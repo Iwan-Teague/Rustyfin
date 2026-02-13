@@ -1,0 +1,26 @@
+# VAAPI GPU docker-compose for Intel/AMD GPU transcoding
+#
+# Maps the DRI device into the container for VAAPI hardware encoding.
+
+services:
+  rustfin:
+    build: .
+    container_name: rustfin-vaapi
+    ports:
+      - "8096:8096"
+    volumes:
+      - rustfin-config:/config
+      - rustfin-cache:/cache
+      - rustfin-transcode:/transcode
+      - /path/to/your/media:/media:ro
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - RUSTFIN_ADMIN_PASSWORD=changeme
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  rustfin-config:
+  rustfin-cache:
+  rustfin-transcode:

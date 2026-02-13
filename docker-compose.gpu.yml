@@ -1,0 +1,36 @@
+# GPU-enabled docker-compose for NVIDIA GPU transcoding
+#
+# Prerequisites:
+#   1. Install NVIDIA Container Toolkit:
+#      https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+#   2. Verify with: docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+#
+# For Intel/AMD (VAAPI), use docker-compose.vaapi.yml instead.
+
+services:
+  rustfin:
+    build: .
+    container_name: rustfin-gpu
+    ports:
+      - "8096:8096"
+    volumes:
+      - rustfin-config:/config
+      - rustfin-cache:/cache
+      - rustfin-transcode:/transcode
+      - /path/to/your/media:/media:ro
+    environment:
+      - RUSTFIN_ADMIN_PASSWORD=changeme
+      - RUST_LOG=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  rustfin-config:
+  rustfin-cache:
+  rustfin-transcode:

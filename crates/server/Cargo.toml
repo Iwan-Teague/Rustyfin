@@ -1,0 +1,38 @@
+[package]
+name = "rustfin-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rustfin-server"
+path = "src/main.rs"
+
+[dependencies]
+rustfin-core = { path = "../core" }
+rustfin-db = { path = "../db" }
+rustfin-metadata = { path = "../metadata" }
+rustfin-scanner = { path = "../scanner" }
+rustfin-transcoder = { path = "../transcoder" }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+tokio-util = { workspace = true }
+futures = "0.3"
+async-stream = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+axum-test = "18"
+rustfin-transcoder = { path = "../transcoder" }

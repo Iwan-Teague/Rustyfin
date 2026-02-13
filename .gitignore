@@ -1,0 +1,53 @@
+# Rust build directory
+/target/
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Build outputs
+/build/
+/dist/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE/editor directories
+.idea/
+.vscode/
+*.swp
+
+# Environment files
+.env
+.env.local
+
+# Local overrides and secrets
+docker-compose.override.yml
+
+# Next.js build outputs
+/ui/.next/
+.next/
+
+# Ignore any other local build artifacts
+*.tgz
+npm-debug.log*
+.yarn/cache
+# Node modules
+node_modules/
+ui/node_modules/
+
+# Ignore node modules and Next.js build
+node_modules/
+ui/node_modules/
+ui/.next/

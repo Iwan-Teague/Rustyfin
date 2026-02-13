@@ -1,0 +1,16 @@
+[package]
+name = "rustfin-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rustfin-core = { path = "../core" }
+sqlx = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+argon2 = { workspace = true }
+password-hash = { workspace = true }

@@ -1,0 +1,20 @@
+services:
+  rustfin:
+    build: .
+    container_name: rustfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - rustfin-config:/config
+      - rustfin-cache:/cache
+      - rustfin-transcode:/transcode
+      - /path/to/your/media:/media:ro
+    environment:
+      - RUSTFIN_ADMIN_PASSWORD=changeme
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  rustfin-config:
+  rustfin-cache:
+  rustfin-transcode:
