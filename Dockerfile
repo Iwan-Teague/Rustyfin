@@ -1,5 +1,5 @@
 # Multi-stage build for Rustfin server
-FROM rust:1.83-bookworm AS builder
+FROM rustlang/rust:nightly-bookworm AS builder
 
 WORKDIR /app
 

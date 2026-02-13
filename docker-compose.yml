@@ -1,7 +1,8 @@
 services:
+  # Backend API server
   rustfin:
     build: .
-    container_name: rustfin
+    container_name: rustfin-backend
     ports:
       - "8096:8096"
     volumes:
@@ -12,6 +13,25 @@ services:
     environment:
       - RUSTFIN_ADMIN_PASSWORD=changeme
       - RUST_LOG=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Frontend UI
+  rustfin-ui:
+    build: ./ui
+    container_name: rustfin-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      rustfin:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
