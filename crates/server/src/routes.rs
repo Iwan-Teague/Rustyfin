@@ -1,11 +1,12 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{AdminUser, AuthUser, issue_token};
 use crate::error::AppError;
+use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
@@ -26,6 +27,13 @@ fn stream_router() -> Router<AppState> {
 
 fn api_router() -> Router<AppState> {
     Router::new()
+        // Public system info (unauthenticated)
+        .route(
+            "/system/info/public",
+            get(crate::setup::handlers::get_public_system_info),
+        )
+        // Setup routes
+        .nest("/setup", setup_router())
         .route("/auth/login", post(auth_login))
         .route("/users", post(create_user_route).get(list_users_route))
         .route("/users/{id}", axum::routing::delete(delete_user_route))
@@ -59,6 +67,47 @@ fn api_router() -> Router<AppState> {
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
+}
+
+fn setup_router() -> Router<AppState> {
+    let rate_limiter = RateLimiter::new(30, 60); // 30 requests per 60s window
+    Router::new()
+        .route("/session/claim", post(crate::setup::handlers::claim_session))
+        .route(
+            "/session/release",
+            post(crate::setup::handlers::release_session),
+        )
+        .route(
+            "/config",
+            get(crate::setup::handlers::get_setup_config)
+                .put(crate::setup::handlers::put_setup_config),
+        )
+        .route("/admin", post(crate::setup::handlers::create_admin))
+        .route(
+            "/paths/validate",
+            post(crate::setup::handlers::validate_path),
+        )
+        .route(
+            "/libraries",
+            post(crate::setup::handlers::create_libraries),
+        )
+        .route(
+            "/metadata",
+            get(crate::setup::handlers::get_setup_metadata)
+                .put(crate::setup::handlers::put_setup_metadata),
+        )
+        .route(
+            "/network",
+            get(crate::setup::handlers::get_setup_network)
+                .put(crate::setup::handlers::put_setup_network),
+        )
+        .route(
+            "/complete",
+            post(crate::setup::handlers::complete_setup),
+        )
+        .route("/reset", post(crate::setup::handlers::reset_setup))
+        .layer(axum::middleware::from_fn(crate::setup::rate_limit::rate_limit_middleware))
+        .layer(Extension(rate_limiter))
 }
 
 // ---------------------------------------------------------------------------

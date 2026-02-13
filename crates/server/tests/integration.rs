@@ -8,8 +8,17 @@ async fn test_app() -> TestServer {
     let pool = rustfin_db::connect(":memory:").await.unwrap();
     rustfin_db::migrate::run(&pool).await.unwrap();
 
-    // Bootstrap admin user
+    // Ensure setup defaults exist
+    rustfin_db::repo::settings::insert_defaults(&pool).await.unwrap();
+
+    // Bootstrap admin user and mark setup as completed for existing tests
     rustfin_db::repo::users::create_user(&pool, "admin", "admin123", "admin")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_completed", "true")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_state", "Completed")
         .await
         .unwrap();
 
@@ -787,4 +796,319 @@ async fn user_management_crud() {
         .await;
     let users: Vec<Value> = resp.json();
     assert_eq!(users.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Setup wizard tests
+// ---------------------------------------------------------------------------
+
+/// Create a test server in fresh (uncompleted setup) state.
+async fn test_app_fresh() -> TestServer {
+    let pool = rustfin_db::connect(":memory:").await.unwrap();
+    rustfin_db::migrate::run(&pool).await.unwrap();
+    rustfin_db::repo::settings::insert_defaults(&pool).await.unwrap();
+
+    let tc_config = rustfin_transcoder::TranscoderConfig {
+        transcode_dir: std::env::temp_dir().join(format!("rf_setup_{}", std::process::id())),
+        max_concurrent: 2,
+        ..Default::default()
+    };
+    let transcoder =
+        std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+
+    let (events_tx, _) = tokio::sync::broadcast::channel(64);
+    let state = AppState {
+        db: pool,
+        jwt_secret: "test-secret-key".to_string(),
+        transcoder,
+        cache_dir: std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
+        events: events_tx,
+    };
+
+    let app = build_router(state);
+    TestServer::new(app).unwrap()
+}
+
+#[tokio::test]
+async fn public_info_shows_setup_incomplete_on_fresh_db() {
+    let server = test_app_fresh().await;
+    let resp = server.get("/api/v1/system/info/public").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["setup_completed"], false);
+    assert_eq!(body["setup_state"], "NotStarted");
+    assert_eq!(body["server_name"], "Rustyfin");
+    assert!(body["version"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn public_info_shows_completed_on_existing_install() {
+    let server = test_app().await;
+    let resp = server.get("/api/v1/system/info/public").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["setup_completed"], true);
+    assert_eq!(body["setup_state"], "Completed");
+}
+
+#[tokio::test]
+async fn setup_claim_and_release_session() {
+    let server = test_app_fresh().await;
+
+    // Claim session
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "TestUI",
+            "force": false,
+            "confirm_takeover": false
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let token = body["owner_token"].as_str().unwrap().to_string();
+    assert_eq!(body["claimed_by"], "TestUI");
+    assert!(!token.is_empty());
+
+    // Second claim without force should 409
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "OtherUI",
+            "force": false,
+            "confirm_takeover": false
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: Value = resp.json();
+    assert_eq!(body["error"]["code"], "setup_claimed");
+
+    // Release session
+    let resp = server
+        .post("/api/v1/setup/session/release")
+        .add_header(
+            axum::http::HeaderName::from_static("x-setup-owner-token"),
+            token.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["released"], true);
+}
+
+#[tokio::test]
+async fn setup_full_wizard_flow() {
+    let server = test_app_fresh().await;
+
+    // Step 1: Claim session
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "TestUI",
+            "force": false,
+            "confirm_takeover": false
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let token = body["owner_token"].as_str().unwrap().to_string();
+
+    let owner_hdr = axum::http::HeaderName::from_static("x-setup-owner-token");
+    let owner_val: axum::http::HeaderValue = token.parse().unwrap();
+
+    // Step 2: PUT config
+    let resp = server
+        .put("/api/v1/setup/config")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .json(&json!({
+            "server_name": "My Rustyfin",
+            "default_ui_locale": "en-US",
+            "default_region": "US",
+            "default_time_zone": "America/New_York"
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["setup_state"], "ServerConfigSaved");
+
+    // Step 3: Create admin
+    let resp = server
+        .post("/api/v1/setup/admin")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .add_header(
+            axum::http::HeaderName::from_static("idempotency-key"),
+            "test-idem-key-12345678".parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "username": "myadmin",
+            "password": "supersecurepassword123"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let body: Value = resp.json();
+    assert!(body["user_id"].as_str().is_some());
+    assert_eq!(body["setup_state"], "AdminCreated");
+
+    // Step 3b: Idempotent replay with same key
+    let resp = server
+        .post("/api/v1/setup/admin")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .add_header(
+            axum::http::HeaderName::from_static("idempotency-key"),
+            "test-idem-key-12345678".parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "username": "myadmin",
+            "password": "supersecurepassword123"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+
+    // Step 4: PUT metadata (skipping libraries since they're optional)
+    let resp = server
+        .put("/api/v1/setup/metadata")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .json(&json!({
+            "metadata_language": "en",
+            "metadata_region": "US"
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["setup_state"], "MetadataSaved");
+
+    // Step 5: PUT network
+    let resp = server
+        .put("/api/v1/setup/network")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .json(&json!({
+            "allow_remote_access": false,
+            "enable_automatic_port_mapping": false,
+            "trusted_proxies": []
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["setup_state"], "NetworkSaved");
+
+    // Step 6: Complete
+    let resp = server
+        .post("/api/v1/setup/complete")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .json(&json!({ "confirm": true }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["setup_completed"], true);
+    assert_eq!(body["setup_state"], "Completed");
+
+    // Verify: public info now shows completed
+    let resp = server.get("/api/v1/system/info/public").await;
+    let body: Value = resp.json();
+    assert_eq!(body["setup_completed"], true);
+    assert_eq!(body["server_name"], "My Rustyfin");
+
+    // Verify: admin can login
+    let resp = server
+        .post("/api/v1/auth/login")
+        .json(&json!({ "username": "myadmin", "password": "supersecurepassword123" }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["role"], "admin");
+}
+
+#[tokio::test]
+async fn setup_state_machine_enforces_order() {
+    let server = test_app_fresh().await;
+
+    // Try to put config without claiming session first — should fail (no token)
+    let resp = server
+        .put("/api/v1/setup/config")
+        .json(&json!({
+            "server_name": "Test",
+            "default_ui_locale": "en",
+            "default_region": "US"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn setup_validation_rejects_weak_password() {
+    let server = test_app_fresh().await;
+
+    // Claim session
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "TestUI",
+            "force": false,
+            "confirm_takeover": false
+        }))
+        .await;
+    let body: Value = resp.json();
+    let token = body["owner_token"].as_str().unwrap().to_string();
+    let owner_hdr = axum::http::HeaderName::from_static("x-setup-owner-token");
+    let owner_val: axum::http::HeaderValue = token.parse().unwrap();
+
+    // Put config first
+    let resp = server
+        .put("/api/v1/setup/config")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .json(&json!({
+            "server_name": "Test",
+            "default_ui_locale": "en",
+            "default_region": "US"
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    // Try to create admin with short password
+    let resp = server
+        .post("/api/v1/setup/admin")
+        .add_header(owner_hdr.clone(), owner_val.clone())
+        .add_header(
+            axum::http::HeaderName::from_static("idempotency-key"),
+            "validate-test-key123".parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "username": "admin",
+            "password": "short"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = resp.json();
+    assert_eq!(body["error"]["code"], "validation_failed");
+    assert!(body["error"]["details"]["fields"]["password"].is_array());
+}
+
+#[tokio::test]
+async fn setup_force_takeover() {
+    let server = test_app_fresh().await;
+
+    // First claim
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "Browser1",
+            "force": false,
+            "confirm_takeover": false
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    // Force takeover
+    let resp = server
+        .post("/api/v1/setup/session/claim")
+        .json(&json!({
+            "client_name": "Browser2",
+            "force": true,
+            "confirm_takeover": true
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["claimed_by"], "Browser2");
 }

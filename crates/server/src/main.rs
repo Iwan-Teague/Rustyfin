@@ -23,18 +23,32 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to run migrations")?;
     info!("migrations complete");
 
-    // Bootstrap admin if no users exist
+    // Ensure setup defaults exist (idempotent)
+    rustfin_db::repo::settings::insert_defaults(&pool)
+        .await
+        .context("failed to ensure setup defaults")?;
+
+    // Auto-migrate: if users already exist but setup not completed, mark setup as completed
+    // (handles existing installs that pre-date the setup wizard)
     let user_count = rustfin_db::repo::users::count_users(&pool)
         .await
         .context("failed to count users")?;
 
-    if user_count == 0 {
-        let admin_pass =
-            std::env::var("RUSTFIN_ADMIN_PASSWORD").unwrap_or_else(|_| "admin".to_string());
-        rustfin_db::repo::users::create_user(&pool, "admin", &admin_pass, "admin")
+    if user_count > 0 {
+        let setup_completed = rustfin_db::repo::settings::get(&pool, "setup_completed")
             .await
-            .context("failed to bootstrap admin user")?;
-        info!("admin user bootstrapped (username: admin)");
+            .context("failed to read setup_completed")?
+            .unwrap_or_else(|| "false".to_string());
+
+        if setup_completed != "true" {
+            rustfin_db::repo::settings::set(&pool, "setup_completed", "true")
+                .await
+                .context("failed to auto-set setup_completed")?;
+            rustfin_db::repo::settings::set(&pool, "setup_state", "Completed")
+                .await
+                .context("failed to auto-set setup_state")?;
+            info!("auto-migrated existing install to setup_completed=true");
+        }
     }
 
     // JWT secret: use env or generate random

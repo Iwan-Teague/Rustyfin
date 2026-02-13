@@ -1,4 +1,33 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { getPublicSystemInfo } from '@/lib/setupApi';
+
 export default function Home() {
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getPublicSystemInfo()
+      .then((info) => {
+        if (!info.setup_completed) {
+          window.location.href = '/setup';
+        } else {
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <div className="text-gray-400">Loading...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <h1 className="text-3xl font-bold">Welcome to Rustfin</h1>
