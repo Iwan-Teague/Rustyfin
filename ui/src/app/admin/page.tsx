@@ -43,6 +43,7 @@ export default function AdminPage() {
     role: 'user' as 'admin' | 'user',
     library_ids: [] as string[],
   });
+  const [pickingPath, setPickingPath] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'ok' | 'error'>('ok');
 
@@ -111,6 +112,21 @@ export default function AdminPage() {
       await loadData();
     } catch (err: any) {
       setErr(err.message || 'Failed to start scan');
+    }
+  }
+
+  async function browseLibraryPath() {
+    setPickingPath(true);
+    try {
+      const data = await apiJson<{ path: string }>('/system/pick-directory', {
+        method: 'POST',
+      });
+      setNewLib((prev) => ({ ...prev, path: data.path }));
+      setOk('Directory selected');
+    } catch (err: any) {
+      setErr(err.message || 'Failed to open directory picker');
+    } finally {
+      setPickingPath(false);
     }
   }
 
@@ -224,7 +240,7 @@ export default function AdminPage() {
 
       <section className="panel space-y-4 p-6">
         <h2 className="text-xl font-semibold">Create Library</h2>
-        <form onSubmit={createLibrary} className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto]">
+        <form onSubmit={createLibrary} className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto_auto]">
           <input
             placeholder="Name"
             value={newLib.name}
@@ -247,6 +263,14 @@ export default function AdminPage() {
             className="input px-3 py-2 text-sm"
             required
           />
+          <button
+            type="button"
+            onClick={browseLibraryPath}
+            disabled={pickingPath}
+            className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+          >
+            {pickingPath ? 'Opening...' : 'Browse'}
+          </button>
           <button
             type="submit"
             className="btn-primary px-4 py-2 text-sm"
