@@ -67,24 +67,18 @@ impl FromRequestParts<AppState> for SetupWriteGuard {
             .headers
             .get("x-setup-owner-token")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::Unauthorized("missing setup owner token".into())
-            })?;
+            .ok_or_else(|| ApiError::Unauthorized("missing setup owner token".into()))?;
 
         // Get active session
         let session = rustfin_db::repo::setup_session::get_active(&state.db)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| {
-                ApiError::Unauthorized("no active setup session".into())
-            })?;
+            .ok_or_else(|| ApiError::Unauthorized("no active setup session".into()))?;
 
         // Constant-time compare token hash
         let provided_hash = hash_token(token);
         if !constant_time_eq(&provided_hash, &session.owner_token_hash) {
-            return Err(
-                ApiError::Unauthorized("invalid setup owner token".into()).into()
-            );
+            return Err(ApiError::Unauthorized("invalid setup owner token".into()).into());
         }
 
         // Check local/remote policy
@@ -148,22 +142,16 @@ impl FromRequestParts<AppState> for SetupReadGuard {
             .headers
             .get("x-setup-owner-token")
             .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::Unauthorized("missing setup owner token".into())
-            })?;
+            .ok_or_else(|| ApiError::Unauthorized("missing setup owner token".into()))?;
 
         let session = rustfin_db::repo::setup_session::get_active(&state.db)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| {
-                ApiError::Unauthorized("no active setup session".into())
-            })?;
+            .ok_or_else(|| ApiError::Unauthorized("no active setup session".into()))?;
 
         let provided_hash = hash_token(token);
         if !constant_time_eq(&provided_hash, &session.owner_token_hash) {
-            return Err(
-                ApiError::Unauthorized("invalid setup owner token".into()).into()
-            );
+            return Err(ApiError::Unauthorized("invalid setup owner token".into()).into());
         }
 
         Ok(SetupReadGuard {

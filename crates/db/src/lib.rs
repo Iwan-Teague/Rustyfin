@@ -1,8 +1,9 @@
+#![allow(clippy::type_complexity, clippy::empty_line_after_doc_comments)]
 pub mod migrate;
 pub mod repo;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 

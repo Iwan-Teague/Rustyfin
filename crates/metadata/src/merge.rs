@@ -30,12 +30,8 @@ pub async fn merge_metadata(
     // Merge each field if not locked and provider has a value
     macro_rules! merge_field {
         ($field:ident) => {
-            if provider_meta.$field.is_some()
-                && !locked.contains(&stringify!($field).to_string())
-            {
-                if current.$field.is_none()
-                    || current.$field != provider_meta.$field
-                {
+            if provider_meta.$field.is_some() && !locked.contains(&stringify!($field).to_string()) {
+                if current.$field.is_none() || current.$field != provider_meta.$field {
                     merged.$field = provider_meta.$field.clone();
                     updated_fields.push(stringify!($field).to_string());
                 }
@@ -268,7 +264,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = merge_metadata(&pool, item_id, &provider_meta).await.unwrap();
+        let result = merge_metadata(&pool, item_id, &provider_meta)
+            .await
+            .unwrap();
 
         // Title should NOT be updated (locked)
         assert_eq!(result.metadata.title.as_deref(), Some("Original Title"));
@@ -302,8 +300,12 @@ mod tests {
         .await
         .unwrap();
 
-        set_provider_id(&pool, item_id, "tmdb", "12345").await.unwrap();
-        set_provider_id(&pool, item_id, "imdb", "tt1234567").await.unwrap();
+        set_provider_id(&pool, item_id, "tmdb", "12345")
+            .await
+            .unwrap();
+        set_provider_id(&pool, item_id, "imdb", "tt1234567")
+            .await
+            .unwrap();
 
         let ids = get_provider_ids(&pool, item_id).await.unwrap();
         assert_eq!(ids.len(), 2);
@@ -311,7 +313,9 @@ mod tests {
         assert!(ids.iter().any(|(p, id)| p == "imdb" && id == "tt1234567"));
 
         // Update existing
-        set_provider_id(&pool, item_id, "tmdb", "99999").await.unwrap();
+        set_provider_id(&pool, item_id, "tmdb", "99999")
+            .await
+            .unwrap();
         let ids = get_provider_ids(&pool, item_id).await.unwrap();
         assert!(ids.iter().any(|(p, id)| p == "tmdb" && id == "99999"));
     }

@@ -1,35 +1,12 @@
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::LazyLock;
 
-static USERNAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._-]{3,32}$").unwrap());
-static REGION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z]{2}$").unwrap());
+static REGION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]{2}$").unwrap());
 
 /// Validate create admin request fields. Returns field errors or None.
 pub fn validate_admin(username: &str, password: &str) -> Option<Value> {
-    let mut fields = serde_json::Map::new();
-
-    if username.len() < 3 || username.len() > 32 || !USERNAME_RE.is_match(username) {
-        fields.insert(
-            "username".to_string(),
-            json!(["must match ^[a-zA-Z0-9._-]{3,32}$"]),
-        );
-    }
-
-    if password.len() < 12 || password.len() > 1024 {
-        fields.insert(
-            "password".to_string(),
-            json!(["must be between 12 and 1024 characters"]),
-        );
-    }
-
-    if fields.is_empty() {
-        None
-    } else {
-        Some(Value::Object(fields))
-    }
+    crate::user_pipeline::validate_username_password(username, password)
 }
 
 /// Validate setup config fields.
@@ -122,11 +99,7 @@ pub fn validate_network(trusted_proxies: &[String]) -> Option<Value> {
 }
 
 /// Validate a library spec.
-pub fn validate_library_spec(
-    name: &str,
-    kind: &str,
-    paths: &[String],
-) -> Option<Value> {
+pub fn validate_library_spec(name: &str, kind: &str, paths: &[String]) -> Option<Value> {
     let mut fields = serde_json::Map::new();
 
     if name.is_empty() || name.len() > 64 {

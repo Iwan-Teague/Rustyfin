@@ -1,3 +1,8 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::redundant_closure,
+    clippy::unused_async
+)]
 pub mod decision;
 pub mod ffprobe;
 pub mod gpu;

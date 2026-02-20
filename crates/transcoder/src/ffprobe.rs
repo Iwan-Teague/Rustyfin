@@ -110,10 +110,7 @@ fn parse_probe_output(raw: &serde_json::Value) -> Result<MediaInfo, TranscodeErr
 
     for s in &streams {
         let codec_type = s.get("codec_type").and_then(|v| v.as_str()).unwrap_or("");
-        let index = s
-            .get("index")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let index = s.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let codec = s
             .get("codec_name")
             .and_then(|v| v.as_str())
@@ -166,8 +163,7 @@ fn parse_probe_output(raw: &serde_json::Value) -> Result<MediaInfo, TranscodeErr
                 }
             }
             "audio" => {
-                let channels =
-                    s.get("channels").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
+                let channels = s.get("channels").and_then(|v| v.as_u64()).unwrap_or(2) as u32;
                 audio.push(AudioStream {
                     index,
                     codec,
@@ -205,11 +201,7 @@ fn parse_fraction(s: &str) -> Option<f64> {
     if let Some((num, den)) = s.split_once('/') {
         let n: f64 = num.parse().ok()?;
         let d: f64 = den.parse().ok()?;
-        if d > 0.0 {
-            Some(n / d)
-        } else {
-            None
-        }
+        if d > 0.0 { Some(n / d) } else { None }
     } else {
         s.parse().ok()
     }

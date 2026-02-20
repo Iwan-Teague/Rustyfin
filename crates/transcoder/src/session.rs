@@ -104,7 +104,10 @@ impl SessionManager {
             child: Some(child),
         };
 
-        self.sessions.lock().await.insert(session_id.clone(), session);
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), session);
 
         // The semaphore permit is dropped here, but we track active sessions via the map.
         // We re-check count in create_session. For true gating, we'd hold the permit
@@ -261,7 +264,12 @@ async fn spawn_ffmpeg(
 
     // Video encoding params for software encode
     if hw_accel.is_none() && video_codec_override.is_none() {
-        args.extend(["-preset".into(), "veryfast".into(), "-crf".into(), "23".into()]);
+        args.extend([
+            "-preset".into(),
+            "veryfast".into(),
+            "-crf".into(),
+            "23".into(),
+        ]);
     }
 
     // Audio: always AAC for HLS compatibility

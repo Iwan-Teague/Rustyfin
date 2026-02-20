@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 pub mod merge;
 pub mod provider;
 pub mod tmdb;

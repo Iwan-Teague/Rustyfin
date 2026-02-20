@@ -44,15 +44,21 @@ pub async fn get_expected_episodes(
     pool: &SqlitePool,
     series_id: &str,
 ) -> Result<Vec<ExpectedEpisodeRow>, sqlx::Error> {
-    let rows: Vec<(String, i32, i32, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT series_id, season_number, episode_number, title, overview, air_date \
+    let rows: Vec<(
+        String,
+        i32,
+        i32,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT series_id, season_number, episode_number, title, overview, air_date \
              FROM episode_expected WHERE series_id = ? \
              ORDER BY season_number, episode_number",
-        )
-        .bind(series_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(series_id)
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -73,16 +79,22 @@ pub async fn get_season_expected(
     series_id: &str,
     season_number: i32,
 ) -> Result<Vec<ExpectedEpisodeRow>, sqlx::Error> {
-    let rows: Vec<(String, i32, i32, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT series_id, season_number, episode_number, title, overview, air_date \
+    let rows: Vec<(
+        String,
+        i32,
+        i32,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT series_id, season_number, episode_number, title, overview, air_date \
              FROM episode_expected WHERE series_id = ? AND season_number = ? \
              ORDER BY episode_number",
-        )
-        .bind(series_id)
-        .bind(season_number)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(series_id)
+    .bind(season_number)
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()

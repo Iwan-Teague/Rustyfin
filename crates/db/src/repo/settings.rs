@@ -2,11 +2,10 @@ use sqlx::SqlitePool;
 
 /// Get a setting value by key.
 pub async fn get(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = ?")
-            .bind(key)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(v,)| v))
 }
 
@@ -67,13 +66,11 @@ pub async fn insert_defaults(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         ("trusted_proxies", "[]"),
     ];
     for (key, value) in defaults {
-        sqlx::query(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(pool)
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
+            .bind(key)
+            .bind(value)
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }

@@ -3,12 +3,14 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashSet;
 
 use crate::auth::{AdminUser, AuthUser, issue_token};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
+use crate::user_pipeline;
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -227,34 +229,14 @@ struct CreateUserResponse {
 }
 
 fn normalize_library_ids(ids: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::new();
-    for raw in ids {
-        let id = raw.trim();
-        if id.is_empty() {
-            continue;
-        }
-        if seen.insert(id.to_string()) {
-            normalized.push(id.to_string());
-        }
-    }
-    normalized
+    user_pipeline::normalize_library_ids(ids)
 }
 
 async fn validate_library_ids_exist(
     state: &AppState,
     library_ids: &[String],
 ) -> Result<(), AppError> {
-    for library_id in library_ids {
-        let exists = rustfin_db::repo::libraries::get_library(&state.db, library_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .is_some();
-        if !exists {
-            return Err(ApiError::BadRequest(format!("unknown library id: {library_id}")).into());
-        }
-    }
-    Ok(())
+    user_pipeline::validate_library_ids_exist(state, library_ids).await
 }
 
 async fn ensure_library_access(
@@ -279,39 +261,16 @@ async fn create_user_route(
     State(state): State<AppState>,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<Json<CreateUserResponse>, AppError> {
-    if body.username.is_empty() || body.password.len() < 4 {
-        return Err(ApiError::BadRequest(
-            "username must be non-empty and password at least 4 chars".into(),
-        )
-        .into());
-    }
-    let role = body.role;
-    if role != "admin" && role != "user" {
-        return Err(ApiError::BadRequest("role must be 'admin' or 'user'".into()).into());
-    }
-    let library_ids = normalize_library_ids(&body.library_ids);
-    if role == "user" && library_ids.is_empty() {
-        return Err(
-            ApiError::BadRequest("user accounts must include at least one library".into()).into(),
-        );
-    }
-    if role == "admin" && !library_ids.is_empty() {
-        return Err(ApiError::BadRequest(
-            "admin users cannot be limited to specific libraries".into(),
-        )
-        .into());
-    }
-    validate_library_ids_exist(&state, &library_ids).await?;
-
-    let id = rustfin_db::repo::users::create_user(&state.db, &body.username, &body.password, &role)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    if role == "user" {
-        rustfin_db::repo::users::set_library_access(&state.db, &id, &library_ids)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    }
+    let role = body.role.clone();
+    let library_ids = user_pipeline::normalize_library_ids(&body.library_ids);
+    let id = user_pipeline::create_user_with_access(
+        &state,
+        &body.username,
+        &body.password,
+        &role,
+        &library_ids,
+    )
+    .await?;
 
     Ok(Json(CreateUserResponse {
         id,
@@ -539,10 +498,52 @@ async fn create_library(
         return Err(ApiError::BadRequest("at least one path required".into()).into());
     }
 
-    let lib =
-        rustfin_db::repo::libraries::create_library(&state.db, &body.name, &body.kind, &body.paths)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    // Validate and normalise each path
+    let mut normalized_paths = Vec::new();
+    for (i, raw) in body.paths.iter().enumerate() {
+        let p = raw.trim();
+        if p.is_empty() {
+            return Err(ApiError::validation(json!({
+                format!("paths[{i}]"): ["must not be empty"]
+            }))
+            .into());
+        }
+        let path = std::path::Path::new(p);
+        if !path.is_absolute() {
+            return Err(ApiError::validation(json!({
+                format!("paths[{i}]"): ["must be an absolute path"]
+            }))
+            .into());
+        }
+        if !path.exists() {
+            return Err(ApiError::validation(json!({
+                format!("paths[{i}]"): ["path does not exist on the server"]
+            }))
+            .into());
+        }
+        if !path.is_dir() {
+            return Err(ApiError::validation(json!({
+                format!("paths[{i}]"): ["path is not a directory"]
+            }))
+            .into());
+        }
+        if path.read_dir().is_err() {
+            return Err(ApiError::validation(json!({
+                format!("paths[{i}]"): ["directory is not readable by the server process"]
+            }))
+            .into());
+        }
+        normalized_paths.push(p.to_string());
+    }
+
+    let lib = rustfin_db::repo::libraries::create_library(
+        &state.db,
+        &body.name,
+        &body.kind,
+        &normalized_paths,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
         .await
@@ -1550,8 +1551,9 @@ POSIX path of chosenFolder"#;
         .map_err(|e| ApiError::Internal(format!("failed to launch folder picker: {e}")))?;
 
     if output.status.success() {
-        let path = String::from_utf8(output.stdout)
-            .map_err(|e| ApiError::Internal(format!("folder picker returned invalid UTF-8: {e}")))?;
+        let path = String::from_utf8(output.stdout).map_err(|e| {
+            ApiError::Internal(format!("folder picker returned invalid UTF-8: {e}"))
+        })?;
         let path = path.trim().to_string();
         if path.is_empty() {
             return Err(ApiError::BadRequest("no directory selected".into()));
@@ -1571,14 +1573,15 @@ POSIX path of chosenFolder"#;
         ));
     }
 
-    Err(ApiError::Internal(format!("folder picker failed: {detail}")))
+    Err(ApiError::Internal(format!(
+        "folder picker failed: {detail}"
+    )))
 }
 
 #[cfg(not(target_os = "macos"))]
 fn open_directory_picker_native() -> Result<String, ApiError> {
     Err(ApiError::BadRequest(
-        "directory picker is only supported on macOS in this build; enter the path manually"
-            .into(),
+        "directory picker is only supported on macOS in this build; enter the path manually".into(),
     ))
 }
 

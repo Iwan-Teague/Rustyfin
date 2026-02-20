@@ -62,25 +62,23 @@ impl SubtitleFormat {
 
 /// ISO 639-1 two-letter language codes (common subset for validation).
 const LANG_CODES: &[&str] = &[
-    "aa", "ab", "af", "ak", "am", "an", "ar", "as", "av", "ay", "az", "ba", "be", "bg", "bh",
-    "bi", "bm", "bn", "bo", "br", "bs", "ca", "ce", "ch", "co", "cr", "cs", "cu", "cv", "cy",
-    "da", "de", "dv", "dz", "ee", "el", "en", "eo", "es", "et", "eu", "fa", "ff", "fi", "fj",
-    "fo", "fr", "fy", "ga", "gd", "gl", "gn", "gu", "gv", "ha", "he", "hi", "ho", "hr", "ht",
-    "hu", "hy", "hz", "ia", "id", "ie", "ig", "ii", "ik", "in", "io", "is", "it", "iu", "ja",
-    "jv", "ka", "kg", "ki", "kj", "kk", "kl", "km", "kn", "ko", "kr", "ks", "ku", "kv", "kw",
-    "ky", "la", "lb", "lg", "li", "ln", "lo", "lt", "lu", "lv", "mg", "mh", "mi", "mk", "ml",
-    "mn", "mr", "ms", "mt", "my", "na", "nb", "nd", "ne", "ng", "nl", "nn", "no", "nr", "nv",
-    "ny", "oc", "oj", "om", "or", "os", "pa", "pi", "pl", "ps", "pt", "qu", "rm", "rn", "ro",
-    "ru", "rw", "sa", "sc", "sd", "se", "sg", "si", "sk", "sl", "sm", "sn", "so", "sq", "sr",
-    "ss", "st", "su", "sv", "sw", "ta", "te", "tg", "th", "ti", "tk", "tl", "tn", "to", "tr",
-    "ts", "tt", "tw", "ty", "ug", "uk", "ur", "uz", "ve", "vi", "vo", "wa", "wo", "xh", "yi",
-    "yo", "za", "zh", "zu",
+    "aa", "ab", "af", "ak", "am", "an", "ar", "as", "av", "ay", "az", "ba", "be", "bg", "bh", "bi",
+    "bm", "bn", "bo", "br", "bs", "ca", "ce", "ch", "co", "cr", "cs", "cu", "cv", "cy", "da", "de",
+    "dv", "dz", "ee", "el", "en", "eo", "es", "et", "eu", "fa", "ff", "fi", "fj", "fo", "fr", "fy",
+    "ga", "gd", "gl", "gn", "gu", "gv", "ha", "he", "hi", "ho", "hr", "ht", "hu", "hy", "hz", "ia",
+    "id", "ie", "ig", "ii", "ik", "in", "io", "is", "it", "iu", "ja", "jv", "ka", "kg", "ki", "kj",
+    "kk", "kl", "km", "kn", "ko", "kr", "ks", "ku", "kv", "kw", "ky", "la", "lb", "lg", "li", "ln",
+    "lo", "lt", "lu", "lv", "mg", "mh", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "na", "nb",
+    "nd", "ne", "ng", "nl", "nn", "no", "nr", "nv", "ny", "oc", "oj", "om", "or", "os", "pa", "pi",
+    "pl", "ps", "pt", "qu", "rm", "rn", "ro", "ru", "rw", "sa", "sc", "sd", "se", "sg", "si", "sk",
+    "sl", "sm", "sn", "so", "sq", "sr", "ss", "st", "su", "sv", "sw", "ta", "te", "tg", "th", "ti",
+    "tk", "tl", "tn", "to", "tr", "ts", "tt", "tw", "ty", "ug", "uk", "ur", "uz", "ve", "vi", "vo",
+    "wa", "wo", "xh", "yi", "yo", "za", "zh", "zu",
 ];
 
 fn is_lang_code(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
-    LANG_CODES.contains(&lower.as_str())
-        || lower.len() == 3 // also accept ISO 639-2 (3-letter)
+    LANG_CODES.contains(&lower.as_str()) || lower.len() == 3 // also accept ISO 639-2 (3-letter)
 }
 
 /// Parse subtitle metadata from filename parts.
@@ -203,11 +201,26 @@ mod tests {
 
     #[test]
     fn subtitle_format_detection() {
-        assert_eq!(SubtitleFormat::from_extension("srt"), Some(SubtitleFormat::Srt));
-        assert_eq!(SubtitleFormat::from_extension("SRT"), Some(SubtitleFormat::Srt));
-        assert_eq!(SubtitleFormat::from_extension("ass"), Some(SubtitleFormat::Ass));
-        assert_eq!(SubtitleFormat::from_extension("vtt"), Some(SubtitleFormat::Vtt));
-        assert_eq!(SubtitleFormat::from_extension("sup"), Some(SubtitleFormat::Sup));
+        assert_eq!(
+            SubtitleFormat::from_extension("srt"),
+            Some(SubtitleFormat::Srt)
+        );
+        assert_eq!(
+            SubtitleFormat::from_extension("SRT"),
+            Some(SubtitleFormat::Srt)
+        );
+        assert_eq!(
+            SubtitleFormat::from_extension("ass"),
+            Some(SubtitleFormat::Ass)
+        );
+        assert_eq!(
+            SubtitleFormat::from_extension("vtt"),
+            Some(SubtitleFormat::Vtt)
+        );
+        assert_eq!(
+            SubtitleFormat::from_extension("sup"),
+            Some(SubtitleFormat::Sup)
+        );
         assert_eq!(SubtitleFormat::from_extension("mp4"), None);
     }
 
@@ -252,8 +265,16 @@ mod tests {
         fs::write(&media, "fake video").unwrap();
 
         // Create subtitle files
-        fs::write(tmp.join("Movie.Title.2020.en.srt"), "1\n00:00:01,000 --> 00:00:02,000\nHello").unwrap();
-        fs::write(tmp.join("Movie.Title.2020.fr.forced.srt"), "1\n00:00:01,000 --> 00:00:02,000\nBonjour").unwrap();
+        fs::write(
+            tmp.join("Movie.Title.2020.en.srt"),
+            "1\n00:00:01,000 --> 00:00:02,000\nHello",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("Movie.Title.2020.fr.forced.srt"),
+            "1\n00:00:01,000 --> 00:00:02,000\nBonjour",
+        )
+        .unwrap();
         fs::write(tmp.join("Movie.Title.2020.srt"), "no lang").unwrap();
         fs::write(tmp.join("Movie.Title.2020.en.sdh.ass"), "sdh subs").unwrap();
         // Unrelated file
@@ -263,20 +284,32 @@ mod tests {
         assert_eq!(subs.len(), 4);
 
         // Check the English SRT
-        let en_srt = subs.iter().find(|s| s.language.as_deref() == Some("en") && s.format == SubtitleFormat::Srt).unwrap();
+        let en_srt = subs
+            .iter()
+            .find(|s| s.language.as_deref() == Some("en") && s.format == SubtitleFormat::Srt)
+            .unwrap();
         assert!(!en_srt.forced);
         assert!(!en_srt.sdh);
 
         // Check French forced
-        let fr_forced = subs.iter().find(|s| s.language.as_deref() == Some("fr")).unwrap();
+        let fr_forced = subs
+            .iter()
+            .find(|s| s.language.as_deref() == Some("fr"))
+            .unwrap();
         assert!(fr_forced.forced);
 
         // Check no-language SRT
-        let no_lang = subs.iter().find(|s| s.language.is_none() && s.format == SubtitleFormat::Srt).unwrap();
+        let no_lang = subs
+            .iter()
+            .find(|s| s.language.is_none() && s.format == SubtitleFormat::Srt)
+            .unwrap();
         assert!(!no_lang.forced);
 
         // Check SDH ASS
-        let sdh_ass = subs.iter().find(|s| s.sdh && s.format == SubtitleFormat::Ass).unwrap();
+        let sdh_ass = subs
+            .iter()
+            .find(|s| s.sdh && s.format == SubtitleFormat::Ass)
+            .unwrap();
         assert_eq!(sdh_ass.language.as_deref(), Some("en"));
 
         fs::remove_dir_all(&tmp).ok();

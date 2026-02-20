@@ -43,10 +43,7 @@ pub async fn run_library_scan(
             }
 
             // Determine relative path for parsing
-            let rel = entry
-                .path
-                .strip_prefix(root)
-                .unwrap_or(&entry.path);
+            let rel = entry.path.strip_prefix(root).unwrap_or(&entry.path);
 
             // Parse based on library kind
             let parsed = match library_kind {
@@ -103,10 +100,7 @@ fn parse_movie_entry(rel: &Path) -> ParsedMedia {
 /// Parse a relative path for a TV entry.
 /// Supports: `Show Name/Season 01/S01E02.mkv` or `Show Name/S01E02.mkv`
 fn parse_tv_entry(rel: &Path) -> ParsedMedia {
-    let filename = rel
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let filename = rel.file_name().unwrap_or_default().to_string_lossy();
 
     let parsed = parser::parse_filename(&filename);
 
@@ -152,11 +146,10 @@ fn find_series_dir(rel: &Path) -> Option<String> {
 // ─── DB helpers ──────────────────────────────────────────────────────────────
 
 async fn file_exists(pool: &SqlitePool, path: &str) -> Result<bool, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM media_file WHERE path = ?")
-            .bind(path)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM media_file WHERE path = ?")
+        .bind(path)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.is_some())
 }
 
@@ -284,18 +277,30 @@ async fn create_episode_item(
     } else {
         format!("Season {}", info.season)
     };
-    let season_id =
-        find_or_create_item(pool, library_id, "season", Some(&series_id), &season_title, None)
-            .await?;
+    let season_id = find_or_create_item(
+        pool,
+        library_id,
+        "season",
+        Some(&series_id),
+        &season_title,
+        None,
+    )
+    .await?;
 
     // Create episode
     let ep_title = info
         .episode_title
         .clone()
         .unwrap_or_else(|| format!("Episode {}", info.episode));
-    let episode_id =
-        find_or_create_item(pool, library_id, "episode", Some(&season_id), &ep_title, None)
-            .await?;
+    let episode_id = find_or_create_item(
+        pool,
+        library_id,
+        "episode",
+        Some(&season_id),
+        &ep_title,
+        None,
+    )
+    .await?;
 
     // Create media file
     let file_id = create_media_file(pool, file_path, entry).await?;

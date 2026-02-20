@@ -20,10 +20,7 @@ pub enum ServerEvent {
         items_added: u64,
     },
     #[serde(rename = "metadata_refresh")]
-    MetadataRefresh {
-        item_id: String,
-        status: String,
-    },
+    MetadataRefresh { item_id: String, status: String },
     #[serde(rename = "job_update")]
     JobUpdate {
         job_id: String,

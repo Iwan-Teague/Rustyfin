@@ -26,9 +26,7 @@ pub enum ApiError {
     },
 
     #[error("too many requests")]
-    TooManyRequests {
-        retry_after_seconds: u64,
-    },
+    TooManyRequests { retry_after_seconds: u64 },
 
     #[error("internal error: {0}")]
     Internal(String),
@@ -74,7 +72,9 @@ impl ApiError {
     pub fn details(&self) -> serde_json::Value {
         match self {
             Self::UnprocessableEntity { details, .. } => details.clone(),
-            Self::TooManyRequests { retry_after_seconds } => {
+            Self::TooManyRequests {
+                retry_after_seconds,
+            } => {
                 serde_json::json!({ "retry_after_seconds": retry_after_seconds })
             }
             _ => serde_json::Value::Object(serde_json::Map::new()),

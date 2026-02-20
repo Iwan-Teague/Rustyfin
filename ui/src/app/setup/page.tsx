@@ -13,6 +13,7 @@ import {
   completeSetup,
   type SetupError,
 } from '@/lib/setupApi';
+import { useAuth } from '@/lib/auth';
 
 type Step = 'loading' | 'welcome' | 'config' | 'admin' | 'libraries' | 'metadata' | 'network' | 'complete' | 'done';
 
@@ -25,6 +26,7 @@ export default function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
+  const { refreshMe } = useAuth();
 
   // Config state
   const [serverName, setServerName] = useState('Rustyfin');
@@ -177,6 +179,17 @@ export default function SetupWizard() {
     try {
       await completeSetup();
       clearOwnerToken();
+      // Auto-login as the admin created during setup
+      const res = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: adminUsername, password: adminPassword }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem('token', data.token);
+        await refreshMe();
+      }
       setStep('done');
     } catch (err) {
       handleError(err);
@@ -213,10 +226,10 @@ export default function SetupWizard() {
         <div className="text-4xl">Setup Complete</div>
         <p className="text-sm muted sm:text-base">Your Rustyfin server is ready to use.</p>
         <a
-          href="/login"
+          href="/libraries"
           className="btn-primary inline-flex px-6 py-2.5 text-sm"
         >
-          Go to Login
+          Go to Libraries
         </a>
       </section>
     );
@@ -362,6 +375,7 @@ export default function SetupWizard() {
               <label className="mb-1 block text-sm font-medium muted">Password</label>
               <input
                 type="password"
+                minLength={12}
                 value={adminPassword}
                 onChange={(e) => setAdminPassword(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password))}
@@ -375,6 +389,7 @@ export default function SetupWizard() {
               <label className="mb-1 block text-sm font-medium muted">Confirm Password</label>
               <input
                 type="password"
+                minLength={12}
                 value={adminPasswordConfirm}
                 onChange={(e) => setAdminPasswordConfirm(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password_confirm))}

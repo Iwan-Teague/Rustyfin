@@ -47,16 +47,16 @@ pub async fn lookup(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(key, endpoint, payload_hash, response, status_code, created_at)| {
-        IdempotencyRecord {
+    Ok(row.map(
+        |(key, endpoint, payload_hash, response, status_code, created_at)| IdempotencyRecord {
             key,
             endpoint,
             payload_hash,
             response,
             status_code,
             created_at,
-        }
-    }))
+        },
+    ))
 }
 
 /// Delete all idempotency keys (used by setup reset).

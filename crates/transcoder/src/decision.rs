@@ -16,12 +16,7 @@ pub struct ClientCaps {
 impl Default for ClientCaps {
     fn default() -> Self {
         Self {
-            containers: vec![
-                "mp4".into(),
-                "matroska".into(),
-                "webm".into(),
-                "mov".into(),
-            ],
+            containers: vec!["mp4".into(), "matroska".into(), "webm".into(), "mov".into()],
             video_codecs: vec!["h264".into(), "hevc".into(), "vp9".into(), "av1".into()],
             audio_codecs: vec![
                 "aac".into(),

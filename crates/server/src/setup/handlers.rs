@@ -1,7 +1,7 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use rustfin_core::error::{ApiError, ErrorBody, ErrorEnvelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -45,7 +45,12 @@ fn state_violation_response(current: SetupState, expected_min: SetupState) -> Re
 }
 
 /// Return a custom error response.
-fn custom_error_response(status: StatusCode, code: &str, message: &str, details: serde_json::Value) -> Response {
+fn custom_error_response(
+    status: StatusCode,
+    code: &str,
+    message: &str,
+    details: serde_json::Value,
+) -> Response {
     let envelope = ErrorEnvelope {
         error: ErrorBody {
             code: code.to_string(),
@@ -120,7 +125,8 @@ pub async fn claim_session(
     Json(body): Json<ClaimSessionRequest>,
 ) -> Response {
     // Check setup not completed
-    let setup_completed = match rustfin_db::repo::settings::get(&state.db, "setup_completed").await {
+    let setup_completed = match rustfin_db::repo::settings::get(&state.db, "setup_completed").await
+    {
         Ok(Some(v)) => v == "true",
         Ok(None) => false,
         Err(e) => {
@@ -195,7 +201,9 @@ pub async fn claim_session(
     };
 
     if current_state == SetupState::NotStarted {
-        if let Err(e) = rustfin_db::repo::settings::set(&state.db, "setup_state", "SessionClaimed").await {
+        if let Err(e) =
+            rustfin_db::repo::settings::set(&state.db, "setup_state", "SessionClaimed").await
+        {
             return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
         }
     }
@@ -258,10 +266,7 @@ pub struct SetupConfig {
     default_time_zone: Option<String>,
 }
 
-pub async fn get_setup_config(
-    _guard: SetupReadGuard,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn get_setup_config(_guard: SetupReadGuard, State(state): State<AppState>) -> Response {
     let current = match get_setup_state(&state.db).await {
         Ok(s) => s,
         Err(e) => return e.into_response(),
@@ -342,7 +347,8 @@ pub async fn put_setup_config(
     macro_rules! set {
         ($k:expr, $v:expr) => {
             if let Err(e) = rustfin_db::repo::settings::set(db, $k, $v).await {
-                return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
+                return AppError::from(ApiError::Internal(format!("db error: {e}")))
+                    .into_response();
             }
         };
     }
@@ -437,8 +443,7 @@ pub async fn create_admin(
                 let resp_body: serde_json::Value =
                     serde_json::from_str(&record.response).unwrap_or(json!({}));
                 return (
-                    StatusCode::from_u16(record.status_code as u16)
-                        .unwrap_or(StatusCode::CREATED),
+                    StatusCode::from_u16(record.status_code as u16).unwrap_or(StatusCode::CREATED),
                     Json(resp_body),
                 )
                     .into_response();
@@ -676,13 +681,8 @@ pub async fn create_libraries(
     let mut created_libs = Vec::new();
     for lib in &body.libraries {
         let db_kind = map_kind(&lib.kind);
-        match rustfin_db::repo::libraries::create_library(
-            &state.db,
-            &lib.name,
-            db_kind,
-            &lib.paths,
-        )
-        .await
+        match rustfin_db::repo::libraries::create_library(&state.db, &lib.name, db_kind, &lib.paths)
+            .await
         {
             Ok(row) => {
                 created_libs.push(LibraryRef {
@@ -734,10 +734,7 @@ pub struct SetupMetadata {
     metadata_region: String,
 }
 
-pub async fn get_setup_metadata(
-    _guard: SetupReadGuard,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn get_setup_metadata(_guard: SetupReadGuard, State(state): State<AppState>) -> Response {
     let current = match get_setup_state(&state.db).await {
         Ok(s) => s,
         Err(e) => return e.into_response(),
@@ -796,7 +793,8 @@ pub async fn put_setup_metadata(
     macro_rules! set {
         ($k:expr, $v:expr) => {
             if let Err(e) = rustfin_db::repo::settings::set(db, $k, $v).await {
-                return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
+                return AppError::from(ApiError::Internal(format!("db error: {e}")))
+                    .into_response();
             }
         };
     }
@@ -828,10 +826,7 @@ pub struct SetupNetwork {
     trusted_proxies: Vec<String>,
 }
 
-pub async fn get_setup_network(
-    _guard: SetupReadGuard,
-    State(state): State<AppState>,
-) -> Response {
+pub async fn get_setup_network(_guard: SetupReadGuard, State(state): State<AppState>) -> Response {
     let current = match get_setup_state(&state.db).await {
         Ok(s) => s,
         Err(e) => return e.into_response(),
@@ -858,8 +853,7 @@ pub async fn get_setup_network(
         .unwrap_or(Some("[]".to_string()))
         .unwrap_or_else(|| "[]".to_string());
 
-    let proxies: Vec<String> =
-        serde_json::from_str(&proxies_json).unwrap_or_default();
+    let proxies: Vec<String> = serde_json::from_str(&proxies_json).unwrap_or_default();
 
     (
         StatusCode::OK,
@@ -898,14 +892,19 @@ pub async fn put_setup_network(
     macro_rules! set {
         ($k:expr, $v:expr) => {
             if let Err(e) = rustfin_db::repo::settings::set(db, $k, $v).await {
-                return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
+                return AppError::from(ApiError::Internal(format!("db error: {e}")))
+                    .into_response();
             }
         };
     }
 
     set!(
         "allow_remote_access",
-        if body.allow_remote_access { "true" } else { "false" }
+        if body.allow_remote_access {
+            "true"
+        } else {
+            "false"
+        }
     );
     set!(
         "enable_automatic_port_mapping",
@@ -915,7 +914,8 @@ pub async fn put_setup_network(
             "false"
         }
     );
-    let proxies_json = serde_json::to_string(&body.trusted_proxies).unwrap_or_else(|_| "[]".to_string());
+    let proxies_json =
+        serde_json::to_string(&body.trusted_proxies).unwrap_or_else(|_| "[]".to_string());
     set!("trusted_proxies", &proxies_json);
     set!("setup_state", SetupState::NetworkSaved.as_str());
 
@@ -984,7 +984,8 @@ pub async fn complete_setup(
     macro_rules! set {
         ($k:expr, $v:expr) => {
             if let Err(e) = rustfin_db::repo::settings::set(db, $k, $v).await {
-                return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
+                return AppError::from(ApiError::Internal(format!("db error: {e}")))
+                    .into_response();
             }
         };
     }
@@ -1044,7 +1045,8 @@ pub async fn reset_setup(
         let users = match rustfin_db::repo::users::list_users(db).await {
             Ok(u) => u,
             Err(e) => {
-                return AppError::from(ApiError::Internal(format!("db error: {e}"))).into_response();
+                return AppError::from(ApiError::Internal(format!("db error: {e}")))
+                    .into_response();
             }
         };
         for user in users {

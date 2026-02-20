@@ -2,18 +2,21 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
+  const { refreshMe } = useAuth();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
 
     try {
+      localStorage.removeItem('token');
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -28,6 +31,7 @@ export default function LoginPage() {
 
       const data = await res.json();
       localStorage.setItem('token', data.token);
+      await refreshMe();
       router.push('/libraries');
     } catch {
       setError('Network error');
