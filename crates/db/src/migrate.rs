@@ -10,6 +10,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_metadata_columns",
         include_str!("../migrations/002_metadata_columns.sql"),
     ),
+    (
+        "003_settings_and_setup",
+        include_str!("../migrations/003_settings_and_setup.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

@@ -1,7 +1,10 @@
 pub mod episodes;
+pub mod idempotency;
 pub mod items;
 pub mod jobs;
 pub mod libraries;
 pub mod media_files;
 pub mod playstate;
+pub mod settings;
+pub mod setup_session;
 pub mod users;
