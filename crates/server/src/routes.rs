@@ -68,6 +68,7 @@ fn api_router() -> Router<AppState> {
         .route("/playback/sessions", post(create_playback_session))
         .route("/playback/sessions/{sid}/stop", post(stop_playback_session))
         .route("/playback/info/{file_id}", get(get_media_info))
+        .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
         .route("/events", get(sse_events))
         // Jobs
@@ -1504,6 +1505,82 @@ async fn serve_subtitle(
 // ---------------------------------------------------------------------------
 // System / GPU
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PickDirectoryResponse {
+    path: String,
+}
+
+async fn pick_directory(_admin: AdminUser) -> Result<Json<PickDirectoryResponse>, AppError> {
+    let path = tokio::task::spawn_blocking(open_directory_picker)
+        .await
+        .map_err(|e| ApiError::Internal(format!("directory picker task failed: {e}")))??;
+    Ok(Json(PickDirectoryResponse { path }))
+}
+
+fn open_directory_picker() -> Result<String, ApiError> {
+    if let Ok(raw) = std::env::var("RUSTFIN_DIRECTORY_PICKER_PATH") {
+        let path = raw.trim().to_string();
+        if path.is_empty() {
+            return Err(ApiError::BadRequest(
+                "RUSTFIN_DIRECTORY_PICKER_PATH must not be empty".into(),
+            ));
+        }
+        return Ok(path);
+    }
+
+    open_directory_picker_native()
+}
+
+#[cfg(target_os = "macos")]
+fn open_directory_picker_native() -> Result<String, ApiError> {
+    if std::path::Path::new("/.dockerenv").exists() {
+        return Err(ApiError::BadRequest(
+            "directory picker is unavailable in Docker containers; enter the path manually".into(),
+        ));
+    }
+
+    let script = r#"set chosenFolder to choose folder with prompt "Select a media directory for Rustyfin"
+POSIX path of chosenFolder"#;
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("failed to launch folder picker: {e}")))?;
+
+    if output.status.success() {
+        let path = String::from_utf8(output.stdout)
+            .map_err(|e| ApiError::Internal(format!("folder picker returned invalid UTF-8: {e}")))?;
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            return Err(ApiError::BadRequest("no directory selected".into()));
+        }
+        return Ok(path);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("User canceled") || stderr.contains("(-128)") {
+        return Err(ApiError::BadRequest("directory selection cancelled".into()));
+    }
+
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return Err(ApiError::Internal(
+            "folder picker failed with an unknown error".into(),
+        ));
+    }
+
+    Err(ApiError::Internal(format!("folder picker failed: {detail}")))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_directory_picker_native() -> Result<String, ApiError> {
+    Err(ApiError::BadRequest(
+        "directory picker is only supported on macOS in this build; enter the path manually"
+            .into(),
+    ))
+}
 
 async fn get_gpu_caps(_auth: AdminUser) -> Result<Json<serde_json::Value>, AppError> {
     let caps = rustfin_transcoder::gpu::detect(std::path::Path::new("ffmpeg")).await;
