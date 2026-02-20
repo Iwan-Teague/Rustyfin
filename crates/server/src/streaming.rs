@@ -1,12 +1,14 @@
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use rustfin_core::error::ApiError;
+use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
+use crate::auth::validate_token;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -27,9 +29,7 @@ pub fn parse_range_header(range_str: &str, file_size: u64) -> Result<ByteRange, 
 
     // Reject multi-range
     if spec.contains(',') {
-        return Err(ApiError::BadRequest(
-            "multi-range not supported".into(),
-        ));
+        return Err(ApiError::BadRequest("multi-range not supported".into()));
     }
 
     let mut parts = spec.splitn(2, '-');
@@ -100,11 +100,30 @@ fn content_type_for_path(path: &std::path::Path) -> &'static str {
 
 /// Stream a file with HTTP Range support (Direct Play).
 /// GET /stream/file/{file_id}
+#[derive(Debug, Default, Deserialize)]
+pub struct StreamAuthQuery {
+    token: Option<String>,
+}
+
 pub async fn stream_file_range(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
+    Query(query): Query<StreamAuthQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // Require JWT either via Authorization header or query token.
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .or(query.token.as_deref())
+        .ok_or_else(|| ApiError::Unauthorized("missing authorization token".into()))?;
+
+    let claims = validate_token(token, &state.jwt_secret).map_err(AppError::from)?;
+
     // Look up media file
     let media_file = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
         .await
@@ -118,8 +137,12 @@ pub async fn stream_file_range(
         return Err(ApiError::NotFound("file not found on disk".into()).into());
     }
 
-    // Security: verify the path is under a library root
-    validate_path_in_library(&state, &file_path).await?;
+    // Security: verify path is within libraries this account can access.
+    if claims.role == "admin" {
+        validate_path_in_library(&state, &file_path).await?;
+    } else {
+        validate_path_in_user_libraries(&state, &file_path, &claims.sub).await?;
+    }
 
     let file_size = media_file.size_bytes as u64;
     let content_type = content_type_for_path(&file_path);
@@ -209,6 +232,42 @@ async fn validate_path_in_library(state: &AppState, file_path: &PathBuf) -> Resu
     }
 
     Err(ApiError::Forbidden("file not in any library path".into()).into())
+}
+
+/// Verify that a file path is under one of the current user's assigned library paths.
+async fn validate_path_in_user_libraries(
+    state: &AppState,
+    file_path: &PathBuf,
+    user_id: &str,
+) -> Result<(), AppError> {
+    let canonical = file_path
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("canonicalize error: {e}")))?;
+
+    let allowed_library_ids = rustfin_db::repo::users::get_library_access(&state.db, user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if allowed_library_ids.is_empty() {
+        return Err(ApiError::Forbidden("library access denied".into()).into());
+    }
+
+    for library_id in allowed_library_ids {
+        let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &library_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        for lp in paths {
+            let lib_root = PathBuf::from(lp.path);
+            if let Ok(lib_canonical) = lib_root.canonicalize() {
+                if canonical.starts_with(&lib_canonical) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Err(ApiError::Forbidden("library access denied".into()).into())
 }
 
 // ─── Unit tests ──────────────────────────────────────────────────────────────

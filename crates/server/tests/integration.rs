@@ -1,7 +1,7 @@
 use axum_test::TestServer;
 use rustfin_server::routes::build_router;
 use rustfin_server::state::AppState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Create a test server with an in-memory SQLite database.
 async fn test_app() -> TestServer {
@@ -9,7 +9,9 @@ async fn test_app() -> TestServer {
     rustfin_db::migrate::run(&pool).await.unwrap();
 
     // Ensure setup defaults exist
-    rustfin_db::repo::settings::insert_defaults(&pool).await.unwrap();
+    rustfin_db::repo::settings::insert_defaults(&pool)
+        .await
+        .unwrap();
 
     // Bootstrap admin user and mark setup as completed for existing tests
     rustfin_db::repo::users::create_user(&pool, "admin", "admin123", "admin")
@@ -105,7 +107,9 @@ async fn users_me_with_valid_token() {
         .get("/api/v1/users/me")
         .add_header(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            format!("Bearer {token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
         )
         .await;
     resp.assert_status_ok();
@@ -175,7 +179,9 @@ async fn migrations_are_idempotent() {
 fn auth_hdr(token: &str) -> (axum::http::HeaderName, axum::http::HeaderValue) {
     (
         axum::http::header::AUTHORIZATION,
-        format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+        format!("Bearer {token}")
+            .parse::<axum::http::HeaderValue>()
+            .unwrap(),
     )
 }
 
@@ -575,10 +581,17 @@ async fn stream_file_with_range_returns_206() {
     };
     let app = rustfin_server::routes::build_router(state);
     let server = TestServer::new(app).unwrap();
+    let token = login(&server, "admin", "admin123").await;
+    let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    // Unauthenticated stream requests are rejected.
+    let resp = server.get(&format!("/stream/file/{file_id}")).await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::UNAUTHORIZED);
 
     // Request Range: bytes=0-999 (first 1000 bytes)
     let resp = server
         .get(&format!("/stream/file/{file_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
         .add_header(
             axum::http::header::RANGE,
             "bytes=0-999".parse::<axum::http::HeaderValue>().unwrap(),
@@ -611,6 +624,7 @@ async fn stream_file_with_range_returns_206() {
     // Request full file (no Range header)
     let resp = server
         .get(&format!("/stream/file/{file_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
     assert_eq!(resp.as_bytes().len(), 5000);
@@ -618,6 +632,7 @@ async fn stream_file_with_range_returns_206() {
     // Request open-ended range: bytes=4000-
     let resp = server
         .get(&format!("/stream/file/{file_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
         .add_header(
             axum::http::header::RANGE,
             "bytes=4000-".parse::<axum::http::HeaderValue>().unwrap(),
@@ -625,7 +640,12 @@ async fn stream_file_with_range_returns_206() {
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::PARTIAL_CONTENT);
     assert_eq!(resp.as_bytes().len(), 1000);
-    let cr = resp.headers().get("content-range").unwrap().to_str().unwrap();
+    let cr = resp
+        .headers()
+        .get("content-range")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(cr, "bytes 4000-4999/5000");
 
     // Cleanup
@@ -648,7 +668,7 @@ async fn playback_progress_update_and_get() {
         .add_header(hdr_name.clone(), hdr_val.clone())
         .json(&json!({ "name": "Movies", "kind": "movies", "paths": ["/media/movies"] }))
         .await;
-    let lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+    let _lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
 
     // Manually insert an item via DB (we have access to pool through a helper)
     // Instead, we create via scan with a real temp dir
@@ -746,6 +766,16 @@ async fn user_management_crud() {
     let hdr_name = axum::http::header::AUTHORIZATION;
     let hdr_val = axum::http::HeaderValue::from_str(&format!("Bearer {token}")).unwrap();
 
+    // Create a library that can be assigned to regular users
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({ "name": "User Movies", "kind": "movies", "paths": ["/media/user_movies"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let library_body: Value = resp.json();
+    let library_id = library_body["id"].as_str().unwrap().to_string();
+
     // List users — should have the bootstrap admin
     let resp = server
         .get("/api/v1/users")
@@ -762,7 +792,9 @@ async fn user_management_crud() {
         .add_header(hdr_name.clone(), hdr_val.clone())
         .json(&json!({
             "username": "testuser",
-            "password": "testpass"
+            "password": "testpass",
+            "role": "user",
+            "library_ids": [library_id]
         }))
         .await;
     resp.assert_status_ok();
@@ -806,7 +838,9 @@ async fn user_management_crud() {
 async fn test_app_fresh() -> TestServer {
     let pool = rustfin_db::connect(":memory:").await.unwrap();
     rustfin_db::migrate::run(&pool).await.unwrap();
-    rustfin_db::repo::settings::insert_defaults(&pool).await.unwrap();
+    rustfin_db::repo::settings::insert_defaults(&pool)
+        .await
+        .unwrap();
 
     let tc_config = rustfin_transcoder::TranscoderConfig {
         transcode_dir: std::env::temp_dir().join(format!("rf_setup_{}", std::process::id())),
@@ -827,6 +861,158 @@ async fn test_app_fresh() -> TestServer {
 
     let app = build_router(state);
     TestServer::new(app).unwrap()
+}
+
+#[tokio::test]
+async fn user_library_access_is_enforced() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    // Create two libraries
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "name": "Movies A", "kind": "movies", "paths": ["/media/a"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let lib_a: Value = resp.json();
+    let lib_a_id = lib_a["id"].as_str().unwrap().to_string();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "name": "Movies B", "kind": "movies", "paths": ["/media/b"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let lib_b: Value = resp.json();
+    let lib_b_id = lib_b["id"].as_str().unwrap().to_string();
+
+    // Create simple user with access only to library A
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "username": "viewer",
+            "password": "viewerpass",
+            "role": "user",
+            "library_ids": [lib_a_id]
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    let viewer_token = login(&server, "viewer", "viewerpass").await;
+    let viewer_hdr = auth_hdr(&viewer_token);
+
+    // Viewer sees only one library
+    let resp = server
+        .get("/api/v1/libraries")
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let libs: Vec<Value> = resp.json();
+    assert_eq!(libs.len(), 1);
+    assert_eq!(libs[0]["id"], lib_a["id"]);
+
+    // Viewer can access assigned library
+    let resp = server
+        .get(&format!("/api/v1/libraries/{lib_a_id}"))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+
+    // Viewer cannot access unassigned library
+    let resp = server
+        .get(&format!("/api/v1/libraries/{lib_b_id}"))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .await;
+    resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_can_modify_user_permissions() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    // Create two libraries
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "name": "Lib 1", "kind": "movies", "paths": ["/media/lib1"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let lib1: Value = resp.json();
+    let lib1_id = lib1["id"].as_str().unwrap().to_string();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "name": "Lib 2", "kind": "movies", "paths": ["/media/lib2"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let lib2: Value = resp.json();
+    let lib2_id = lib2["id"].as_str().unwrap().to_string();
+
+    // Create user with Lib1 access
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "username": "limited",
+            "password": "limitedpass",
+            "role": "user",
+            "library_ids": [lib1_id]
+        }))
+        .await;
+    resp.assert_status_ok();
+    let created: Value = resp.json();
+    let user_id = created["id"].as_str().unwrap().to_string();
+
+    // Move user access to Lib2
+    let resp = server
+        .patch(&format!("/api/v1/users/{user_id}"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "role": "user",
+            "library_ids": [lib2_id]
+        }))
+        .await;
+    resp.assert_status_ok();
+    let patched: Value = resp.json();
+    assert_eq!(patched["role"], "user");
+    assert_eq!(patched["library_ids"][0], lib2["id"]);
+
+    let limited_token = login(&server, "limited", "limitedpass").await;
+    let limited_hdr = auth_hdr(&limited_token);
+    let resp = server
+        .get("/api/v1/libraries")
+        .add_header(limited_hdr.0.clone(), limited_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let libs: Vec<Value> = resp.json();
+    assert_eq!(libs.len(), 1);
+    assert_eq!(libs[0]["id"], lib2["id"]);
+
+    // Promote to admin; admin should see both libraries
+    let resp = server
+        .patch(&format!("/api/v1/users/{user_id}"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "role": "admin" }))
+        .await;
+    resp.assert_status_ok();
+    let patched: Value = resp.json();
+    assert_eq!(patched["role"], "admin");
+
+    let limited_token = login(&server, "limited", "limitedpass").await;
+    let limited_hdr = auth_hdr(&limited_token);
+    let resp = server
+        .get("/api/v1/libraries")
+        .add_header(limited_hdr.0.clone(), limited_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let libs: Vec<Value> = resp.json();
+    assert_eq!(libs.len(), 2);
 }
 
 #[tokio::test]
@@ -938,7 +1124,9 @@ async fn setup_full_wizard_flow() {
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
-            "test-idem-key-12345678".parse::<axum::http::HeaderValue>().unwrap(),
+            "test-idem-key-12345678"
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
         )
         .json(&json!({
             "username": "myadmin",
@@ -956,7 +1144,9 @@ async fn setup_full_wizard_flow() {
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
-            "test-idem-key-12345678".parse::<axum::http::HeaderValue>().unwrap(),
+            "test-idem-key-12345678"
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
         )
         .json(&json!({
             "username": "myadmin",
@@ -1071,7 +1261,9 @@ async fn setup_validation_rejects_weak_password() {
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
-            "validate-test-key123".parse::<axum::http::HeaderValue>().unwrap(),
+            "validate-test-key123"
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
         )
         .json(&json!({
             "username": "admin",

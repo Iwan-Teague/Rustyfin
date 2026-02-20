@@ -30,7 +30,9 @@ export default function PlayerPage() {
     if (!fileId || !videoRef.current) return;
 
     if (mode === 'direct') {
-      videoRef.current.src = `/stream/file/${fileId}`;
+      const token = localStorage.getItem('token');
+      const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+      videoRef.current.src = `/stream/file/${fileId}${tokenQuery}`;
     }
   }, [fileId, mode]);
 

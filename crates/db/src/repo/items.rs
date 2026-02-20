@@ -37,10 +37,7 @@ pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow
     Ok(row.map(row_to_item))
 }
 
-pub async fn get_children(
-    pool: &SqlitePool,
-    parent_id: &str,
-) -> Result<Vec<ItemRow>, sqlx::Error> {
+pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {
     let rows: Vec<(
         String,
         String,
@@ -96,12 +93,24 @@ pub async fn get_item_file_id(
     pool: &SqlitePool,
     item_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT file_id FROM episode_file_map WHERE episode_item_id = ? LIMIT 1",
-    )
-    .bind(item_id)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT file_id FROM episode_file_map WHERE episode_item_id = ? LIMIT 1")
+            .bind(item_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id,)| id))
+}
+
+/// Get an item ID for a media file.
+pub async fn get_item_id_by_file_id(
+    pool: &SqlitePool,
+    file_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT episode_item_id FROM episode_file_map WHERE file_id = ? LIMIT 1")
+            .bind(file_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.map(|(id,)| id))
 }
 

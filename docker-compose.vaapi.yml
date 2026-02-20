@@ -12,7 +12,7 @@ services:
       - rustfin-config:/config
       - rustfin-cache:/cache
       - rustfin-transcode:/transcode
-      - /path/to/your/media:/media:ro
+      - ${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}:/media:ro
     devices:
       - /dev/dri:/dev/dri
     environment:

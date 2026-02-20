@@ -3,6 +3,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::auth::{AdminUser, AuthUser, issue_token};
 use crate::error::AppError;
@@ -36,7 +37,10 @@ fn api_router() -> Router<AppState> {
         .nest("/setup", setup_router())
         .route("/auth/login", post(auth_login))
         .route("/users", post(create_user_route).get(list_users_route))
-        .route("/users/{id}", axum::routing::delete(delete_user_route))
+        .route(
+            "/users/{id}",
+            axum::routing::delete(delete_user_route).patch(update_user_route),
+        )
         .route("/users/me", get(users_me))
         .route("/users/me/preferences", get(get_prefs).patch(update_prefs))
         // Libraries
@@ -51,7 +55,10 @@ fn api_router() -> Router<AppState> {
         .route("/items/{id}/images/{img_type}", get(get_item_image))
         .route("/items/{id}/metadata/refresh", post(refresh_item_metadata))
         .route("/items/{id}/providers", get(get_item_providers))
-        .route("/items/{id}/field-locks", post(lock_item_field).delete(unlock_item_field))
+        .route(
+            "/items/{id}/field-locks",
+            post(lock_item_field).delete(unlock_item_field),
+        )
         // TV expected episodes
         .route("/items/{id}/expected-episodes", get(get_expected_episodes))
         .route("/items/{id}/missing-episodes", get(get_missing_episodes))
@@ -72,7 +79,10 @@ fn api_router() -> Router<AppState> {
 fn setup_router() -> Router<AppState> {
     let rate_limiter = RateLimiter::new(30, 60); // 30 requests per 60s window
     Router::new()
-        .route("/session/claim", post(crate::setup::handlers::claim_session))
+        .route(
+            "/session/claim",
+            post(crate::setup::handlers::claim_session),
+        )
         .route(
             "/session/release",
             post(crate::setup::handlers::release_session),
@@ -87,10 +97,7 @@ fn setup_router() -> Router<AppState> {
             "/paths/validate",
             post(crate::setup::handlers::validate_path),
         )
-        .route(
-            "/libraries",
-            post(crate::setup::handlers::create_libraries),
-        )
+        .route("/libraries", post(crate::setup::handlers::create_libraries))
         .route(
             "/metadata",
             get(crate::setup::handlers::get_setup_metadata)
@@ -101,12 +108,11 @@ fn setup_router() -> Router<AppState> {
             get(crate::setup::handlers::get_setup_network)
                 .put(crate::setup::handlers::put_setup_network),
         )
-        .route(
-            "/complete",
-            post(crate::setup::handlers::complete_setup),
-        )
+        .route("/complete", post(crate::setup::handlers::complete_setup))
         .route("/reset", post(crate::setup::handlers::reset_setup))
-        .layer(axum::middleware::from_fn(crate::setup::rate_limit::rate_limit_middleware))
+        .layer(axum::middleware::from_fn(
+            crate::setup::rate_limit::rate_limit_middleware,
+        ))
         .layer(Extension(rate_limiter))
 }
 
@@ -203,6 +209,8 @@ struct CreateUserRequest {
     password: String,
     #[serde(default = "default_user_role")]
     role: String,
+    #[serde(default)]
+    library_ids: Vec<String>,
 }
 
 fn default_user_role() -> String {
@@ -214,6 +222,55 @@ struct CreateUserResponse {
     id: String,
     username: String,
     role: String,
+    library_ids: Vec<String>,
+}
+
+fn normalize_library_ids(ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for raw in ids {
+        let id = raw.trim();
+        if id.is_empty() {
+            continue;
+        }
+        if seen.insert(id.to_string()) {
+            normalized.push(id.to_string());
+        }
+    }
+    normalized
+}
+
+async fn validate_library_ids_exist(
+    state: &AppState,
+    library_ids: &[String],
+) -> Result<(), AppError> {
+    for library_id in library_ids {
+        let exists = rustfin_db::repo::libraries::get_library(&state.db, library_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .is_some();
+        if !exists {
+            return Err(ApiError::BadRequest(format!("unknown library id: {library_id}")).into());
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_library_access(
+    auth: &AuthUser,
+    state: &AppState,
+    library_id: &str,
+) -> Result<(), AppError> {
+    if auth.role == "admin" {
+        return Ok(());
+    }
+    let allowed = rustfin_db::repo::users::is_library_allowed(&state.db, &auth.user_id, library_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if !allowed {
+        return Err(ApiError::Forbidden("library access denied".into()).into());
+    }
+    Ok(())
 }
 
 async fn create_user_route(
@@ -222,19 +279,44 @@ async fn create_user_route(
     Json(body): Json<CreateUserRequest>,
 ) -> Result<Json<CreateUserResponse>, AppError> {
     if body.username.is_empty() || body.password.len() < 4 {
-        return Err(ApiError::BadRequest("username must be non-empty and password at least 4 chars".into()).into());
+        return Err(ApiError::BadRequest(
+            "username must be non-empty and password at least 4 chars".into(),
+        )
+        .into());
     }
-    if body.role != "admin" && body.role != "user" {
+    let role = body.role;
+    if role != "admin" && role != "user" {
         return Err(ApiError::BadRequest("role must be 'admin' or 'user'".into()).into());
     }
-    let id = rustfin_db::repo::users::create_user(&state.db, &body.username, &body.password, &body.role)
+    let library_ids = normalize_library_ids(&body.library_ids);
+    if role == "user" && library_ids.is_empty() {
+        return Err(
+            ApiError::BadRequest("user accounts must include at least one library".into()).into(),
+        );
+    }
+    if role == "admin" && !library_ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "admin users cannot be limited to specific libraries".into(),
+        )
+        .into());
+    }
+    validate_library_ids_exist(&state, &library_ids).await?;
+
+    let id = rustfin_db::repo::users::create_user(&state.db, &body.username, &body.password, &role)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if role == "user" {
+        rustfin_db::repo::users::set_library_access(&state.db, &id, &library_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
 
     Ok(Json(CreateUserResponse {
         id,
         username: body.username,
-        role: body.role,
+        role: role.clone(),
+        library_ids: if role == "user" { library_ids } else { vec![] },
     }))
 }
 
@@ -244,6 +326,7 @@ struct UserListItem {
     username: String,
     role: String,
     created_ts: i64,
+    library_ids: Vec<String>,
 }
 
 async fn list_users_route(
@@ -254,17 +337,110 @@ async fn list_users_route(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    Ok(Json(
-        users
-            .into_iter()
-            .map(|u| UserListItem {
+    Ok(Json({
+        let mut out = Vec::with_capacity(users.len());
+        for u in users {
+            let library_ids = if u.role == "user" {
+                rustfin_db::repo::users::get_library_access(&state.db, &u.id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            } else {
+                vec![]
+            };
+            out.push(UserListItem {
                 id: u.id,
                 username: u.username,
                 role: u.role,
                 created_ts: u.created_ts,
-            })
-            .collect(),
-    ))
+                library_ids,
+            });
+        }
+        out
+    }))
+}
+
+#[derive(Deserialize)]
+struct UpdateUserRequest {
+    role: Option<String>,
+    library_ids: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct UpdateUserResponse {
+    id: String,
+    username: String,
+    role: String,
+    library_ids: Vec<String>,
+}
+
+async fn update_user_route(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Json(body): Json<UpdateUserRequest>,
+) -> Result<Json<UpdateUserResponse>, AppError> {
+    let existing = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+
+    let target_role = body.role.unwrap_or_else(|| existing.role.clone());
+    if target_role != "admin" && target_role != "user" {
+        return Err(ApiError::BadRequest("role must be 'admin' or 'user'".into()).into());
+    }
+    if admin.user_id == user_id && target_role != "admin" {
+        return Err(ApiError::BadRequest("cannot remove your own admin role".into()).into());
+    }
+
+    let requested_library_ids = body
+        .library_ids
+        .as_ref()
+        .map(|v| normalize_library_ids(v))
+        .unwrap_or_default();
+    validate_library_ids_exist(&state, &requested_library_ids).await?;
+
+    if existing.role != target_role {
+        rustfin_db::repo::users::update_user_role(&state.db, &user_id, &target_role)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
+    let final_library_ids = if target_role == "user" {
+        let final_ids = if body.library_ids.is_some() {
+            requested_library_ids
+        } else {
+            rustfin_db::repo::users::get_library_access(&state.db, &user_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        };
+        if final_ids.is_empty() {
+            return Err(ApiError::BadRequest(
+                "user accounts must include at least one library".into(),
+            )
+            .into());
+        }
+        rustfin_db::repo::users::set_library_access(&state.db, &user_id, &final_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        final_ids
+    } else {
+        rustfin_db::repo::users::set_library_access(&state.db, &user_id, &[])
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        vec![]
+    };
+
+    let updated = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+
+    Ok(Json(UpdateUserResponse {
+        id: updated.id,
+        username: updated.username,
+        role: updated.role,
+        library_ids: final_library_ids,
+    }))
 }
 
 async fn delete_user_route(
@@ -362,14 +538,10 @@ async fn create_library(
         return Err(ApiError::BadRequest("at least one path required".into()).into());
     }
 
-    let lib = rustfin_db::repo::libraries::create_library(
-        &state.db,
-        &body.name,
-        &body.kind,
-        &body.paths,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let lib =
+        rustfin_db::repo::libraries::create_library(&state.db, &body.name, &body.kind, &body.paths)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
         .await
@@ -397,15 +569,32 @@ async fn create_library(
 }
 
 async fn list_libraries(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<LibraryResponse>>, AppError> {
+    let allowed_library_ids = if auth.role == "admin" {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &auth.user_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+        )
+    };
+
     let libs = rustfin_db::repo::libraries::list_libraries(&state.db)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let mut result = Vec::with_capacity(libs.len());
     for lib in libs {
+        if let Some(allowed) = &allowed_library_ids {
+            if !allowed.contains(&lib.id) {
+                continue;
+            }
+        }
         let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -435,7 +624,7 @@ async fn list_libraries(
 }
 
 async fn get_library(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<LibraryResponse>, AppError> {
@@ -443,6 +632,7 @@ async fn get_library(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
+    ensure_library_access(&auth, &state, &lib.id).await?;
 
     let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
         .await
@@ -480,13 +670,9 @@ async fn update_library(
     Path(id): Path<String>,
     Json(body): Json<UpdateLibraryRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let updated = rustfin_db::repo::libraries::update_library(
-        &state.db,
-        &id,
-        body.name.as_deref(),
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let updated = rustfin_db::repo::libraries::update_library(&state.db, &id, body.name.as_deref())
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     if !updated {
         return Err(ApiError::NotFound("library not found".into()).into());
@@ -507,13 +693,10 @@ async fn scan_library(
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
 
     let payload = serde_json::json!({ "library_id": id });
-    let job = rustfin_db::repo::jobs::create_job(
-        &state.db,
-        "library_scan",
-        Some(&payload.to_string()),
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let job =
+        rustfin_db::repo::jobs::create_job(&state.db, "library_scan", Some(&payload.to_string()))
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     // Spawn scan in background
     let job_id = job.id.clone();
@@ -523,8 +706,8 @@ async fn scan_library(
     let events_tx = state.events.clone();
     tokio::spawn(async move {
         // Mark running
-        let _ = rustfin_db::repo::jobs::update_job_status(&pool, &job_id, "running", 0.0, None)
-            .await;
+        let _ =
+            rustfin_db::repo::jobs::update_job_status(&pool, &job_id, "running", 0.0, None).await;
         let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
             job_id: job_id.clone(),
             status: "running".into(),
@@ -540,7 +723,11 @@ async fn scan_library(
                     "scan completed"
                 );
                 let _ = rustfin_db::repo::jobs::update_job_status(
-                    &pool, &job_id, "completed", 1.0, None,
+                    &pool,
+                    &job_id,
+                    "completed",
+                    1.0,
+                    None,
                 )
                 .await;
                 let _ = events_tx.send(crate::state::ServerEvent::ScanComplete {
@@ -573,10 +760,7 @@ async fn scan_library(
         }
     });
 
-    Ok((
-        axum::http::StatusCode::ACCEPTED,
-        Json(job_to_response(job)),
-    ))
+    Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
 }
 
 // ---------------------------------------------------------------------------
@@ -646,9 +830,7 @@ async fn cancel_job(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     if !cancelled {
-        return Err(
-            ApiError::BadRequest("job not found or not cancellable".into()).into()
-        );
+        return Err(ApiError::BadRequest("job not found or not cancellable".into()).into());
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -688,14 +870,15 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow) -> ItemResponse {
 }
 
 async fn list_library_items(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ItemResponse>>, AppError> {
-    let _lib = rustfin_db::repo::libraries::get_library(&state.db, &id)
+    let lib = rustfin_db::repo::libraries::get_library(&state.db, &id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
+    ensure_library_access(&auth, &state, &lib.id).await?;
 
     let items = rustfin_db::repo::items::get_library_items(&state.db, &id)
         .await
@@ -705,7 +888,7 @@ async fn list_library_items(
 }
 
 async fn get_item(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ItemResponse>, AppError> {
@@ -713,19 +896,21 @@ async fn get_item(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
 
     Ok(Json(item_to_response(item)))
 }
 
 async fn get_item_children(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ItemResponse>>, AppError> {
-    let _parent = rustfin_db::repo::items::get_item(&state.db, &id)
+    let parent = rustfin_db::repo::items::get_item(&state.db, &id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &parent.library_id).await?;
 
     let children = rustfin_db::repo::items::get_children(&state.db, &id)
         .await
@@ -751,6 +936,12 @@ async fn update_progress(
     State(state): State<AppState>,
     Json(body): Json<ProgressRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &body.item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     rustfin_db::repo::playstate::update_progress(
         &state.db,
         &auth.user_id,
@@ -778,10 +969,15 @@ async fn get_play_state(
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<PlayStateResponse>, AppError> {
-    let state_row =
-        rustfin_db::repo::playstate::get_play_state(&state.db, &auth.user_id, &item_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
+    let state_row = rustfin_db::repo::playstate::get_play_state(&state.db, &auth.user_id, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     match state_row {
         Some(s) => Ok(Json(PlayStateResponse {
@@ -819,10 +1015,23 @@ struct SessionResponse {
 }
 
 async fn create_playback_session(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, AppError> {
+    if auth.role != "admin" {
+        let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &body.file_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not playable for this account".into()))?;
+
+        let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not playable for this account".into()))?;
+        ensure_library_access(&auth, &state, &item.library_id).await?;
+    }
+
     // Look up the media file
     let file = rustfin_db::repo::media_files::get_media_file(&state.db, &body.file_id)
         .await
@@ -877,10 +1086,22 @@ async fn stop_playback_session(
 // ---------------------------------------------------------------------------
 
 async fn get_media_info(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(file_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    if auth.role != "admin" {
+        let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &file_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
+        let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
+        ensure_library_access(&auth, &state, &item.library_id).await?;
+    }
+
     let file = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -1008,12 +1229,12 @@ struct ImageQuery {
 }
 
 async fn get_item_image(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path((item_id, img_type)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<ImageQuery>,
 ) -> Result<axum::response::Response, AppError> {
-    use axum::http::{header, StatusCode};
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
     use std::io::Read;
 
@@ -1025,6 +1246,12 @@ async fn get_item_image(
         ))
         .into());
     }
+
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
 
     // Get the image URL from DB
     let image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
@@ -1065,9 +1292,11 @@ async fn get_item_image(
                 .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
 
             if !resp.status().is_success() {
-                return Err(
-                    ApiError::Internal(format!("image download failed: {}", resp.status())).into(),
-                );
+                return Err(ApiError::Internal(format!(
+                    "image download failed: {}",
+                    resp.status()
+                ))
+                .into());
             }
 
             let bytes = resp
@@ -1119,10 +1348,7 @@ async fn get_item_image(
         [
             (header::CONTENT_TYPE, content_type.to_string()),
             (header::ETAG, etag),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=86400".to_string(),
-            ),
+            (header::CACHE_CONTROL, "public, max-age=86400".to_string()),
         ],
         buf,
     )
@@ -1147,10 +1373,16 @@ struct SubtitleInfo {
 }
 
 async fn get_item_subtitles(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Vec<SubtitleInfo>>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     // Get the media file for this item
     let file_id = rustfin_db::repo::items::get_item_file_id(&state.db, &item_id)
         .await
@@ -1226,8 +1458,8 @@ async fn serve_subtitle(
     use axum::body::Body;
     use axum::response::IntoResponse;
 
-    let decoded = hex_decode(&sub_path)
-        .ok_or(ApiError::BadRequest("invalid subtitle path".into()))?;
+    let decoded =
+        hex_decode(&sub_path).ok_or(ApiError::BadRequest("invalid subtitle path".into()))?;
 
     let path = std::path::Path::new(&decoded);
 
@@ -1252,15 +1484,11 @@ async fn serve_subtitle(
         return Err(ApiError::Forbidden("path not in allowed library".into()).into());
     }
 
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("srt");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("srt");
 
-    let content_type =
-        rustfin_scanner::subtitles::SubtitleFormat::from_extension(ext)
-            .map(|f| f.mime_type())
-            .unwrap_or("application/octet-stream");
+    let content_type = rustfin_scanner::subtitles::SubtitleFormat::from_extension(ext)
+        .map(|f| f.mime_type())
+        .unwrap_or("application/octet-stream");
 
     let data = tokio::fs::read(&canonical)
         .await
@@ -1277,9 +1505,7 @@ async fn serve_subtitle(
 // System / GPU
 // ---------------------------------------------------------------------------
 
-async fn get_gpu_caps(
-    _auth: AdminUser,
-) -> Result<Json<serde_json::Value>, AppError> {
+async fn get_gpu_caps(_auth: AdminUser) -> Result<Json<serde_json::Value>, AppError> {
     let caps = rustfin_transcoder::gpu::detect(std::path::Path::new("ffmpeg")).await;
     Ok(Json(serde_json::to_value(&caps).unwrap()))
 }
@@ -1297,7 +1523,7 @@ struct RefreshMetadataRequest {
 }
 
 async fn refresh_item_metadata(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
     Json(body): Json<RefreshMetadataRequest>,
@@ -1307,6 +1533,7 @@ async fn refresh_item_metadata(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or(ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &_item.library_id).await?;
 
     // If provider_id given, store it
     if let (Some(provider), Some(pid)) = (&body.provider, &body.provider_id) {
@@ -1323,10 +1550,16 @@ async fn refresh_item_metadata(
 }
 
 async fn get_item_providers(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     let providers = rustfin_metadata::merge::get_provider_ids(&state.db, &item_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1345,27 +1578,43 @@ struct FieldLockRequest {
 }
 
 async fn lock_item_field(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
     Json(body): Json<FieldLockRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     rustfin_metadata::merge::lock_field(&state.db, &item_id, &body.field)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    Ok(Json(serde_json::json!({ "ok": true, "locked": body.field })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "locked": body.field }),
+    ))
 }
 
 async fn unlock_item_field(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
     Json(body): Json<FieldLockRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     rustfin_metadata::merge::unlock_field(&state.db, &item_id, &body.field)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    Ok(Json(serde_json::json!({ "ok": true, "unlocked": body.field })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "unlocked": body.field }),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1373,10 +1622,16 @@ async fn unlock_item_field(
 // ---------------------------------------------------------------------------
 
 async fn get_expected_episodes(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Vec<rustfin_db::repo::episodes::ExpectedEpisodeRow>>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     let episodes = rustfin_db::repo::episodes::get_expected_episodes(&state.db, &item_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1384,10 +1639,16 @@ async fn get_expected_episodes(
 }
 
 async fn get_missing_episodes(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(item_id): Path<String>,
 ) -> Result<Json<Vec<rustfin_db::repo::episodes::MissingEpisode>>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
     let missing = rustfin_db::repo::episodes::get_missing_episodes(&state.db, &item_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1401,7 +1662,9 @@ async fn get_missing_episodes(
 async fn sse_events(
     _auth: AuthUser,
     State(state): State<AppState>,
-) -> axum::response::Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+) -> axum::response::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
     use axum::response::sse::Event;
     use std::time::Duration;
 
