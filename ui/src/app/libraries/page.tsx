@@ -21,23 +21,44 @@ export default function LibrariesPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-gray-400">Loading...</p>;
+  if (loading) {
+    return (
+      <div className="panel-soft animate-rise px-5 py-4">
+        <p className="text-sm muted">Loading libraries...</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Libraries</h1>
+    <div className="space-y-6 animate-rise">
+      <header className="space-y-2">
+        <span className="chip">Collection Browser</span>
+        <h1 className="text-3xl font-semibold sm:text-4xl">Libraries</h1>
+        <p className="text-sm muted sm:text-base">
+          Explore all configured media directories and jump into items instantly.
+        </p>
+      </header>
+
       {libraries.length === 0 ? (
-        <p className="text-gray-400">No libraries found. Create one from the admin panel.</p>
+        <div className="panel px-6 py-8">
+          <p className="text-sm muted">No libraries found. Create one from the admin panel.</p>
+          <a href="/admin" className="btn-primary mt-4 px-5 py-2 text-sm">
+            Open Admin
+          </a>
+        </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {libraries.map((lib) => (
             <a
               key={lib.id}
               href={`/libraries/${lib.id}`}
-              className="block p-5 bg-gray-900 rounded-lg border border-gray-800 hover:border-blue-500 transition"
+              className="tile tile-hover block p-5"
             >
-              <h2 className="text-lg font-semibold">{lib.name}</h2>
-              <p className="text-gray-400 text-sm mt-1">
+              <div className="flex items-center justify-between gap-4">
+                <h2 className="text-lg font-semibold">{lib.name}</h2>
+                <span className="chip">{lib.kind === 'tv_shows' ? 'TV' : 'Movies'}</span>
+              </div>
+              <p className="mt-2 text-sm muted">
                 {lib.kind} · {lib.item_count} items
               </p>
             </a>
