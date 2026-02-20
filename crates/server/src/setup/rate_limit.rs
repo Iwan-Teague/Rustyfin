@@ -1,8 +1,8 @@
+use axum::Json;
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use rustfin_core::error::ErrorEnvelope;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,20 +53,14 @@ impl RateLimiter {
 }
 
 /// Rate limiting middleware for setup write routes.
-pub async fn rate_limit_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn rate_limit_middleware(request: Request, next: Next) -> Response {
     // Only rate-limit write methods (POST, PUT, PATCH, DELETE)
     if request.method() == axum::http::Method::GET {
         return next.run(request).await;
     }
 
     // Extract rate limiter from Extension layer
-    let rate_limiter = request
-        .extensions()
-        .get::<RateLimiter>()
-        .cloned();
+    let rate_limiter = request.extensions().get::<RateLimiter>().cloned();
 
     let rate_limiter = match rate_limiter {
         Some(rl) => rl,

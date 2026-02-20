@@ -52,8 +52,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // JWT secret: use env or generate random
-    let jwt_secret = std::env::var("RUSTFIN_JWT_SECRET")
-        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let jwt_secret =
+        std::env::var("RUSTFIN_JWT_SECRET").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
     // Transcoder config
     let transcode_dir = std::env::var("RUSTFIN_TRANSCODE_DIR")

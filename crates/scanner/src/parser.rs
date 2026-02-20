@@ -43,37 +43,32 @@ static IGNORE_NAMES: &[&str] = &[
 ];
 
 static VIDEO_EXTENSIONS: &[&str] = &[
-    "mkv", "mp4", "avi", "m4v", "mov", "wmv", "flv", "webm", "ts", "mpg", "mpeg", "3gp", "ogv",
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mpe", "mpv", "ts", "m2ts", "mts",
+    "wmv", "asf", "flv", "f4v", "3gp", "3g2", "ogv", "vob", "mxf",
 ];
 
 // SxxExx pattern: S01E02, s1e3, etc.
-static RE_SXXEXX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap()
-});
+static RE_SXXEXX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap());
 
 // 1x02 pattern
-static RE_XEP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(\d{1,2})[xX](\d{2,3})").unwrap()
-});
+static RE_XEP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d{1,2})[xX](\d{2,3})").unwrap());
 
 // "Season X Episode Y" pattern
-static RE_SEASON_EPISODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)Season\s+(\d+)\s+Episode\s+(\d+)").unwrap()
-});
+static RE_SEASON_EPISODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)Season\s+(\d+)\s+Episode\s+(\d+)").unwrap());
 
 // Movie: "Title (Year)" or "Title.Year"
-static RE_MOVIE_YEAR_PAREN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+?)\s*\((\d{4})\)").unwrap()
-});
+static RE_MOVIE_YEAR_PAREN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+?)\s*\((\d{4})\)").unwrap());
 
-static RE_MOVIE_YEAR_DOT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(.+?)[\.\s](\d{4})(?:[\.\s]|$)").unwrap()
-});
+static RE_MOVIE_YEAR_DOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+?)[\.\s](\d{4})(?:[\.\s]|$)").unwrap());
 
 // Provider ID in folder name: [tmdb=12345], [tvdb=67890], [imdb=tt123]
-static RE_PROVIDER_ID: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[(\w+)=([^\]]+)\]").unwrap()
-});
+static RE_PROVIDER_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[(\w+)=([^\]]+)\]").unwrap());
 
 /// Check if a filename should be ignored.
 pub fn should_ignore(filename: &str) -> bool {
@@ -102,10 +97,7 @@ pub fn extract_provider_ids(name: &str) -> Vec<(String, String)> {
 
 /// Clean up a title: replace dots/underscores with spaces, trim.
 fn clean_title(raw: &str) -> String {
-    raw.replace('.', " ")
-        .replace('_', " ")
-        .trim()
-        .to_string()
+    raw.replace('.', " ").replace('_', " ").trim().to_string()
 }
 
 /// Parse a video filename into movie or episode info.
@@ -343,10 +335,13 @@ mod tests {
     #[test]
     fn provider_ids_extraction() {
         let ids = extract_provider_ids("Breaking Bad [tmdb=1396] [tvdb=81189]");
-        assert_eq!(ids, vec![
-            ("tmdb".to_string(), "1396".to_string()),
-            ("tvdb".to_string(), "81189".to_string()),
-        ]);
+        assert_eq!(
+            ids,
+            vec![
+                ("tmdb".to_string(), "1396".to_string()),
+                ("tvdb".to_string(), "81189".to_string()),
+            ]
+        );
     }
 
     #[test]

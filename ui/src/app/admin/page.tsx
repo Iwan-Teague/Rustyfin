@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { apiJson, apiFetch } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 
 interface Library {
   id: string;
@@ -31,6 +33,9 @@ interface UserEditState {
 }
 
 export default function AdminPage() {
+  const router = useRouter();
+  const { me, loading: authLoading } = useAuth();
+
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [users, setUsers] = useState<UserAccount[]>([]);
@@ -48,8 +53,16 @@ export default function AdminPage() {
   const [msgType, setMsgType] = useState<'ok' | 'error'>('ok');
 
   useEffect(() => {
-    loadData();
-  }, []);
+    if (!authLoading && (!me || me.role !== 'admin')) {
+      router.replace('/libraries');
+    }
+  }, [authLoading, me, router]);
+
+  useEffect(() => {
+    if (me?.role === 'admin') {
+      loadData();
+    }
+  }, [me]);
 
   async function loadData() {
     try {
@@ -223,6 +236,14 @@ export default function AdminPage() {
   }
 
   return (
+    <>
+      {authLoading && (
+        <div className="panel-soft px-5 py-4"><p className="text-sm muted">Checking access…</p></div>
+      )}
+      {!authLoading && (!me || me.role !== 'admin') && (
+        <div className="panel px-6 py-8"><p className="text-sm muted">Admin access required.</p></div>
+      )}
+      {!authLoading && me?.role === 'admin' && (
     <div className="space-y-8 animate-rise">
       <header className="space-y-2">
         <span className="chip">Server Controls</span>
@@ -293,7 +314,8 @@ export default function AdminPage() {
             />
             <input
               type="password"
-              placeholder="Password"
+              placeholder="Password (min 12 chars)"
+              minLength={12}
               value={newUser.password}
               onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
               className="input px-3 py-2 text-sm"
@@ -466,5 +488,7 @@ export default function AdminPage() {
         )}
       </section>
     </div>
+      )}
+    </>
   );
 }

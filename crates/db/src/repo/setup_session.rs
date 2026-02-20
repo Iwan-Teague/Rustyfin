@@ -18,12 +18,14 @@ pub async fn get_active(pool: &SqlitePool) -> Result<Option<SetupSessionRow>, sq
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(owner_token_hash, client_name, claimed_at, expires_at)| SetupSessionRow {
-        owner_token_hash,
-        client_name,
-        claimed_at,
-        expires_at,
-    }))
+    Ok(row.map(
+        |(owner_token_hash, client_name, claimed_at, expires_at)| SetupSessionRow {
+            owner_token_hash,
+            client_name,
+            claimed_at,
+            expires_at,
+        },
+    ))
 }
 
 /// Get session regardless of expiry (for force takeover).
@@ -34,12 +36,14 @@ pub async fn get_any(pool: &SqlitePool) -> Result<Option<SetupSessionRow>, sqlx:
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(owner_token_hash, client_name, claimed_at, expires_at)| SetupSessionRow {
-        owner_token_hash,
-        client_name,
-        claimed_at,
-        expires_at,
-    }))
+    Ok(row.map(
+        |(owner_token_hash, client_name, claimed_at, expires_at)| SetupSessionRow {
+            owner_token_hash,
+            client_name,
+            claimed_at,
+            expires_at,
+        },
+    ))
 }
 
 /// Claim (or force-reclaim) the setup session.
@@ -75,18 +79,14 @@ pub async fn release(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 }
 
 /// Refresh expiry for active session.
-pub async fn refresh_expiry(
-    pool: &SqlitePool,
-    new_expires_at: i64,
-) -> Result<bool, sqlx::Error> {
+pub async fn refresh_expiry(pool: &SqlitePool, new_expires_at: i64) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
-    let result = sqlx::query(
-        "UPDATE setup_session SET expires_at = ? WHERE id = 1 AND expires_at > ?",
-    )
-    .bind(new_expires_at)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("UPDATE setup_session SET expires_at = ? WHERE id = 1 AND expires_at > ?")
+            .bind(new_expires_at)
+            .bind(now)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 

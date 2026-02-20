@@ -14,7 +14,7 @@ async fn test_app() -> TestServer {
         .unwrap();
 
     // Bootstrap admin user and mark setup as completed for existing tests
-    rustfin_db::repo::users::create_user(&pool, "admin", "admin123", "admin")
+    rustfin_db::repo::users::create_user(&pool, "admin", "admin_secure_123", "admin")
         .await
         .unwrap();
     rustfin_db::repo::settings::set(&pool, "setup_completed", "true")
@@ -70,7 +70,7 @@ async fn login_with_valid_credentials() {
     let server = test_app().await;
     let resp = server
         .post("/api/v1/auth/login")
-        .json(&json!({ "username": "admin", "password": "admin123" }))
+        .json(&json!({ "username": "admin", "password": "admin_secure_123" }))
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
@@ -101,7 +101,7 @@ async fn users_me_requires_auth() {
 #[tokio::test]
 async fn users_me_with_valid_token() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
 
     let resp = server
         .get("/api/v1/users/me")
@@ -121,7 +121,7 @@ async fn users_me_with_valid_token() {
 #[tokio::test]
 async fn preferences_crud() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let auth_header = format!("Bearer {token}");
 
     // GET default prefs
@@ -188,39 +188,35 @@ fn auth_hdr(token: &str) -> (axum::http::HeaderName, axum::http::HeaderValue) {
 #[tokio::test]
 async fn create_library_requires_admin() {
     let server = test_app().await;
-
-    // Create a regular user
-    let pool = {
-        // We need to reach into state — use a fresh login-based approach:
-        // the test_app bootstraps "admin" only; there's no regular user to test with.
-        // Instead, test that unauthenticated requests fail:
-        let resp = server
-            .post("/api/v1/libraries")
-            .json(&json!({ "name": "Movies", "kind": "movies", "paths": ["/media/movies"] }))
-            .await;
-        resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
-    };
-    let _ = pool; // suppress unused
+    // Test that unauthenticated requests fail
+    let resp = server
+        .post("/api/v1/libraries")
+        .json(&json!({ "name": "Movies", "kind": "movies", "paths": ["/media/movies"] }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn library_crud_flow() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    let tmp = std::env::temp_dir().join(format!("rf_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
 
     // Create library
     let resp = server
         .post("/api/v1/libraries")
         .add_header(hdr_name.clone(), hdr_val.clone())
-        .json(&json!({ "name": "Movies", "kind": "movies", "paths": ["/media/movies"] }))
+        .json(&json!({ "name": "Movies", "kind": "movies", "paths": [tmp.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let body: Value = resp.json();
     assert_eq!(body["name"], "Movies");
     assert_eq!(body["kind"], "movies");
     assert_eq!(body["item_count"], 0);
-    assert_eq!(body["paths"][0]["path"], "/media/movies");
+    assert_eq!(body["paths"][0]["path"], tmp.to_str().unwrap());
     let lib_id = body["id"].as_str().unwrap().to_string();
 
     // List libraries
@@ -257,12 +253,14 @@ async fn library_crud_flow() {
     resp.assert_status_ok();
     let body: Value = resp.json();
     assert_eq!(body["name"], "My Movies");
+
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[tokio::test]
 async fn create_library_validates_kind() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
 
     let resp = server
@@ -276,7 +274,7 @@ async fn create_library_validates_kind() {
 #[tokio::test]
 async fn get_nonexistent_library_returns_404() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
 
     let resp = server
@@ -293,14 +291,17 @@ async fn get_nonexistent_library_returns_404() {
 #[tokio::test]
 async fn scan_library_creates_job() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    let tmp = std::env::temp_dir().join(format!("rf_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
 
     // Create library first
     let resp = server
         .post("/api/v1/libraries")
         .add_header(hdr_name.clone(), hdr_val.clone())
-        .json(&json!({ "name": "TV", "kind": "tv_shows", "paths": ["/media/tv"] }))
+        .json(&json!({ "name": "TV", "kind": "tv_shows", "paths": [tmp.to_str().unwrap()] }))
         .await;
     let lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
 
@@ -352,7 +353,7 @@ async fn scan_library_creates_job() {
 #[tokio::test]
 async fn scan_nonexistent_library_returns_404() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
 
     let resp = server
@@ -535,7 +536,7 @@ async fn stream_file_with_range_returns_206() {
     // Set up DB + scan
     let pool = rustfin_db::connect(":memory:").await.unwrap();
     rustfin_db::migrate::run(&pool).await.unwrap();
-    rustfin_db::repo::users::create_user(&pool, "admin", "admin123", "admin")
+    rustfin_db::repo::users::create_user(&pool, "admin", "admin_secure_123", "admin")
         .await
         .unwrap();
 
@@ -581,7 +582,7 @@ async fn stream_file_with_range_returns_206() {
     };
     let app = rustfin_server::routes::build_router(state);
     let server = TestServer::new(app).unwrap();
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
 
     // Unauthenticated stream requests are rejected.
@@ -659,19 +660,10 @@ async fn stream_file_with_range_returns_206() {
 #[tokio::test]
 async fn playback_progress_update_and_get() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let (hdr_name, hdr_val) = auth_hdr(&token);
 
-    // First need a library and item to reference
-    let resp = server
-        .post("/api/v1/libraries")
-        .add_header(hdr_name.clone(), hdr_val.clone())
-        .json(&json!({ "name": "Movies", "kind": "movies", "paths": ["/media/movies"] }))
-        .await;
-    let _lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
-
-    // Manually insert an item via DB (we have access to pool through a helper)
-    // Instead, we create via scan with a real temp dir
+    // Create a library with a real temp dir and scan it for playback tests
     let tmp = std::env::temp_dir().join(format!("rf_play_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("Inception (2010).mkv"), "fake video data").unwrap();
@@ -762,15 +754,17 @@ async fn playback_progress_update_and_get() {
 #[tokio::test]
 async fn user_management_crud() {
     let server = test_app().await;
-    let token = login(&server, "admin", "admin123").await;
+    let token = login(&server, "admin", "admin_secure_123").await;
     let hdr_name = axum::http::header::AUTHORIZATION;
     let hdr_val = axum::http::HeaderValue::from_str(&format!("Bearer {token}")).unwrap();
 
     // Create a library that can be assigned to regular users
+    let tmp = std::env::temp_dir().join(format!("rf_user_mgmt_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
     let resp = server
         .post("/api/v1/libraries")
         .add_header(hdr_name.clone(), hdr_val.clone())
-        .json(&json!({ "name": "User Movies", "kind": "movies", "paths": ["/media/user_movies"] }))
+        .json(&json!({ "name": "User Movies", "kind": "movies", "paths": [tmp.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let library_body: Value = resp.json();
@@ -792,7 +786,7 @@ async fn user_management_crud() {
         .add_header(hdr_name.clone(), hdr_val.clone())
         .json(&json!({
             "username": "testuser",
-            "password": "testpass",
+            "password": "testpass_secure",
             "role": "user",
             "library_ids": [library_id]
         }))
@@ -812,7 +806,7 @@ async fn user_management_crud() {
     assert_eq!(users.len(), 2);
 
     // New user can login
-    let _user_token = login(&server, "testuser", "testpass").await;
+    let _user_token = login(&server, "testuser", "testpass_secure").await;
 
     // Delete the new user
     let resp = server
@@ -828,6 +822,8 @@ async fn user_management_crud() {
         .await;
     let users: Vec<Value> = resp.json();
     assert_eq!(users.len(), 1);
+
+    std::fs::remove_dir_all(&tmp).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -866,14 +862,19 @@ async fn test_app_fresh() -> TestServer {
 #[tokio::test]
 async fn user_library_access_is_enforced() {
     let server = test_app().await;
-    let admin_token = login(&server, "admin", "admin123").await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
     let admin_hdr = auth_hdr(&admin_token);
 
     // Create two libraries
+    let tmp_a = std::env::temp_dir().join(format!("rf_access_a_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_a).unwrap();
+    let tmp_b = std::env::temp_dir().join(format!("rf_access_b_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_b).unwrap();
+
     let resp = server
         .post("/api/v1/libraries")
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
-        .json(&json!({ "name": "Movies A", "kind": "movies", "paths": ["/media/a"] }))
+        .json(&json!({ "name": "Movies A", "kind": "movies", "paths": [tmp_a.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let lib_a: Value = resp.json();
@@ -882,7 +883,7 @@ async fn user_library_access_is_enforced() {
     let resp = server
         .post("/api/v1/libraries")
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
-        .json(&json!({ "name": "Movies B", "kind": "movies", "paths": ["/media/b"] }))
+        .json(&json!({ "name": "Movies B", "kind": "movies", "paths": [tmp_b.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let lib_b: Value = resp.json();
@@ -894,14 +895,14 @@ async fn user_library_access_is_enforced() {
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
         .json(&json!({
             "username": "viewer",
-            "password": "viewerpass",
+            "password": "viewerpass_sec",
             "role": "user",
             "library_ids": [lib_a_id]
         }))
         .await;
     resp.assert_status_ok();
 
-    let viewer_token = login(&server, "viewer", "viewerpass").await;
+    let viewer_token = login(&server, "viewer", "viewerpass_sec").await;
     let viewer_hdr = auth_hdr(&viewer_token);
 
     // Viewer sees only one library
@@ -927,19 +928,27 @@ async fn user_library_access_is_enforced() {
         .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
         .await;
     resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    std::fs::remove_dir_all(&tmp_a).ok();
+    std::fs::remove_dir_all(&tmp_b).ok();
 }
 
 #[tokio::test]
 async fn admin_can_modify_user_permissions() {
     let server = test_app().await;
-    let admin_token = login(&server, "admin", "admin123").await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
     let admin_hdr = auth_hdr(&admin_token);
 
     // Create two libraries
+    let tmp_1 = std::env::temp_dir().join(format!("rf_perm_1_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_1).unwrap();
+    let tmp_2 = std::env::temp_dir().join(format!("rf_perm_2_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp_2).unwrap();
+
     let resp = server
         .post("/api/v1/libraries")
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
-        .json(&json!({ "name": "Lib 1", "kind": "movies", "paths": ["/media/lib1"] }))
+        .json(&json!({ "name": "Lib 1", "kind": "movies", "paths": [tmp_1.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let lib1: Value = resp.json();
@@ -948,7 +957,7 @@ async fn admin_can_modify_user_permissions() {
     let resp = server
         .post("/api/v1/libraries")
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
-        .json(&json!({ "name": "Lib 2", "kind": "movies", "paths": ["/media/lib2"] }))
+        .json(&json!({ "name": "Lib 2", "kind": "movies", "paths": [tmp_2.to_str().unwrap()] }))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let lib2: Value = resp.json();
@@ -960,7 +969,7 @@ async fn admin_can_modify_user_permissions() {
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
         .json(&json!({
             "username": "limited",
-            "password": "limitedpass",
+            "password": "limitedpass_sec",
             "role": "user",
             "library_ids": [lib1_id]
         }))
@@ -983,7 +992,7 @@ async fn admin_can_modify_user_permissions() {
     assert_eq!(patched["role"], "user");
     assert_eq!(patched["library_ids"][0], lib2["id"]);
 
-    let limited_token = login(&server, "limited", "limitedpass").await;
+    let limited_token = login(&server, "limited", "limitedpass_sec").await;
     let limited_hdr = auth_hdr(&limited_token);
     let resp = server
         .get("/api/v1/libraries")
@@ -1004,7 +1013,7 @@ async fn admin_can_modify_user_permissions() {
     let patched: Value = resp.json();
     assert_eq!(patched["role"], "admin");
 
-    let limited_token = login(&server, "limited", "limitedpass").await;
+    let limited_token = login(&server, "limited", "limitedpass_sec").await;
     let limited_hdr = auth_hdr(&limited_token);
     let resp = server
         .get("/api/v1/libraries")
@@ -1013,6 +1022,9 @@ async fn admin_can_modify_user_permissions() {
     resp.assert_status_ok();
     let libs: Vec<Value> = resp.json();
     assert_eq!(libs.len(), 2);
+
+    std::fs::remove_dir_all(&tmp_1).ok();
+    std::fs::remove_dir_all(&tmp_2).ok();
 }
 
 #[tokio::test]

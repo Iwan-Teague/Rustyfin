@@ -23,7 +23,11 @@ impl TmdbClient {
         }
     }
 
-    async fn get_json(&self, path: &str, params: &[(&str, &str)]) -> Result<serde_json::Value, MetadataError> {
+    async fn get_json(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<serde_json::Value, MetadataError> {
         let mut all_params = vec![("api_key", self.api_key.as_str())];
         all_params.extend_from_slice(params);
 
@@ -73,20 +77,14 @@ impl MetadataProvider for TmdbClient {
         }
 
         let data = self.get_json("/search/movie", &params).await?;
-        let results = data["results"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let results = data["results"].as_array().cloned().unwrap_or_default();
 
         Ok(results
             .iter()
             .take(10)
             .map(|r| SearchResult {
                 provider_id: r["id"].as_u64().unwrap_or(0).to_string(),
-                title: r["title"]
-                    .as_str()
-                    .unwrap_or("Unknown")
-                    .to_string(),
+                title: r["title"].as_str().unwrap_or("Unknown").to_string(),
                 year: r["release_date"]
                     .as_str()
                     .and_then(|d| d.get(..4))
@@ -111,20 +109,14 @@ impl MetadataProvider for TmdbClient {
         }
 
         let data = self.get_json("/search/tv", &params).await?;
-        let results = data["results"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let results = data["results"].as_array().cloned().unwrap_or_default();
 
         Ok(results
             .iter()
             .take(10)
             .map(|r| SearchResult {
                 provider_id: r["id"].as_u64().unwrap_or(0).to_string(),
-                title: r["name"]
-                    .as_str()
-                    .unwrap_or("Unknown")
-                    .to_string(),
+                title: r["name"].as_str().unwrap_or("Unknown").to_string(),
                 year: r["first_air_date"]
                     .as_str()
                     .and_then(|d| d.get(..4))
@@ -171,10 +163,7 @@ impl MetadataProvider for TmdbClient {
             )
             .await?;
 
-        let episodes = data["episodes"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let episodes = data["episodes"].as_array().cloned().unwrap_or_default();
 
         Ok(episodes
             .iter()
@@ -210,13 +199,21 @@ fn parse_movie_metadata(data: &serde_json::Value) -> ItemMetadata {
         runtime_minutes: data["runtime"].as_i64().map(|r| r as i32),
         community_rating: data["vote_average"].as_f64(),
         official_rating: None, // TMDB doesn't directly provide MPAA ratings in basic endpoint
-        genres: data["genres"]
-            .as_array()
-            .map(|gs| gs.iter().filter_map(|g| g["name"].as_str().map(|s| s.to_string())).collect()),
-        studios: data["production_companies"]
-            .as_array()
-            .map(|cs| cs.iter().filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect()),
-        people: if people.is_empty() { None } else { Some(people) },
+        genres: data["genres"].as_array().map(|gs| {
+            gs.iter()
+                .filter_map(|g| g["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        studios: data["production_companies"].as_array().map(|cs| {
+            cs.iter()
+                .filter_map(|c| c["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        people: if people.is_empty() {
+            None
+        } else {
+            Some(people)
+        },
         poster_url: data["poster_path"]
             .as_str()
             .map(|p| format!("{IMAGE_BASE}/original{p}")),
@@ -250,13 +247,21 @@ fn parse_series_metadata(data: &serde_json::Value) -> ItemMetadata {
             .map(|r| r as i32),
         community_rating: data["vote_average"].as_f64(),
         official_rating: None,
-        genres: data["genres"]
-            .as_array()
-            .map(|gs| gs.iter().filter_map(|g| g["name"].as_str().map(|s| s.to_string())).collect()),
-        studios: data["production_companies"]
-            .as_array()
-            .map(|cs| cs.iter().filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect()),
-        people: if people.is_empty() { None } else { Some(people) },
+        genres: data["genres"].as_array().map(|gs| {
+            gs.iter()
+                .filter_map(|g| g["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        studios: data["production_companies"].as_array().map(|cs| {
+            cs.iter()
+                .filter_map(|c| c["name"].as_str().map(|s| s.to_string()))
+                .collect()
+        }),
+        people: if people.is_empty() {
+            None
+        } else {
+            Some(people)
+        },
         poster_url: data["poster_path"]
             .as_str()
             .map(|p| format!("{IMAGE_BASE}/original{p}")),

@@ -1,4 +1,4 @@
-/// HLS playlist and segment content-type helpers.
+//! HLS playlist and segment content-type helpers.
 
 /// Content-Type for HLS master/variant playlists.
 pub const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
@@ -24,8 +24,14 @@ mod tests {
 
     #[test]
     fn content_types() {
-        assert_eq!(segment_content_type("seg_00001.ts"), SEGMENT_CONTENT_TYPE_TS);
-        assert_eq!(segment_content_type("seg_00001.m4s"), SEGMENT_CONTENT_TYPE_MP4);
+        assert_eq!(
+            segment_content_type("seg_00001.ts"),
+            SEGMENT_CONTENT_TYPE_TS
+        );
+        assert_eq!(
+            segment_content_type("seg_00001.m4s"),
+            SEGMENT_CONTENT_TYPE_MP4
+        );
         assert_eq!(segment_content_type("init.mp4"), SEGMENT_CONTENT_TYPE_MP4);
     }
 }

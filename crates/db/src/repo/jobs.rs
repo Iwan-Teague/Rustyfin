@@ -45,29 +45,42 @@ pub async fn create_job(
 }
 
 pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<JobRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, f64, Option<String>, Option<String>, i64, i64)> =
-        sqlx::query_as(
-            "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        f64,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
              FROM job ORDER BY created_ts DESC",
-        )
-        .fetch_all(pool)
-        .await?;
+    )
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows.into_iter().map(row_to_job).collect())
 }
 
-pub async fn get_job(
-    pool: &SqlitePool,
-    job_id: &str,
-) -> Result<Option<JobRow>, sqlx::Error> {
-    let row: Option<(String, String, String, f64, Option<String>, Option<String>, i64, i64)> =
-        sqlx::query_as(
-            "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
+pub async fn get_job(pool: &SqlitePool, job_id: &str) -> Result<Option<JobRow>, sqlx::Error> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        f64,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
              FROM job WHERE id = ?",
-        )
-        .bind(job_id)
-        .fetch_optional(pool)
-        .await?;
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
 
     Ok(row.map(row_to_job))
 }
@@ -94,10 +107,7 @@ pub async fn update_job_status(
 }
 
 /// Cancel a job (only if queued or running).
-pub async fn cancel_job(
-    pool: &SqlitePool,
-    job_id: &str,
-) -> Result<bool, sqlx::Error> {
+pub async fn cancel_job(pool: &SqlitePool, job_id: &str) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
         "UPDATE job SET status = 'cancelled', updated_ts = ? \
@@ -111,7 +121,16 @@ pub async fn cancel_job(
 }
 
 fn row_to_job(
-    r: (String, String, String, f64, Option<String>, Option<String>, i64, i64),
+    r: (
+        String,
+        String,
+        String,
+        f64,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    ),
 ) -> JobRow {
     JobRow {
         id: r.0,
