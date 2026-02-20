@@ -26,14 +26,16 @@ pub async fn create_user(
     let hash = hash_password(password)?;
     let now = chrono::Utc::now().timestamp();
 
-    sqlx::query("INSERT INTO user (id, username, password_hash, role, created_ts) VALUES (?, ?, ?, ?, ?)")
-        .bind(&id)
-        .bind(username)
-        .bind(&hash)
-        .bind(role)
-        .bind(now)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO user (id, username, password_hash, role, created_ts) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(username)
+    .bind(&hash)
+    .bind(role)
+    .bind(now)
+    .execute(pool)
+    .await?;
 
     // Create default preferences
     sqlx::query("INSERT INTO user_pref (user_id, json, updated_ts) VALUES (?, '{}', ?)")
@@ -57,20 +59,19 @@ pub async fn find_by_username(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, username, password_hash, role, created_ts)| UserRow {
-        id,
-        username,
-        password_hash,
-        role,
-        created_ts,
-    }))
+    Ok(
+        row.map(|(id, username, password_hash, role, created_ts)| UserRow {
+            id,
+            username,
+            password_hash,
+            role,
+            created_ts,
+        }),
+    )
 }
 
 /// Find user by ID.
-pub async fn find_by_id(
-    pool: &SqlitePool,
-    user_id: &str,
-) -> Result<Option<UserRow>, sqlx::Error> {
+pub async fn find_by_id(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
         "SELECT id, username, password_hash, role, created_ts FROM user WHERE id = ?",
     )
@@ -78,13 +79,15 @@ pub async fn find_by_id(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, username, password_hash, role, created_ts)| UserRow {
-        id,
-        username,
-        password_hash,
-        role,
-        created_ts,
-    }))
+    Ok(
+        row.map(|(id, username, password_hash, role, created_ts)| UserRow {
+            id,
+            username,
+            password_hash,
+            role,
+            created_ts,
+        }),
+    )
 }
 
 /// List all users (admin).
@@ -109,12 +112,85 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> 
 
 /// Delete a user by ID.
 pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx::Error> {
-    let result =
-        sqlx::query("DELETE FROM user WHERE id = ?")
-            .bind(user_id)
-            .execute(pool)
-            .await?;
+    let result = sqlx::query("DELETE FROM user WHERE id = ?")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
     Ok(result.rows_affected() > 0)
+}
+
+/// Update a user's role.
+pub async fn update_user_role(
+    pool: &SqlitePool,
+    user_id: &str,
+    role: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE user SET role = ? WHERE id = ?")
+        .bind(role)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Replace library access entries for a user.
+pub async fn set_library_access(
+    pool: &SqlitePool,
+    user_id: &str,
+    library_ids: &[String],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM user_library_access WHERE user_id = ?")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+
+    if !library_ids.is_empty() {
+        let now = chrono::Utc::now().timestamp();
+        for library_id in library_ids {
+            sqlx::query(
+                "INSERT INTO user_library_access (user_id, library_id, created_ts) VALUES (?, ?, ?)",
+            )
+            .bind(user_id)
+            .bind(library_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Return library IDs a user can access.
+pub async fn get_library_access(
+    pool: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT library_id FROM user_library_access WHERE user_id = ? ORDER BY library_id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Check whether a user can access a specific library.
+pub async fn is_library_allowed(
+    pool: &SqlitePool,
+    user_id: &str,
+    library_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM user_library_access WHERE user_id = ? AND library_id = ? LIMIT 1",
+    )
+    .bind(user_id)
+    .bind(library_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
 }
 
 /// Check if any users exist (for admin bootstrap).
@@ -130,11 +206,10 @@ pub async fn get_preferences(
     pool: &SqlitePool,
     user_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT json FROM user_pref WHERE user_id = ?")
-            .bind(user_id)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT json FROM user_pref WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row.map(|(json,)| json))
 }
 

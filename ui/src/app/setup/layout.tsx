@@ -1,10 +1,18 @@
 export default function SetupLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
-      <header className="border-b border-gray-800 px-6 py-4">
-        <h1 className="text-xl font-bold text-blue-400">Rustyfin Setup</h1>
+    <div className="mx-auto w-full max-w-3xl animate-rise space-y-6">
+      <header className="panel px-6 py-5 sm:px-8">
+        <div className="space-y-2">
+          <span className="chip chip-accent">First-Time Experience</span>
+          <h1 className="text-3xl font-semibold sm:text-4xl">
+            <span className="accent-logo">Rustyfin</span> Setup
+          </h1>
+          <p className="text-sm muted sm:text-base">
+            Configure your server in a few guided steps, then start streaming.
+          </p>
+        </div>
       </header>
-      <main className="flex-1 max-w-2xl mx-auto w-full px-6 py-8">{children}</main>
+      <main>{children}</main>
     </div>
   );
 }
