@@ -270,6 +270,7 @@ export default function AdminPage() {
             required
           />
           <select
+            aria-label="Library type"
             value={newLib.kind}
             onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
             className="select px-3 py-2 text-sm"
@@ -322,6 +323,7 @@ export default function AdminPage() {
               required
             />
             <select
+              aria-label="New user role"
               value={newUser.role}
               onChange={(e) => setNewUser({
                 ...newUser,
@@ -385,6 +387,7 @@ export default function AdminPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <select
+                      aria-label={`Role for ${user.username}`}
                       value={edit.role}
                       onChange={(e) => updateEditRole(user.id, e.target.value as 'admin' | 'user')}
                       className="select px-2 py-1.5 text-sm"

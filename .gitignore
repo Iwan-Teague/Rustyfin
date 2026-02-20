@@ -27,6 +27,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+*.kate-swp
 
 # Environment files
 .env
@@ -51,3 +52,11 @@ ui/node_modules/
 node_modules/
 ui/node_modules/
 ui/.next/
+
+# Local test/runtime artifacts
+/.tmp/
+/.npm-cache/
+/.playwright-browsers/
+/tests/_runs/
+/scripts/rustfin.db*
+/rustfin.db*

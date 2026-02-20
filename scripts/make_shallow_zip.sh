@@ -5,6 +5,8 @@ set -euo pipefail
 #   ./make_shallow_zip.sh            # archives HEAD to <repo>-<sha>.zip
 #   ./make_shallow_zip.sh <ref>      # archives <ref> (e.g. main, HEAD, v1.2.3)
 #   ./make_shallow_zip.sh <ref> <out.zip>
+# Env:
+#   SHALLOW_ZIP_EXTRA_EXCLUDES="path1,path2"  # optional comma-separated extra excludes
 
 ref="${1:-HEAD}"
 out="${2:-}"
@@ -22,7 +24,51 @@ if [[ -z "$out" ]]; then
   out="${repo_name}-${short_sha}.zip"
 fi
 
-# --prefix puts everything under a single folder when unzipping
-git archive --format=zip --prefix="${repo_name}/" -o "$out" "$ref"
+if [[ "$out" = /* ]]; then
+  out_path="$out"
+else
+  out_path="${root}/${out}"
+fi
 
-echo "Created: $out"
+mkdir -p "$(dirname "$out_path")"
+
+stage_dir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$stage_dir"
+}
+trap cleanup EXIT
+
+# --prefix puts everything under a single folder when unzipping
+git archive --format=tar --prefix="${repo_name}/" "$ref" | tar -xf - -C "$stage_dir"
+
+# Keep export lightweight by removing local/test/bootstrap artifacts if present.
+exclude_paths=(
+  ".tmp"
+  ".npm-cache"
+  ".playwright-browsers"
+  "node_modules"
+  "ui/node_modules"
+  "ui/.next"
+  "tests/node_modules"
+  "tests/_runs"
+  "scripts/rustfin.db"
+  "scripts/rustfin.db-shm"
+  "scripts/rustfin.db-wal"
+)
+
+if [[ -n "${SHALLOW_ZIP_EXTRA_EXCLUDES:-}" ]]; then
+  IFS=',' read -r -a extra_excludes <<< "${SHALLOW_ZIP_EXTRA_EXCLUDES}"
+  exclude_paths+=("${extra_excludes[@]}")
+fi
+
+for rel in "${exclude_paths[@]}"; do
+  [[ -z "$rel" ]] && continue
+  rm -rf "${stage_dir}/${repo_name}/${rel}"
+done
+
+(
+  cd "$stage_dir"
+  zip -rq "$out_path" "$repo_name"
+)
+
+echo "Created: $out_path"
