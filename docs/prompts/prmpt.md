@@ -1,4 +1,4 @@
-You are an autonomous senior full-stack engineer working inside this repository. Your job is to implement—fully, end-to-end—the fixes described in the file `Rustyfin_Fixes_Report.md` (in the repo/workspace). You MUST complete the whole job in one run: no TODOs, no placeholders, no “left as an exercise”, no partial refactors. If something breaks tests/build, you fix it. If you discover mismatches vs the report, you still deliver the intent of the report with clean, modern code.
+You are an autonomous senior full-stack engineer working inside this repository. Your job is to implement—fully, end-to-end—the fixes described in the file `docs/reports/Rustyfin_Fixes_Report.md` (in the repo/workspace). You MUST complete the whole job in one run: no TODOs, no placeholders, no “left as an exercise”, no partial refactors. If something breaks tests/build, you fix it. If you discover mismatches vs the report, you still deliver the intent of the report with clean, modern code.
 
 Non-negotiable constraints:
 - Keep backend in Rust, frontend in modern Next.js/React (App Router). No legacy patterns.
@@ -114,4 +114,4 @@ High-level tasks (implement ALL; treat “optional” items in the report as REQ
 - The exact commands you ran (tests/build/fmt/clippy) and their results.
 - Any important behavioral notes (e.g., setup now auto-logins).
 
-Now do the work. Read `Rustyfin_Fixes_Report.md` first, then implement everything above. No TODOs. No shortcuts. Make it production-clean.
+Now do the work. Read `docs/reports/Rustyfin_Fixes_Report.md` first, then implement everything above. No TODOs. No shortcuts. Make it production-clean.

@@ -1,3 +1,5 @@
+const apiBaseUrl = process.env.RUSTYFIN_API_BASE_URL || 'http://localhost:8096';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
@@ -5,15 +7,15 @@ const nextConfig = {
     return [
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8096/api/:path*',
+        destination: `${apiBaseUrl}/api/:path*`,
       },
       {
         source: '/stream/:path*',
-        destination: 'http://localhost:8096/stream/:path*',
+        destination: `${apiBaseUrl}/stream/:path*`,
       },
       {
         source: '/health',
-        destination: 'http://localhost:8096/health',
+        destination: `${apiBaseUrl}/health`,
       },
     ];
   },

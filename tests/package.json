@@ -1,0 +1,17 @@
+{
+  "name": "rustyfin-tests",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test --config=playwright.config.ts",
+    "e2e:ui": "playwright test --config=playwright.config.ts --ui",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.0",
+    "@axe-core/playwright": "^4.10.1",
+    "wait-on": "^9.0.3",
+    "typescript": "^5.7.0"
+  }
+}

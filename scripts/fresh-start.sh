@@ -2,7 +2,8 @@
 # fresh-start.sh — Reset Rustyfin to a clean install state and start it up.
 #
 # Usage:
-#   ./scripts/fresh-start.sh           # Local dev (default)
+#   ./scripts/fresh-start.sh           # Reset only (default)
+#   ./scripts/fresh-start.sh --run     # Reset, then build and run backend (local)
 #   ./scripts/fresh-start.sh --docker  # Docker Compose
 #   ./scripts/fresh-start.sh --no-run  # Wipe only, don't start the server
 #
@@ -26,16 +27,18 @@ die()     { echo -e "${RED}[fresh-start] ERROR:${RESET} $*" >&2; exit 1; }
 
 # ── Argument parsing ────────────────────────────────────────────────────────────
 MODE="local"
-RUN=true
+RUN=false
 
 for arg in "$@"; do
   case "$arg" in
+    --run)     RUN=true ;;
     --docker)  MODE="docker" ;;
     --no-run)  RUN=false ;;
     -h|--help)
-      echo "Usage: $0 [--docker] [--no-run]"
+      echo "Usage: $0 [--run] [--docker] [--no-run]"
+      echo "  --run      After reset, build and run local rustfin-server"
       echo "  --docker   Reset and start via Docker Compose instead of local binary"
-      echo "  --no-run   Only wipe data, do not start the server afterwards"
+      echo "  --no-run   Only wipe data, do not start the server afterwards (default)"
       exit 0
       ;;
     *) die "Unknown argument: $arg" ;;
@@ -46,10 +49,20 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Stable temp dir (macOS-safe) ───────────────────────────────────────────────
+# Some environments deny access to default /var/folders temp paths.
+# Force a known writable temp directory for cargo and docker compose.
+SAFE_TMP_DIR="${RUSTFIN_TMPDIR:-$REPO_ROOT/.tmp}"
+mkdir -p "$SAFE_TMP_DIR" || die "Failed to create temp directory: $SAFE_TMP_DIR"
+chmod 700 "$SAFE_TMP_DIR" 2>/dev/null || true
+[[ -w "$SAFE_TMP_DIR" ]] || die "Temp directory is not writable: $SAFE_TMP_DIR"
+export TMPDIR="$SAFE_TMP_DIR"
+
 # ── Confirm ─────────────────────────────────────────────────────────────────────
 echo ""
 warn "This will DELETE all Rustyfin data (database, cache, transcode files)."
 warn "Mode: $MODE"
+info "Using TMPDIR: $TMPDIR"
 echo ""
 read -r -p "Are you sure? Type 'yes' to continue: " CONFIRM
 [[ "$CONFIRM" == "yes" ]] || { info "Aborted."; exit 0; }
@@ -124,6 +137,7 @@ success "Data wiped — Rustyfin is now in a clean install state."
 echo ""
 
 if [[ "$RUN" == false ]]; then
+  info "Reset complete. Start backend manually when ready."
   exit 0
 fi
 
@@ -138,4 +152,5 @@ BINARY="$REPO_ROOT/target/release/rustfin-server"
 
 info "Starting rustfin-server..."
 echo ""
+cd "$REPO_ROOT"
 exec "$BINARY"

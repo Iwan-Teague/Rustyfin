@@ -211,7 +211,7 @@ Rustyfin is in active development. Core features are implemented and tested:
 - ✅ Docker deployment
 - ✅ Web UI with video player
 
-See the [implementation tracker](RUSTFIN_AI_PROJECT_TRACKER.md) for detailed status.
+See the [implementation tracker](docs/project/RUSTFIN_AI_PROJECT_TRACKER.md) for detailed status.
 
 ## Contributing
 
