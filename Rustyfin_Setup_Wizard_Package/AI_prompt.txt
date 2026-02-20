@@ -1,0 +1,43 @@
+You are implementing the Rustyfin first‑run Setup Wizard.
+
+You MUST treat these artifacts as canonical and implement them exactly:
+- Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md
+- rustyfin-setup-wizard.openapi.yaml
+
+You MUST update the progress tracker as you work:
+- Rustyfin_Setup_Wizard_Implementation_Progress.md
+  - Mark tasks as 🟧/✅
+  - Add commit hashes or PR IDs in the ledger table
+  - Add any deviations to the decision log
+
+Repo context (from Rustyfin.zip)
+- Backend: crates/server (Axum + Tower), crates/db (sqlx + SQLite), crates/core (ApiError)
+- UI: ui/ (Next.js app router)
+
+Hard constraints
+- Remove the insecure admin bootstrap in crates/server/src/main.rs (RUSTFIN_ADMIN_PASSWORD fallback and default “admin” user creation).
+- Fresh installs MUST NOT show login; UI MUST route to /setup when setup_completed=false.
+- Setup write endpoints are a high-risk surface: implement SetupWriteGuard + local/remote policy + concurrency guard + rate limiting as a Tower layer.
+- Match the OpenAPI YAML exactly: endpoints, schemas, status codes, and error envelopes.
+- Do not log secrets (passwords/tokens) or library filesystem paths.
+
+Work order (do in this order; do not jump ahead)
+1) DB migration + repo modules (settings/setup_session/idempotency).
+2) Expand ApiError to support 422 validation + 429 rate limit errors with structured details.
+3) Remove admin bootstrap; ensure setup defaults; add GET /api/v1/system/info/public.
+4) Implement setup session claim/release.
+5) Implement SetupWriteGuard (owner token, constant-time compare, local/remote rules, trusted proxy handling).
+6) Add rate limiting Tower layer on /api/v1/setup/* write routes.
+7) Implement setup endpoints in contract order (/config, /admin, /paths/validate, /libraries, /metadata, /network, /complete, /reset).
+8) Implement UI route guard + /setup wizard pages + dedicated setup API client (no JWT redirect behavior).
+9) Add/update tests (integration + e2e recommended).
+10) Hardening pass (logging redaction, edge cases, concurrency, reset behavior).
+
+Deliverables
+- A branch/PR with code changes implementing the wizard end-to-end.
+- Updated OpenAPI compliance (no contract drift).
+- Updated Rustyfin_Setup_Wizard_Implementation_Progress.md with completed checkboxes and ledger filled in.
+- A short final implementation report summarizing what was changed and where.
+
+Quality bar
+- No “implied behavior.” If the spec says it, implement it. If it doesn’t, choose the safest behavior and record the decision in the tracker’s decision log.

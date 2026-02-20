@@ -1,3 +1,8 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { getPublicSystemInfo } from '@/lib/setupApi';
+
 export default function Home() {
   const quickActions = [
     {
@@ -19,6 +24,30 @@ export default function Home() {
       badge: 'Access',
     },
   ];
+
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getPublicSystemInfo()
+      .then((info) => {
+        if (!info.setup_completed) {
+          window.location.href = '/setup';
+        } else {
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="panel-soft flex min-h-[45vh] items-center justify-center animate-rise">
+        <div className="text-sm muted">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8 animate-rise">
