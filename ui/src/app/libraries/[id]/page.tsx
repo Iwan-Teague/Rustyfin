@@ -26,36 +26,49 @@ export default function LibraryPage() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) return <p className="text-gray-400">Loading...</p>;
+  if (loading) {
+    return (
+      <div className="panel-soft animate-rise px-5 py-4">
+        <p className="text-sm muted">Loading library...</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Library</h1>
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        {items.map((item) => (
-          <a
-            key={item.id}
-            href={`/items/${item.id}`}
-            className="group block"
-          >
-            <div className="aspect-[2/3] bg-gray-800 rounded-lg overflow-hidden mb-2">
-              {item.poster_url ? (
-                <img
-                  src={item.poster_url}
-                  alt={item.title}
-                  className="w-full h-full object-cover group-hover:scale-105 transition"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-gray-600 text-xs">
-                  No Poster
-                </div>
-              )}
-            </div>
-            <p className="text-sm font-medium truncate">{item.title}</p>
-            {item.year && <p className="text-xs text-gray-500">{item.year}</p>}
-          </a>
-        ))}
-      </div>
+    <div className="space-y-6 animate-rise">
+      <header className="space-y-2">
+        <span className="chip">Library View</span>
+        <h1 className="text-3xl font-semibold">Library</h1>
+        <p className="text-sm muted">Library ID: {id}</p>
+      </header>
+
+      {items.length === 0 ? (
+        <div className="panel px-6 py-8">
+          <p className="text-sm muted">No media items were found in this library yet.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
+          {items.map((item) => (
+            <a key={item.id} href={`/items/${item.id}`} className="group block">
+              <div className="tile tile-hover aspect-[2/3] overflow-hidden">
+                {item.poster_url ? (
+                  <img
+                    src={item.poster_url}
+                    alt={item.title}
+                    className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-xs muted">
+                    No Poster
+                  </div>
+                )}
+              </div>
+              <p className="mt-2 truncate text-sm font-medium">{item.title}</p>
+              {item.year && <p className="text-xs muted">{item.year}</p>}
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

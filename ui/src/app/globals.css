@@ -1,1 +1,244 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --bg-start: #1d2231;
+  --bg-end: #242b3c;
+  --surface: rgba(39, 45, 64, 0.76);
+  --surface-strong: #2e3550;
+  --surface-soft: rgba(49, 57, 82, 0.6);
+  --border: rgba(215, 223, 255, 0.14);
+  --border-strong: rgba(215, 223, 255, 0.28);
+  --text-main: #f8f8ff;
+  --text-muted: #c4c9e1;
+  --purple: #b18cff;
+  --purple-strong: #9d74ff;
+  --orange: #ff914d;
+  --orange-soft: #ffc27a;
+  --danger: #ff7588;
+  --ok: #91f0a4;
+  --shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+  --radius-lg: 18px;
+  --radius-md: 14px;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(60rem 60rem at 10% -20%, rgba(177, 140, 255, 0.24), transparent 55%),
+    radial-gradient(45rem 45rem at 95% 0%, rgba(255, 145, 77, 0.2), transparent 55%),
+    linear-gradient(150deg, var(--bg-start) 0%, var(--bg-end) 55%, #2b3347 100%);
+  color: var(--text-main);
+  font-family: "Avenir Next", "Segoe UI Variable Text", "SF Pro Text", sans-serif;
+  letter-spacing: 0.01em;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 38px 38px;
+  pointer-events: none;
+  opacity: 0.35;
+  z-index: -1;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "Avenir Next Demi Bold", "Avenir Next", "SF Pro Display", sans-serif;
+  letter-spacing: -0.02em;
+}
+
+a {
+  transition: color 160ms ease, border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
+}
+
+.app-nav {
+  background: linear-gradient(180deg, rgba(37, 43, 61, 0.9), rgba(31, 37, 54, 0.82));
+  border: 1px solid var(--border);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow);
+}
+
+.accent-logo {
+  background: linear-gradient(130deg, var(--orange) 0%, var(--purple) 75%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.panel {
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+}
+
+.panel-soft {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+}
+
+.tile-hover {
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.tile-hover:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.38);
+  transform: translateY(-3px);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.68rem;
+  font-size: 0.74rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+}
+
+.chip-accent {
+  border-color: rgba(177, 140, 255, 0.38);
+  color: #e8ddff;
+  background: rgba(177, 140, 255, 0.14);
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 999px;
+  font-weight: 600;
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease, border-color 160ms ease;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 12px 24px rgba(116, 84, 198, 0.4);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.btn-secondary {
+  color: var(--text-main);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+.btn-ghost {
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.btn-ghost:hover {
+  color: var(--text-main);
+  border-color: var(--border);
+}
+
+.input,
+.select {
+  width: 100%;
+  color: var(--text-main);
+  background: rgba(21, 25, 38, 0.78);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.input::placeholder {
+  color: #949cb9;
+}
+
+.input:focus,
+.select:focus {
+  border-color: rgba(177, 140, 255, 0.66);
+  box-shadow: 0 0 0 3px rgba(177, 140, 255, 0.18);
+}
+
+.notice-ok {
+  border: 1px solid rgba(145, 240, 164, 0.4);
+  background: rgba(145, 240, 164, 0.13);
+  color: #d9fbe1;
+}
+
+.notice-error {
+  border: 1px solid rgba(255, 117, 136, 0.45);
+  background: rgba(255, 117, 136, 0.13);
+  color: #ffdce2;
+}
+
+.animate-rise {
+  animation: rise-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

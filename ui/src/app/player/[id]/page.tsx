@@ -10,7 +10,6 @@ export default function PlayerPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [fileId, setFileId] = useState<string | null>(null);
-  const [hlsUrl, setHlsUrl] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
@@ -48,7 +47,6 @@ export default function PlayerPage() {
         }
       );
       setSessionId(data.session_id);
-      setHlsUrl(data.hls_url);
       setMode('hls');
 
       // Use hls.js if available, otherwise native HLS
@@ -103,10 +101,16 @@ export default function PlayerPage() {
   }, [sessionId]);
 
   return (
-    <div className="space-y-4">
-      {error && <p className="text-red-400">{error}</p>}
+    <div className="space-y-5 animate-rise">
+      <header className="space-y-2">
+        <span className="chip">Playback Console</span>
+        <h1 className="text-3xl font-semibold">Player</h1>
+        <p className="text-sm muted">Item ID: {id}</p>
+      </header>
 
-      <div className="bg-black rounded-lg overflow-hidden">
+      {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
+
+      <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
         <video
           ref={videoRef}
           controls
@@ -116,13 +120,14 @@ export default function PlayerPage() {
         />
       </div>
 
-      <div className="flex gap-3">
+      <div className="panel-soft flex flex-wrap items-center gap-3 px-4 py-4">
+        <p className="mr-2 text-sm muted">Mode:</p>
         <button
           onClick={() => setMode('direct')}
           className={`px-4 py-2 rounded text-sm font-medium transition ${
             mode === 'direct'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:text-white'
+              ? 'btn-primary'
+              : 'btn-secondary'
           }`}
         >
           Direct Play
@@ -131,8 +136,8 @@ export default function PlayerPage() {
           onClick={startHls}
           className={`px-4 py-2 rounded text-sm font-medium transition ${
             mode === 'hls'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:text-white'
+              ? 'btn-primary'
+              : 'btn-secondary'
           }`}
         >
           Transcode (HLS)

@@ -22,6 +22,7 @@ export default function AdminPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [newLib, setNewLib] = useState({ name: '', kind: 'movies', path: '' });
   const [msg, setMsg] = useState('');
+  const [msgType, setMsgType] = useState<'ok' | 'error'>('ok');
 
   useEffect(() => {
     loadData();
@@ -47,10 +48,12 @@ export default function AdminPage() {
           paths: [newLib.path],
         }),
       });
+      setMsgType('ok');
       setMsg('Library created');
       setNewLib({ name: '', kind: 'movies', path: '' });
       loadData();
     } catch (err: any) {
+      setMsgType('error');
       setMsg(err.message);
     }
   }
@@ -58,36 +61,46 @@ export default function AdminPage() {
   async function scanLibrary(libId: string) {
     try {
       await apiFetch(`/libraries/${libId}/scan`, { method: 'POST' });
+      setMsgType('ok');
       setMsg('Scan started');
       loadData();
     } catch (err: any) {
+      setMsgType('error');
       setMsg(err.message);
     }
   }
 
   return (
-    <div className="space-y-8">
-      <h1 className="text-2xl font-bold">Admin Dashboard</h1>
+    <div className="space-y-8 animate-rise">
+      <header className="space-y-2">
+        <span className="chip">Server Controls</span>
+        <h1 className="text-3xl font-semibold sm:text-4xl">Admin Dashboard</h1>
+        <p className="text-sm muted sm:text-base">
+          Configure media sources, trigger scans, and monitor active processing jobs.
+        </p>
+      </header>
 
       {msg && (
-        <p className="text-sm text-green-400 bg-green-900/20 px-4 py-2 rounded">{msg}</p>
+        <p className={`${msgType === 'ok' ? 'notice-ok' : 'notice-error'} rounded-xl px-4 py-2 text-sm`}>
+          {msg}
+        </p>
       )}
 
       {/* Create Library */}
-      <section className="space-y-4">
+      <section className="panel space-y-4 p-6">
         <h2 className="text-xl font-semibold">Create Library</h2>
-        <form onSubmit={createLibrary} className="flex gap-3 flex-wrap">
+        <form onSubmit={createLibrary} className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto]">
           <input
             placeholder="Name"
             value={newLib.name}
             onChange={(e) => setNewLib({ ...newLib, name: e.target.value })}
-            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm"
+            className="input px-3 py-2 text-sm"
             required
           />
           <select
             value={newLib.kind}
             onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
-            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm"
+            className="select px-3 py-2 text-sm"
           >
             <option value="movies">Movies</option>
             <option value="tv_shows">TV Shows</option>
@@ -96,12 +109,12 @@ export default function AdminPage() {
             placeholder="/path/to/media"
             value={newLib.path}
             onChange={(e) => setNewLib({ ...newLib, path: e.target.value })}
-            className="px-3 py-2 bg-gray-900 border border-gray-700 rounded text-sm flex-1"
+            className="input px-3 py-2 text-sm"
             required
           />
           <button
             type="submit"
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-semibold"
+            className="btn-primary px-4 py-2 text-sm"
           >
             Create
           </button>
@@ -111,41 +124,52 @@ export default function AdminPage() {
       {/* Libraries */}
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Libraries</h2>
-        {libraries.map((lib) => (
-          <div
-            key={lib.id}
-            className="flex items-center justify-between p-4 bg-gray-900 rounded border border-gray-800"
-          >
-            <div>
-              <p className="font-medium">{lib.name}</p>
-              <p className="text-sm text-gray-400">{lib.kind} · {lib.item_count} items</p>
-            </div>
-            <button
-              onClick={() => scanLibrary(lib.id)}
-              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-            >
-              Scan
-            </button>
+        {libraries.length === 0 ? (
+          <div className="panel-soft px-4 py-3">
+            <p className="text-sm muted">No libraries configured.</p>
           </div>
-        ))}
+        ) : (
+          libraries.map((lib) => (
+            <div
+              key={lib.id}
+              className="tile flex items-center justify-between gap-4 p-4"
+            >
+              <div>
+                <p className="font-medium">{lib.name}</p>
+                <p className="text-sm muted">{lib.kind} · {lib.item_count} items</p>
+              </div>
+              <button
+                onClick={() => scanLibrary(lib.id)}
+                className="btn-secondary px-3 py-1.5 text-sm"
+              >
+                Scan
+              </button>
+            </div>
+          ))
+        )}
       </section>
 
       {/* Jobs */}
       <section className="space-y-3">
         <h2 className="text-xl font-semibold">Jobs</h2>
         {jobs.length === 0 ? (
-          <p className="text-gray-400 text-sm">No active jobs</p>
+          <p className="text-sm muted">No active jobs</p>
         ) : (
           jobs.map((job) => (
             <div
               key={job.id}
-              className="flex items-center justify-between p-3 bg-gray-900 rounded border border-gray-800"
+              className="tile space-y-2 p-3"
             >
-              <div>
+              <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-medium">{job.kind}</p>
-                <p className="text-xs text-gray-400">
-                  {job.status} · {Math.round(job.progress * 100)}%
-                </p>
+                <span className="chip">{job.status}</span>
+              </div>
+              <p className="text-xs muted">{Math.round(job.progress * 100)}%</p>
+              <div className="h-2 overflow-hidden rounded-full bg-white/8">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[var(--orange)] to-[var(--purple)]"
+                  style={{ width: `${Math.max(0, Math.min(100, Math.round(job.progress * 100)))}%` }}
+                />
               </div>
             </div>
           ))

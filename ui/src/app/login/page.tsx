@@ -35,37 +35,46 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="max-w-md mx-auto mt-20">
-      <h1 className="text-2xl font-bold mb-6">Login</h1>
-      {error && <p className="text-red-400 mb-4">{error}</p>}
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Username</label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded focus:border-blue-500 outline-none"
-            required
-          />
+    <div className="mx-auto mt-8 max-w-md animate-rise sm:mt-14">
+      <div className="panel space-y-6 px-6 py-7 sm:px-8">
+        <div className="space-y-2">
+          <span className="chip chip-accent">Secure Access</span>
+          <h1 className="text-3xl font-semibold">Welcome back</h1>
+          <p className="text-sm muted">Sign in to stream media and manage your server.</p>
         </div>
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-4 py-2 bg-gray-900 border border-gray-700 rounded focus:border-blue-500 outline-none"
-            required
-          />
-        </div>
-        <button
-          type="submit"
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold transition"
-        >
-          Sign In
-        </button>
-      </form>
+
+        {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium muted">Username</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="input px-4 py-2.5"
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium muted">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="input px-4 py-2.5"
+              required
+            />
+          </div>
+          <button type="submit" className="btn-primary w-full py-2.5 text-sm">
+            Sign In
+          </button>
+        </form>
+
+        <p className="text-xs muted">
+          Tip: if this is your first run, default credentials are <span className="font-semibold">admin/admin</span>.
+        </p>
+      </div>
     </div>
   );
 }
