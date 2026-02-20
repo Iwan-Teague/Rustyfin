@@ -78,13 +78,21 @@ The easiest way to run Rustyfin is with Docker:
 
 ```bash
 # CPU-only mode
-docker-compose up -d
+./scripts/docker-compose-safe.sh up -d
 
 # NVIDIA GPU acceleration
-docker-compose -f docker-compose.gpu.yml up -d
+./scripts/docker-compose-safe.sh -f docker-compose.gpu.yml up -d
 
 # Intel/AMD VAAPI acceleration
-docker-compose -f docker-compose.vaapi.yml up -d
+./scripts/docker-compose-safe.sh -f docker-compose.vaapi.yml up -d
+```
+
+If you want this fix to be permanent for all new terminal sessions (so plain
+`docker compose ...` also works), run once:
+
+```bash
+./scripts/install-tempdir-fix.sh
+source ~/.zshrc
 ```
 
 Default admin credentials on first run:
