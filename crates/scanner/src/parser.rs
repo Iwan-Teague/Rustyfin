@@ -43,7 +43,7 @@ static IGNORE_NAMES: &[&str] = &[
 ];
 
 static VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mpe", "mpv", "ts", "m2ts", "mts",
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mpe", "mpv", "m2ts", "mts",
     "wmv", "asf", "flv", "f4v", "3gp", "3g2", "ogv", "vob", "mxf",
 ];
 

@@ -5,6 +5,7 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
+use std::time::Duration;
 
 use crate::auth::{AdminUser, AuthUser, issue_token};
 use crate::error::AppError;
@@ -708,8 +709,9 @@ async fn scan_library(
     let events_tx = state.events.clone();
     tokio::spawn(async move {
         // Mark running
-        let _ =
-            rustfin_db::repo::jobs::update_job_status(&pool, &job_id, "running", 0.0, None).await;
+        if let Err(e) = update_job_status_with_retry(&pool, &job_id, "running", 0.0, None).await {
+            tracing::error!(job_id = %job_id, error = %e, "failed to set job status to running");
+        }
         let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
             job_id: job_id.clone(),
             status: "running".into(),
@@ -724,14 +726,21 @@ async fn scan_library(
                     skipped = result.skipped,
                     "scan completed"
                 );
-                let _ = rustfin_db::repo::jobs::update_job_status(
+                if let Err(e) = update_job_status_with_retry(
                     &pool,
                     &job_id,
                     "completed",
                     1.0,
                     None,
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(
+                        job_id = %job_id,
+                        error = %e,
+                        "failed to set job status to completed"
+                    );
+                }
                 let _ = events_tx.send(crate::state::ServerEvent::ScanComplete {
                     library_id: lib_id,
                     job_id: job_id.clone(),
@@ -745,14 +754,21 @@ async fn scan_library(
             }
             Err(e) => {
                 tracing::error!(job_id = %job_id, error = %e, "scan failed");
-                let _ = rustfin_db::repo::jobs::update_job_status(
+                if let Err(update_err) = update_job_status_with_retry(
                     &pool,
                     &job_id,
                     "failed",
                     0.0,
                     Some(&e.to_string()),
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(
+                        job_id = %job_id,
+                        error = %update_err,
+                        "failed to set job status to failed"
+                    );
+                }
                 let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
                     job_id,
                     status: "failed".into(),
@@ -763,6 +779,26 @@ async fn scan_library(
     });
 
     Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
+}
+
+async fn update_job_status_with_retry(
+    pool: &sqlx::SqlitePool,
+    job_id: &str,
+    status: &str,
+    progress: f64,
+    error: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut last_err: Option<sqlx::Error> = None;
+    for _ in 0..5 {
+        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+        }
+    }
+    Err(last_err.expect("last_err must be set on retry failure"))
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,18 @@ use tracing::debug;
 
 use crate::parser;
 
+static SKIP_DIR_NAMES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    "__pycache__",
+];
+
 /// Entry discovered during a filesystem walk.
 #[derive(Debug, Clone)]
 pub struct MediaEntry {
@@ -39,6 +51,11 @@ fn walk_recursive(dir: &Path, entries: &mut Vec<MediaEntry>) {
         }
 
         if path.is_dir() {
+            let lower_name = name.to_ascii_lowercase();
+            if SKIP_DIR_NAMES.iter().any(|d| lower_name == *d) {
+                debug!(path = %path.display(), "skipping known non-media directory");
+                continue;
+            }
             // Skip known junk directories
             if name == "@eaDir" || name == "#recycle" || name == ".Trash" {
                 continue;

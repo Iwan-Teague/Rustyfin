@@ -88,15 +88,24 @@ fi
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
 
+# Migrate legacy repo-local default media root from older starts so Browse can
+# map typical user-selected folders without extra configuration.
+legacy_media_root="$REPO_ROOT/media"
+if [[ -z "$user_media_path" && "${RUSTFIN_MEDIA_PATH:-}" == "$legacy_media_root" ]]; then
+  RUSTFIN_MEDIA_PATH="$HOME"
+fi
+
 backend_locked=false
 ui_locked=false
 [[ -n "$user_backend_port" ]] && backend_locked=true
 [[ -n "$user_ui_port" ]] && ui_locked=true
 
 # Default media path for first-time setup on any machine.
-MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-$REPO_ROOT/media}"
+# Use HOME by default so the native picker can map common user folders.
+MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-${HOME:-$REPO_ROOT/media}}"
 mkdir -p "$MEDIA_PATH" || die "Failed to create media path: $MEDIA_PATH"
-MEDIA_PATH="$(cd "$MEDIA_PATH" && pwd -P)" || die "Failed to resolve media path: $MEDIA_PATH"
+# Keep logical path form (e.g. /Users/... on macOS) to match chooser output.
+MEDIA_PATH="$(cd "$MEDIA_PATH" && pwd -L)" || die "Failed to resolve media path: $MEDIA_PATH"
 [[ -d "$MEDIA_PATH" ]] || die "Resolved media path is not a directory: $MEDIA_PATH"
 [[ -r "$MEDIA_PATH" ]] || die "Media path is not readable: $MEDIA_PATH"
 [[ -x "$MEDIA_PATH" ]] || die "Media path is not traversable: $MEDIA_PATH"
@@ -277,7 +286,7 @@ start_directory_picker_helper
 export RUSTFIN_PICKER_HELPER_PORT="$PICKER_HELPER_PORT"
 export RUSTFIN_DIRECTORY_PICKER_HELPER_URL="${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:${PICKER_HELPER_PORT}/pick}"
 export RUSTFIN_MEDIA_HOST_PATH="${RUSTFIN_MEDIA_HOST_PATH:-$RUSTFIN_MEDIA_PATH}"
-export RUSTFIN_MEDIA_CONTAINER_ROOT="${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}"
+export RUSTFIN_MEDIA_CONTAINER_ROOT="${RUSTFIN_MEDIA_CONTAINER_ROOT:-$RUSTFIN_MEDIA_PATH}"
 
 is_port_in_use() {
   local port="$1"

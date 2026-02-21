@@ -14,7 +14,7 @@ services:
       - rustfin-config:/config
       - rustfin-cache:/cache
       - rustfin-transcode:/transcode
-      - ${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}:/media:ro
+      - ${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}:${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}:ro
     devices:
       - /dev/dri:/dev/dri
     environment:
@@ -22,7 +22,7 @@ services:
       - RUST_LOG=info
       - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
       - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}
-      - RUSTFIN_MEDIA_CONTAINER_ROOT=/media
+      - RUSTFIN_MEDIA_CONTAINER_ROOT=${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}
     restart: unless-stopped
 
 volumes:
