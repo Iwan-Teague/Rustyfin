@@ -6,27 +6,44 @@ type PublicSystemInfo = {
 };
 
 async function isSetupIncomplete(): Promise<boolean> {
+  const endpoints: string[] = [];
+
   try {
     const h = await headers();
     const host = h.get('x-forwarded-host') ?? h.get('host');
-    if (!host) return false;
-
-    const proto =
-      h.get('x-forwarded-proto') ??
-      (host.includes('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
-    const origin = `${proto}://${host}`;
-
-    const res = await fetch(`${origin}/api/v1/system/info/public`, {
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    });
-    if (!res.ok) return false;
-
-    const info = (await res.json()) as PublicSystemInfo;
-    return !info.setup_completed;
+    if (host) {
+      const proto =
+        h.get('x-forwarded-proto') ??
+        (host.includes('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
+      const origin = `${proto}://${host}`;
+      endpoints.push(`${origin}/api/v1/system/info/public`);
+    }
   } catch {
-    return false;
+    // continue to env-based fallback
   }
+
+  const apiBase = process.env.RUSTYFIN_API_BASE_URL;
+  if (apiBase) {
+    endpoints.push(`${apiBase.replace(/\/$/, '')}/api/v1/system/info/public`);
+  }
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) continue;
+
+      const info = (await res.json()) as PublicSystemInfo;
+      return !info.setup_completed;
+    } catch {
+      // try next endpoint
+    }
+  }
+
+  // If status can't be determined, bias to setup flow for first-time safety.
+  return true;
 }
 
 export default async function Home() {
