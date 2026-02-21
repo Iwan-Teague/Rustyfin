@@ -16,6 +16,17 @@ pub struct Claims {
     pub exp: usize,
 }
 
+/// Short-lived token used only for streaming URLs.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StreamClaims {
+    pub sub: String, // user ID
+    pub role: String,
+    pub aud: String, // "stream"
+    pub file_id: Option<String>,
+    pub session_id: Option<String>,
+    pub exp: usize,
+}
+
 /// Issue a JWT token for a user.
 pub fn issue_token(
     user_id: &str,
@@ -51,6 +62,52 @@ pub fn validate_token(token: &str, secret: &str) -> Result<Claims, ApiError> {
         &Validation::default(),
     )
     .map_err(|e| ApiError::Unauthorized(format!("invalid token: {e}")))?;
+
+    Ok(data.claims)
+}
+
+/// Issue a short-lived, scoped token for stream URLs.
+pub fn issue_stream_token(
+    user_id: &str,
+    role: &str,
+    file_id: Option<&str>,
+    session_id: Option<&str>,
+    ttl_seconds: i64,
+    secret: &str,
+) -> Result<String, AppError> {
+    let exp = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::seconds(ttl_seconds))
+        .ok_or_else(|| ApiError::Internal("time overflow".into()))?
+        .timestamp() as usize;
+
+    let claims = StreamClaims {
+        sub: user_id.to_string(),
+        role: role.to_string(),
+        aud: "stream".to_string(),
+        file_id: file_id.map(str::to_string),
+        session_id: session_id.map(str::to_string),
+        exp,
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| ApiError::Internal(format!("stream token encoding failed: {e}")).into())
+}
+
+/// Validate a short-lived stream token.
+pub fn validate_stream_token(token: &str, secret: &str) -> Result<StreamClaims, ApiError> {
+    let mut validation = Validation::default();
+    validation.set_audience(&["stream"]);
+
+    let data = decode::<StreamClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|e| ApiError::Unauthorized(format!("invalid stream token: {e}")))?;
 
     Ok(data.claims)
 }

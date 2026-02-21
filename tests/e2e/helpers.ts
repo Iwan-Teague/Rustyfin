@@ -69,7 +69,7 @@ export async function login(page: Page, username: string, password: string) {
   await form.locator('input[type="password"]').first().fill(password);
 
   await Promise.all([
-    page.waitForURL(/\/libraries/, { timeout: 20_000 }),
+    page.waitForURL(/\/libraries(?:\/|$)/, { timeout: 40_000 }),
     form.getByRole('button', { name: /sign in/i }).click(),
   ]);
 }

@@ -21,9 +21,10 @@ die()     { echo -e "${RED}[start] ERROR:${RESET} $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/start.sh [--no-build] [--foreground] [--no-health-check] [-f <compose-file>]
+  ./scripts/start.sh [--build|--no-build] [--foreground] [--no-health-check] [-f <compose-file>]
 
 Options:
+  --build            Force image rebuild step (default behavior).
   --no-build         Skip image rebuild step.
   --foreground       Run compose in foreground (default is detached).
   --no-health-check  Skip backend health wait loop.
@@ -42,6 +43,7 @@ COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --build) BUILD=true; shift ;;
     --no-build) BUILD=false; shift ;;
     --foreground) DETACH=false; shift ;;
     --no-health-check) HEALTH_CHECK=false; shift ;;

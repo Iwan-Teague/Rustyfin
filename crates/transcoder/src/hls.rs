@@ -4,7 +4,7 @@
 pub const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 
 /// Content-Type for MPEG-TS segments.
-pub const SEGMENT_CONTENT_TYPE_TS: &str = "video/MP2T";
+pub const SEGMENT_CONTENT_TYPE_TS: &str = "video/mp2t";
 
 /// Content-Type for fMP4 segments.
 pub const SEGMENT_CONTENT_TYPE_MP4: &str = "video/mp4";

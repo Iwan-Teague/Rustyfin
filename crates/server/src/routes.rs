@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
@@ -7,11 +7,58 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::auth::{AdminUser, AuthUser, issue_token};
+use crate::auth::{
+    AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
+};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::user_pipeline;
+
+const STREAM_TOKEN_TTL_SECONDS: i64 = 90;
+
+#[derive(Debug, Clone)]
+struct StreamRequestIdentity {
+    user_id: String,
+    role: String,
+    stream_claims: Option<crate::auth::StreamClaims>,
+}
+
+fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::to_string)
+}
+
+fn resolve_stream_request_identity(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    stream_token: Option<&str>,
+) -> Result<StreamRequestIdentity, AppError> {
+    if let Some(token) = extract_bearer_token(headers) {
+        let claims = validate_token(&token, &state.jwt_secret)?;
+        return Ok(StreamRequestIdentity {
+            user_id: claims.sub,
+            role: claims.role,
+            stream_claims: None,
+        });
+    }
+
+    let st = stream_token.ok_or_else(|| {
+        ApiError::Unauthorized("missing authorization header or stream token".into())
+    })?;
+    let claims = validate_stream_token(st, &state.jwt_secret)?;
+    Ok(StreamRequestIdentity {
+        user_id: claims.sub.clone(),
+        role: claims.role.clone(),
+        stream_claims: Some(claims),
+    })
+}
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
@@ -53,6 +100,7 @@ fn api_router() -> Router<AppState> {
         .route("/libraries/{id}/items", get(list_library_items))
         // Items
         .route("/items/{id}", get(get_item))
+        .route("/items/{id}/playback", get(get_item_playback))
         .route("/items/{id}/children", get(get_item_children))
         .route("/items/{id}/subtitles", get(get_item_subtitles))
         .route("/items/{id}/images/{img_type}", get(get_item_image))
@@ -726,14 +774,8 @@ async fn scan_library(
                     skipped = result.skipped,
                     "scan completed"
                 );
-                if let Err(e) = update_job_status_with_retry(
-                    &pool,
-                    &job_id,
-                    "completed",
-                    1.0,
-                    None,
-                )
-                .await
+                if let Err(e) =
+                    update_job_status_with_retry(&pool, &job_id, "completed", 1.0, None).await
                 {
                     tracing::error!(
                         job_id = %job_id,
@@ -790,7 +832,8 @@ async fn update_job_status_with_retry(
 ) -> Result<(), sqlx::Error> {
     let mut last_err: Option<sqlx::Error> = None;
     for _ in 0..5 {
-        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await {
+        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await
+        {
             Ok(_) => return Ok(()),
             Err(e) => {
                 last_err = Some(e);
@@ -892,6 +935,15 @@ struct ItemResponse {
     updated_ts: i64,
 }
 
+#[derive(Serialize)]
+struct PlaybackDescriptorResponse {
+    item_id: String,
+    file_id: String,
+    direct_url: String,
+    hls_start_url: String,
+    media_info_url: String,
+}
+
 fn item_to_response(item: rustfin_db::repo::items::ItemRow) -> ItemResponse {
     ItemResponse {
         id: item.id,
@@ -937,6 +989,42 @@ async fn get_item(
     ensure_library_access(&auth, &state, &item.library_id).await?;
 
     Ok(Json(item_to_response(item)))
+}
+
+async fn get_item_playback(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<PlaybackDescriptorResponse>, AppError> {
+    let item = rustfin_db::repo::items::get_item(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+    ensure_library_access(&auth, &state, &item.library_id).await?;
+
+    let file_id = rustfin_db::repo::items::get_item_file_id(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| {
+            ApiError::Conflict("No playable file mapped to this item; rescan library.".into())
+        })?;
+
+    let token = issue_stream_token(
+        &auth.user_id,
+        &auth.role,
+        Some(&file_id),
+        None,
+        STREAM_TOKEN_TTL_SECONDS,
+        &state.jwt_secret,
+    )?;
+
+    Ok(Json(PlaybackDescriptorResponse {
+        item_id: id,
+        file_id: file_id.clone(),
+        direct_url: format!("/stream/file/{file_id}?st={token}"),
+        hls_start_url: "/api/v1/playback/sessions".to_string(),
+        media_info_url: format!("/api/v1/playback/info/{file_id}"),
+    }))
 }
 
 async fn get_item_children(
@@ -1039,6 +1127,43 @@ async fn get_play_state(
 // Playback sessions (HLS transcode)
 // ---------------------------------------------------------------------------
 
+fn map_transcode_session_error(err: rustfin_transcoder::TranscodeError) -> ApiError {
+    match err {
+        rustfin_transcoder::TranscodeError::MaxTranscodesReached(n) => {
+            ApiError::BadRequest(format!("max concurrent transcodes reached ({n})"))
+        }
+        rustfin_transcoder::TranscodeError::FfmpegFailed(msg) => {
+            let lower = msg.to_lowercase();
+            if lower.contains("spawn")
+                && (lower.contains("no such file") || lower.contains("not found"))
+            {
+                ApiError::Internal(
+                    "ffmpeg is not available; configure RUSTFIN_FFMPEG_PATH or install ffmpeg"
+                        .into(),
+                )
+            } else if lower.contains("permission denied") {
+                ApiError::Internal(
+                    "transcode directory is not writable by the server process".into(),
+                )
+            } else {
+                ApiError::Internal(format!("ffmpeg failed: {msg}"))
+            }
+        }
+        rustfin_transcoder::TranscodeError::Io(e) => {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                ApiError::Internal(
+                    "transcode directory is not writable by the server process".into(),
+                )
+            } else if e.kind() == std::io::ErrorKind::NotFound {
+                ApiError::Internal("input media file is not readable or no longer exists".into())
+            } else {
+                ApiError::Internal(format!("transcoder IO error: {e}"))
+            }
+        }
+        other => ApiError::Internal(format!("transcode error: {other}")),
+    }
+}
+
 #[derive(Deserialize)]
 struct CreateSessionRequest {
     file_id: String,
@@ -1080,19 +1205,37 @@ async fn create_playback_session(
     if !input_path.exists() {
         return Err(ApiError::NotFound("media file does not exist on disk".into()).into());
     }
+    if !input_path.is_file() {
+        return Err(ApiError::BadRequest("media path is not a regular file".into()).into());
+    }
+    if std::fs::File::open(&input_path).is_err() {
+        return Err(ApiError::BadRequest(
+            "media file is not readable by the server process".into(),
+        )
+        .into());
+    }
 
     let session_id = state
         .transcoder
-        .create_session(input_path, body.start_time_secs, None)
+        .create_session(
+            input_path,
+            body.start_time_secs,
+            None,
+            auth.user_id.clone(),
+            body.file_id.clone(),
+        )
         .await
-        .map_err(|e| match e {
-            rustfin_transcoder::TranscodeError::MaxTranscodesReached(n) => {
-                ApiError::BadRequest(format!("max concurrent transcodes reached ({n})"))
-            }
-            other => ApiError::Internal(format!("transcode error: {other}")),
-        })?;
+        .map_err(map_transcode_session_error)?;
 
-    let hls_url = format!("/stream/hls/{session_id}/master.m3u8");
+    let stream_token = issue_stream_token(
+        &auth.user_id,
+        &auth.role,
+        Some(&body.file_id),
+        Some(&session_id),
+        STREAM_TOKEN_TTL_SECONDS,
+        &state.jwt_secret,
+    )?;
+    let hls_url = format!("/stream/hls/{session_id}/master.m3u8?st={stream_token}");
 
     Ok(Json(SessionResponse {
         session_id,
@@ -1145,12 +1288,37 @@ async fn get_media_info(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or(ApiError::NotFound("media file not found".into()))?;
 
-    let info = rustfin_transcoder::ffprobe::probe(
-        std::path::Path::new("ffprobe"),
-        std::path::Path::new(&file.path),
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("ffprobe error: {e}")))?;
+    let media_path = std::path::Path::new(&file.path);
+    if !media_path.exists() {
+        return Err(ApiError::NotFound("media file does not exist on disk".into()).into());
+    }
+    if !media_path.is_file() {
+        return Err(ApiError::BadRequest("media path is not a regular file".into()).into());
+    }
+    if std::fs::File::open(media_path).is_err() {
+        return Err(ApiError::BadRequest(
+            "media file is not readable by the server process".into(),
+        )
+        .into());
+    }
+
+    let info = rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
+        .await
+        .map_err(|e| {
+            let message = e.to_string().to_lowercase();
+            if message.contains("spawn failed")
+                && (message.contains("no such file") || message.contains("not found"))
+            {
+                ApiError::Internal(
+                    "ffprobe is not available; configure RUSTFIN_FFPROBE_PATH or install ffprobe"
+                        .into(),
+                )
+            } else if message.contains("permission denied") {
+                ApiError::Internal("media file is not readable by ffprobe".into())
+            } else {
+                ApiError::Internal(format!("ffprobe error: {e}"))
+            }
+        })?;
 
     Ok(Json(serde_json::to_value(&info).unwrap()))
 }
@@ -1159,12 +1327,105 @@ async fn get_media_info(
 // HLS serving
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Default, Deserialize)]
+struct HlsAuthQuery {
+    st: Option<String>,
+}
+
+#[derive(Debug)]
+struct AuthorizedHlsSession {
+    user_id: String,
+    role: String,
+    file_id: String,
+    stream_token: Option<String>,
+}
+
+fn attach_stream_token_to_playlist(playlist: &str, token: &str) -> String {
+    let mut out = String::with_capacity(playlist.len() + 64);
+    let mut first = true;
+    for line in playlist.lines() {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            out.push_str(line);
+            continue;
+        }
+
+        if trimmed.contains("st=") {
+            out.push_str(trimmed);
+            continue;
+        }
+
+        let sep = if trimmed.contains('?') { "&" } else { "?" };
+        out.push_str(trimmed);
+        out.push_str(sep);
+        out.push_str("st=");
+        out.push_str(token);
+    }
+    if playlist.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+async fn authorize_hls_session_request(
+    state: &AppState,
+    sid: &str,
+    headers: &axum::http::HeaderMap,
+    query: &HlsAuthQuery,
+) -> Result<AuthorizedHlsSession, AppError> {
+    let identity = resolve_stream_request_identity(state, headers, query.st.as_deref())?;
+
+    let session = state
+        .transcoder
+        .get_session_access(sid)
+        .await
+        .ok_or_else(|| ApiError::NotFound("HLS session not found".into()))?;
+
+    if session.owner_user_id != identity.user_id {
+        return Err(
+            ApiError::Forbidden("HLS session does not belong to this account".into()).into(),
+        );
+    }
+
+    if let Some(claims) = &identity.stream_claims {
+        if claims.session_id.as_deref() != Some(sid) {
+            return Err(ApiError::Forbidden(
+                "stream token is not scoped to this HLS session".into(),
+            )
+            .into());
+        }
+        if claims.file_id.as_deref() != Some(session.file_id.as_str()) {
+            return Err(ApiError::Forbidden(
+                "stream token is not scoped to this media file".into(),
+            )
+            .into());
+        }
+    }
+
+    Ok(AuthorizedHlsSession {
+        user_id: identity.user_id,
+        role: identity.role,
+        file_id: session.file_id,
+        stream_token: query.st.clone(),
+    })
+}
+
 async fn hls_master(
     State(state): State<AppState>,
     Path(sid): Path<String>,
+    Query(query): Query<HlsAuthQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
+    use axum::http::header;
     use axum::response::IntoResponse;
+
+    let authorized = authorize_hls_session_request(&state, &sid, &headers, &query).await?;
 
     // Ping the session
     if !state.transcoder.ping(&sid).await {
@@ -1192,12 +1453,35 @@ async fn hls_master(
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| ApiError::Internal(format!("read playlist: {e}")))?;
+    let stream_token = match authorized.stream_token {
+        Some(t) => t,
+        None => issue_stream_token(
+            &authorized.user_id,
+            &authorized.role,
+            Some(&authorized.file_id),
+            Some(&sid),
+            STREAM_TOKEN_TTL_SECONDS,
+            &state.jwt_secret,
+        )?,
+    };
+    let content = attach_stream_token_to_playlist(&content, &stream_token);
 
     Ok((
-        [(
-            axum::http::header::CONTENT_TYPE,
-            rustfin_transcoder::hls::PLAYLIST_CONTENT_TYPE,
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                rustfin_transcoder::hls::PLAYLIST_CONTENT_TYPE,
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::HeaderName::from_static("referrer-policy"),
+                "no-referrer",
+            ),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff",
+            ),
+        ],
         Body::from(content),
     )
         .into_response())
@@ -1206,9 +1490,14 @@ async fn hls_master(
 async fn hls_segment(
     State(state): State<AppState>,
     Path((sid, filename)): Path<(String, String)>,
+    Query(query): Query<HlsAuthQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
+    use axum::http::header;
     use axum::response::IntoResponse;
+
+    let _authorized = authorize_hls_session_request(&state, &sid, &headers, &query).await?;
 
     // Ping the session
     if !state.transcoder.ping(&sid).await {
@@ -1249,7 +1538,18 @@ async fn hls_segment(
         .map_err(|e| ApiError::Internal(format!("read segment: {e}")))?;
 
     Ok((
-        [(axum::http::header::CONTENT_TYPE, content_type)],
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::HeaderName::from_static("referrer-policy"),
+                "no-referrer",
+            ),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff",
+            ),
+        ],
         Body::from(data),
     )
         .into_response())
@@ -1279,8 +1579,7 @@ async fn get_item_image(
     let valid_types = ["poster", "backdrop", "logo", "thumb"];
     if !valid_types.contains(&img_type.as_str()) {
         return Err(ApiError::BadRequest(format!(
-            "invalid image type '{}', must be one of: {:?}",
-            img_type, valid_types
+            "invalid image type '{img_type}', must be one of: {valid_types:?}"
         ))
         .into());
     }
@@ -1295,7 +1594,7 @@ async fn get_item_image(
     let image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound(format!("no {} image for item", img_type)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("no {img_type} image for item")))?;
 
     // Build cache key from item_id + type + resize params
     let cache_key = format!(
@@ -1316,7 +1615,7 @@ async fn get_item_image(
     } else {
         "jpg".to_string()
     };
-    let cache_path = images_dir.join(format!("{}.{}", cache_key, ext));
+    let cache_path = images_dir.join(format!("{cache_key}.{ext}"));
 
     // Check cache
     if !cache_path.exists() {
@@ -1453,7 +1752,7 @@ async fn get_item_subtitles(
     // 2. Embedded subtitles (via ffprobe)
     if media_path.exists() {
         if let Ok(info) =
-            rustfin_transcoder::ffprobe::probe(std::path::Path::new("ffprobe"), media_path).await
+            rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path).await
         {
             for sub in &info.subtitles {
                 subtitles.push(SubtitleInfo {
@@ -1476,7 +1775,7 @@ fn base64_url_encode(s: &str) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     for b in s.bytes() {
-        write!(&mut out, "{:02x}", b).unwrap();
+        write!(&mut out, "{b:02x}").unwrap();
     }
     out
 }

@@ -4,18 +4,27 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::process::Child;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tracing::{info, warn};
 
 use crate::{HwAccel, TranscodeError, TranscoderConfig};
+
+#[derive(Debug, Clone)]
+pub struct SessionAccess {
+    pub owner_user_id: String,
+    pub file_id: String,
+}
 
 /// An active HLS transcode session.
 pub struct TranscodeSession {
     pub id: String,
     pub input_path: PathBuf,
+    pub file_id: String,
+    pub owner_user_id: String,
     pub output_dir: PathBuf,
     pub started_at: Instant,
     pub last_ping: Instant,
+    _permit: OwnedSemaphorePermit,
     child: Option<Child>,
 }
 
@@ -72,9 +81,11 @@ impl SessionManager {
         input_path: PathBuf,
         start_time_secs: Option<f64>,
         video_codec_override: Option<&str>,
+        owner_user_id: String,
+        file_id: String,
     ) -> Result<String, TranscodeError> {
-        // Try to acquire a permit (non-blocking check first)
-        let _permit = self
+        // Hold a permit for the full session lifetime to enforce max concurrency.
+        let permit = self
             .semaphore
             .clone()
             .try_acquire_owned()
@@ -98,9 +109,12 @@ impl SessionManager {
         let session = TranscodeSession {
             id: session_id.clone(),
             input_path,
+            file_id,
+            owner_user_id,
             output_dir,
             started_at: Instant::now(),
             last_ping: Instant::now(),
+            _permit: permit,
             child: Some(child),
         };
 
@@ -108,13 +122,6 @@ impl SessionManager {
             .lock()
             .await
             .insert(session_id.clone(), session);
-
-        // The semaphore permit is dropped here, but we track active sessions via the map.
-        // We re-check count in create_session. For true gating, we'd hold the permit
-        // in the session, but that complicates the borrow. The try_acquire + map size
-        // provides adequate protection.
-        // Actually, let's forget the permit — we'll just check map size.
-        drop(_permit);
 
         info!(session_id = %session_id, "HLS transcode session created");
         Ok(session_id)
@@ -198,6 +205,25 @@ impl SessionManager {
     /// List active session IDs.
     pub async fn list_sessions(&self) -> Vec<String> {
         self.sessions.lock().await.keys().cloned().collect()
+    }
+
+    pub async fn get_session_access(&self, session_id: &str) -> Option<SessionAccess> {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|s| SessionAccess {
+                owner_user_id: s.owner_user_id.clone(),
+                file_id: s.file_id.clone(),
+            })
+    }
+
+    pub fn ffmpeg_path(&self) -> &Path {
+        &self.config.ffmpeg_path
+    }
+
+    pub fn ffprobe_path(&self) -> &Path {
+        &self.config.ffprobe_path
     }
 }
 

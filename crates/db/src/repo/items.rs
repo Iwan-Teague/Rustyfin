@@ -155,7 +155,7 @@ pub async fn get_item_image_url(
         "thumb" => "thumb_url",
         _ => return Ok(None),
     };
-    let query = format!("SELECT {} FROM item WHERE id = ?", col);
+    let query = format!("SELECT {col} FROM item WHERE id = ?");
     let row: Option<(Option<String>,)> = sqlx::query_as(&query)
         .bind(item_id)
         .fetch_optional(pool)
