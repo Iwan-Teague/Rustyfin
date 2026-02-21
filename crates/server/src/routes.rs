@@ -1580,9 +1580,170 @@ POSIX path of chosenFolder"#;
 
 #[cfg(not(target_os = "macos"))]
 fn open_directory_picker_native() -> Result<String, ApiError> {
+    // Containerized Linux builds cannot show host desktop pickers.
+    // In that case, fall back to common media mount locations.
+    if std::path::Path::new("/.dockerenv").exists() {
+        let candidates = ["/media", "/mnt/media", "/data/media"];
+        if let Some(path) = candidates
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(|p| (*p).to_string())
+        {
+            return Ok(path);
+        }
+        return Err(ApiError::BadRequest(
+            "directory picker is unavailable in this container; enter the path manually".into(),
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return open_directory_picker_linux();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return open_directory_picker_windows();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Err(ApiError::BadRequest(
+            "directory picker is unavailable on this OS in this build; enter the path manually"
+                .into(),
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_directory_picker_linux() -> Result<String, ApiError> {
+    let mut last_err: Option<ApiError> = None;
+
+    if command_exists("zenity") {
+        match run_linux_folder_picker(
+            "zenity",
+            &[
+                "--file-selection",
+                "--directory",
+                "--title=Select a media directory for Rustyfin",
+            ],
+        ) {
+            Ok(path) => return Ok(path),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    if command_exists("kdialog") {
+        match run_linux_folder_picker(
+            "kdialog",
+            &[
+                "--getexistingdirectory",
+                ".",
+                "Select a media directory for Rustyfin",
+            ],
+        ) {
+            Ok(path) => return Ok(path),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    if std::path::Path::new("/media").exists() {
+        return Ok("/media".into());
+    }
+
+    if let Some(err) = last_err {
+        return Err(err);
+    }
+
     Err(ApiError::BadRequest(
-        "directory picker is only supported on macOS in this build; enter the path manually".into(),
+        "directory picker is unavailable: install zenity or kdialog, or enter the path manually"
+            .into(),
     ))
+}
+
+#[cfg(target_os = "linux")]
+fn command_exists(cmd: &str) -> bool {
+    std::process::Command::new(cmd)
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_folder_picker(cmd: &str, args: &[&str]) -> Result<String, ApiError> {
+    let output = std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("failed to launch {cmd}: {e}")))?;
+
+    if output.status.success() {
+        let path = String::from_utf8(output.stdout)
+            .map_err(|e| ApiError::Internal(format!("{cmd} returned invalid UTF-8: {e}")))?;
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            return Err(ApiError::BadRequest("no directory selected".into()));
+        }
+        return Ok(path);
+    }
+
+    if output.status.code() == Some(1) {
+        return Err(ApiError::BadRequest("directory selection cancelled".into()));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return Err(ApiError::Internal(format!(
+            "{cmd} folder picker failed with unknown error"
+        )));
+    }
+    Err(ApiError::Internal(format!(
+        "{cmd} folder picker failed: {detail}"
+    )))
+}
+
+#[cfg(target_os = "windows")]
+fn open_directory_picker_windows() -> Result<String, ApiError> {
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select a media directory for Rustyfin'
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"#;
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| {
+            ApiError::Internal(format!("failed to launch PowerShell folder picker: {e}"))
+        })?;
+
+    if output.status.success() {
+        let path = String::from_utf8(output.stdout).map_err(|e| {
+            ApiError::Internal(format!(
+                "PowerShell folder picker returned invalid UTF-8: {e}"
+            ))
+        })?;
+        let path = path.trim().to_string();
+        if path.is_empty() {
+            return Err(ApiError::BadRequest("directory selection cancelled".into()));
+        }
+        return Ok(path);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return Err(ApiError::Internal(
+            "PowerShell folder picker failed with unknown error".into(),
+        ));
+    }
+    Err(ApiError::Internal(format!(
+        "PowerShell folder picker failed: {detail}"
+    )))
 }
 
 async fn get_gpu_caps(_auth: AdminUser) -> Result<Json<serde_json::Value>, AppError> {

@@ -12,6 +12,7 @@ services:
     environment:
       - RUSTFIN_ADMIN_PASSWORD=changeme
       - RUST_LOG=info
+      - RUSTFIN_DIRECTORY_PICKER_PATH=${RUSTFIN_DIRECTORY_PICKER_PATH:-/media}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
