@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -58,13 +58,7 @@ export default function AdminPage() {
     }
   }, [authLoading, me, router]);
 
-  useEffect(() => {
-    if (me?.role === 'admin') {
-      loadData();
-    }
-  }, [me]);
-
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
       const [libs, jobList, userList] = await Promise.all([
         apiJson<Library[]>('/libraries'),
@@ -87,7 +81,27 @@ export default function AdminPage() {
       setMsgType('error');
       setMsg(err.message || 'Failed to load admin data');
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (me?.role === 'admin') {
+      void loadData();
+    }
+  }, [me, loadData]);
+
+  const hasActiveJobs = useMemo(
+    () => jobs.some((job) => job.status === 'queued' || job.status === 'running'),
+    [jobs],
+  );
+
+  useEffect(() => {
+    if (me?.role !== 'admin') return;
+    const intervalMs = hasActiveJobs ? 1000 : 5000;
+    const timer = setInterval(() => {
+      void loadData();
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [me, hasActiveJobs, loadData]);
 
   function setOk(message: string) {
     setMsgType('ok');
