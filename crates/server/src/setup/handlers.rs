@@ -685,6 +685,15 @@ pub async fn create_libraries(
             .await
         {
             Ok(row) => {
+                if let Err(e) =
+                    crate::library_scan::enqueue_library_scan(&state, &row.id, &row.kind).await
+                {
+                    tracing::warn!(
+                        library_id = %row.id,
+                        status = e.0.status_code(),
+                        "setup library created but auto-scan enqueue failed"
+                    );
+                }
                 created_libs.push(LibraryRef {
                     id: row.id,
                     name: row.name,

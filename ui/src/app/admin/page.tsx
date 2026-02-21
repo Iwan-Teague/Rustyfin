@@ -9,7 +9,21 @@ interface Library {
   id: string;
   name: string;
   kind: string;
+  paths: { id: string; path: string; is_read_only: boolean }[];
+  settings: {
+    show_images: boolean;
+    prefer_local_artwork: boolean;
+    fetch_online_artwork: boolean;
+  };
   item_count: number;
+}
+
+interface LibraryEditState {
+  name: string;
+  path: string;
+  show_images: boolean;
+  prefer_local_artwork: boolean;
+  fetch_online_artwork: boolean;
 }
 
 interface Job {
@@ -32,16 +46,30 @@ interface UserEditState {
   library_ids: string[];
 }
 
+interface TmdbConfig {
+  configured: boolean;
+  key_preview: string | null;
+  source: 'database' | 'environment' | null;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
 
   const [libraries, setLibraries] = useState<Library[]>([]);
+  const [libraryEdits, setLibraryEdits] = useState<Record<string, LibraryEditState>>({});
   const [jobs, setJobs] = useState<Job[]>([]);
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [userEdits, setUserEdits] = useState<Record<string, UserEditState>>({});
 
-  const [newLib, setNewLib] = useState({ name: '', kind: 'movies', path: '' });
+  const [newLib, setNewLib] = useState({
+    name: '',
+    kind: 'movies',
+    path: '',
+    show_images: true,
+    prefer_local_artwork: true,
+    fetch_online_artwork: true,
+  });
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
@@ -49,6 +77,14 @@ export default function AdminPage() {
     library_ids: [] as string[],
   });
   const [pickingPath, setPickingPath] = useState(false);
+  const [pickingPathForLibraryId, setPickingPathForLibraryId] = useState<string | null>(null);
+  const [tmdbConfig, setTmdbConfig] = useState<TmdbConfig>({
+    configured: false,
+    key_preview: null,
+    source: null,
+  });
+  const [tmdbApiKey, setTmdbApiKey] = useState('');
+  const [savingTmdb, setSavingTmdb] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'ok' | 'error'>('ok');
 
@@ -60,12 +96,24 @@ export default function AdminPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [libs, jobList, userList] = await Promise.all([
+      const [libs, jobList, userList, tmdb] = await Promise.all([
         apiJson<Library[]>('/libraries'),
         apiJson<Job[]>('/jobs'),
         apiJson<UserAccount[]>('/users'),
+        apiJson<TmdbConfig>('/system/tmdb'),
       ]);
       setLibraries(libs);
+      const nextLibEdits: Record<string, LibraryEditState> = {};
+      for (const lib of libs) {
+        nextLibEdits[lib.id] = {
+          name: lib.name,
+          path: lib.paths[0]?.path || '',
+          show_images: lib.settings?.show_images ?? true,
+          prefer_local_artwork: lib.settings?.prefer_local_artwork ?? true,
+          fetch_online_artwork: lib.settings?.fetch_online_artwork ?? true,
+        };
+      }
+      setLibraryEdits(nextLibEdits);
       setJobs(jobList);
       setUsers(userList);
 
@@ -77,6 +125,11 @@ export default function AdminPage() {
         };
       }
       setUserEdits(nextEdits);
+      setTmdbConfig({
+        configured: tmdb.configured,
+        key_preview: tmdb.key_preview ?? null,
+        source: tmdb.source ?? null,
+      });
     } catch (err: any) {
       setMsgType('error');
       setMsg(err.message || 'Failed to load admin data');
@@ -122,10 +175,22 @@ export default function AdminPage() {
           name: newLib.name,
           kind: newLib.kind,
           paths: [newLib.path],
+          settings: {
+            show_images: newLib.show_images,
+            prefer_local_artwork: newLib.prefer_local_artwork,
+            fetch_online_artwork: newLib.fetch_online_artwork,
+          },
         }),
       });
       setOk('Library created');
-      setNewLib({ name: '', kind: 'movies', path: '' });
+      setNewLib({
+        name: '',
+        kind: 'movies',
+        path: '',
+        show_images: true,
+        prefer_local_artwork: true,
+        fetch_online_artwork: true,
+      });
       await loadData();
     } catch (err: any) {
       setErr(err.message || 'Failed to create library');
@@ -154,6 +219,87 @@ export default function AdminPage() {
       setErr(err.message || 'Failed to open directory picker');
     } finally {
       setPickingPath(false);
+    }
+  }
+
+  function setLibraryEdit<K extends keyof LibraryEditState>(
+    libraryId: string,
+    key: K,
+    value: LibraryEditState[K],
+  ) {
+    setLibraryEdits((prev) => ({
+      ...prev,
+      [libraryId]: {
+        ...(prev[libraryId] || {
+          name: '',
+          path: '',
+          show_images: true,
+          prefer_local_artwork: true,
+          fetch_online_artwork: true,
+        }),
+        [key]: value,
+      },
+    }));
+  }
+
+  async function browseExistingLibraryPath(libraryId: string) {
+    setPickingPathForLibraryId(libraryId);
+    try {
+      const data = await apiJson<{ path: string }>('/system/pick-directory', {
+        method: 'POST',
+      });
+      setLibraryEdit(libraryId, 'path', data.path);
+      setOk('Directory selected');
+    } catch (err: any) {
+      setErr(err.message || 'Failed to open directory picker');
+    } finally {
+      setPickingPathForLibraryId(null);
+    }
+  }
+
+  async function saveLibrary(libraryId: string) {
+    const edit = libraryEdits[libraryId];
+    if (!edit) return;
+    if (!edit.path.trim()) {
+      setErr('Library path is required');
+      return;
+    }
+    try {
+      await apiJson(`/libraries/${libraryId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: edit.name,
+          paths: [edit.path],
+          settings: {
+            show_images: edit.show_images,
+            prefer_local_artwork: edit.prefer_local_artwork,
+            fetch_online_artwork: edit.fetch_online_artwork,
+          },
+        }),
+      });
+      setOk('Library updated');
+      await loadData();
+    } catch (err: any) {
+      setErr(err.message || 'Failed to update library');
+    }
+  }
+
+  async function deleteLibrary(libId: string) {
+    const target = libraries.find((l) => l.id === libId);
+    const label = target ? `"${target.name}"` : 'this library';
+    if (!window.confirm(`Delete ${label}? This removes all indexed items for it.`)) {
+      return;
+    }
+    try {
+      const res = await apiFetch(`/libraries/${libId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message || 'Delete failed');
+      }
+      setOk('Library deleted');
+      await loadData();
+    } catch (err: any) {
+      setErr(err.message || 'Failed to delete library');
     }
   }
 
@@ -249,6 +395,49 @@ export default function AdminPage() {
     }
   }
 
+  async function saveTmdbKey(e: React.FormEvent) {
+    e.preventDefault();
+    setSavingTmdb(true);
+    try {
+      const updated = await apiJson<TmdbConfig>('/system/tmdb', {
+        method: 'PUT',
+        body: JSON.stringify({ api_key: tmdbApiKey }),
+      });
+      setTmdbConfig({
+        configured: updated.configured,
+        key_preview: updated.key_preview ?? null,
+        source: updated.source ?? null,
+      });
+      setTmdbApiKey('');
+      setOk(updated.configured ? 'TMDB key saved' : 'TMDB key cleared');
+    } catch (err: any) {
+      setErr(err.message || 'Failed to save TMDB key');
+    } finally {
+      setSavingTmdb(false);
+    }
+  }
+
+  async function clearTmdbKey() {
+    setSavingTmdb(true);
+    try {
+      const updated = await apiJson<TmdbConfig>('/system/tmdb', {
+        method: 'PUT',
+        body: JSON.stringify({ api_key: '' }),
+      });
+      setTmdbConfig({
+        configured: updated.configured,
+        key_preview: updated.key_preview ?? null,
+        source: updated.source ?? null,
+      });
+      setTmdbApiKey('');
+      setOk(updated.configured ? 'Using environment TMDB key' : 'TMDB key cleared');
+    } catch (err: any) {
+      setErr(err.message || 'Failed to clear TMDB key');
+    } finally {
+      setSavingTmdb(false);
+    }
+  }
+
   return (
     <>
       {authLoading && (
@@ -274,45 +463,120 @@ export default function AdminPage() {
       )}
 
       <section className="panel space-y-4 p-6">
+        <h2 className="text-xl font-semibold">TMDB Metadata</h2>
+        <p className="text-sm muted">
+          Set a TMDB API key so scans can fetch posters and metadata for detected movies/shows.
+        </p>
+        <form onSubmit={saveTmdbKey} className="space-y-3">
+          <input
+            type="password"
+            value={tmdbApiKey}
+            onChange={(e) => setTmdbApiKey(e.target.value)}
+            placeholder="Enter TMDB API key (leave empty to clear)"
+            className="input w-full px-3 py-2 text-sm"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="submit"
+              disabled={savingTmdb}
+              className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+            >
+              {savingTmdb ? 'Saving...' : 'Save TMDB Key'}
+            </button>
+            <button
+              type="button"
+              onClick={clearTmdbKey}
+              disabled={savingTmdb}
+              className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+            >
+              Clear Stored Key
+            </button>
+          </div>
+        </form>
+        <p className="text-xs muted">
+          Status:{' '}
+          {tmdbConfig.configured
+            ? `configured (${tmdbConfig.source || 'unknown'}${tmdbConfig.key_preview ? `, ${tmdbConfig.key_preview}` : ''})`
+            : 'not configured'}
+        </p>
+      </section>
+
+      <section className="panel space-y-4 p-6">
         <h2 className="text-xl font-semibold">Create Library</h2>
-        <form onSubmit={createLibrary} className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto_auto]">
-          <input
-            placeholder="Name"
-            value={newLib.name}
-            onChange={(e) => setNewLib({ ...newLib, name: e.target.value })}
-            className="input px-3 py-2 text-sm"
-            required
-          />
-          <select
-            aria-label="Library type"
-            value={newLib.kind}
-            onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
-            className="select px-3 py-2 text-sm"
-          >
-            <option value="movies">Movies</option>
-            <option value="tv_shows">TV Shows</option>
-          </select>
-          <input
-            placeholder="/path/to/media"
-            value={newLib.path}
-            onChange={(e) => setNewLib({ ...newLib, path: e.target.value })}
-            className="input px-3 py-2 text-sm"
-            required
-          />
-          <button
-            type="button"
-            onClick={browseLibraryPath}
-            disabled={pickingPath}
-            className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-          >
-            {pickingPath ? 'Opening...' : 'Browse'}
-          </button>
-          <button
-            type="submit"
-            className="btn-primary px-4 py-2 text-sm"
-          >
-            Create
-          </button>
+        <form onSubmit={createLibrary} className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto_auto]">
+            <input
+              placeholder="Name"
+              value={newLib.name}
+              onChange={(e) => setNewLib({ ...newLib, name: e.target.value })}
+              className="input px-3 py-2 text-sm"
+              required
+            />
+            <select
+              aria-label="Library type"
+              value={newLib.kind}
+              onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
+              className="select px-3 py-2 text-sm"
+            >
+              <option value="movies">Movies</option>
+              <option value="tv_shows">TV Shows</option>
+            </select>
+            <input
+              placeholder="/path/to/media"
+              value={newLib.path}
+              onChange={(e) => setNewLib({ ...newLib, path: e.target.value })}
+              className="input px-3 py-2 text-sm"
+              required
+            />
+            <button
+              type="button"
+              onClick={browseLibraryPath}
+              disabled={pickingPath}
+              className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+            >
+              {pickingPath ? 'Opening...' : 'Browse'}
+            </button>
+            <button
+              type="submit"
+              className="btn-primary px-4 py-2 text-sm"
+            >
+              Create
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={newLib.show_images}
+                onChange={(e) => setNewLib({ ...newLib, show_images: e.target.checked })}
+                className="h-4 w-4 [accent-color:var(--purple)]"
+              />
+              <span>Enable artwork thumbnails</span>
+            </label>
+            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={newLib.prefer_local_artwork}
+                onChange={(e) =>
+                  setNewLib({ ...newLib, prefer_local_artwork: e.target.checked })
+                }
+                className="h-4 w-4 [accent-color:var(--purple)]"
+              />
+              <span>Prefer local artwork files</span>
+            </label>
+            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={newLib.fetch_online_artwork}
+                onChange={(e) =>
+                  setNewLib({ ...newLib, fetch_online_artwork: e.target.checked })
+                }
+                className="h-4 w-4 [accent-color:var(--purple)]"
+              />
+              <span>Fetch missing artwork online</span>
+            </label>
+          </div>
         </form>
       </section>
 
@@ -460,20 +724,90 @@ export default function AdminPage() {
           </div>
         ) : (
           libraries.map((lib) => (
-            <div
-              key={lib.id}
-              className="tile flex items-center justify-between gap-4 p-4"
-            >
-              <div>
-                <p className="font-medium">{lib.name}</p>
-                <p className="text-sm muted">{lib.kind} · {lib.item_count} items</p>
+            <div key={lib.id} className="tile space-y-4 p-4">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_2fr_auto_auto_auto]">
+                <input
+                  aria-label={`Library name ${lib.name}`}
+                  value={libraryEdits[lib.id]?.name ?? lib.name}
+                  onChange={(e) => setLibraryEdit(lib.id, 'name', e.target.value)}
+                  className="input px-3 py-2 text-sm"
+                />
+                <input
+                  aria-label={`Library path ${lib.name}`}
+                  value={libraryEdits[lib.id]?.path ?? lib.paths[0]?.path ?? ''}
+                  onChange={(e) => setLibraryEdit(lib.id, 'path', e.target.value)}
+                  className="input px-3 py-2 text-sm"
+                />
+                <button
+                  onClick={() => browseExistingLibraryPath(lib.id)}
+                  disabled={pickingPathForLibraryId === lib.id}
+                  className="btn-secondary px-3 py-1.5 text-sm disabled:opacity-50"
+                >
+                  {pickingPathForLibraryId === lib.id ? 'Opening...' : 'Browse'}
+                </button>
+                <button
+                  onClick={() => scanLibrary(lib.id)}
+                  className="btn-secondary px-3 py-1.5 text-sm"
+                >
+                  Scan
+                </button>
+                <button
+                  onClick={() => saveLibrary(lib.id)}
+                  className="btn-primary px-3 py-1.5 text-sm"
+                >
+                  Save
+                </button>
               </div>
-              <button
-                onClick={() => scanLibrary(lib.id)}
-                className="btn-secondary px-3 py-1.5 text-sm"
-              >
-                Scan
-              </button>
+
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={libraryEdits[lib.id]?.show_images ?? lib.settings.show_images}
+                    onChange={(e) => setLibraryEdit(lib.id, 'show_images', e.target.checked)}
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Enable artwork thumbnails</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={
+                      libraryEdits[lib.id]?.prefer_local_artwork ??
+                      lib.settings.prefer_local_artwork
+                    }
+                    onChange={(e) =>
+                      setLibraryEdit(lib.id, 'prefer_local_artwork', e.target.checked)
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Prefer local artwork files</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={
+                      libraryEdits[lib.id]?.fetch_online_artwork ??
+                      lib.settings.fetch_online_artwork
+                    }
+                    onChange={(e) =>
+                      setLibraryEdit(lib.id, 'fetch_online_artwork', e.target.checked)
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Fetch missing artwork online</span>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm muted">{lib.kind} · {lib.item_count} items</p>
+                <button
+                  onClick={() => deleteLibrary(lib.id)}
+                  className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)] hover:text-[var(--danger)]"
+                >
+                  Delete Library
+                </button>
+              </div>
             </div>
           ))
         )}

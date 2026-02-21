@@ -12,6 +12,7 @@ interface Item {
   overview?: string;
   poster_url?: string;
   backdrop_url?: string;
+  thumb_url?: string;
 }
 
 interface Child {
@@ -19,6 +20,8 @@ interface Child {
   title: string;
   kind: string;
   year?: number;
+  poster_url?: string;
+  thumb_url?: string;
 }
 
 export default function ItemPage() {
@@ -93,12 +96,25 @@ export default function ItemPage() {
               <a
                 key={child.id}
                 href={`/items/${child.id}`}
-                className="tile tile-hover block p-3"
+                className="tile tile-hover block overflow-hidden"
               >
-                <p className="font-medium text-sm">{child.title}</p>
-                {child.kind === 'episode' && (
-                  <p className="mt-1 text-xs muted">Episode</p>
+                {child.poster_url || child.thumb_url ? (
+                  <img
+                    src={child.poster_url || child.thumb_url}
+                    alt={child.title}
+                    className="aspect-[2/3] w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex aspect-[2/3] items-center justify-center bg-white/5 px-2 text-xs muted">
+                    {child.kind.toUpperCase()}
+                  </div>
                 )}
+                <div className="space-y-1 p-3">
+                  <p className="font-medium text-sm">{child.title}</p>
+                  {child.kind === 'episode' && (
+                    <p className="text-xs muted">Episode</p>
+                  )}
+                </div>
               </a>
             ))}
           </div>

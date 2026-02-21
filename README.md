@@ -90,6 +90,15 @@ The easiest way to run Rustyfin is with the repo scripts:
 `start.sh` handles temp-directory permission issues, creates a default media path,
 and starts everything with Docker Compose.
 
+To enable TMDB metadata/artwork enrichment during scans (posters, backdrops,
+overview/year improvements), set a TMDB API key in **Admin → TMDB Metadata**.
+You can also provide it via environment before startup:
+
+```bash
+export RUSTFIN_TMDB_KEY="your_tmdb_api_key"
+./scripts/start.sh
+```
+
 When using the Admin `Browse` button in Docker mode, Rustyfin starts a local
 host-side picker helper so the native OS directory dialog can open. By default,
 `start.sh` mounts your media root (`RUSTFIN_MEDIA_PATH`, default: your home

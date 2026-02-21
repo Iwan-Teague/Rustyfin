@@ -5,7 +5,6 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
-use std::time::Duration;
 
 use crate::auth::{
     AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
@@ -95,7 +94,12 @@ fn api_router() -> Router<AppState> {
         .route("/users/me/preferences", get(get_prefs).patch(update_prefs))
         // Libraries
         .route("/libraries", post(create_library).get(list_libraries))
-        .route("/libraries/{id}", get(get_library).patch(update_library))
+        .route(
+            "/libraries/{id}",
+            get(get_library)
+                .patch(update_library)
+                .delete(delete_library),
+        )
         .route("/libraries/{id}/scan", post(scan_library))
         .route("/libraries/{id}/items", get(list_library_items))
         // Items
@@ -121,6 +125,7 @@ fn api_router() -> Router<AppState> {
         .route("/playback/info/{file_id}", get(get_media_info))
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
+        .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
         .route("/events", get(sse_events))
         // Jobs
         .route("/jobs", get(list_jobs))
@@ -509,11 +514,28 @@ async fn update_prefs(
 // Libraries
 // ---------------------------------------------------------------------------
 
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct LibrarySettingsPatchRequest {
+    show_images: Option<bool>,
+    prefer_local_artwork: Option<bool>,
+    fetch_online_artwork: Option<bool>,
+}
+
 #[derive(Deserialize)]
 struct CreateLibraryRequest {
     name: String,
     kind: String,
     paths: Vec<String>,
+    #[serde(default)]
+    settings: LibrarySettingsPatchRequest,
+}
+
+#[derive(Serialize)]
+struct LibrarySettingsResponse {
+    show_images: bool,
+    prefer_local_artwork: bool,
+    fetch_online_artwork: bool,
 }
 
 #[derive(Serialize)]
@@ -522,6 +544,7 @@ struct LibraryResponse {
     name: String,
     kind: String,
     paths: Vec<LibraryPathResponse>,
+    settings: LibrarySettingsResponse,
     item_count: i64,
     created_ts: i64,
     updated_ts: i64,
@@ -534,22 +557,13 @@ struct LibraryPathResponse {
     is_read_only: bool,
 }
 
-async fn create_library(
-    _admin: AdminUser,
-    State(state): State<AppState>,
-    Json(body): Json<CreateLibraryRequest>,
-) -> Result<(axum::http::StatusCode, Json<LibraryResponse>), AppError> {
-    // Validate kind
-    if body.kind != "movies" && body.kind != "tv_shows" {
-        return Err(ApiError::BadRequest("kind must be 'movies' or 'tv_shows'".into()).into());
-    }
-    if body.paths.is_empty() {
+fn validate_and_normalize_paths(paths: &[String]) -> Result<Vec<String>, AppError> {
+    if paths.is_empty() {
         return Err(ApiError::BadRequest("at least one path required".into()).into());
     }
 
-    // Validate and normalise each path
-    let mut normalized_paths = Vec::new();
-    for (i, raw) in body.paths.iter().enumerate() {
+    let mut normalized_paths = Vec::with_capacity(paths.len());
+    for (i, raw) in paths.iter().enumerate() {
         let p = raw.trim();
         if p.is_empty() {
             return Err(ApiError::validation(json!({
@@ -584,6 +598,72 @@ async fn create_library(
         }
         normalized_paths.push(p.to_string());
     }
+    Ok(normalized_paths)
+}
+
+async fn load_library_settings_response(
+    state: &AppState,
+    library_id: &str,
+) -> Result<LibrarySettingsResponse, AppError> {
+    let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, library_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let settings = settings.unwrap_or(rustfin_db::repo::libraries::LibrarySettingsRow {
+        library_id: library_id.to_string(),
+        show_images: true,
+        prefer_local_artwork: true,
+        fetch_online_artwork: true,
+        updated_ts: chrono::Utc::now().timestamp(),
+    });
+
+    Ok(LibrarySettingsResponse {
+        show_images: settings.show_images,
+        prefer_local_artwork: settings.prefer_local_artwork,
+        fetch_online_artwork: settings.fetch_online_artwork,
+    })
+}
+
+async fn library_row_to_response(
+    state: &AppState,
+    lib: rustfin_db::repo::libraries::LibraryRow,
+) -> Result<LibraryResponse, AppError> {
+    let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let item_count = rustfin_db::repo::libraries::count_library_items(&state.db, &lib.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let settings = load_library_settings_response(state, &lib.id).await?;
+
+    Ok(LibraryResponse {
+        id: lib.id,
+        name: lib.name,
+        kind: lib.kind,
+        paths: paths
+            .into_iter()
+            .map(|p| LibraryPathResponse {
+                id: p.id,
+                path: p.path,
+                is_read_only: p.is_read_only,
+            })
+            .collect(),
+        settings,
+        item_count,
+        created_ts: lib.created_ts,
+        updated_ts: lib.updated_ts,
+    })
+}
+
+async fn create_library(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Json(body): Json<CreateLibraryRequest>,
+) -> Result<(axum::http::StatusCode, Json<LibraryResponse>), AppError> {
+    // Validate kind
+    if body.kind != "movies" && body.kind != "tv_shows" {
+        return Err(ApiError::BadRequest("kind must be 'movies' or 'tv_shows'".into()).into());
+    }
+    let normalized_paths = validate_and_normalize_paths(&body.paths)?;
 
     let lib = rustfin_db::repo::libraries::create_library(
         &state.db,
@@ -594,29 +674,30 @@ async fn create_library(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    rustfin_db::repo::libraries::upsert_library_settings(
+        &state.db,
+        &lib.id,
+        body.settings.show_images.unwrap_or(true),
+        body.settings.prefer_local_artwork.unwrap_or(true),
+        body.settings.fetch_online_artwork.unwrap_or(true),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(LibraryResponse {
-            id: lib.id,
-            name: lib.name,
-            kind: lib.kind,
-            paths: paths
-                .into_iter()
-                .map(|p| LibraryPathResponse {
-                    id: p.id,
-                    path: p.path,
-                    is_read_only: p.is_read_only,
-                })
-                .collect(),
-            item_count: 0,
-            created_ts: lib.created_ts,
-            updated_ts: lib.updated_ts,
-        }),
-    ))
+    let response = library_row_to_response(&state, lib).await?;
+
+    // Auto-scan newly created libraries so items populate without manual scan.
+    if let Err(e) =
+        crate::library_scan::enqueue_library_scan(&state, &response.id, &response.kind).await
+    {
+        tracing::warn!(
+            library_id = %response.id,
+            status = e.0.status_code(),
+            "library created but auto-scan enqueue failed"
+        );
+    }
+
+    Ok((axum::http::StatusCode::CREATED, Json(response)))
 }
 
 async fn list_libraries(
@@ -646,29 +727,7 @@ async fn list_libraries(
                 continue;
             }
         }
-        let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-        let item_count = rustfin_db::repo::libraries::count_library_items(&state.db, &lib.id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-        result.push(LibraryResponse {
-            id: lib.id,
-            name: lib.name,
-            kind: lib.kind,
-            paths: paths
-                .into_iter()
-                .map(|p| LibraryPathResponse {
-                    id: p.id,
-                    path: p.path,
-                    is_read_only: p.is_read_only,
-                })
-                .collect(),
-            item_count,
-            created_ts: lib.created_ts,
-            updated_ts: lib.updated_ts,
-        });
+        result.push(library_row_to_response(&state, lib).await?);
     }
 
     Ok(Json(result))
@@ -685,34 +744,15 @@ async fn get_library(
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
     ensure_library_access(&auth, &state, &lib.id).await?;
 
-    let paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &lib.id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    let item_count = rustfin_db::repo::libraries::count_library_items(&state.db, &lib.id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    Ok(Json(LibraryResponse {
-        id: lib.id,
-        name: lib.name,
-        kind: lib.kind,
-        paths: paths
-            .into_iter()
-            .map(|p| LibraryPathResponse {
-                id: p.id,
-                path: p.path,
-                is_read_only: p.is_read_only,
-            })
-            .collect(),
-        item_count,
-        created_ts: lib.created_ts,
-        updated_ts: lib.updated_ts,
-    }))
+    Ok(Json(library_row_to_response(&state, lib).await?))
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct UpdateLibraryRequest {
     name: Option<String>,
+    paths: Option<Vec<String>>,
+    settings: LibrarySettingsPatchRequest,
 }
 
 async fn update_library(
@@ -721,15 +761,96 @@ async fn update_library(
     Path(id): Path<String>,
     Json(body): Json<UpdateLibraryRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let updated = rustfin_db::repo::libraries::update_library(&state.db, &id, body.name.as_deref())
+    let existing = rustfin_db::repo::libraries::get_library(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
+
+    let mut did_update = false;
+    let mut should_rescan = false;
+
+    if body.name.is_some() {
+        let updated =
+            rustfin_db::repo::libraries::update_library(&state.db, &id, body.name.as_deref())
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        did_update |= updated;
+    }
+
+    if let Some(paths) = &body.paths {
+        let normalized_paths = validate_and_normalize_paths(paths)?;
+        let replaced =
+            rustfin_db::repo::libraries::replace_library_paths(&state.db, &id, &normalized_paths)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        did_update |= replaced;
+        should_rescan |= replaced;
+    }
+
+    if body.settings.show_images.is_some()
+        || body.settings.prefer_local_artwork.is_some()
+        || body.settings.fetch_online_artwork.is_some()
+    {
+        let current = rustfin_db::repo::libraries::get_library_settings(&state.db, &id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .unwrap_or(rustfin_db::repo::libraries::LibrarySettingsRow {
+                library_id: id.clone(),
+                show_images: true,
+                prefer_local_artwork: true,
+                fetch_online_artwork: true,
+                updated_ts: chrono::Utc::now().timestamp(),
+            });
+
+        let _ = rustfin_db::repo::libraries::upsert_library_settings(
+            &state.db,
+            &id,
+            body.settings.show_images.unwrap_or(current.show_images),
+            body.settings
+                .prefer_local_artwork
+                .unwrap_or(current.prefer_local_artwork),
+            body.settings
+                .fetch_online_artwork
+                .unwrap_or(current.fetch_online_artwork),
+        )
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        did_update = true;
+        should_rescan = true;
+    }
 
-    if !updated {
-        return Err(ApiError::NotFound("library not found".into()).into());
+    if !did_update {
+        return Err(ApiError::BadRequest("no update fields provided".into()).into());
+    }
+
+    if should_rescan {
+        if let Err(e) =
+            crate::library_scan::enqueue_library_scan(&state, &existing.id, &existing.kind).await
+        {
+            tracing::warn!(
+                library_id = %existing.id,
+                status = e.0.status_code(),
+                "library updated but auto-scan enqueue failed"
+            );
+        }
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn delete_library(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let deleted = rustfin_db::repo::libraries::delete_library(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if !deleted {
+        return Err(ApiError::NotFound("library not found".into()).into());
+    }
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
 async fn scan_library(
@@ -743,105 +864,9 @@ async fn scan_library(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
 
-    let payload = serde_json::json!({ "library_id": id });
-    let job =
-        rustfin_db::repo::jobs::create_job(&state.db, "library_scan", Some(&payload.to_string()))
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    // Spawn scan in background
-    let job_id = job.id.clone();
-    let pool = state.db.clone();
-    let lib_id = lib.id.clone();
-    let lib_kind = lib.kind.clone();
-    let events_tx = state.events.clone();
-    tokio::spawn(async move {
-        // Mark running
-        if let Err(e) = update_job_status_with_retry(&pool, &job_id, "running", 0.0, None).await {
-            tracing::error!(job_id = %job_id, error = %e, "failed to set job status to running");
-        }
-        let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
-            job_id: job_id.clone(),
-            status: "running".into(),
-            progress: 0.0,
-        });
-
-        match rustfin_scanner::scan::run_library_scan(&pool, &lib_id, &lib_kind).await {
-            Ok(result) => {
-                tracing::info!(
-                    job_id = %job_id,
-                    added = result.added,
-                    skipped = result.skipped,
-                    "scan completed"
-                );
-                if let Err(e) =
-                    update_job_status_with_retry(&pool, &job_id, "completed", 1.0, None).await
-                {
-                    tracing::error!(
-                        job_id = %job_id,
-                        error = %e,
-                        "failed to set job status to completed"
-                    );
-                }
-                let _ = events_tx.send(crate::state::ServerEvent::ScanComplete {
-                    library_id: lib_id,
-                    job_id: job_id.clone(),
-                    items_added: result.added as u64,
-                });
-                let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
-                    job_id,
-                    status: "completed".into(),
-                    progress: 1.0,
-                });
-            }
-            Err(e) => {
-                tracing::error!(job_id = %job_id, error = %e, "scan failed");
-                if let Err(update_err) = update_job_status_with_retry(
-                    &pool,
-                    &job_id,
-                    "failed",
-                    0.0,
-                    Some(&e.to_string()),
-                )
-                .await
-                {
-                    tracing::error!(
-                        job_id = %job_id,
-                        error = %update_err,
-                        "failed to set job status to failed"
-                    );
-                }
-                let _ = events_tx.send(crate::state::ServerEvent::JobUpdate {
-                    job_id,
-                    status: "failed".into(),
-                    progress: 0.0,
-                });
-            }
-        }
-    });
+    let job = crate::library_scan::enqueue_library_scan(&state, &lib.id, &lib.kind).await?;
 
     Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
-}
-
-async fn update_job_status_with_retry(
-    pool: &sqlx::SqlitePool,
-    job_id: &str,
-    status: &str,
-    progress: f64,
-    error: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let mut last_err: Option<sqlx::Error> = None;
-    for _ in 0..5 {
-        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                last_err = Some(e);
-                tokio::time::sleep(Duration::from_millis(120)).await;
-            }
-        }
-    }
-    Err(last_err.expect("last_err must be set on retry failure"))
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +956,10 @@ struct ItemResponse {
     sort_title: Option<String>,
     year: Option<i64>,
     overview: Option<String>,
+    poster_url: Option<String>,
+    backdrop_url: Option<String>,
+    logo_url: Option<String>,
+    thumb_url: Option<String>,
     created_ts: i64,
     updated_ts: i64,
 }
@@ -944,9 +973,17 @@ struct PlaybackDescriptorResponse {
     media_info_url: String,
 }
 
-fn item_to_response(item: rustfin_db::repo::items::ItemRow) -> ItemResponse {
+fn item_image_url(item_id: &str, img_type: &str, include_images: bool) -> Option<String> {
+    if include_images {
+        Some(format!("/api/v1/items/{item_id}/images/{img_type}"))
+    } else {
+        None
+    }
+}
+
+fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool) -> ItemResponse {
     ItemResponse {
-        id: item.id,
+        id: item.id.clone(),
         library_id: item.library_id,
         kind: item.kind,
         parent_id: item.parent_id,
@@ -954,6 +991,26 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow) -> ItemResponse {
         sort_title: item.sort_title,
         year: item.year,
         overview: item.overview,
+        poster_url: if item.poster_url.is_some() {
+            item_image_url(&item.id, "poster", include_images)
+        } else {
+            None
+        },
+        backdrop_url: if item.backdrop_url.is_some() {
+            item_image_url(&item.id, "backdrop", include_images)
+        } else {
+            None
+        },
+        logo_url: if item.logo_url.is_some() {
+            item_image_url(&item.id, "logo", include_images)
+        } else {
+            None
+        },
+        thumb_url: if item.thumb_url.is_some() {
+            item_image_url(&item.id, "thumb", include_images)
+        } else {
+            None
+        },
         created_ts: item.created_ts,
         updated_ts: item.updated_ts,
     }
@@ -973,8 +1030,18 @@ async fn list_library_items(
     let items = rustfin_db::repo::items::get_library_items(&state.db, &id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let show_images = rustfin_db::repo::libraries::get_library_settings(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .map(|s| s.show_images)
+        .unwrap_or(true);
 
-    Ok(Json(items.into_iter().map(item_to_response).collect()))
+    Ok(Json(
+        items
+            .into_iter()
+            .map(|item| item_to_response(item, show_images))
+            .collect(),
+    ))
 }
 
 async fn get_item(
@@ -987,8 +1054,14 @@ async fn get_item(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
     ensure_library_access(&auth, &state, &item.library_id).await?;
+    let show_images =
+        rustfin_db::repo::libraries::get_library_settings(&state.db, &item.library_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .map(|s| s.show_images)
+            .unwrap_or(true);
 
-    Ok(Json(item_to_response(item)))
+    Ok(Json(item_to_response(item, show_images)))
 }
 
 async fn get_item_playback(
@@ -1041,8 +1114,19 @@ async fn get_item_children(
     let children = rustfin_db::repo::items::get_children(&state.db, &id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let show_images =
+        rustfin_db::repo::libraries::get_library_settings(&state.db, &parent.library_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .map(|s| s.show_images)
+            .unwrap_or(true);
 
-    Ok(Json(children.into_iter().map(item_to_response).collect()))
+    Ok(Json(
+        children
+            .into_iter()
+            .map(|item| item_to_response(item, show_images))
+            .collect(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,6 +1673,15 @@ async fn get_item_image(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
     ensure_library_access(&auth, &state, &item.library_id).await?;
+    let show_images =
+        rustfin_db::repo::libraries::get_library_settings(&state.db, &item.library_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .map(|s| s.show_images)
+            .unwrap_or(true);
+    if !show_images {
+        return Err(ApiError::NotFound("images are disabled for this library".into()).into());
+    }
 
     // Get the image URL from DB
     let image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
@@ -2177,6 +2270,100 @@ async fn get_gpu_caps(_auth: AdminUser) -> Result<Json<serde_json::Value>, AppEr
     Ok(Json(serde_json::to_value(&caps).unwrap()))
 }
 
+#[derive(Serialize)]
+struct TmdbConfigResponse {
+    configured: bool,
+    key_preview: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateTmdbConfigRequest {
+    api_key: String,
+}
+
+fn normalize_secret(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn secret_preview(secret: &str) -> String {
+    let len = secret.chars().count();
+    let suffix: String = secret
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if len <= 4 {
+        "****".to_string()
+    } else {
+        format!("****{suffix}")
+    }
+}
+
+async fn resolve_tmdb_key_for_admin(
+    state: &AppState,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let db_key = rustfin_db::repo::settings::get(&state.db, "tmdb_api_key")
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .and_then(|value| normalize_secret(&value));
+    if let Some(key) = db_key {
+        return Ok((Some(key), Some("database".to_string())));
+    }
+
+    let env_key = std::env::var("RUSTFIN_TMDB_KEY")
+        .ok()
+        .and_then(|value| normalize_secret(&value));
+    if let Some(key) = env_key {
+        return Ok((Some(key), Some("environment".to_string())));
+    }
+
+    Ok((None, None))
+}
+
+async fn get_tmdb_config(
+    _auth: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<TmdbConfigResponse>, AppError> {
+    let (key, source) = resolve_tmdb_key_for_admin(&state).await?;
+    Ok(Json(TmdbConfigResponse {
+        configured: key.is_some(),
+        key_preview: key.as_deref().map(secret_preview),
+        source,
+    }))
+}
+
+async fn update_tmdb_config(
+    _auth: AdminUser,
+    State(state): State<AppState>,
+    Json(body): Json<UpdateTmdbConfigRequest>,
+) -> Result<Json<TmdbConfigResponse>, AppError> {
+    if let Some(key) = normalize_secret(&body.api_key) {
+        rustfin_db::repo::settings::set(&state.db, "tmdb_api_key", &key)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    } else {
+        let _ = rustfin_db::repo::settings::delete(&state.db, "tmdb_api_key")
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
+    let (key, source) = resolve_tmdb_key_for_admin(&state).await?;
+    Ok(Json(TmdbConfigResponse {
+        configured: key.is_some(),
+        key_preview: key.as_deref().map(secret_preview),
+        source,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Metadata management
 // ---------------------------------------------------------------------------
@@ -2212,7 +2399,7 @@ async fn refresh_item_metadata(
     Ok(Json(serde_json::json!({
         "status": "metadata refresh queued",
         "item_id": item_id,
-        "note": "TMDB API key required for actual provider fetch. Set RUSTFIN_TMDB_KEY env var."
+        "note": "TMDB API key required for provider fetch. Configure in Admin or set RUSTFIN_TMDB_KEY."
     })))
 }
 
