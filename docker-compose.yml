@@ -2,14 +2,13 @@ services:
   # Backend API server
   rustfin:
     build: .
-    container_name: rustfin-backend
     ports:
-      - "8096:8096"
+      - "${RUSTFIN_BACKEND_PORT:-8096}:8096"
     volumes:
       - rustfin-config:/config
       - rustfin-cache:/cache
       - rustfin-transcode:/transcode
-      - ${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}:/media:ro
+      - ${RUSTFIN_MEDIA_PATH:-./media}:/media:ro
     environment:
       - RUSTFIN_ADMIN_PASSWORD=changeme
       - RUST_LOG=info
@@ -24,9 +23,8 @@ services:
   # Frontend UI
   rustfin-ui:
     build: ./ui
-    container_name: rustfin-ui
     ports:
-      - "3000:3000"
+      - "${RUSTFIN_UI_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
     depends_on:
