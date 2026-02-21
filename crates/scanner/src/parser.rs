@@ -43,8 +43,8 @@ static IGNORE_NAMES: &[&str] = &[
 ];
 
 static VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mpe", "mpv", "m2ts", "mts",
-    "wmv", "asf", "flv", "f4v", "3gp", "3g2", "ogv", "vob", "mxf",
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mpe", "mpv", "m2ts", "mts", "wmv",
+    "asf", "flv", "f4v", "3gp", "3g2", "ogv", "vob", "mxf",
 ];
 
 // SxxExx pattern: S01E02, s1e3, etc.

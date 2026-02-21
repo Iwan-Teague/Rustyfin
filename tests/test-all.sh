@@ -13,6 +13,7 @@ SUITES=(
   "04_libraries_scanner"
   "05_directory_picker"
   "06_accessibility"
+  "08_playback"
   "07_api_contract"
 )
 
@@ -39,4 +40,3 @@ else
   echo "[test-all] ❌ SOME SUITES FAILED"
   exit 1
 fi
-

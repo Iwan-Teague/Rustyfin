@@ -1,6 +1,33 @@
 use anyhow::Context;
+use std::path::Path;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+fn probe_binary(path: &Path, name: &str) {
+    match std::process::Command::new(path).arg("-version").output() {
+        Ok(out) if out.status.success() => {
+            tracing::info!(binary = %name, path = %path.display(), "binary available");
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::warn!(
+                binary = %name,
+                path = %path.display(),
+                status = %out.status,
+                stderr = %stderr.trim(),
+                "binary check failed; playback/transcoding may fail"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                binary = %name,
+                path = %path.display(),
+                error = %err,
+                "binary is not executable or missing; playback/transcoding may fail"
+            );
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -62,12 +89,21 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    let ffmpeg_path = std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
+    let ffprobe_path =
+        std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string());
 
     let tc_config = rustfin_transcoder::TranscoderConfig {
+        ffmpeg_path: ffmpeg_path.clone().into(),
+        ffprobe_path: ffprobe_path.clone().into(),
         transcode_dir: transcode_dir.into(),
         max_concurrent: max_transcodes,
         ..Default::default()
     };
+
+    probe_binary(Path::new(&ffmpeg_path), "ffmpeg");
+    probe_binary(Path::new(&ffprobe_path), "ffprobe");
+
     let session_mgr =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 

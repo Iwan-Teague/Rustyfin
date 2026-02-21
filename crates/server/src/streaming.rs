@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
-use crate::auth::validate_token;
+use crate::auth::{validate_stream_token, validate_token};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -92,8 +92,15 @@ fn content_type_for_path(path: &std::path::Path) -> &'static str {
         Some("webm") => "video/webm",
         Some("avi") => "video/x-msvideo",
         Some("mov") => "video/quicktime",
-        Some("ts") => "video/mp2t",
-        Some("mpg" | "mpeg") => "video/mpeg",
+        Some("ts" | "m2ts" | "mts") => "video/mp2t",
+        Some("mpg" | "mpeg" | "mpe" | "mpv" | "vob") => "video/mpeg",
+        Some("ogv") => "video/ogg",
+        Some("wmv") => "video/x-ms-wmv",
+        Some("asf") => "video/x-ms-asf",
+        Some("flv" | "f4v") => "video/x-flv",
+        Some("3gp") => "video/3gpp",
+        Some("3g2") => "video/3gpp2",
+        Some("mxf") => "application/mxf",
         _ => "application/octet-stream",
     }
 }
@@ -102,7 +109,8 @@ fn content_type_for_path(path: &std::path::Path) -> &'static str {
 /// GET /stream/file/{file_id}
 #[derive(Debug, Default, Deserialize)]
 pub struct StreamAuthQuery {
-    token: Option<String>,
+    st: Option<String>,
+    token: Option<String>, // legacy, intentionally rejected
 }
 
 pub async fn stream_file_range(
@@ -111,18 +119,39 @@ pub async fn stream_file_range(
     Query(query): Query<StreamAuthQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    // Require JWT either via Authorization header or query token.
-    let token = headers
+    let bearer_token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
             v.strip_prefix("Bearer ")
                 .or_else(|| v.strip_prefix("bearer "))
-        })
-        .or(query.token.as_deref())
-        .ok_or_else(|| ApiError::Unauthorized("missing authorization token".into()))?;
+        });
 
-    let claims = validate_token(token, &state.jwt_secret).map_err(AppError::from)?;
+    let auth_context = if let Some(token) = bearer_token {
+        let claims = validate_token(token, &state.jwt_secret).map_err(AppError::from)?;
+        (claims.sub, claims.role, None::<String>)
+    } else if let Some(stream_token) = query.st.as_deref() {
+        let claims =
+            validate_stream_token(stream_token, &state.jwt_secret).map_err(AppError::from)?;
+        (claims.sub, claims.role, claims.file_id)
+    } else if query.token.is_some() {
+        return Err(ApiError::Unauthorized(
+            "legacy query token is not supported; request a playback descriptor and use its stream URL"
+                .into(),
+        )
+        .into());
+    } else {
+        return Err(ApiError::Unauthorized("missing authorization token".into()).into());
+    };
+
+    let (user_id, role, scoped_file_id) = auth_context;
+    if let Some(scoped) = scoped_file_id {
+        if scoped != file_id {
+            return Err(
+                ApiError::Forbidden("stream token is not scoped to this file".into()).into(),
+            );
+        }
+    }
 
     // Look up media file
     let media_file = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
@@ -138,10 +167,10 @@ pub async fn stream_file_range(
     }
 
     // Security: verify path is within libraries this account can access.
-    if claims.role == "admin" {
+    if role == "admin" {
         validate_path_in_library(&state, &file_path).await?;
     } else {
-        validate_path_in_user_libraries(&state, &file_path, &claims.sub).await?;
+        validate_path_in_user_libraries(&state, &file_path, &user_id).await?;
     }
 
     let file_size = media_file.size_bytes as u64;
@@ -186,6 +215,9 @@ pub async fn stream_file_range(
                 ),
             )
             .header("Accept-Ranges", "bytes")
+            .header("Cache-Control", "no-store")
+            .header("Referrer-Policy", "no-referrer")
+            .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(stream))
             .unwrap())
     } else {
@@ -201,6 +233,9 @@ pub async fn stream_file_range(
             .header("Content-Type", content_type)
             .header("Content-Length", file_size.to_string())
             .header("Accept-Ranges", "bytes")
+            .header("Cache-Control", "no-store")
+            .header("Referrer-Policy", "no-referrer")
+            .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(stream))
             .unwrap())
     }

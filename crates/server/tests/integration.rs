@@ -2,6 +2,7 @@ use axum_test::TestServer;
 use rustfin_server::routes::build_router;
 use rustfin_server::state::AppState;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// Create a test server with an in-memory SQLite database.
 async fn test_app() -> TestServer {
@@ -54,6 +55,94 @@ async fn login(server: &TestServer, username: &str, password: &str) -> String {
     resp.assert_status_ok();
     let body: Value = resp.json();
     body["token"].as_str().unwrap().to_string()
+}
+
+fn create_fake_ffmpeg_script() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rf_fake_ffmpeg_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake_ffmpeg.sh");
+
+    let content = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+out="${@: -1}"
+seg_pattern=""
+for ((i=1; i<=$#; i++)); do
+  arg="${!i}"
+  if [[ "$arg" == "-hls_segment_filename" ]]; then
+    j=$((i+1))
+    seg_pattern="${!j}"
+  fi
+done
+
+mkdir -p "$(dirname "$out")"
+cat > "$out" <<'EOF'
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:4.0,
+seg_00000.ts
+EOF
+
+if [[ -n "$seg_pattern" ]]; then
+  seg="${seg_pattern//%05d/00000}"
+  mkdir -p "$(dirname "$seg")"
+  printf 'FAKE_TS' > "$seg"
+fi
+
+sleep 30
+"#;
+
+    std::fs::write(&script, content).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+    script
+}
+
+async fn test_app_with_fake_ffmpeg() -> TestServer {
+    let pool = rustfin_db::connect(":memory:").await.unwrap();
+    rustfin_db::migrate::run(&pool).await.unwrap();
+    rustfin_db::repo::settings::insert_defaults(&pool)
+        .await
+        .unwrap();
+    rustfin_db::repo::users::create_user(&pool, "admin", "admin_secure_123", "admin")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_completed", "true")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_state", "Completed")
+        .await
+        .unwrap();
+
+    let fake_ffmpeg = create_fake_ffmpeg_script();
+    let tc_config = rustfin_transcoder::TranscoderConfig {
+        ffmpeg_path: fake_ffmpeg,
+        ffprobe_path: PathBuf::from("ffprobe"),
+        transcode_dir: std::env::temp_dir().join(format!("rf_test_hls_{}", uuid::Uuid::new_v4())),
+        max_concurrent: 2,
+        ..Default::default()
+    };
+    let transcoder =
+        std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+
+    let (events_tx, _) = tokio::sync::broadcast::channel(64);
+    let state = AppState {
+        db: pool,
+        jwt_secret: "test-secret-key".to_string(),
+        transcoder,
+        cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        events: events_tx,
+    };
+
+    let app = build_router(state);
+    TestServer::new(app).unwrap()
 }
 
 #[tokio::test]
@@ -650,6 +739,256 @@ async fn stream_file_with_range_returns_206() {
     assert_eq!(cr, "bytes 4000-4999/5000");
 
     // Cleanup
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn playback_descriptor_returns_file_id_and_reports_unmapped_items() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    // Movies fixture with a mapped playable file.
+    let movies_tmp =
+        std::env::temp_dir().join(format!("rf_playback_desc_movies_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&movies_tmp).unwrap();
+    std::fs::write(movies_tmp.join("Sample Movie (2020).mp4"), b"fake").unwrap();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "name": "Playback Movies",
+            "kind": "movies",
+            "paths": [movies_tmp.to_str().unwrap()]
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let movies_lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    server
+        .post(&format!("/api/v1/libraries/{movies_lib_id}/scan"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let resp = server
+        .get(&format!("/api/v1/libraries/{movies_lib_id}/items"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status_ok();
+    let items: Value = resp.json();
+    let movie_item_id = items.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = server
+        .get(&format!("/api/v1/items/{movie_item_id}/playback"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status_ok();
+    let playback: Value = resp.json();
+    let file_id = playback["file_id"].as_str().unwrap().to_string();
+    let direct_url = playback["direct_url"].as_str().unwrap();
+    assert!(direct_url.contains(&format!("/stream/file/{file_id}?st=")));
+    assert!(!direct_url.contains("?token="));
+
+    // TV fixture where top-level series item has no direct file mapping.
+    let tv_tmp = std::env::temp_dir().join(format!("rf_playback_desc_tv_{}", uuid::Uuid::new_v4()));
+    let season_dir = tv_tmp.join("Example Show/Season 01");
+    std::fs::create_dir_all(&season_dir).unwrap();
+    std::fs::write(season_dir.join("Example.Show.S01E01.mp4"), b"fake").unwrap();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "name": "Playback TV",
+            "kind": "tv_shows",
+            "paths": [tv_tmp.to_str().unwrap()]
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let tv_lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    server
+        .post(&format!("/api/v1/libraries/{tv_lib_id}/scan"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let resp = server
+        .get(&format!("/api/v1/libraries/{tv_lib_id}/items"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status_ok();
+    let tv_items: Value = resp.json();
+    let series_item_id = tv_items.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = server
+        .get(&format!("/api/v1/items/{series_item_id}/playback"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: Value = resp.json();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("No playable file mapped to this item")
+    );
+
+    std::fs::remove_dir_all(&movies_tmp).ok();
+    std::fs::remove_dir_all(&tv_tmp).ok();
+}
+
+#[tokio::test]
+async fn hls_endpoints_require_auth_and_enforce_session_owner() {
+    let server = test_app_with_fake_ffmpeg().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let tmp = std::env::temp_dir().join(format!("rf_hls_auth_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("Auth Movie (2020).mp4"), b"fake").unwrap();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "name": "HLS Auth Movies",
+            "kind": "movies",
+            "paths": [tmp.to_str().unwrap()]
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    server
+        .post(&format!("/api/v1/libraries/{lib_id}/scan"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let resp = server
+        .get(&format!("/api/v1/libraries/{lib_id}/items"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    let items: Value = resp.json();
+    let item_id = items.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = server
+        .get(&format!("/api/v1/items/{item_id}/playback"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let playback: Value = resp.json();
+    let file_id = playback["file_id"].as_str().unwrap().to_string();
+
+    let resp = server
+        .post("/api/v1/playback/sessions")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({ "file_id": file_id }))
+        .await;
+    resp.assert_status_ok();
+    let session: Value = resp.json();
+    let sid = session["session_id"].as_str().unwrap().to_string();
+
+    // Unauthenticated master request is rejected.
+    let resp = server.get(&format!("/stream/hls/{sid}/master.m3u8")).await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::UNAUTHORIZED);
+
+    // Session owner can fetch HLS resources.
+    let resp = server
+        .get(&format!("/stream/hls/{sid}/master.m3u8"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+    let master_playlist = String::from_utf8(resp.as_bytes().to_vec()).unwrap();
+    let first_child = master_playlist
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .expect("master playlist should include at least one child URI")
+        .to_string();
+    let first_child_path = if first_child.starts_with('/') {
+        first_child
+    } else {
+        format!("/stream/hls/{sid}/{first_child}")
+    };
+    assert!(first_child_path.contains("st="));
+
+    let resp = server
+        .get(&first_child_path)
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+    assert!(!resp.as_bytes().is_empty());
+
+    // Derive a concrete segment/media URL so we can verify auth there as well.
+    let child_body = String::from_utf8(resp.as_bytes().to_vec()).unwrap_or_default();
+    let maybe_segment = if first_child_path.contains(".m3u8") {
+        child_body
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_string)
+    } else {
+        Some(first_child_path.clone())
+    };
+    let segment_path = maybe_segment
+        .map(|uri| {
+            if uri.starts_with('/') {
+                uri
+            } else {
+                format!("/stream/hls/{sid}/{uri}")
+            }
+        })
+        .unwrap_or_else(|| format!("/stream/hls/{sid}/seg_00000.ts"));
+    let segment_path_no_query = segment_path
+        .split('?')
+        .next()
+        .unwrap_or(&segment_path)
+        .to_string();
+
+    let resp = server.get(&segment_path_no_query).await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::UNAUTHORIZED);
+
+    // Create a non-owner user and ensure they cannot access this session.
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "username": "otheruser",
+            "password": "otheruser_pass_123",
+            "role": "user",
+            "library_ids": [lib_id]
+        }))
+        .await;
+    resp.assert_status_ok();
+    let other_token = login(&server, "otheruser", "otheruser_pass_123").await;
+    let other_hdr = auth_hdr(&other_token);
+
+    let resp = server
+        .get(&format!("/stream/hls/{sid}/master.m3u8"))
+        .add_header(other_hdr.0.clone(), other_hdr.1.clone())
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::FORBIDDEN);
+
+    let resp = server
+        .get(&segment_path_no_query)
+        .add_header(other_hdr.0.clone(), other_hdr.1.clone())
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::FORBIDDEN);
+
     std::fs::remove_dir_all(&tmp).ok();
 }
 
