@@ -74,32 +74,36 @@ Rustyfin is built as a **modular monolith** - a single server process with clear
 
 ### Quick Start with Docker
 
-The easiest way to run Rustyfin is with Docker:
+The easiest way to run Rustyfin is with the repo scripts:
 
 ```bash
-# CPU-only mode
-./scripts/docker-compose-safe.sh up -d
+# Start full stack (first run or repeat run)
+./scripts/start.sh
 
-# NVIDIA GPU acceleration
-./scripts/docker-compose-safe.sh -f docker-compose.gpu.yml up -d
+# Stop full stack
+./scripts/stop.sh
 
-# Intel/AMD VAAPI acceleration
-./scripts/docker-compose-safe.sh -f docker-compose.vaapi.yml up -d
+# Full wipe to blank slate (setup wizard required on next start)
+./scripts/clean_install.sh
 ```
 
-If you want this fix to be permanent for all new terminal sessions (so plain
-`docker compose ...` also works), run once:
+`start.sh` handles temp-directory permission issues, creates a default media path,
+and starts everything with Docker Compose.
+
+Use a different compose file when needed:
 
 ```bash
-./scripts/install-tempdir-fix.sh
-source ~/.zshrc
+./scripts/start.sh -f docker-compose.gpu.yml
+./scripts/start.sh -f docker-compose.vaapi.yml
 ```
 
 Default admin credentials on first run:
 - **Username**: `admin`
 - **Password**: `admin` (change immediately!)
 
-The server will be available at `http://localhost:8096`
+By default, the server is available at `http://localhost:8096` and the UI at
+`http://localhost:3000`. If those are occupied, `start.sh` will pick free ports
+and print them.
 
 ### Building from Source
 

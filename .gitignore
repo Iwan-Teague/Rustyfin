@@ -60,3 +60,4 @@ ui/.next/
 /tests/_runs/
 /scripts/rustfin.db*
 /rustfin.db*
+/.rustyfin.runtime.env
