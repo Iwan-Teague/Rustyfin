@@ -1,9 +1,39 @@
-'use client';
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 
-import { useEffect, useState } from 'react';
-import { getPublicSystemInfo } from '@/lib/setupApi';
+type PublicSystemInfo = {
+  setup_completed: boolean;
+};
 
-export default function Home() {
+async function isSetupIncomplete(): Promise<boolean> {
+  try {
+    const h = await headers();
+    const host = h.get('x-forwarded-host') ?? h.get('host');
+    if (!host) return false;
+
+    const proto =
+      h.get('x-forwarded-proto') ??
+      (host.includes('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https');
+    const origin = `${proto}://${host}`;
+
+    const res = await fetch(`${origin}/api/v1/system/info/public`, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return false;
+
+    const info = (await res.json()) as PublicSystemInfo;
+    return !info.setup_completed;
+  } catch {
+    return false;
+  }
+}
+
+export default async function Home() {
+  if (await isSetupIncomplete()) {
+    redirect('/setup');
+  }
+
   const quickActions = [
     {
       title: 'Libraries',
@@ -24,30 +54,6 @@ export default function Home() {
       badge: 'Access',
     },
   ];
-
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    getPublicSystemInfo()
-      .then((info) => {
-        if (!info.setup_completed) {
-          window.location.href = '/setup';
-        } else {
-          setLoading(false);
-        }
-      })
-      .catch(() => {
-        setLoading(false);
-      });
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="panel-soft flex min-h-[45vh] items-center justify-center animate-rise">
-        <div className="text-sm muted">Loading...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-8 animate-rise">
