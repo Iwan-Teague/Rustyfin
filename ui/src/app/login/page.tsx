@@ -32,7 +32,7 @@ export default function LoginPage() {
       const data = await res.json();
       localStorage.setItem('token', data.token);
       await refreshMe();
-      router.push('/libraries');
+      router.push('/');
     } catch {
       setError('Network error');
     }

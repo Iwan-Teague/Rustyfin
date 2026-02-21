@@ -347,6 +347,11 @@ info "Using TMPDIR: $TMPDIR"
 info "Using media path: $RUSTFIN_MEDIA_PATH"
 info "Backend port: $RUSTFIN_BACKEND_PORT"
 info "UI port: $RUSTFIN_UI_PORT"
+if [[ -n "${RUSTFIN_TMDB_KEY:-}" ]]; then
+  info "TMDB metadata enrichment: enabled"
+else
+  warn "TMDB metadata enrichment disabled (set RUSTFIN_TMDB_KEY to fetch online posters/metadata)"
+fi
 
 compose_args=(up --remove-orphans)
 if [[ "$DETACH" == "true" ]]; then

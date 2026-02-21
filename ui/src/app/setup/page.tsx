@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   getPublicSystemInfo,
   claimSession,
@@ -22,6 +23,7 @@ interface FieldErrors {
 }
 
 export default function SetupWizard() {
+  const router = useRouter();
   const [step, setStep] = useState<Step>('loading');
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -48,16 +50,23 @@ export default function SetupWizard() {
   const [autoPort, setAutoPort] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     getPublicSystemInfo()
       .then((info) => {
+        if (cancelled) return;
         if (info.setup_completed) {
-          window.location.href = '/';
+          router.replace('/');
         } else {
           setStep('welcome');
         }
       })
-      .catch(() => setStep('welcome'));
-  }, []);
+      .catch(() => {
+        if (!cancelled) setStep('welcome');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   const handleError = useCallback((err: unknown) => {
     setSaving(false);
@@ -190,6 +199,7 @@ export default function SetupWizard() {
         localStorage.setItem('token', data.token);
         await refreshMe();
       }
+      router.replace('/');
       setStep('done');
     } catch (err) {
       handleError(err);
@@ -226,10 +236,10 @@ export default function SetupWizard() {
         <div className="text-4xl">Setup Complete</div>
         <p className="text-sm muted sm:text-base">Your Rustyfin server is ready to use.</p>
         <a
-          href="/libraries"
+          href="/"
           className="btn-primary inline-flex px-6 py-2.5 text-sm"
         >
-          Go to Libraries
+          Go to Home
         </a>
       </section>
     );

@@ -1,9 +1,15 @@
 'use client';
 
 import { useAuth } from '@/lib/auth';
+import { usePathname } from 'next/navigation';
 
 export default function NavBar() {
   const { me, loading, logout } = useAuth();
+  const pathname = usePathname();
+
+  if (pathname.startsWith('/setup')) {
+    return null;
+  }
 
   return (
     <nav className="app-nav animate-rise rounded-2xl px-4 py-3 sm:px-6">

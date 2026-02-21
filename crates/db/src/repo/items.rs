@@ -10,6 +10,10 @@ pub struct ItemRow {
     pub sort_title: Option<String>,
     pub year: Option<i64>,
     pub overview: Option<String>,
+    pub poster_url: Option<String>,
+    pub backdrop_url: Option<String>,
+    pub logo_url: Option<String>,
+    pub thumb_url: Option<String>,
     pub created_ts: i64,
     pub updated_ts: i64,
 }
@@ -24,10 +28,15 @@ pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow
         Option<String>,
         Option<i64>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         i64,
         i64,
     )> = sqlx::query_as(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
+         poster_url, backdrop_url, logo_url, thumb_url, \
          created_ts, updated_ts FROM item WHERE id = ?",
     )
     .bind(item_id)
@@ -47,10 +56,15 @@ pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<Item
         Option<String>,
         Option<i64>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         i64,
         i64,
     )> = sqlx::query_as(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
+         poster_url, backdrop_url, logo_url, thumb_url, \
          created_ts, updated_ts FROM item WHERE parent_id = ? ORDER BY title",
     )
     .bind(parent_id)
@@ -74,10 +88,15 @@ pub async fn get_library_items(
         Option<String>,
         Option<i64>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         i64,
         i64,
     )> = sqlx::query_as(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
+         poster_url, backdrop_url, logo_url, thumb_url, \
          created_ts, updated_ts FROM item \
          WHERE library_id = ? AND parent_id IS NULL ORDER BY title",
     )
@@ -114,6 +133,90 @@ pub async fn get_item_id_by_file_id(
     Ok(row.map(|(id,)| id))
 }
 
+pub async fn get_item_media_path(
+    pool: &SqlitePool,
+    item_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT mf.path \
+         FROM episode_file_map ef \
+         JOIN media_file mf ON mf.id = ef.file_id \
+         WHERE ef.episode_item_id = ? \
+         LIMIT 1",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(path,)| path))
+}
+
+pub async fn get_first_descendant_media_path(
+    pool: &SqlitePool,
+    item_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "WITH RECURSIVE descendants(id, depth) AS (
+            SELECT id, 0 FROM item WHERE id = ?
+            UNION ALL
+            SELECT i.id, d.depth + 1
+            FROM item i
+            JOIN descendants d ON i.parent_id = d.id
+         )
+         SELECT mf.path
+         FROM descendants d
+         JOIN episode_file_map ef ON ef.episode_item_id = d.id
+         JOIN media_file mf ON mf.id = ef.file_id
+         ORDER BY d.depth ASC
+         LIMIT 1",
+    )
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(path,)| path))
+}
+
+pub async fn get_item_artwork(
+    pool: &SqlitePool,
+    item_id: &str,
+) -> Result<
+    Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
+    sqlx::Error,
+> {
+    sqlx::query_as("SELECT poster_url, backdrop_url, logo_url, thumb_url FROM item WHERE id = ?")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+}
+
+pub async fn update_item_artwork(
+    pool: &SqlitePool,
+    item_id: &str,
+    poster_url: Option<&str>,
+    backdrop_url: Option<&str>,
+    logo_url: Option<&str>,
+    thumb_url: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE item
+         SET poster_url = ?, backdrop_url = ?, logo_url = ?, thumb_url = ?, updated_ts = ?
+         WHERE id = ?",
+    )
+    .bind(poster_url)
+    .bind(backdrop_url)
+    .bind(logo_url)
+    .bind(thumb_url)
+    .bind(chrono::Utc::now().timestamp())
+    .bind(item_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 fn row_to_item(
     r: (
         String,
@@ -123,6 +226,10 @@ fn row_to_item(
         String,
         Option<String>,
         Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         Option<String>,
         i64,
         i64,
@@ -137,8 +244,12 @@ fn row_to_item(
         sort_title: r.5,
         year: r.6,
         overview: r.7,
-        created_ts: r.8,
-        updated_ts: r.9,
+        poster_url: r.8,
+        backdrop_url: r.9,
+        logo_url: r.10,
+        thumb_url: r.11,
+        created_ts: r.12,
+        updated_ts: r.13,
     }
 }
 
