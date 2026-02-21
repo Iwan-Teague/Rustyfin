@@ -1520,6 +1520,22 @@ async fn pick_directory(_admin: AdminUser) -> Result<Json<PickDirectoryResponse>
 }
 
 fn open_directory_picker() -> Result<String, ApiError> {
+    let in_container = std::path::Path::new("/.dockerenv").exists();
+
+    if let Ok(url) = std::env::var("RUSTFIN_DIRECTORY_PICKER_HELPER_URL") {
+        let helper_url = url.trim();
+        if !helper_url.is_empty() {
+            let path = open_directory_picker_via_helper(helper_url)?;
+            return map_host_path_to_container_path(&path);
+        }
+    }
+
+    if in_container {
+        return Err(ApiError::BadRequest(
+            "native directory picker is unavailable in containers; start Rustyfin with ./scripts/start.sh so Browse can open your host file picker".into(),
+        ));
+    }
+
     if let Ok(raw) = std::env::var("RUSTFIN_DIRECTORY_PICKER_PATH") {
         let path = raw.trim().to_string();
         if path.is_empty() {
@@ -1531,6 +1547,90 @@ fn open_directory_picker() -> Result<String, ApiError> {
     }
 
     open_directory_picker_native()
+}
+
+#[derive(Deserialize)]
+struct DirectoryPickerHelperResponse {
+    path: String,
+}
+
+fn open_directory_picker_via_helper(url: &str) -> Result<String, ApiError> {
+    let client = reqwest::blocking::Client::new();
+    let res = client.post(url).send().map_err(|e| {
+        ApiError::BadRequest(format!(
+            "directory picker helper is unavailable ({e}); restart with ./scripts/start.sh"
+        ))
+    })?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().unwrap_or_default();
+        let detail = body.trim();
+        if detail.is_empty() {
+            return Err(ApiError::BadRequest(format!(
+                "directory picker helper error: HTTP {status}"
+            )));
+        }
+        return Err(ApiError::BadRequest(format!(
+            "directory picker helper error: {detail}"
+        )));
+    }
+
+    let parsed = res.json::<DirectoryPickerHelperResponse>().map_err(|e| {
+        ApiError::Internal(format!(
+            "directory picker helper returned invalid response payload: {e}"
+        ))
+    })?;
+
+    let path = parsed.path.trim().to_string();
+    if path.is_empty() {
+        return Err(ApiError::BadRequest("directory selection cancelled".into()));
+    }
+
+    Ok(path)
+}
+
+fn map_host_path_to_container_path(selected_path: &str) -> Result<String, ApiError> {
+    let host_root = std::env::var("RUSTFIN_MEDIA_HOST_PATH").unwrap_or_default();
+    let host_root = host_root.trim();
+    let in_container = std::path::Path::new("/.dockerenv").exists();
+    if host_root.is_empty() {
+        if in_container {
+            return Err(ApiError::BadRequest(
+                "media host root is not configured; set RUSTFIN_MEDIA_HOST_PATH and restart with ./scripts/start.sh".into(),
+            ));
+        }
+        return Ok(selected_path.to_string());
+    }
+
+    let container_root = std::env::var("RUSTFIN_MEDIA_CONTAINER_ROOT")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/media".into());
+
+    let normalize = |s: &str| -> String {
+        s.trim()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string()
+    };
+
+    let host_norm = normalize(host_root);
+    let selected_norm = normalize(selected_path);
+
+    if selected_norm == host_norm {
+        return Ok(container_root);
+    }
+
+    let prefix = format!("{host_norm}/");
+    if let Some(rel) = selected_norm.strip_prefix(&prefix) {
+        return Ok(format!("{}/{}", container_root.trim_end_matches('/'), rel));
+    }
+
+    Err(ApiError::BadRequest(format!(
+        "selected path is outside mounted media root ({host_root}); choose a folder inside it"
+    )))
 }
 
 #[cfg(target_os = "macos")]
@@ -1580,19 +1680,10 @@ POSIX path of chosenFolder"#;
 
 #[cfg(not(target_os = "macos"))]
 fn open_directory_picker_native() -> Result<String, ApiError> {
-    // Containerized Linux builds cannot show host desktop pickers.
-    // In that case, fall back to common media mount locations.
+    // Containerized builds cannot show host desktop pickers.
     if std::path::Path::new("/.dockerenv").exists() {
-        let candidates = ["/media", "/mnt/media", "/data/media"];
-        if let Some(path) = candidates
-            .iter()
-            .find(|p| std::path::Path::new(p).exists())
-            .map(|p| (*p).to_string())
-        {
-            return Ok(path);
-        }
         return Err(ApiError::BadRequest(
-            "directory picker is unavailable in this container; enter the path manually".into(),
+            "native directory picker is unavailable in this container; use ./scripts/start.sh so Browse can open the host file picker".into(),
         ));
     }
 

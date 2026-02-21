@@ -90,6 +90,14 @@ The easiest way to run Rustyfin is with the repo scripts:
 `start.sh` handles temp-directory permission issues, creates a default media path,
 and starts everything with Docker Compose.
 
+When using the Admin `Browse` button in Docker mode, Rustyfin starts a local
+host-side picker helper so the native OS directory dialog can open. Pick a
+directory inside your mounted media root (`RUSTFIN_MEDIA_PATH`, default:
+`./media`) so the container can access it.
+
+If `Browse` does not open a native dialog, restart via `./scripts/start.sh`
+(not plain `docker compose up`) so helper env/permissions are applied.
+
 Use a different compose file when needed:
 
 ```bash
