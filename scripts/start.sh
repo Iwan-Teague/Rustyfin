@@ -96,7 +96,188 @@ ui_locked=false
 # Default media path for first-time setup on any machine.
 MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-$REPO_ROOT/media}"
 mkdir -p "$MEDIA_PATH" || die "Failed to create media path: $MEDIA_PATH"
+MEDIA_PATH="$(cd "$MEDIA_PATH" && pwd -P)" || die "Failed to resolve media path: $MEDIA_PATH"
+[[ -d "$MEDIA_PATH" ]] || die "Resolved media path is not a directory: $MEDIA_PATH"
+[[ -r "$MEDIA_PATH" ]] || die "Media path is not readable: $MEDIA_PATH"
+[[ -x "$MEDIA_PATH" ]] || die "Media path is not traversable: $MEDIA_PATH"
 export RUSTFIN_MEDIA_PATH="$MEDIA_PATH"
+
+PICKER_HELPER_PORT="${RUSTFIN_PICKER_HELPER_PORT:-43110}"
+PICKER_HELPER_HOST="${RUSTFIN_PICKER_HELPER_HOST:-0.0.0.0}"
+PICKER_HELPER_PID_FILE="$SAFE_TMP_DIR/directory-picker-helper.pid"
+PICKER_HELPER_LOG_FILE="$SAFE_TMP_DIR/directory-picker-helper.log"
+PICKER_HELPER_SCRIPT="$SAFE_TMP_DIR/directory-picker-helper.py"
+
+start_directory_picker_helper() {
+  local enabled="${RUSTFIN_ENABLE_PICKER_HELPER:-1}"
+  if [[ "$enabled" == "0" ]]; then
+    warn "Directory picker helper disabled (RUSTFIN_ENABLE_PICKER_HELPER=0)."
+    return
+  fi
+
+  local py_bin=""
+  if command -v python3 >/dev/null 2>&1; then
+    py_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    py_bin="python"
+  else
+    warn "Python not found; native host directory picker helper not started."
+    return
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:${PICKER_HELPER_PORT}/health" >/dev/null 2>&1; then
+      info "Directory picker helper already running on port ${PICKER_HELPER_PORT}."
+      return
+    fi
+  fi
+
+  if [[ -f "$PICKER_HELPER_PID_FILE" ]]; then
+    local existing_pid
+    existing_pid="$(cat "$PICKER_HELPER_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      info "Directory picker helper already running (pid $existing_pid)."
+      return
+    fi
+    rm -f "$PICKER_HELPER_PID_FILE"
+  fi
+
+  cat > "$PICKER_HELPER_SCRIPT" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+import platform
+import shutil
+import subprocess
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+HOST = os.environ.get("RUSTFIN_PICKER_HELPER_HOST", "0.0.0.0")
+PORT = int(os.environ.get("RUSTFIN_PICKER_HELPER_PORT", "43110"))
+
+def pick_directory():
+    system = platform.system()
+    if system == "Darwin":
+        script = 'set chosenFolder to choose folder with prompt "Select a media directory for Rustyfin"\nPOSIX path of chosenFolder'
+        out = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if out.returncode == 0:
+            return out.stdout.strip()
+        err = (out.stderr or "").strip()
+        if "User canceled" in err or "(-128)" in err:
+            return ""
+        raise RuntimeError(err or "folder picker failed")
+
+    if system == "Linux":
+        if shutil.which("zenity"):
+            out = subprocess.run(
+                ["zenity", "--file-selection", "--directory", "--title=Select a media directory for Rustyfin"],
+                capture_output=True,
+                text=True,
+            )
+            if out.returncode == 0:
+                return (out.stdout or "").strip()
+            if out.returncode == 1:
+                return ""
+            raise RuntimeError((out.stderr or "").strip() or "zenity folder picker failed")
+        if shutil.which("kdialog"):
+            out = subprocess.run(
+                ["kdialog", "--getexistingdirectory", ".", "Select a media directory for Rustyfin"],
+                capture_output=True,
+                text=True,
+            )
+            if out.returncode == 0:
+                return (out.stdout or "").strip()
+            if out.returncode == 1:
+                return ""
+            raise RuntimeError((out.stderr or "").strip() or "kdialog folder picker failed")
+        raise RuntimeError("no supported Linux picker found (install zenity or kdialog)")
+
+    if system == "Windows":
+        ps_script = r"""
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select a media directory for Rustyfin'
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"""
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+        )
+        if out.returncode == 0:
+            return (out.stdout or "").strip()
+        raise RuntimeError((out.stderr or "").strip() or "PowerShell folder picker failed")
+
+    raise RuntimeError(f"unsupported host OS for picker helper: {system}")
+
+class Handler(BaseHTTPRequestHandler):
+    def _write_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._write_json(200, {"ok": True})
+        else:
+            self._write_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path != "/pick":
+            self._write_json(404, {"error": "not found"})
+            return
+        try:
+            selected = pick_directory()
+            if not selected:
+                self._write_json(400, {"error": "directory selection cancelled"})
+                return
+            self._write_json(200, {"path": selected})
+        except Exception as exc:
+            self._write_json(500, {"error": str(exc)})
+
+    def log_message(self, format, *args):
+        return
+
+def main():
+    server = HTTPServer((HOST, PORT), Handler)
+    server.serve_forever()
+
+if __name__ == "__main__":
+    main()
+PY
+  chmod 700 "$PICKER_HELPER_SCRIPT"
+
+  nohup env RUSTFIN_PICKER_HELPER_PORT="$PICKER_HELPER_PORT" \
+    RUSTFIN_PICKER_HELPER_HOST="$PICKER_HELPER_HOST" \
+    "$py_bin" "$PICKER_HELPER_SCRIPT" </dev/null >>"$PICKER_HELPER_LOG_FILE" 2>&1 &
+  local helper_pid=$!
+  echo "$helper_pid" > "$PICKER_HELPER_PID_FILE"
+
+  if command -v curl >/dev/null 2>&1; then
+    for _ in $(seq 1 20); do
+      if curl -fsS "http://127.0.0.1:${PICKER_HELPER_PORT}/health" >/dev/null 2>&1; then
+        info "Directory picker helper started on http://127.0.0.1:${PICKER_HELPER_PORT} (pid $helper_pid)"
+        return
+      fi
+      sleep 0.2
+    done
+    warn "Directory picker helper did not report healthy; check: $PICKER_HELPER_LOG_FILE"
+  else
+    info "Directory picker helper started (pid $helper_pid)"
+  fi
+}
+
+start_directory_picker_helper
+
+export RUSTFIN_PICKER_HELPER_PORT="$PICKER_HELPER_PORT"
+export RUSTFIN_DIRECTORY_PICKER_HELPER_URL="${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:${PICKER_HELPER_PORT}/pick}"
+export RUSTFIN_MEDIA_HOST_PATH="${RUSTFIN_MEDIA_HOST_PATH:-$RUSTFIN_MEDIA_PATH}"
+export RUSTFIN_MEDIA_CONTAINER_ROOT="${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}"
 
 is_port_in_use() {
   local port="$1"

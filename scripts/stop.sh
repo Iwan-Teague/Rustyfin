@@ -56,4 +56,26 @@ export TMPDIR="$SAFE_TMP_DIR"
 
 info "Stopping Rustyfin stack..."
 docker compose -f "$COMPOSE_FILE" down --remove-orphans
+
+PICKER_HELPER_PID_FILE="$SAFE_TMP_DIR/directory-picker-helper.pid"
+if [[ -f "$PICKER_HELPER_PID_FILE" ]]; then
+  helper_pid="$(cat "$PICKER_HELPER_PID_FILE" 2>/dev/null || true)"
+  if [[ -n "${helper_pid:-}" ]] && kill -0 "$helper_pid" 2>/dev/null; then
+    info "Stopping directory picker helper (pid $helper_pid)..."
+    kill "$helper_pid" 2>/dev/null || true
+  fi
+  rm -f "$PICKER_HELPER_PID_FILE"
+fi
+
+PICKER_HELPER_PORT="${RUSTFIN_PICKER_HELPER_PORT:-43110}"
+if command -v lsof >/dev/null 2>&1; then
+  helper_pids="$(lsof -ti tcp:${PICKER_HELPER_PORT} -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$helper_pids" ]]; then
+    info "Stopping picker helper listener(s) on port ${PICKER_HELPER_PORT}..."
+    for pid in $helper_pids; do
+      kill "$pid" 2>/dev/null || true
+    done
+  fi
+fi
+
 success "Rustyfin stack stopped."

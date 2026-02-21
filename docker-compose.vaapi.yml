@@ -8,6 +8,8 @@ services:
     container_name: rustfin-vaapi
     ports:
       - "8096:8096"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - rustfin-config:/config
       - rustfin-cache:/cache
@@ -18,6 +20,9 @@ services:
     environment:
       - RUSTFIN_ADMIN_PASSWORD=changeme
       - RUST_LOG=info
+      - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
+      - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-/Users/iwanteague/Media}
+      - RUSTFIN_MEDIA_CONTAINER_ROOT=/media
     restart: unless-stopped
 
 volumes:

@@ -41,7 +41,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [userEdits, setUserEdits] = useState<Record<string, UserEditState>>({});
 
-  const [newLib, setNewLib] = useState({ name: '', kind: 'movies', path: '/media' });
+  const [newLib, setNewLib] = useState({ name: '', kind: 'movies', path: '' });
   const [newUser, setNewUser] = useState({
     username: '',
     password: '',
@@ -111,7 +111,7 @@ export default function AdminPage() {
         }),
       });
       setOk('Library created');
-      setNewLib({ name: '', kind: 'movies', path: '/media' });
+      setNewLib({ name: '', kind: 'movies', path: '' });
       await loadData();
     } catch (err: any) {
       setErr(err.message || 'Failed to create library');
