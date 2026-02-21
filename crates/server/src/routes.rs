@@ -2029,7 +2029,7 @@ fn open_directory_picker_native() -> Result<String, ApiError> {
 
     #[cfg(target_os = "windows")]
     {
-        return open_directory_picker_windows();
+        open_directory_picker_windows()
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]

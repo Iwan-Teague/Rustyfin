@@ -60,9 +60,11 @@ async fn login(server: &TestServer, username: &str, password: &str) -> String {
 fn create_fake_ffmpeg_script() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("rf_fake_ffmpeg_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("fake_ffmpeg.sh");
 
-    let content = r#"#!/usr/bin/env bash
+    #[cfg(unix)]
+    {
+        let script = dir.join("fake_ffmpeg.sh");
+        let content = r#"#!/usr/bin/env bash
 set -euo pipefail
 
 out="${@: -1}"
@@ -93,16 +95,66 @@ fi
 
 sleep 30
 "#;
-
-    std::fs::write(&script, content).unwrap();
-    #[cfg(unix)]
-    {
+        std::fs::write(&script, content).unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();
+        script
     }
-    script
+
+    #[cfg(windows)]
+    {
+        // On Windows, create a PowerShell wrapper script invoked via a .cmd launcher.
+        // The .cmd file is what tokio::process::Command will execute.
+        let ps_script = dir.join("fake_ffmpeg.ps1");
+        let ps_content = r#"
+$args_list = $args
+$out = $args_list[$args_list.Count - 1]
+$seg_pattern = ""
+for ($i = 0; $i -lt $args_list.Count; $i++) {
+    if ($args_list[$i] -eq "-hls_segment_filename" -and ($i + 1) -lt $args_list.Count) {
+        $seg_pattern = $args_list[$i + 1]
+    }
+}
+
+$out_dir = Split-Path -Parent $out
+if ($out_dir -and !(Test-Path $out_dir)) {
+    New-Item -ItemType Directory -Path $out_dir -Force | Out-Null
+}
+
+$playlist = @"
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:4
+#EXT-X-MEDIA-SEQUENCE:0
+#EXTINF:4.0,
+seg_00000.ts
+"@
+Set-Content -Path $out -Value $playlist -NoNewline
+
+if ($seg_pattern -ne "") {
+    $seg = $seg_pattern -replace "%05d", "00000"
+    $seg_dir = Split-Path -Parent $seg
+    if ($seg_dir -and !(Test-Path $seg_dir)) {
+        New-Item -ItemType Directory -Path $seg_dir -Force | Out-Null
+    }
+    Set-Content -Path $seg -Value "FAKE_TS" -NoNewline
+}
+
+Start-Sleep -Seconds 30
+"#;
+        std::fs::write(&ps_script, ps_content).unwrap();
+
+        let cmd_script = dir.join("fake_ffmpeg.cmd");
+        let _ps_path_escaped = ps_script.to_string_lossy().replace('\\', "\\\\");
+        let cmd_content = format!(
+            "@echo off\r\npowershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{}\" %*\r\n",
+            ps_script.to_string_lossy()
+        );
+        std::fs::write(&cmd_script, cmd_content).unwrap();
+        cmd_script
+    }
 }
 
 async fn test_app_with_fake_ffmpeg() -> TestServer {
