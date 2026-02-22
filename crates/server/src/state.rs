@@ -39,4 +39,5 @@ pub struct AppState {
     pub transcoder: Arc<rustfin_transcoder::session::SessionManager>,
     pub cache_dir: std::path::PathBuf,
     pub events: tokio::sync::broadcast::Sender<ServerEvent>,
+    pub watch_party: Arc<crate::watch_party::manager::WatchPartyManager>,
 }

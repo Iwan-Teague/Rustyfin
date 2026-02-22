@@ -40,6 +40,9 @@ async fn test_app() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);
@@ -191,6 +194,9 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);
@@ -720,6 +726,9 @@ async fn stream_file_with_range_returns_206() {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_stream_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
     let app = rustfin_server::routes::build_router(state);
     let server = TestServer::new(app).unwrap();
@@ -1244,6 +1253,9 @@ async fn test_app_fresh() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);
