@@ -1,11 +1,12 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMessage {
     Auth { token: String },
     Play { position_ms: u64 },
     Pause { position_ms: u64 },
     Seek { position_ms: u64 },
     Ping,
+    Pong,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

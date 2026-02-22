@@ -36,9 +36,15 @@ impl Default for RoomPolicy {
 }
 
 pub fn can_play_pause(role: &str, policy: &RoomPolicy) -> bool {
-    role == "host" || role == "controller" || (role == "viewer" && policy.allow_non_host_play_pause)
+    if role == "host" {
+        return true;
+    }
+    policy.allow_non_host_play_pause && (role == "controller" || role == "viewer")
 }
 
 pub fn can_seek(role: &str, policy: &RoomPolicy) -> bool {
-    role == "host" || role == "controller" || (role == "viewer" && policy.allow_non_host_seek)
+    if role == "host" {
+        return true;
+    }
+    policy.allow_non_host_seek && (role == "controller" || role == "viewer")
 }

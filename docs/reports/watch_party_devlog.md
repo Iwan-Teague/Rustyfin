@@ -93,3 +93,29 @@
   - `cargo fmt --all` ✅
   - `cargo clippy --workspace --all-targets -- -D warnings` ✅
   - `cargo test` ✅
+
+## Stage 5 - WebSocket runtime/control plane
+- Expanded runtime manager in `crates/server/src/watch_party/manager.rs`:
+  - authoritative `PlaybackState`
+  - `PlaybackAction` apply/update helper
+  - room activity tracking + bounded active-room guard
+  - broadcast channel per room for fanout
+- Implemented WS protocol in `crates/server/src/watch_party/protocol.rs`:
+  - client: `auth`, `play`, `pause`, `seek`, `ping`, `pong`
+  - server: `state`, `presence`, `error`, `pong`
+  - strict serde validation with tagged messages and unknown-field rejection
+- Implemented hardened WS endpoint in `crates/server/src/watch_party/ws.rs`:
+  - origin validation (same-origin + optional `RUSTFIN_WS_ALLOWED_ORIGINS`)
+  - connect rate limiting (in-memory limiter)
+  - first-message auth deadline (JWT in first message, not URL query)
+  - membership and ACL enforcement before socket activation
+  - per-message rate limiting and text size validation
+  - idle timeout + periodic ping
+  - permission checks on every control message (`play/pause/seek`)
+  - authoritative state/presence broadcast with lag recovery snapshot
+  - redacted/safe logging (no token/message body logging)
+- Updated role policy checks in `crates/server/src/watch_party/permissions.rs` to enforce host-vs-non-host toggles.
+- Validation commands:
+  - `cargo fmt --all` ✅
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo test` ✅
