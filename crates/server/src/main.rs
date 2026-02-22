@@ -146,6 +146,9 @@ async fn main() -> anyhow::Result<()> {
         transcoder: session_mgr,
         cache_dir,
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = rustfin_server::routes::build_router(app_state);

@@ -3,6 +3,10 @@ const apiBaseUrl = process.env.RUSTYFIN_API_BASE_URL || 'http://localhost:8096';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  eslint: {
+    // Linting runs in dedicated CI/test scripts; keep production build resilient.
+    ignoreDuringBuilds: true,
+  },
   async rewrites() {
     return [
       {

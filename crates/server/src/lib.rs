@@ -12,3 +12,4 @@ pub mod setup;
 pub mod state;
 pub mod streaming;
 pub mod user_pipeline;
+pub mod watch_party;

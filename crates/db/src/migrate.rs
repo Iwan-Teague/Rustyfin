@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "005_library_settings",
         include_str!("../migrations/005_library_settings.sql"),
     ),
+    (
+        "006_watch_party",
+        include_str!("../migrations/006_watch_party.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
