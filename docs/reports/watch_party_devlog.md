@@ -41,3 +41,28 @@
   - `cargo fmt --all` ✅
   - `cargo clippy --workspace --all-targets -- -D warnings` ✅
   - `cargo test` ✅
+
+## Stage 3 - Server scaffolding and router mount
+- Enabled Axum WebSocket feature in workspace dependency:
+  - `Cargo.toml` (`axum` features now include `ws`)
+- Added `watch_party` server module tree:
+  - `crates/server/src/watch_party/mod.rs`
+  - `crates/server/src/watch_party/router.rs`
+  - `crates/server/src/watch_party/handlers.rs`
+  - `crates/server/src/watch_party/manager.rs`
+  - `crates/server/src/watch_party/protocol.rs`
+  - `crates/server/src/watch_party/permissions.rs`
+  - `crates/server/src/watch_party/ws.rs`
+- Wired module into server:
+  - `crates/server/src/lib.rs` exported `watch_party`
+  - `crates/server/src/state.rs` added `watch_party: Arc<WatchPartyManager>`
+  - `crates/server/src/main.rs` instantiates `WatchPartyManager`
+  - `crates/server/src/routes.rs` nests `/api/v1/watch-party`
+- Updated test app state constructors in:
+  - `crates/server/tests/integration.rs`
+- Validation commands:
+  - `cargo fmt --all` ✅
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo test` ✅
+- Note:
+  - Initial `cargo clippy` run needed a one-time dependency fetch (`tokio-tungstenite`) after enabling `axum/ws`.
