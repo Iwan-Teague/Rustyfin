@@ -66,3 +66,30 @@
   - `cargo test` ✅
 - Note:
   - Initial `cargo clippy` run needed a one-time dependency fetch (`tokio-tungstenite`) after enabling `axum/ws`.
+
+## Stage 4 - REST endpoints (room + inbox)
+- Implemented watch-party REST handlers in:
+  - `crates/server/src/watch_party/handlers.rs`
+- Endpoints implemented under `/api/v1/watch-party`:
+  - `GET /users`
+  - `POST /eligible-libraries`
+  - `POST /rooms`
+  - `GET /rooms/{room_id}`
+  - `POST /rooms/{room_id}/join`
+  - `POST /rooms/{room_id}/leave`
+  - `POST /rooms/{room_id}/end`
+  - `GET /invites`
+  - `POST /invites/{room_id}/decline`
+- Server-side validations and controls added:
+  - item must be `movie` or `episode`
+  - host and invitees must have access to item library (admins bypass library ACL checks)
+  - invite deduplication and max invitee cap
+  - policy validation (`default_join_role` restricted to `viewer|controller`)
+  - optional room password normalization + Argon2 hashing + join-time verification
+  - invite-only room enforcement on room details/join
+  - rate limiting for create/join (`ApiError::TooManyRequests`)
+  - host-only room end action
+- Validation commands:
+  - `cargo fmt --all` ✅
+  - `cargo clippy --workspace --all-targets -- -D warnings` ✅
+  - `cargo test` ✅
