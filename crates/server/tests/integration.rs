@@ -88,7 +88,14 @@ async fn test_app_http() -> TestServer {
     };
 
     let app = build_router(state);
-    TestServer::builder().http_transport().build(app).unwrap()
+    for _ in 0..12 {
+        if let Ok(server) = TestServer::builder().http_transport().build(app.clone()) {
+            return server;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    }
+
+    panic!("failed to create HTTP transport test server for websocket tests");
 }
 
 /// Helper: login and return JWT token.
