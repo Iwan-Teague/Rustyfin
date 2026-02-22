@@ -89,6 +89,16 @@ The easiest way to run Rustyfin is with the repo scripts:
 
 `start.sh` handles temp-directory permission issues, creates a default media path,
 and starts everything with Docker Compose.
+By default it rebuilds images each run (cache-enabled, so code changes apply without
+always redownloading everything). For a strict no-cache rebuild, use:
+
+```bash
+./scripts/start.sh --full-rebuild
+```
+
+`start.sh` also detects your primary LAN IP and prints `UI (LAN)` / `Backend (LAN)`
+URLs so devices on the same network can connect. To force a specific advertised host,
+set `RUSTFIN_PUBLIC_HOST` before starting.
 
 To enable TMDB metadata/artwork enrichment during scans (posters, backdrops,
 overview/year improvements), set a TMDB API key in **Admin → TMDB Metadata**.
