@@ -18,6 +18,7 @@ export default function NavBar() {
         <span className="chip chip-accent hidden md:inline-flex">Home Server Streaming</span>
 
         <a href="/libraries" className="btn-ghost px-3 py-2 text-sm sm:text-base">Libraries</a>
+        <a href="/watch-party" className="btn-ghost px-3 py-2 text-sm sm:text-base">Watch Party</a>
 
         {!loading && me?.role === 'admin' && (
           <a href="/admin" className="btn-ghost px-3 py-2 text-sm sm:text-base">Admin</a>
