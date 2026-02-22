@@ -40,10 +40,62 @@ async fn test_app() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);
     TestServer::new(app).unwrap()
+}
+
+async fn test_app_http() -> TestServer {
+    let pool = rustfin_db::connect(":memory:").await.unwrap();
+    rustfin_db::migrate::run(&pool).await.unwrap();
+
+    rustfin_db::repo::settings::insert_defaults(&pool)
+        .await
+        .unwrap();
+
+    rustfin_db::repo::users::create_user(&pool, "admin", "admin_secure_123", "admin")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_completed", "true")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&pool, "setup_state", "Completed")
+        .await
+        .unwrap();
+
+    let tc_config = rustfin_transcoder::TranscoderConfig {
+        transcode_dir: std::env::temp_dir().join(format!("rf_test_{}", std::process::id())),
+        max_concurrent: 2,
+        ..Default::default()
+    };
+    let transcoder =
+        std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+
+    let (events_tx, _) = tokio::sync::broadcast::channel(64);
+    let state = AppState {
+        db: pool,
+        jwt_secret: "test-secret-key".to_string(),
+        transcoder,
+        cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+    };
+
+    let app = build_router(state);
+    for _ in 0..12 {
+        if let Ok(server) = TestServer::builder().http_transport().build(app.clone()) {
+            return server;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+    }
+
+    panic!("failed to create HTTP transport test server for websocket tests");
 }
 
 /// Helper: login and return JWT token.
@@ -191,6 +243,9 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);
@@ -324,6 +379,90 @@ fn auth_hdr(token: &str) -> (axum::http::HeaderName, axum::http::HeaderValue) {
             .parse::<axum::http::HeaderValue>()
             .unwrap(),
     )
+}
+
+async fn create_library_and_first_item(
+    server: &TestServer,
+    admin_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+    library_name: &str,
+    media_file_name: &str,
+) -> (String, String, PathBuf) {
+    let tmp = std::env::temp_dir().join(format!("rf_watch_party_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join(media_file_name), "fake video data").unwrap();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "name": library_name,
+            "kind": "movies",
+            "paths": [tmp.to_str().unwrap()]
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let body: Value = resp.json();
+    let library_id = body["id"].as_str().unwrap().to_string();
+
+    let resp = server
+        .post(&format!("/api/v1/libraries/{library_id}/scan"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status(axum::http::StatusCode::ACCEPTED);
+
+    for _ in 0..20 {
+        let resp = server
+            .get(&format!("/api/v1/libraries/{library_id}/items"))
+            .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+            .await;
+        resp.assert_status_ok();
+        let items: Vec<Value> = resp.json();
+        if let Some(first) = items.first() {
+            let item_id = first["id"].as_str().unwrap().to_string();
+            return (library_id, item_id, tmp);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    panic!("library scan did not produce items in time");
+}
+
+async fn create_user_with_libraries(
+    server: &TestServer,
+    admin_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+    username: &str,
+    password: &str,
+    role: &str,
+    library_ids: &[String],
+) -> String {
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "username": username,
+            "password": password,
+            "role": role,
+            "library_ids": library_ids
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    body["id"].as_str().unwrap().to_string()
+}
+
+async fn create_watch_party_room(
+    server: &TestServer,
+    auth_hdr: &(axum::http::HeaderName, axum::http::HeaderValue),
+    payload: Value,
+) -> String {
+    let resp = server
+        .post("/api/v1/watch-party/rooms")
+        .add_header(auth_hdr.0.clone(), auth_hdr.1.clone())
+        .json(&payload)
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
+    let body: Value = resp.json();
+    body["room_id"].as_str().unwrap().to_string()
 }
 
 #[tokio::test]
@@ -720,6 +859,9 @@ async fn stream_file_with_range_returns_206() {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_stream_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
     let app = rustfin_server::routes::build_router(state);
     let server = TestServer::new(app).unwrap();
@@ -1218,6 +1360,328 @@ async fn user_management_crud() {
 }
 
 // ---------------------------------------------------------------------------
+// Watch party tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn watch_party_create_room_rejects_invitee_without_library_access() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let (allowed_library_id, item_id, tmp_allowed) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "Watch Allowed",
+        "Allowed Movie (2024).mp4",
+    )
+    .await;
+
+    let (restricted_library_id, _, tmp_restricted) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "Watch Restricted",
+        "Restricted Movie (2024).mp4",
+    )
+    .await;
+
+    let allowed_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "watch_allowed_user",
+        "watch_allowed_user_pass_123",
+        "user",
+        std::slice::from_ref(&allowed_library_id),
+    )
+    .await;
+
+    let restricted_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "watch_restricted_user",
+        "watch_restricted_user_pass_123",
+        "user",
+        std::slice::from_ref(&restricted_library_id),
+    )
+    .await;
+
+    let resp = server
+        .post("/api/v1/watch-party/rooms")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "item_id": item_id,
+            "invites": [
+                { "user_id": allowed_user_id, "role": "viewer" },
+                { "user_id": restricted_user_id, "role": "viewer" }
+            ],
+            "policy": {
+                "allow_non_host_play_pause": true,
+                "allow_non_host_seek": false,
+                "default_join_role": "viewer",
+                "invite_only": true
+            }
+        }))
+        .await;
+
+    resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    std::fs::remove_dir_all(&tmp_allowed).ok();
+    std::fs::remove_dir_all(&tmp_restricted).ok();
+}
+
+#[tokio::test]
+async fn watch_party_invites_and_password_join_flow() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let (library_id, item_id, tmp) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "Watch Password",
+        "Password Movie (2024).mp4",
+    )
+    .await;
+
+    let invitee_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "watch_invitee_user",
+        "watch_invitee_user_pass_123",
+        "user",
+        std::slice::from_ref(&library_id),
+    )
+    .await;
+    let invitee_token = login(&server, "watch_invitee_user", "watch_invitee_user_pass_123").await;
+    let invitee_hdr = auth_hdr(&invitee_token);
+
+    let room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "item_id": item_id,
+            "invites": [
+                { "user_id": invitee_id, "role": "viewer" }
+            ],
+            "password": "party-pass",
+            "policy": {
+                "allow_non_host_play_pause": true,
+                "allow_non_host_seek": false,
+                "default_join_role": "viewer",
+                "invite_only": true
+            }
+        }),
+    )
+    .await;
+
+    let resp = server
+        .get("/api/v1/watch-party/invites")
+        .add_header(invitee_hdr.0.clone(), invitee_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let invites: Vec<Value> = resp.json();
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0]["room_id"], room_id);
+    assert_eq!(invites[0]["password_required"], true);
+
+    let resp = server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(invitee_hdr.0.clone(), invitee_hdr.1.clone())
+        .json(&json!({ "password": "wrong-pass" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::FORBIDDEN);
+
+    let resp = server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(invitee_hdr.0.clone(), invitee_hdr.1.clone())
+        .json(&json!({ "password": "party-pass" }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["role"], "viewer");
+
+    let resp = server
+        .get("/api/v1/watch-party/invites")
+        .add_header(invitee_hdr.0.clone(), invitee_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let invites: Vec<Value> = resp.json();
+    assert!(invites.is_empty());
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn watch_party_websocket_requires_auth_and_enforces_permissions() {
+    let server = test_app_http().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let (library_id, item_id, tmp) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "Watch WS",
+        "WebSocket Movie (2024).mp4",
+    )
+    .await;
+
+    let viewer_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "watch_ws_viewer",
+        "watch_ws_viewer_pass_123",
+        "user",
+        std::slice::from_ref(&library_id),
+    )
+    .await;
+    let outsider_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "watch_ws_outsider",
+        "watch_ws_outsider_pass_123",
+        "user",
+        std::slice::from_ref(&library_id),
+    )
+    .await;
+    assert_ne!(viewer_id, outsider_id);
+
+    let room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "item_id": item_id,
+            "invites": [
+                { "user_id": viewer_id, "role": "viewer" }
+            ],
+            "policy": {
+                "allow_non_host_play_pause": false,
+                "allow_non_host_seek": false,
+                "default_join_role": "viewer",
+                "invite_only": true
+            }
+        }),
+    )
+    .await;
+
+    let viewer_token = login(&server, "watch_ws_viewer", "watch_ws_viewer_pass_123").await;
+    let viewer_hdr = auth_hdr(&viewer_token);
+    let outsider_token = login(&server, "watch_ws_outsider", "watch_ws_outsider_pass_123").await;
+
+    let resp = server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .json(&json!({}))
+        .await;
+    resp.assert_status_ok();
+
+    let ws_host_header = axum::http::header::HOST;
+    let ws_host_value = "watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+    let ws_origin_header = axum::http::header::ORIGIN;
+    let ws_origin_value = "http://watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+
+    let mut unauth_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    unauth_ws
+        .send_json(&json!({ "type": "play", "position_ms": 0 }))
+        .await;
+    let unauth_msg: Value = unauth_ws.receive_json().await;
+    assert_eq!(unauth_msg["type"], "error");
+    assert!(
+        unauth_msg["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("first websocket message must be auth")
+    );
+    unauth_ws.close().await;
+
+    let mut host_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    host_ws
+        .send_json(&json!({ "type": "auth", "token": admin_token }))
+        .await;
+    let host_state: Value = host_ws.receive_json().await;
+    assert_eq!(host_state["type"], "state");
+
+    let mut viewer_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    viewer_ws
+        .send_json(&json!({ "type": "auth", "token": viewer_token }))
+        .await;
+    let viewer_state: Value = viewer_ws.receive_json().await;
+    assert_eq!(viewer_state["type"], "state");
+
+    viewer_ws
+        .send_json(&json!({ "type": "play", "position_ms": 1000 }))
+        .await;
+
+    let mut viewer_error = None;
+    for _ in 0..6 {
+        let message: Value = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            viewer_ws.receive_json::<Value>(),
+        )
+        .await
+        .expect("viewer websocket should receive a response");
+        if message["type"] == "error" {
+            viewer_error = Some(message);
+            break;
+        }
+    }
+    let viewer_error = viewer_error.expect("viewer action should be rejected");
+    assert!(
+        viewer_error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("play/pause is not allowed")
+    );
+
+    let mut outsider_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    outsider_ws
+        .send_json(&json!({ "type": "auth", "token": outsider_token }))
+        .await;
+    let outsider_msg: Value = outsider_ws.receive_json().await;
+    assert_eq!(outsider_msg["type"], "error");
+    assert!(
+        outsider_msg["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("room membership not found")
+    );
+
+    host_ws.close().await;
+    viewer_ws.close().await;
+    outsider_ws.close().await;
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+// ---------------------------------------------------------------------------
 // Setup wizard tests
 // ---------------------------------------------------------------------------
 
@@ -1244,6 +1708,9 @@ async fn test_app_fresh() -> TestServer {
         transcoder,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
         events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
     };
 
     let app = build_router(state);

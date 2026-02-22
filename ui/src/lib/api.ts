@@ -1,5 +1,15 @@
 const API_BASE = '/api/v1';
 
+function resolveApiPath(path: string): string {
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+  if (path.startsWith(API_BASE)) {
+    return path;
+  }
+  return `${API_BASE}${path}`;
+}
+
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers: HeadersInit = {
@@ -8,7 +18,7 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
     ...((options.headers as Record<string, string>) || {}),
   };
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(resolveApiPath(path), { ...options, headers });
 
   if (res.status === 401) {
     if (typeof window !== 'undefined') {

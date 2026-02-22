@@ -8,3 +8,4 @@ pub mod playstate;
 pub mod settings;
 pub mod setup_session;
 pub mod users;
+pub mod watch_party;
