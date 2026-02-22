@@ -255,22 +255,19 @@ Response:
 
 ### 3.5 WebSocket design
 
-#### 3.5.1 Auth problem + solution (short-lived room WS token)
-Browsers can’t set custom headers in the WebSocket handshake. The safe pattern is:
-1) fetch a short-lived token using the normal REST auth header,
-2) open the WS with that short-lived token.
+#### 3.5.1 Auth problem + solution (first-message auth, no URL token)
+Browsers cannot attach arbitrary `Authorization` headers in the WebSocket handshake.
+To avoid leaking JWTs in query strings, use first-message authentication:
+1) open WebSocket on `/api/v1/watch-party/rooms/{room_id}/ws`,
+2) immediately send `{"type":"auth","token":"<jwt>"}` as the first message.
 
-Add:
-- `POST /rooms/{room_id}/ws-token` → returns `{ token }`
+Server behavior:
+- keep connection in unauthenticated state for a short deadline (e.g. 3 seconds),
+- validate JWT + room membership + library access before accepting control messages,
+- close the socket if auth is missing/invalid.
 
-Token contains:
-- `aud = "watch_party"`
-- `sub = user_id`
-- `room_id`
-- short expiration (e.g. 60s)
-
-Client then connects:
-- `wss://{host}/api/v1/watch-party/rooms/{room_id}/ws?t={token}`
+This keeps the primary auth token out of URL query parameters and aligns with OWASP
+guidance on minimizing token disclosure through logs/history/referrers.
 
 #### 3.5.2 Protocol messages
 All JSON with `type` discriminator.
@@ -410,8 +407,8 @@ Playback sync:
 
 ### Step 3 — WebSocket plumbing
 1. Enable axum `ws` feature.
-2. Implement WS token issuance endpoint.
-3. Add WS endpoint and in-memory room runtime.
+2. Add WS endpoint and in-memory room runtime.
+3. Implement first-message auth flow with deadline.
 4. Minimal sync: broadcast play/pause/seek and apply state.
 
 ### Step 4 — UI create page
@@ -429,7 +426,7 @@ MVP:
 - Poll `GET /invites` every 20–30s and show a badge.
 
 Upgrade path:
-- Add a small authenticated WebSocket “notification channel” using the same short-lived token pattern.
+- Add a small authenticated WebSocket “notification channel” using the same first-message auth pattern.
 
 ---
 
@@ -437,7 +434,7 @@ Upgrade path:
 
 - **TV libraries**: top-level items are series; must drill down to episodes.
 - **Large libraries**: current API returns all items; consider pagination later.
-- **Auth limitations**: browser WS can’t send Authorization headers, so use short-lived WS tokens.
+- **Auth limitations**: browser WS can’t send Authorization headers directly, so authenticate in the first WS message and enforce a short auth timeout.
 - **Password storage**: always store an Argon2 hash (never plaintext).
 - **Invite privacy**: inbox lists only invitations for the current user.
 - **Room takeover**: if host disconnects, room continues; consider “host reassignment” later.
@@ -451,4 +448,3 @@ Upgrade path:
 - Add per-user fine-grained permissions beyond role.
 - Add ready-state gating (“start when everyone ready”).
 - Add drift smoothing using measured RTT / ping.
-
