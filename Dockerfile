@@ -3,12 +3,24 @@ FROM rustlang/rust:nightly-bookworm AS builder
 
 WORKDIR /app
 
+ENV CARGO_NET_RETRY=10 \
+    CARGO_HTTP_TIMEOUT=120 \
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-# Build release binary
-RUN cargo build --release --bin rustfin-server
+# Build release binary (with retries for transient registry/network issues)
+RUN set -eu; \
+    for attempt in 1 2 3; do \
+      if cargo build --release --bin rustfin-server; then \
+        exit 0; \
+      fi; \
+      echo "cargo build failed (attempt ${attempt}/3); retrying..."; \
+      sleep $((attempt * 5)); \
+    done; \
+    exit 1
 
 # Runtime stage
 FROM debian:bookworm-slim

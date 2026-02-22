@@ -46,32 +46,34 @@ export default function RoomOptions({
           />
         </label>
 
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={allowPlayPause}
-            onChange={(e) => onAllowPlayPauseChange(e.target.checked)}
-          />
-          Allow non-host play/pause
-        </label>
+        <div className="space-y-2 rounded-xl border border-white/10 bg-black/15 p-3">
+          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={allowPlayPause}
+              onChange={(e) => onAllowPlayPauseChange(e.target.checked)}
+            />
+            Allow non-host play/pause
+          </label>
 
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={allowSeek}
-            onChange={(e) => onAllowSeekChange(e.target.checked)}
-          />
-          Allow non-host seek
-        </label>
+          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={allowSeek}
+              onChange={(e) => onAllowSeekChange(e.target.checked)}
+            />
+            Allow non-host seek
+          </label>
 
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={inviteOnly}
-            onChange={(e) => onInviteOnlyChange(e.target.checked)}
-          />
-          Invite-only room
-        </label>
+          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={inviteOnly}
+              onChange={(e) => onInviteOnlyChange(e.target.checked)}
+            />
+            Invite-only room
+          </label>
+        </div>
 
         <label className="block text-sm">
           <span className="mb-1 block text-xs uppercase tracking-wide muted">Default role for link joins</span>

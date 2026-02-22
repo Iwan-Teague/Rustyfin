@@ -494,7 +494,10 @@ pub async fn get_room(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     if policy.invite_only && me.is_none() {
-        return Err(ApiError::Forbidden("room is invite-only".into()).into());
+        return Err(ApiError::Forbidden(
+            "room is invite-only; this account must be invited by the host".into(),
+        )
+        .into());
     }
 
     let members = rustfin_db::repo::watch_party::list_members(&state.db, &room_id)
@@ -568,7 +571,10 @@ pub async fn join_room(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     if policy.invite_only && existing_member.is_none() {
-        return Err(ApiError::Forbidden("room is invite-only".into()).into());
+        return Err(ApiError::Forbidden(
+            "room is invite-only; password is not enough without an invite".into(),
+        )
+        .into());
     }
 
     if auth.user_id != room.host_user_id {

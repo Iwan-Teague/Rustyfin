@@ -538,6 +538,95 @@ async fn library_crud_flow() {
 }
 
 #[tokio::test]
+async fn scan_recreate_library_reuses_existing_media_rows() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    let tmp = std::env::temp_dir().join(format!("rf_recreate_scan_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("American Sniper.mp4"), "fake video bytes").unwrap();
+
+    let create_resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({ "name": "Desktop Test A", "kind": "movies", "paths": [tmp.to_str().unwrap()] }))
+        .await;
+    create_resp.assert_status(axum::http::StatusCode::CREATED);
+    let first_library_id = create_resp.json::<Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let scan_resp = server
+        .post(&format!("/api/v1/libraries/{first_library_id}/scan"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    scan_resp.assert_status(axum::http::StatusCode::ACCEPTED);
+
+    let mut first_items = Vec::new();
+    for _ in 0..15 {
+        let items_resp = server
+            .get(&format!("/api/v1/libraries/{first_library_id}/items"))
+            .add_header(hdr_name.clone(), hdr_val.clone())
+            .await;
+        items_resp.assert_status_ok();
+        first_items = items_resp.json::<Vec<Value>>();
+        if !first_items.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert!(
+        !first_items.is_empty(),
+        "initial library scan should produce at least one item"
+    );
+
+    let delete_resp = server
+        .delete(&format!("/api/v1/libraries/{first_library_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    delete_resp.assert_status_ok();
+
+    let create_resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({ "name": "Desktop Test B", "kind": "movies", "paths": [tmp.to_str().unwrap()] }))
+        .await;
+    create_resp.assert_status(axum::http::StatusCode::CREATED);
+    let second_library_id = create_resp.json::<Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let scan_resp = server
+        .post(&format!("/api/v1/libraries/{second_library_id}/scan"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    scan_resp.assert_status(axum::http::StatusCode::ACCEPTED);
+
+    let mut second_items = Vec::new();
+    for _ in 0..15 {
+        let items_resp = server
+            .get(&format!("/api/v1/libraries/{second_library_id}/items"))
+            .add_header(hdr_name.clone(), hdr_val.clone())
+            .await;
+        items_resp.assert_status_ok();
+        second_items = items_resp.json::<Vec<Value>>();
+        if !second_items.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert!(
+        !second_items.is_empty(),
+        "recreated library scan should still produce items for existing files"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
 async fn create_library_validates_kind() {
     let server = test_app().await;
     let token = login(&server, "admin", "admin_secure_123").await;

@@ -532,6 +532,19 @@ async fn build_state_message(
 ) -> Result<ServerMessage, AppError> {
     let snapshot = runtime.snapshot_state().await;
     let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    // While actively playing, project the current position forward from the last
+    // authoritative update so late joiners sync close to live host time.
+    let (position_ms, updated_ts_ms) = if snapshot.playing && now_ms > snapshot.updated_ts_ms {
+        let elapsed_ms = (now_ms - snapshot.updated_ts_ms) as u64;
+        (
+            snapshot.position_ms.saturating_add(elapsed_ms),
+            now_ms,
+        )
+    } else {
+        (snapshot.position_ms, snapshot.updated_ts_ms)
+    };
 
     let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
         .await
@@ -562,9 +575,9 @@ async fn build_state_message(
         room_id: room_id.to_string(),
         item_id: runtime.item_id.clone(),
         playing: snapshot.playing,
-        position_ms: snapshot.position_ms,
-        updated_ts_ms: snapshot.updated_ts_ms,
-        server_ts_ms: chrono::Utc::now().timestamp_millis(),
+        position_ms,
+        updated_ts_ms,
+        server_ts_ms: now_ms,
         members: member_summaries,
     })
 }

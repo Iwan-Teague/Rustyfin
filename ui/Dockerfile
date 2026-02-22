@@ -5,9 +5,22 @@ FROM node:22-bookworm-slim AS base
 FROM base AS deps
 WORKDIR /app
 
+ENV NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_FACTOR=2 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
+
 # Copy package files
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN set -eu; \
+    for attempt in 1 2 3; do \
+      if npm ci; then \
+        exit 0; \
+      fi; \
+      echo "npm ci failed (attempt ${attempt}/3); retrying..."; \
+      sleep $((attempt * 5)); \
+    done; \
+    exit 1
 
 # Rebuild the source code only when needed
 FROM base AS builder
