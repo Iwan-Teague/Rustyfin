@@ -179,13 +179,16 @@ export default function PlayerPage() {
         }
         const hls = new Hls();
         hlsRef.current = hls;
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          void video.play().catch(() => {});
+        });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (data?.fatal) {
             setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
           }
         });
-        hls.loadSource(data.hls_url);
         hls.attachMedia(video);
+        hls.loadSource(data.hls_url);
       }
     } catch (e: any) {
       setError(e.message || 'Failed to start HLS playback.');

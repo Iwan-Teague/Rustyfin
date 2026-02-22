@@ -60,6 +60,39 @@ type WsPongMessage = {
 
 type WsMessage = WsStateMessage | WsPresenceMessage | WsErrorMessage | WsPongMessage;
 
+type RuntimeConfig = {
+  backend_origin?: string | null;
+};
+
+function wsUrlForOrigin(origin: string, roomId: string): string {
+  const url = new URL(origin);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = `/api/v1/watch-party/rooms/${roomId}/ws`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+async function waitForVideoMetadata(
+  video: HTMLVideoElement,
+  timeoutMs = 5000,
+): Promise<void> {
+  if (video.readyState >= 1) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener('loadedmetadata', finish);
+      resolve();
+    };
+
+    video.addEventListener('loadedmetadata', finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
 export default function WatchPartyRoomPage() {
   const params = useParams();
   const router = useRouter();
@@ -191,7 +224,8 @@ export default function WatchPartyRoomPage() {
 
   const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
     const video = videoRef.current;
-    if (!video || !descriptor) return;
+    if (!video) return;
+    if (!video.currentSrc && !video.src) return;
 
     applyingRemoteRef.current = true;
 
@@ -211,62 +245,140 @@ export default function WatchPartyRoomPage() {
     window.setTimeout(() => {
       applyingRemoteRef.current = false;
     }, 60);
-  }, [descriptor]);
+  }, []);
 
   useEffect(() => {
     if (!joinedRole) return;
 
+    let cancelled = false;
+    let activeSocket: WebSocket | null = null;
+
     const token = localStorage.getItem('token');
     if (!token) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${protocol}://${window.location.host}/api/v1/watch-party/rooms/${roomId}/ws`;
-
-    const socket = new WebSocket(url);
-    wsRef.current = socket;
-
-    socket.onopen = () => {
+    const bindOpenSocket = (socket: WebSocket, candidateIndex: number) => {
+      activeSocket = socket;
+      wsRef.current = socket;
       setWsConnected(true);
+
+      if (candidateIndex > 0) {
+        setInfo('Connected to watch-party websocket via backend fallback.');
+      }
+
       socket.send(JSON.stringify({ type: 'auth', token }));
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as WsMessage;
+
+          if (payload.type === 'state') {
+            setRoomState(payload);
+            void applyRemoteState(payload);
+          } else if (payload.type === 'presence') {
+            setRoomState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                members: prev.members.map((member) =>
+                  member.user_id === payload.user_id
+                    ? { ...member, connected: payload.connected }
+                    : member,
+                ),
+              };
+            });
+          } else if (payload.type === 'error') {
+            setError(payload.message);
+          }
+        } catch {
+          setError('Invalid websocket message received');
+        }
+      };
+
+      socket.onerror = () => {
+        // onclose handles fallback/disconnect state.
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        setWsConnected(false);
+      };
     };
 
-    socket.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as WsMessage;
+    const attemptConnect = async () => {
+      const candidates: string[] = [wsUrlForOrigin(window.location.origin, roomId)];
 
-        if (payload.type === 'state') {
-          setRoomState(payload);
-          void applyRemoteState(payload);
-        } else if (payload.type === 'presence') {
-          setRoomState((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              members: prev.members.map((member) =>
-                member.user_id === payload.user_id
-                  ? { ...member, connected: payload.connected }
-                  : member,
-              ),
-            };
-          });
-        } else if (payload.type === 'error') {
-          setError(payload.message);
+      try {
+        const runtimeConfig = await fetch('/runtime-config', { cache: 'no-store' });
+        if (runtimeConfig.ok) {
+          const payload = (await runtimeConfig.json()) as RuntimeConfig;
+          if (payload.backend_origin) {
+            const directBackendWs = wsUrlForOrigin(payload.backend_origin, roomId);
+            if (!candidates.includes(directBackendWs)) {
+              candidates.push(directBackendWs);
+            }
+          }
         }
       } catch {
-        setError('Invalid websocket message received');
+        // Best-effort fallback lookup.
+      }
+
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (cancelled) return;
+
+        const candidate = candidates[index];
+        const socket = await new Promise<WebSocket | null>((resolve) => {
+          let settled = false;
+          const ws = new WebSocket(candidate);
+
+          const finish = (result: WebSocket | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(result);
+          };
+
+          ws.onopen = () => finish(ws);
+          ws.onerror = () => {};
+          ws.onclose = () => finish(null);
+
+          window.setTimeout(() => {
+            if (settled) return;
+            try {
+              ws.close();
+            } catch {
+              // no-op
+            }
+            finish(null);
+          }, 4_000);
+        });
+
+        if (!socket) {
+          continue;
+        }
+
+        if (cancelled) {
+          socket.close();
+          return;
+        }
+
+        bindOpenSocket(socket, index);
+        return;
+      }
+
+      if (!cancelled) {
+        setWsConnected(false);
+        setError(
+          'Watch-party websocket connection failed. Restart with ./scripts/start.sh --build and retry.',
+        );
       }
     };
 
-    socket.onerror = () => {
-      setError('Watch-party websocket connection failed');
-    };
-
-    socket.onclose = () => {
-      setWsConnected(false);
-    };
+    void attemptConnect();
 
     return () => {
-      socket.close();
+      cancelled = true;
+      if (activeSocket) {
+        activeSocket.close();
+      }
       wsRef.current = null;
       setWsConnected(false);
     };
@@ -303,13 +415,20 @@ export default function WatchPartyRoomPage() {
 
       setMode('direct');
       video.src = descriptor.direct_url;
-      await video.play().catch(() => {});
+      video.load();
+      await waitForVideoMetadata(video);
+
+      if (roomState) {
+        await applyRemoteState(roomState);
+      } else {
+        await video.play().catch(() => {});
+      }
     } catch (err: any) {
       setError(err?.message || 'Failed to start direct playback');
     } finally {
       setStartingDirect(false);
     }
-  }, [descriptor, destroyHls, stopSession]);
+  }, [descriptor, destroyHls, stopSession, roomState, applyRemoteState]);
 
   const startHls = useCallback(async () => {
     if (!descriptor) {
@@ -319,6 +438,7 @@ export default function WatchPartyRoomPage() {
 
     setStartingHls(true);
     setError('');
+    setInfo('Preparing transcoded stream…');
 
     try {
       const video = videoRef.current;
@@ -340,7 +460,13 @@ export default function WatchPartyRoomPage() {
 
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = session.hls_url;
-        await video.play().catch(() => {});
+        video.load();
+        await waitForVideoMetadata(video);
+        if (roomState) {
+          await applyRemoteState(roomState);
+        } else {
+          await video.play().catch(() => {});
+        }
       } else {
         const Hls = (await import('hls.js')).default;
         if (!Hls.isSupported()) {
@@ -348,20 +474,27 @@ export default function WatchPartyRoomPage() {
         }
         const hls = new Hls();
         hlsRef.current = hls;
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (roomState) {
+            void applyRemoteState(roomState);
+          } else {
+            void video.play().catch(() => {});
+          }
+        });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (data?.fatal) {
             setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
           }
         });
-        hls.loadSource(session.hls_url);
         hls.attachMedia(video);
+        hls.loadSource(session.hls_url);
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to start HLS playback');
     } finally {
       setStartingHls(false);
     }
-  }, [descriptor, destroyHls, stopSession]);
+  }, [descriptor, destroyHls, stopSession, roomState, applyRemoteState]);
 
   async function handleJoin() {
     setJoining(true);
@@ -423,8 +556,49 @@ export default function WatchPartyRoomPage() {
     );
   }
 
-  if (!room || !me) {
+  if (!me) {
     return null;
+  }
+
+  if (!room) {
+    const normalized = error.toLowerCase();
+    let hint = 'This room could not be opened for this account.';
+    if (normalized.includes('invite-only')) {
+      hint =
+        'This room is invite-only for this account. Ask the host to send an invite. A password alone does not bypass invite-only access.';
+    } else if (normalized.includes('library access denied')) {
+      hint =
+        'This account does not have access to the library containing this media. Ask an admin to grant library access.';
+    } else if (normalized.includes('not found')) {
+      hint = 'This room link is invalid or the room has already ended.';
+    }
+
+    return (
+      <div className="space-y-4 animate-rise">
+        <section className="panel space-y-3 p-6 sm:p-7">
+          <span className="chip chip-accent">Watch Party Room</span>
+          <h1 className="text-2xl font-semibold sm:text-3xl">Unable to open room</h1>
+          <p className="text-sm muted">{error || 'Failed to load watch party room.'}</p>
+          <p className="text-sm muted">{hint}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary px-4 py-2 text-sm"
+              onClick={() => void loadRoom()}
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              className="btn-primary px-4 py-2 text-sm"
+              onClick={() => router.push('/watch-party')}
+            >
+              Back to Watch Party
+            </button>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   return (

@@ -21,10 +21,12 @@ die()     { echo -e "${RED}[start] ERROR:${RESET} $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/start.sh [--build|--no-build] [--foreground] [--no-health-check] [-f <compose-file>]
+  ./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [-f <compose-file>]
 
 Options:
-  --build            Force image rebuild step (default behavior).
+  --build            Rebuild images (cached, default behavior).
+  --full-rebuild     Rebuild without cache (slowest, strictest).
+  --cached-build     Alias for --build.
   --no-build         Skip image rebuild step.
   --foreground       Run compose in foreground (default is detached).
   --no-health-check  Skip backend health wait loop.
@@ -37,13 +39,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BUILD=true
+NO_CACHE_BUILD=false
 DETACH=true
 HEALTH_CHECK=true
 COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --build) BUILD=true; shift ;;
+    --build|--cached-build) BUILD=true; NO_CACHE_BUILD=false; shift ;;
+    --full-rebuild) BUILD=true; NO_CACHE_BUILD=true; shift ;;
     --no-build) BUILD=false; shift ;;
     --foreground) DETACH=false; shift ;;
     --no-health-check) HEALTH_CHECK=false; shift ;;
@@ -79,6 +83,8 @@ export TMPDIR="$SAFE_TMP_DIR"
 user_backend_port="${RUSTFIN_BACKEND_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
+user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
+user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 
 if [[ -f "$RUNTIME_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
@@ -89,6 +95,8 @@ fi
 [[ -n "$user_backend_port" ]] && RUSTFIN_BACKEND_PORT="$user_backend_port"
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
+[[ -n "$user_browser_backend_origin" ]] && RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
+[[ -n "$user_ws_allowed_origins" ]] && RUSTFIN_WS_ALLOWED_ORIGINS="$user_ws_allowed_origins"
 
 # Migrate legacy repo-local default media root from older starts so Browse can
 # map typical user-selected folders without extra configuration.
@@ -314,6 +322,39 @@ pick_free_port() {
   echo "$p"
 }
 
+detect_primary_lan_ipv4() {
+  local uname_s
+  uname_s="$(uname -s 2>/dev/null || echo "")"
+  local ip=""
+
+  case "$uname_s" in
+    Darwin)
+      local iface
+      iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+      if [[ -n "$iface" ]]; then
+        ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+      fi
+      if [[ -z "$ip" ]]; then
+        ip="$(ipconfig getifaddr en0 2>/dev/null || true)"
+      fi
+      if [[ -z "$ip" ]]; then
+        ip="$(ipconfig getifaddr en1 2>/dev/null || true)"
+      fi
+      ;;
+    Linux)
+      ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+      ;;
+    *)
+      ;;
+  esac
+
+  if [[ -z "$ip" || "$ip" == 127.* ]]; then
+    return 1
+  fi
+
+  echo "$ip"
+}
+
 project_running=false
 if docker compose -f "$COMPOSE_FILE" ps --status running -q 2>/dev/null | grep -q .; then
   project_running=true
@@ -343,22 +384,82 @@ fi
 export RUSTFIN_BACKEND_PORT="$backend_port"
 export RUSTFIN_UI_PORT="$ui_port"
 
+public_host="${RUSTFIN_PUBLIC_HOST:-}"
+if [[ -z "$public_host" ]]; then
+  if detected_lan_ip="$(detect_primary_lan_ipv4 2>/dev/null)"; then
+    public_host="$detected_lan_ip"
+  else
+    public_host="localhost"
+  fi
+fi
+
+if [[ -n "$user_browser_backend_origin" ]]; then
+  export RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
+else
+  export RUSTYFIN_BROWSER_BACKEND_ORIGIN="http://${public_host}:${RUSTFIN_BACKEND_PORT}"
+fi
+
+if [[ -n "$user_ws_allowed_origins" ]]; then
+  export RUSTFIN_WS_ALLOWED_ORIGINS="$user_ws_allowed_origins"
+else
+  ws_origins=(
+    "http://localhost:${RUSTFIN_UI_PORT}"
+    "http://127.0.0.1:${RUSTFIN_UI_PORT}"
+    "https://localhost:${RUSTFIN_UI_PORT}"
+    "https://127.0.0.1:${RUSTFIN_UI_PORT}"
+  )
+  if [[ "$public_host" != "localhost" && "$public_host" != "127.0.0.1" ]]; then
+    ws_origins+=(
+      "http://${public_host}:${RUSTFIN_UI_PORT}"
+      "https://${public_host}:${RUSTFIN_UI_PORT}"
+    )
+  fi
+  export RUSTFIN_WS_ALLOWED_ORIGINS="$(IFS=,; echo "${ws_origins[*]}")"
+fi
+
 info "Using TMPDIR: $TMPDIR"
 info "Using media path: $RUSTFIN_MEDIA_PATH"
 info "Backend port: $RUSTFIN_BACKEND_PORT"
 info "UI port: $RUSTFIN_UI_PORT"
+info "Public host: $public_host"
+info "Browser backend origin: $RUSTYFIN_BROWSER_BACKEND_ORIGIN"
+info "WebSocket allowed origins: $RUSTFIN_WS_ALLOWED_ORIGINS"
+if [[ "$BUILD" == "true" ]]; then
+  if [[ "$NO_CACHE_BUILD" == "true" ]]; then
+    info "Build mode: full rebuild (no Docker cache)"
+  else
+    info "Build mode: rebuild (Docker cache enabled)"
+  fi
+else
+  warn "Build mode: skipped (--no-build)"
+fi
 if [[ -n "${RUSTFIN_TMDB_KEY:-}" ]]; then
   info "TMDB metadata enrichment: enabled"
 else
   warn "TMDB metadata enrichment disabled (set RUSTFIN_TMDB_KEY to fetch online posters/metadata)"
 fi
 
+if [[ "$BUILD" == "true" ]]; then
+  build_args=(build --pull)
+  if [[ "$NO_CACHE_BUILD" == "true" ]]; then
+    build_args+=(--no-cache)
+  fi
+  info "Rebuilding Docker images..."
+  if ! docker compose -f "$COMPOSE_FILE" "${build_args[@]}"; then
+    if [[ "$NO_CACHE_BUILD" == "true" ]]; then
+      warn "Full no-cache rebuild failed (likely transient network issue). Retrying once with Docker cache."
+      if ! docker compose -f "$COMPOSE_FILE" build --pull; then
+        die "Docker image rebuild failed after retry. Check your internet connection and retry."
+      fi
+    else
+      die "Docker image rebuild failed. Check your internet connection and retry."
+    fi
+  fi
+fi
+
 compose_args=(up --remove-orphans)
 if [[ "$DETACH" == "true" ]]; then
   compose_args+=(-d)
-fi
-if [[ "$BUILD" == "true" ]]; then
-  compose_args+=(--build)
 fi
 
 docker compose -f "$COMPOSE_FILE" "${compose_args[@]}"
@@ -368,6 +469,8 @@ docker compose -f "$COMPOSE_FILE" "${compose_args[@]}"
   printf "RUSTFIN_BACKEND_PORT=%q\n" "$RUSTFIN_BACKEND_PORT"
   printf "RUSTFIN_UI_PORT=%q\n" "$RUSTFIN_UI_PORT"
   printf "RUSTFIN_MEDIA_PATH=%q\n" "$RUSTFIN_MEDIA_PATH"
+  printf "RUSTYFIN_BROWSER_BACKEND_ORIGIN=%q\n" "$RUSTYFIN_BROWSER_BACKEND_ORIGIN"
+  printf "RUSTFIN_WS_ALLOWED_ORIGINS=%q\n" "$RUSTFIN_WS_ALLOWED_ORIGINS"
 } > "$RUNTIME_ENV_FILE"
 chmod 600 "$RUNTIME_ENV_FILE" 2>/dev/null || true
 
@@ -390,3 +493,7 @@ fi
 success "Rustyfin stack is up."
 echo "  Backend: http://localhost:${RUSTFIN_BACKEND_PORT}"
 echo "  UI:      http://localhost:${RUSTFIN_UI_PORT}"
+if [[ "$public_host" != "localhost" && "$public_host" != "127.0.0.1" ]]; then
+  echo "  Backend (LAN): http://${public_host}:${RUSTFIN_BACKEND_PORT}"
+  echo "  UI (LAN):      http://${public_host}:${RUSTFIN_UI_PORT}"
+fi
