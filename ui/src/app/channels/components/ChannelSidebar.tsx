@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
@@ -147,6 +147,97 @@ function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }
   );
 }
 
+// ── Channel row ───────────────────────────────────────────────────────────────
+
+interface ChannelRowProps {
+  ch: ChannelInfo;
+  icon: ReactNode;
+  voicePresence: Record<string, UserInfo[]>;
+  voiceActiveSince: Record<string, number>;
+  nowMs: number;
+  isAdmin: boolean;
+  activeChannelId: string | null;
+  menuOpen: MenuState | null;
+  setMenuOpen: (state: MenuState | null) => void;
+  onSelect: (id: string) => void;
+  onDeleteChannel: (id: string) => void;
+}
+
+function ChannelRow({
+  ch,
+  icon,
+  voicePresence,
+  voiceActiveSince,
+  nowMs,
+  isAdmin,
+  activeChannelId,
+  menuOpen,
+  setMenuOpen,
+  onSelect,
+  onDeleteChannel,
+}: ChannelRowProps) {
+  const members = voicePresence[ch.id] ?? [];
+  const activeSinceTs = voiceActiveSince[ch.id];
+  const isMenuOpen = menuOpen?.channelId === ch.id;
+
+  const isActive = ch.id === activeChannelId;
+  const rowClass = [
+    'flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm group relative select-none',
+    isActive
+      ? 'border-l-2 border-[var(--orange-soft)] bg-white/5 pl-1.5'
+      : 'hover:bg-white/5',
+  ].join(' ');
+
+  return (
+    <div>
+      <div
+        className={rowClass}
+        onClick={() => onSelect(ch.id)}
+      >
+        <span className="muted shrink-0">{icon}</span>
+        <span className="truncate flex-1">{ch.name}</span>
+        {ch.kind === 'voice' && members.length > 0 && (
+          <span className="text-xs shrink-0 muted">{members.length}</span>
+        )}
+        {isAdmin && (
+          <div className="relative shrink-0">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(isMenuOpen ? null : { channelId: ch.id, channelName: ch.name });
+              }}
+              className="btn-ghost px-1 py-0.5 text-xs opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+              title="Channel options"
+            >
+              ⋯
+            </button>
+            {isMenuOpen && (
+              <ChannelContextMenu
+                channel={ch}
+                onClose={() => setMenuOpen(null)}
+                onDelete={() => onDeleteChannel(ch.id)}
+                membersInChannel={members.length}
+              />
+            )}
+          </div>
+        )}
+      </div>
+      {ch.kind === 'voice' && members.length > 0 && activeSinceTs !== undefined && (
+        <div className="pl-8 py-0.5 text-[11px] muted">
+          Live for {formatElapsedSeconds(elapsedSinceSeconds(activeSinceTs, nowMs))}
+        </div>
+      )}
+      {/* Voice member rows */}
+      {ch.kind === 'voice' && members.map((u) => (
+        <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+          {u.username}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 export default function ChannelSidebar({
@@ -172,71 +263,6 @@ export default function ChannelSidebar({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [hasActiveVoice]);
-
-  const channelRowClass = (id: string) => {
-    const isActive = id === activeChannelId;
-    return [
-      'flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm group relative select-none',
-      isActive
-        ? 'border-l-2 border-[var(--orange-soft)] bg-white/5 pl-1.5'
-        : 'hover:bg-white/5',
-    ].join(' ');
-  };
-
-  function ChannelRow({ ch, icon }: { ch: ChannelInfo; icon: React.ReactNode }) {
-    const members = voicePresence[ch.id] ?? [];
-    const activeSinceTs = voiceActiveSince[ch.id];
-    const isMenuOpen = menuOpen?.channelId === ch.id;
-
-    return (
-      <div key={ch.id}>
-        <div
-          className={channelRowClass(ch.id)}
-          onClick={() => onSelect(ch.id)}
-        >
-          <span className="muted shrink-0">{icon}</span>
-          <span className="truncate flex-1">{ch.name}</span>
-          {ch.kind === 'voice' && members.length > 0 && (
-            <span className="text-xs shrink-0 muted">{members.length}</span>
-          )}
-          {isAdmin && (
-            <div className="relative shrink-0">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuOpen(isMenuOpen ? null : { channelId: ch.id, channelName: ch.name });
-                }}
-                className="btn-ghost px-1 py-0.5 text-xs opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-                title="Channel options"
-              >
-                ⋯
-              </button>
-              {isMenuOpen && (
-                <ChannelContextMenu
-                  channel={ch}
-                  onClose={() => setMenuOpen(null)}
-                  onDelete={() => onDeleteChannel(ch.id)}
-                  membersInChannel={members.length}
-                />
-              )}
-            </div>
-          )}
-        </div>
-        {ch.kind === 'voice' && members.length > 0 && activeSinceTs !== undefined && (
-          <div className="pl-8 py-0.5 text-[11px] muted">
-            Live for {formatElapsedSeconds(elapsedSinceSeconds(activeSinceTs, nowMs))}
-          </div>
-        )}
-        {/* Voice member rows */}
-        {ch.kind === 'voice' && members.map((u) => (
-          <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-            {u.username}
-          </div>
-        ))}
-      </div>
-    );
-  }
 
   return (
     <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-y-auto">
@@ -264,7 +290,20 @@ export default function ChannelSidebar({
           </div>
 
           {textChannels.map((ch) => (
-            <ChannelRow key={ch.id} ch={ch} icon="#" />
+            <ChannelRow
+              key={ch.id}
+              ch={ch}
+              icon="#"
+              voicePresence={voicePresence}
+              voiceActiveSince={voiceActiveSince}
+              nowMs={nowMs}
+              isAdmin={isAdmin}
+              activeChannelId={activeChannelId}
+              menuOpen={menuOpen}
+              setMenuOpen={setMenuOpen}
+              onSelect={onSelect}
+              onDeleteChannel={onDeleteChannel}
+            />
           ))}
 
           {textChannels.length === 0 && (
@@ -290,7 +329,20 @@ export default function ChannelSidebar({
           </div>
 
           {voiceChannels.map((ch) => (
-            <ChannelRow key={ch.id} ch={ch} icon="" />
+            <ChannelRow
+              key={ch.id}
+              ch={ch}
+              icon=""
+              voicePresence={voicePresence}
+              voiceActiveSince={voiceActiveSince}
+              nowMs={nowMs}
+              isAdmin={isAdmin}
+              activeChannelId={activeChannelId}
+              menuOpen={menuOpen}
+              setMenuOpen={setMenuOpen}
+              onSelect={onSelect}
+              onDeleteChannel={onDeleteChannel}
+            />
           ))}
 
           {voiceChannels.length === 0 && (
