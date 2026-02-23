@@ -462,12 +462,14 @@ export default function WatchPartyPage() {
           <UserInvitePicker
             users={users}
             currentUserId={me.id}
+            roomMode={roomMode}
             selected={selectedInvites}
             onToggle={toggleInvite}
             onRoleChange={setInviteRole}
           />
 
           <RoomOptions
+            roomMode={roomMode}
             password={password}
             allowPlayPause={policy.allow_non_host_play_pause}
             allowSeek={policy.allow_non_host_seek}

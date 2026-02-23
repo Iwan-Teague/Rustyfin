@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { WatchPartyUser } from '@/lib/watchPartyApi';
+import { nonAdminRoleLabel, type WatchPartyRoomMode } from '@/lib/watchPartyRoles';
 
 export type SelectedInvite = {
   role: 'viewer' | 'controller';
@@ -10,6 +11,7 @@ export type SelectedInvite = {
 type Props = {
   users: WatchPartyUser[];
   currentUserId: string;
+  roomMode: WatchPartyRoomMode;
   selected: Record<string, SelectedInvite>;
   onToggle: (userId: string, initialRole?: 'viewer' | 'controller') => void;
   onRoleChange: (userId: string, role: 'viewer' | 'controller') => void;
@@ -18,18 +20,20 @@ type Props = {
 export default function UserInvitePicker({
   users,
   currentUserId,
+  roomMode,
   selected,
   onToggle,
   onRoleChange,
 }: Props) {
   // Tracks chosen role for users not yet checked — preserved when they get selected
   const [pendingRoles, setPendingRoles] = useState<Record<string, 'viewer' | 'controller'>>({});
+  const memberLabel = nonAdminRoleLabel(roomMode);
 
   return (
     <section className="panel space-y-4 p-5 sm:p-6">
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Invite Users</h2>
-        <p className="text-sm muted">Set each user's role, then check the box to invite them.</p>
+        <p className="text-sm muted">Set each user's access level, then check the box to invite them.</p>
       </div>
 
       <ul className="space-y-2">
@@ -62,8 +66,8 @@ export default function UserInvitePicker({
                       }
                     }}
                   >
-                    <option value="viewer">Viewer</option>
-                    <option value="controller">Controller</option>
+                    <option value="viewer">{memberLabel}</option>
+                    <option value="controller">Admin</option>
                   </select>
                 </div>
               </li>
