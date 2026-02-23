@@ -42,7 +42,6 @@ export default function LoginPage() {
     <div className="mx-auto mt-8 max-w-md animate-rise sm:mt-14">
       <div className="panel space-y-6 px-6 py-7 sm:px-8">
         <div className="space-y-2">
-          <span className="chip chip-accent">Secure Access</span>
           <h1 className="text-3xl font-semibold">Welcome back</h1>
           <p className="text-sm muted">Sign in to stream media and manage your server.</p>
         </div>

@@ -362,7 +362,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       </div>
 
       {videoTitle && (
-        <p className="text-sm font-medium truncate muted">▶ {videoTitle}</p>
+        <p className="text-sm font-medium truncate muted">{videoTitle}</p>
       )}
 
       {playerError && (

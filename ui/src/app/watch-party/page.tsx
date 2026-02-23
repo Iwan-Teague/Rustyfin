@@ -377,7 +377,7 @@ export default function WatchPartyPage() {
             className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'youtube' ? 'btn-primary' : 'btn-secondary'}`}
             onClick={() => setRoomMode('youtube')}
           >
-            ▶ YouTube
+            YouTube
           </button>
         </div>
       </section>
@@ -395,7 +395,7 @@ export default function WatchPartyPage() {
         ) : roomMode === 'youtube' ? (
           <section className="panel space-y-4 p-5 sm:p-6">
             <div className="space-y-2">
-              <h2 className="text-xl font-semibold">▶ YouTube Party</h2>
+              <h2 className="text-xl font-semibold">YouTube Party</h2>
               <p className="text-sm muted">
                 Watch YouTube videos together in sync. Once in the room, paste any YouTube URL or
                 video ID to load a video for everyone.

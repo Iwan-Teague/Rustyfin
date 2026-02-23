@@ -485,7 +485,7 @@ export default function AdminPage() {
             className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors capitalize ${
               activeTab === tab
                 ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                : 'btn-ghost opacity-60 hover:opacity-100'
+                : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
             }`}
           >
             {tab}
