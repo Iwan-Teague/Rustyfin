@@ -125,6 +125,8 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
   const lastVideoIdRef = useRef('');
   const canControlRef = useRef(canControl);
   const sendWsRef = useRef(sendWs);
+  // Always mirrors the latest ytState so event callbacks can read it without stale closure values
+  const ytStateRef = useRef<WsYouTubeStateMessage | null>(ytState);
 
   const [videoInput, setVideoInput] = useState('');
   const [videoTitle, setVideoTitle] = useState('');
@@ -134,6 +136,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
   // Keep refs in sync so event callbacks always see fresh values
   useEffect(() => { canControlRef.current = canControl; }, [canControl]);
   useEffect(() => { sendWsRef.current = sendWs; }, [sendWs]);
+  useEffect(() => { ytStateRef.current = ytState; }, [ytState]);
 
   const handlePlayerStateChange = useCallback((event: { target: YT.Player; data: number }) => {
     if (applyingRemoteRef.current) return;
@@ -146,10 +149,15 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       if (canControlRef.current) {
         sendWsRef.current({ type: 'play', position_ms: posMs });
       } else {
-        // Viewer: revert the play
-        applyingRemoteRef.current = true;
-        player.pauseVideo();
-        window.setTimeout(() => { applyingRemoteRef.current = false; }, 300);
+        // Viewer: only revert play when the remote state is paused/unset.
+        // If the remote state says "playing", the PLAYING event is expected (buffering
+        // just finished after a remote sync) and must NOT be reverted — doing so
+        // would permanently pause the video for slow-buffering clients.
+        if (!ytStateRef.current?.playing) {
+          applyingRemoteRef.current = true;
+          player.pauseVideo();
+          window.setTimeout(() => { applyingRemoteRef.current = false; }, 300);
+        }
       }
     } else if (event.data === 2 /* PAUSED */) {
       if (canControlRef.current) {

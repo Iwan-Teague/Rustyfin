@@ -254,7 +254,6 @@ export default function HomePage() {
                   className="tile tile-hover p-4 flex flex-col gap-2"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-green-400 text-base leading-none">🔊</span>
                     <span className="font-semibold truncate">{ch.name}</span>
                     <span className="ml-auto chip text-xs">{members.length} online</span>
                   </div>
@@ -288,10 +287,6 @@ export default function HomePage() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <p className="font-semibold truncate leading-snug">{room.title}</p>
-                  <div className="flex gap-1 shrink-0">
-                    <span className="chip text-xs">{room.room_mode === 'audio' ? '🎵' : '🎬'}</span>
-                    {room.password_required && <span className="chip text-xs">🔒</span>}
-                  </div>
                 </div>
                 <div className="flex items-center justify-between text-xs muted">
                   <span>Hosted by {room.host_username}</span>
