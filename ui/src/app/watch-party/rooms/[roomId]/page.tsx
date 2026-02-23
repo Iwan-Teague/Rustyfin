@@ -353,6 +353,17 @@ export default function WatchPartyRoomPage() {
                 ),
               };
             });
+            setYoutubeState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                members: prev.members.map((member) =>
+                  member.user_id === payload.user_id
+                    ? { ...member, connected: payload.connected }
+                    : member,
+                ),
+              };
+            });
           } else if (payload.type === 'error') {
             setError(payload.message);
           } else if (payload.type === 'room_ended') {

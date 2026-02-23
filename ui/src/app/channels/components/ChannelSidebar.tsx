@@ -28,10 +28,11 @@ interface ContextMenuProps {
   channel: ChannelInfo;
   onClose: () => void;
   onDelete: () => void;
+  membersInChannel?: number;
 }
 
-function ChannelContextMenu({ channel, onClose, onDelete }: ContextMenuProps) {
-  const [view, setView] = useState<'menu' | 'rename' | 'confirm'>('menu');
+function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }: ContextMenuProps) {
+  const [view, setView] = useState<'menu' | 'rename' | 'confirm' | 'error'>('menu');
   const [renameValue, setRenameValue] = useState(channel.name);
   const [renameError, setRenameError] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
@@ -82,7 +83,13 @@ function ChannelContextMenu({ channel, onClose, onDelete }: ContextMenuProps) {
           </button>
           <button
             className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-md text-red-400 hover:text-red-300"
-            onClick={() => setView('confirm')}
+            onClick={() => {
+              if (channel.kind === 'voice' && membersInChannel > 0) {
+                setView('error');
+              } else {
+                setView('confirm');
+              }
+            }}
           >
             Delete
           </button>
@@ -123,6 +130,16 @@ function ChannelContextMenu({ channel, onClose, onDelete }: ContextMenuProps) {
             >
               Delete
             </button>
+          </div>
+        </div>
+      )}
+
+      {view === 'error' && (
+        <div className="px-3 py-2 space-y-2">
+          <p className="text-xs font-semibold text-red-400">Cannot Delete Channel</p>
+          <p className="text-xs muted">This audio channel needs to be empty before deletion. Ask members to leave first.</p>
+          <div className="flex gap-1 justify-end">
+            <button onClick={() => setView('menu')} className="btn-ghost px-2 py-1 text-xs">Back</button>
           </div>
         </div>
       )}
@@ -199,6 +216,7 @@ export default function ChannelSidebar({
                   channel={ch}
                   onClose={() => setMenuOpen(null)}
                   onDelete={() => onDeleteChannel(ch.id)}
+                  membersInChannel={members.length}
                 />
               )}
             </div>
