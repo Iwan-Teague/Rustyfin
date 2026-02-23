@@ -320,7 +320,7 @@ pub async fn list_public_rooms(
                 if r.audio_library_name.is_empty() {
                     "Music Party".to_string()
                 } else {
-                    format!("🎵 {}", r.audio_library_name)
+                    format!("Music: {}", r.audio_library_name)
                 }
             } else if r.room_mode == "youtube" {
                 "YouTube Party".to_string()

@@ -336,7 +336,7 @@ export default function WatchPartyPage() {
                     {formatElapsedSeconds(elapsedSinceSeconds(room.created_ts, nowMs))}
                   </p>
                   {room.password_required && (
-                    <span className="chip text-xs">🔒 Password</span>
+                    <span className="chip text-xs">Password Protected</span>
                   )}
                 </div>
                 <Link
