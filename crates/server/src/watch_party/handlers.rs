@@ -687,6 +687,7 @@ pub async fn get_room(
 
     let members = members
         .into_iter()
+        .filter(|member| member.status != "left" && member.status != "declined")
         .map(|member| RoomMemberResponse {
             username: room_member_username(&usernames, &member.user_id).to_string(),
             user_id: member.user_id,

@@ -272,7 +272,7 @@ export default function ChannelSidebar({
           </div>
 
           {voiceChannels.map((ch) => (
-            <ChannelRow key={ch.id} ch={ch} icon="🔊" />
+            <ChannelRow key={ch.id} ch={ch} icon="" />
           ))}
 
           {voiceChannels.length === 0 && (

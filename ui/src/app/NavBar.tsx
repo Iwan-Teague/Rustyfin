@@ -51,7 +51,7 @@ export default function NavBar() {
           {voiceSession && (
             <Link
               href="/channels"
-              className="chip flex items-center gap-1.5 text-xs border-green-500/50 text-green-400"
+              className="chip border-green-500/50 text-green-400"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
               {voiceSession.channelName}
@@ -94,14 +94,14 @@ export default function NavBar() {
         {voiceSession && (
           <Link
             href="/channels"
-            className="chip flex items-center gap-1 text-xs border-green-500/50 text-green-400 mr-2"
+            className="chip border-green-500/50 text-green-400 mr-2"
           >
             <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
             🔊
           </Link>
         )}
 
-        {!loading && me && <span className="chip text-sm shrink-0">{me.username}</span>}
+        {!loading && me && <span className="chip">{me.username}</span>}
       </div>
 
       {/* ── Mobile dropdown ── */}

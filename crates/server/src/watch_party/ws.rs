@@ -329,10 +329,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         connected: false,
     });
 
-    let _ = rustfin_db::repo::watch_party::touch_member_last_seen(
+    let _ = rustfin_db::repo::watch_party::set_member_status(
         &state.db,
         &context.room_id,
         &context.user_id,
+        "left",
     )
     .await;
 
@@ -781,7 +782,7 @@ async fn build_state_message(
 
     let member_summaries = members
         .into_iter()
-        .filter(|m| m.status != "declined")
+        .filter(|m| m.status != "declined" && m.status != "left")
         .map(|member| PresenceMember {
             user_id: member.user_id.clone(),
             username: usernames
@@ -905,7 +906,7 @@ async fn build_audio_state_message(
 
     let member_summaries = members_db
         .into_iter()
-        .filter(|m| m.status != "declined")
+        .filter(|m| m.status != "declined" && m.status != "left")
         .map(|member| PresenceMember {
             user_id: member.user_id.clone(),
             username: usernames
@@ -965,7 +966,7 @@ async fn build_youtube_state_message(
 
     let member_summaries = members
         .into_iter()
-        .filter(|m| m.status != "declined")
+        .filter(|m| m.status != "declined" && m.status != "left")
         .map(|member| PresenceMember {
             user_id: member.user_id.clone(),
             username: usernames

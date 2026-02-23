@@ -21,13 +21,14 @@ export default function ChannelsPage() {
     voiceActiveSince,
     newMessages,
     lastWsEvent,
+    voiceSession,
   } = useChannels();
 
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const preselectedApplied = useRef(false);
 
-  // Auto-select a channel when deep-linking via ?channel=<id>
+  // Auto-select a channel when deep-linking via ?channel=<id>, or default to active voice channel
   useEffect(() => {
     if (preselectedApplied.current || activeChannelId || channels.length === 0) return;
     const params = new URLSearchParams(window.location.search);
@@ -35,8 +36,12 @@ export default function ChannelsPage() {
     if (channelId && channels.some((c) => c.id === channelId)) {
       preselectedApplied.current = true;
       setActiveChannelId(channelId);
+    } else if (voiceSession && channels.some((c) => c.id === voiceSession.channelId)) {
+      // If no URL param, default to active voice channel if user is connected
+      preselectedApplied.current = true;
+      setActiveChannelId(voiceSession.channelId);
     }
-  }, [channels, activeChannelId]);
+  }, [channels, activeChannelId, voiceSession]);
 
   // Modal state
   const [createModal, setCreateModal] = useState<{ kind: 'text' | 'voice' } | null>(null);

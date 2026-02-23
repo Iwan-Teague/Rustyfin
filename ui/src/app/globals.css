@@ -197,6 +197,10 @@ a {
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
+.select {
+  padding-right: 2.5rem;
+}
+
 .input::placeholder {
   color: #949cb9;
 }
