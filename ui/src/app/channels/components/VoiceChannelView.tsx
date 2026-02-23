@@ -1,0 +1,117 @@
+'use client';
+
+import { useState } from 'react';
+import { useChannels } from '@/lib/channelsContext';
+import type { ChannelEvent, ChannelInfo, UserInfo } from '@/lib/channelsApi';
+
+interface Props {
+  channel: ChannelInfo;
+  voicePresence: Record<string, UserInfo[]>;
+  currentUserId: string;
+  currentUsername: string;
+  wsEvents: ChannelEvent | null;
+}
+
+function hashColor(userId: string): string {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const colors = [
+    '#e67e22', '#3498db', '#2ecc71', '#9b59b6', '#e74c3c',
+    '#1abc9c', '#f39c12', '#16a085', '#d35400', '#8e44ad',
+  ];
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function ParticipantCard({ userInfo }: { userInfo: UserInfo }) {
+  const color = hashColor(userInfo.user_id);
+  const initials = userInfo.username.slice(0, 2).toUpperCase();
+  return (
+    <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
+      <div
+        className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white"
+        style={{ backgroundColor: color }}
+      >
+        {initials}
+      </div>
+      <span className="text-sm font-medium">{userInfo.username}</span>
+    </div>
+  );
+}
+
+export default function VoiceChannelView({
+  channel,
+  voicePresence,
+  currentUserId,
+  currentUsername,
+  wsEvents,
+}: Props) {
+  const { voiceSession, joinVoice, leaveVoice, toggleMute } = useChannels();
+  const [error, setError] = useState<string | null>(null);
+
+  const members = voicePresence[channel.id] ?? [];
+  const isConnected = voiceSession?.channelId === channel.id;
+  const muted = isConnected ? (voiceSession?.muted ?? false) : false;
+
+  async function handleConnect() {
+    setError(null);
+    const err = await joinVoice(channel.id, channel.name);
+    if (err) setError(err);
+  }
+
+  function handleDisconnect() {
+    leaveVoice();
+  }
+
+  return (
+    <div className="flex flex-col flex-1 h-full overflow-hidden">
+      {/* Header — channel name, member count, and controls all inline */}
+      <div className="px-4 py-3 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+        <span className="font-semibold truncate">{channel.name}</span>
+        <span className="chip text-xs shrink-0">
+          {members.length} member{members.length !== 1 ? 's' : ''}
+        </span>
+
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          {error && <p className="text-xs text-red-400 max-w-[12rem] truncate">{error}</p>}
+
+          {!isConnected ? (
+            <button onClick={handleConnect} className="btn-primary px-4 py-1.5 text-sm">
+              Connect
+            </button>
+          ) : (
+            <>
+              {voiceSession?.localStream ? (
+                <button
+                  onClick={toggleMute}
+                  className={`btn-secondary px-3 py-1.5 text-sm ${muted ? 'opacity-60' : ''}`}
+                >
+                  {muted ? 'Unmute' : 'Mute'}
+                </button>
+              ) : (
+                <span className="text-xs muted px-2">Listening</span>
+              )}
+              <button onClick={handleDisconnect} className="btn-secondary px-3 py-1.5 text-sm text-red-400">
+                Disconnect
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Participant grid */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {members.length === 0 ? (
+          <p className="text-sm muted text-center mt-12">No one is here yet. Join to start!</p>
+        ) : (
+          <div className="flex flex-wrap gap-3">
+            {members.map((u) => (
+              <ParticipantCard key={u.user_id} userInfo={u} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

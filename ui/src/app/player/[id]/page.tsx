@@ -88,6 +88,7 @@ export default function PlayerPage() {
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
+  const autoStartedRef = useRef(false);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
   const directContentType = useMemo(() => buildDirectContentType(mediaInfo), [mediaInfo]);
@@ -171,7 +172,7 @@ export default function PlayerPage() {
 
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = data.hls_url;
-        await video.play().catch(() => {});
+        video.load();
       } else {
         const Hls = (await import('hls.js')).default;
         if (!Hls.isSupported()) {
@@ -180,7 +181,7 @@ export default function PlayerPage() {
         const hls = new Hls();
         hlsRef.current = hls;
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          void video.play().catch(() => {});
+          // manifest loaded — user presses play on the native controls
         });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (data?.fatal) {
@@ -223,7 +224,7 @@ export default function PlayerPage() {
       destroyHls();
       setMode('direct');
       video.src = descriptor.direct_url;
-      await video.play().catch(() => {});
+      video.load();
     } catch (e: any) {
       setError(e.message || 'Direct Play failed; switching to HLS.');
       await startHls();
@@ -234,6 +235,7 @@ export default function PlayerPage() {
 
   useEffect(() => {
     let cancelled = false;
+    autoStartedRef.current = false;
     setLoadingDescriptor(true);
     setDescriptor(null);
     setMediaInfo(null);
@@ -263,6 +265,14 @@ export default function PlayerPage() {
       cancelled = true;
     };
   }, [id]);
+
+  // Auto-start direct play (load without playing) once the descriptor is ready
+  useEffect(() => {
+    if (!loadingDescriptor && canStartPlayback && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      void startDirectPlay();
+    }
+  }, [loadingDescriptor, canStartPlayback, startDirectPlay]);
 
   useEffect(() => {
     return () => {
@@ -313,7 +323,6 @@ export default function PlayerPage() {
         <video
           ref={videoRef}
           controls
-          autoPlay
           className="w-full max-h-[80vh]"
           playsInline
           onError={() => {

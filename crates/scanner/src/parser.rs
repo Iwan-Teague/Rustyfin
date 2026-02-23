@@ -47,6 +47,10 @@ static VIDEO_EXTENSIONS: &[&str] = &[
     "asf", "flv", "f4v", "3gp", "3g2", "ogv", "vob", "mxf",
 ];
 
+static AUDIO_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "aac", "m4a", "ogg", "opus", "wav", "wma", "aiff", "alac",
+];
+
 // SxxExx pattern: S01E02, s1e3, etc.
 static RE_SXXEXX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap());
@@ -82,6 +86,15 @@ pub fn should_ignore(filename: &str) -> bool {
 pub fn is_video_file(filename: &str) -> bool {
     if let Some(ext) = filename.rsplit('.').next() {
         VIDEO_EXTENSIONS.contains(&ext.to_lowercase().as_str())
+    } else {
+        false
+    }
+}
+
+/// Check if a file has an audio extension.
+pub fn is_audio_file(filename: &str) -> bool {
+    if let Some(ext) = filename.rsplit('.').next() {
+        AUDIO_EXTENSIONS.contains(&ext.to_lowercase().as_str())
     } else {
         false
     }

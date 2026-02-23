@@ -33,6 +33,7 @@ body {
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background:
     radial-gradient(60rem 60rem at 10% -20%, rgba(177, 140, 255, 0.24), transparent 55%),
     radial-gradient(45rem 45rem at 95% 0%, rgba(255, 145, 77, 0.2), transparent 55%),

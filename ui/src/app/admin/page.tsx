@@ -417,6 +417,20 @@ export default function AdminPage() {
     }
   }
 
+  async function deleteJob(jobId: string) {
+    try {
+      const res = await apiFetch(`/jobs/${jobId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message || 'Delete failed');
+      }
+      setOk('Job log deleted');
+      await loadData();
+    } catch (err: any) {
+      setErr(err.message || 'Failed to delete job');
+    }
+  }
+
   async function clearTmdbKey() {
     setSavingTmdb(true);
     try {
@@ -438,6 +452,8 @@ export default function AdminPage() {
     }
   }
 
+  const [activeTab, setActiveTab] = useState<'creation' | 'management'>('creation');
+
   return (
     <>
       {authLoading && (
@@ -451,9 +467,6 @@ export default function AdminPage() {
       <header className="space-y-2">
         <span className="chip">Server Controls</span>
         <h1 className="text-3xl font-semibold sm:text-4xl">Admin Dashboard</h1>
-        <p className="text-sm muted sm:text-base">
-          Configure media sources, manage user permissions, and monitor active jobs.
-        </p>
       </header>
 
       {msg && (
@@ -462,300 +475,65 @@ export default function AdminPage() {
         </p>
       )}
 
-      <section className="panel space-y-4 p-6">
-        <h2 className="text-xl font-semibold">TMDB Metadata</h2>
-        <p className="text-sm muted">
-          Set a TMDB API key so scans can fetch posters and metadata for detected movies/shows.
-        </p>
-        <form onSubmit={saveTmdbKey} className="space-y-3">
-          <input
-            type="password"
-            value={tmdbApiKey}
-            onChange={(e) => setTmdbApiKey(e.target.value)}
-            placeholder="Enter TMDB API key (leave empty to clear)"
-            className="input w-full px-3 py-2 text-sm"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="submit"
-              disabled={savingTmdb}
-              className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-            >
-              {savingTmdb ? 'Saving...' : 'Save TMDB Key'}
-            </button>
-            <button
-              type="button"
-              onClick={clearTmdbKey}
-              disabled={savingTmdb}
-              className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-            >
-              Clear Stored Key
-            </button>
-          </div>
-        </form>
-        <p className="text-xs muted">
-          Status:{' '}
-          {tmdbConfig.configured
-            ? `configured (${tmdbConfig.source || 'unknown'}${tmdbConfig.key_preview ? `, ${tmdbConfig.key_preview}` : ''})`
-            : 'not configured'}
-        </p>
-      </section>
-
-      <section className="panel space-y-4 p-6">
-        <h2 className="text-xl font-semibold">Create Library</h2>
-        <form onSubmit={createLibrary} className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto_auto]">
-            <input
-              placeholder="Name"
-              value={newLib.name}
-              onChange={(e) => setNewLib({ ...newLib, name: e.target.value })}
-              className="input px-3 py-2 text-sm"
-              required
-            />
-            <select
-              aria-label="Library type"
-              value={newLib.kind}
-              onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
-              className="select px-3 py-2 text-sm"
-            >
-              <option value="movies">Movies</option>
-              <option value="tv_shows">TV Shows</option>
-            </select>
-            <input
-              placeholder="/path/to/media"
-              value={newLib.path}
-              onChange={(e) => setNewLib({ ...newLib, path: e.target.value })}
-              className="input px-3 py-2 text-sm"
-              required
-            />
-            <button
-              type="button"
-              onClick={browseLibraryPath}
-              disabled={pickingPath}
-              className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-            >
-              {pickingPath ? 'Opening...' : 'Browse'}
-            </button>
-            <button
-              type="submit"
-              className="btn-primary px-4 py-2 text-sm"
-            >
-              Create
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={newLib.show_images}
-                onChange={(e) => setNewLib({ ...newLib, show_images: e.target.checked })}
-                className="h-4 w-4 [accent-color:var(--purple)]"
-              />
-              <span>Enable artwork thumbnails</span>
-            </label>
-            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={newLib.prefer_local_artwork}
-                onChange={(e) =>
-                  setNewLib({ ...newLib, prefer_local_artwork: e.target.checked })
-                }
-                className="h-4 w-4 [accent-color:var(--purple)]"
-              />
-              <span>Prefer local artwork files</span>
-            </label>
-            <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-              <input
-                type="checkbox"
-                checked={newLib.fetch_online_artwork}
-                onChange={(e) =>
-                  setNewLib({ ...newLib, fetch_online_artwork: e.target.checked })
-                }
-                className="h-4 w-4 [accent-color:var(--purple)]"
-              />
-              <span>Fetch missing artwork online</span>
-            </label>
-          </div>
-        </form>
-      </section>
-
-      <section className="panel space-y-4 p-6">
-        <h2 className="text-xl font-semibold">Create User</h2>
-        <form onSubmit={createUser} className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            <input
-              placeholder="Username"
-              value={newUser.username}
-              onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-              className="input px-3 py-2 text-sm"
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password (min 12 chars)"
-              minLength={12}
-              value={newUser.password}
-              onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-              className="input px-3 py-2 text-sm"
-              required
-            />
-            <select
-              aria-label="New user role"
-              value={newUser.role}
-              onChange={(e) => setNewUser({
-                ...newUser,
-                role: e.target.value as 'admin' | 'user',
-                library_ids: e.target.value === 'admin' ? [] : newUser.library_ids,
-              })}
-              className="select px-3 py-2 text-sm"
-            >
-              <option value="user">Simple User</option>
-              <option value="admin">Admin</option>
-            </select>
-          </div>
-
-          {newUser.role === 'user' && (
-            <div className="space-y-2">
-              <p className="text-sm font-medium">Allowed Libraries</p>
-              {libraries.length === 0 ? (
-                <p className="text-xs muted">Create at least one library before creating simple users.</p>
-              ) : (
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                  {libraries.map((lib) => (
-                    <label key={lib.id} className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={newUser.library_ids.includes(lib.id)}
-                        onChange={() => setNewUser({
-                          ...newUser,
-                          library_ids: toggleIds(newUser.library_ids, lib.id),
-                        })}
-                        className="h-4 w-4 [accent-color:var(--purple)]"
-                      />
-                      <span>{lib.name}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <button type="submit" className="btn-primary px-4 py-2 text-sm">
-            Create User
+      {/* Tab bar */}
+      <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+        {(['creation', 'management'] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors capitalize ${
+              activeTab === tab
+                ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                : 'btn-ghost opacity-60 hover:opacity-100'
+            }`}
+          >
+            {tab}
           </button>
-        </form>
-      </section>
+        ))}
+      </div>
 
-      <section className="space-y-3">
-        <h2 className="text-xl font-semibold">User Permissions</h2>
-        {users.length === 0 ? (
-          <div className="panel-soft px-4 py-3">
-            <p className="text-sm muted">No users found.</p>
-          </div>
-        ) : (
-          users.map((user) => {
-            const edit = userEdits[user.id] || { role: user.role, library_ids: user.library_ids || [] };
-            return (
-              <div key={user.id} className="tile space-y-4 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium">{user.username}</p>
-                    <p className="text-xs muted">{new Date(user.created_ts * 1000).toLocaleString()}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      aria-label={`Role for ${user.username}`}
-                      value={edit.role}
-                      onChange={(e) => updateEditRole(user.id, e.target.value as 'admin' | 'user')}
-                      className="select px-2 py-1.5 text-sm"
-                    >
-                      <option value="user">Simple User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                    <button
-                      onClick={() => saveUserPermissions(user.id)}
-                      className="btn-secondary px-3 py-1.5 text-sm"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => deleteUser(user.id)}
-                      className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)] hover:text-[var(--danger)]"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
+      {/* ── CREATION TAB ──────────────────────────────────────────────────────── */}
+      {activeTab === 'creation' && (
+        <div className="space-y-8">
 
-                {edit.role === 'user' && (
-                  <div className="space-y-2">
-                    <p className="text-xs uppercase tracking-[0.18em] muted">Allowed Libraries</p>
-                    {libraries.length === 0 ? (
-                      <p className="text-xs muted">No libraries available to assign.</p>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                        {libraries.map((lib) => (
-                          <label key={lib.id} className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={edit.library_ids.includes(lib.id)}
-                              onChange={() => toggleEditLibrary(user.id, lib.id)}
-                              className="h-4 w-4 [accent-color:var(--purple)]"
-                            />
-                            <span>{lib.name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-xl font-semibold">Libraries</h2>
-        {libraries.length === 0 ? (
-          <div className="panel-soft px-4 py-3">
-            <p className="text-sm muted">No libraries configured.</p>
-          </div>
-        ) : (
-          libraries.map((lib) => (
-            <div key={lib.id} className="tile space-y-4 p-4">
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_2fr_auto_auto_auto]">
+          <section className="panel space-y-4 p-6">
+            <h2 className="text-xl font-semibold">Create Library</h2>
+            <form onSubmit={createLibrary} className="space-y-4">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.9fr_2fr_auto_auto]">
                 <input
-                  aria-label={`Library name ${lib.name}`}
-                  value={libraryEdits[lib.id]?.name ?? lib.name}
-                  onChange={(e) => setLibraryEdit(lib.id, 'name', e.target.value)}
+                  placeholder="Name"
+                  value={newLib.name}
+                  onChange={(e) => setNewLib({ ...newLib, name: e.target.value })}
                   className="input px-3 py-2 text-sm"
+                  required
                 />
+                <select
+                  aria-label="Library type"
+                  value={newLib.kind}
+                  onChange={(e) => setNewLib({ ...newLib, kind: e.target.value })}
+                  className="select px-3 py-2 text-sm"
+                >
+                  <option value="movies">Movies</option>
+                  <option value="tv_shows">TV Shows</option>
+                </select>
                 <input
-                  aria-label={`Library path ${lib.name}`}
-                  value={libraryEdits[lib.id]?.path ?? lib.paths[0]?.path ?? ''}
-                  onChange={(e) => setLibraryEdit(lib.id, 'path', e.target.value)}
+                  placeholder="/path/to/media"
+                  value={newLib.path}
+                  onChange={(e) => setNewLib({ ...newLib, path: e.target.value })}
                   className="input px-3 py-2 text-sm"
+                  required
                 />
                 <button
-                  onClick={() => browseExistingLibraryPath(lib.id)}
-                  disabled={pickingPathForLibraryId === lib.id}
-                  className="btn-secondary px-3 py-1.5 text-sm disabled:opacity-50"
+                  type="button"
+                  onClick={browseLibraryPath}
+                  disabled={pickingPath}
+                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
                 >
-                  {pickingPathForLibraryId === lib.id ? 'Opening...' : 'Browse'}
+                  {pickingPath ? 'Opening...' : 'Browse'}
                 </button>
-                <button
-                  onClick={() => scanLibrary(lib.id)}
-                  className="btn-secondary px-3 py-1.5 text-sm"
-                >
-                  Scan
-                </button>
-                <button
-                  onClick={() => saveLibrary(lib.id)}
-                  className="btn-primary px-3 py-1.5 text-sm"
-                >
-                  Save
+                <button type="submit" className="btn-primary px-4 py-2 text-sm">
+                  Create
                 </button>
               </div>
 
@@ -763,8 +541,8 @@ export default function AdminPage() {
                 <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={libraryEdits[lib.id]?.show_images ?? lib.settings.show_images}
-                    onChange={(e) => setLibraryEdit(lib.id, 'show_images', e.target.checked)}
+                    checked={newLib.show_images}
+                    onChange={(e) => setNewLib({ ...newLib, show_images: e.target.checked })}
                     className="h-4 w-4 [accent-color:var(--purple)]"
                   />
                   <span>Enable artwork thumbnails</span>
@@ -772,12 +550,9 @@ export default function AdminPage() {
                 <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={
-                      libraryEdits[lib.id]?.prefer_local_artwork ??
-                      lib.settings.prefer_local_artwork
-                    }
+                    checked={newLib.prefer_local_artwork}
                     onChange={(e) =>
-                      setLibraryEdit(lib.id, 'prefer_local_artwork', e.target.checked)
+                      setNewLib({ ...newLib, prefer_local_artwork: e.target.checked })
                     }
                     className="h-4 w-4 [accent-color:var(--purple)]"
                   />
@@ -786,58 +561,351 @@ export default function AdminPage() {
                 <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={
-                      libraryEdits[lib.id]?.fetch_online_artwork ??
-                      lib.settings.fetch_online_artwork
-                    }
+                    checked={newLib.fetch_online_artwork}
                     onChange={(e) =>
-                      setLibraryEdit(lib.id, 'fetch_online_artwork', e.target.checked)
+                      setNewLib({ ...newLib, fetch_online_artwork: e.target.checked })
                     }
                     className="h-4 w-4 [accent-color:var(--purple)]"
                   />
                   <span>Fetch missing artwork online</span>
                 </label>
               </div>
+            </form>
+          </section>
 
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm muted">{lib.kind} · {lib.item_count} items</p>
-                <button
-                  onClick={() => deleteLibrary(lib.id)}
-                  className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)] hover:text-[var(--danger)]"
+          <section className="panel space-y-4 p-6">
+            <h2 className="text-xl font-semibold">Create User</h2>
+            <form onSubmit={createUser} className="space-y-4">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <input
+                  placeholder="Username"
+                  value={newUser.username}
+                  onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                  className="input px-3 py-2 text-sm"
+                  required
+                />
+                <input
+                  type="password"
+                  placeholder="Password (min 12 chars)"
+                  minLength={12}
+                  value={newUser.password}
+                  onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                  className="input px-3 py-2 text-sm"
+                  required
+                />
+                <select
+                  aria-label="New user role"
+                  value={newUser.role}
+                  onChange={(e) => setNewUser({
+                    ...newUser,
+                    role: e.target.value as 'admin' | 'user',
+                    library_ids: e.target.value === 'admin' ? [] : newUser.library_ids,
+                  })}
+                  className="select px-3 py-2 text-sm"
                 >
-                  Delete Library
+                  <option value="user">Simple User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+
+              {newUser.role === 'user' && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Allowed Libraries</p>
+                  {libraries.length === 0 ? (
+                    <p className="text-xs muted">Create at least one library before creating simple users.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                      {libraries.map((lib) => (
+                        <label key={lib.id} className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={newUser.library_ids.includes(lib.id)}
+                            onChange={() => setNewUser({
+                              ...newUser,
+                              library_ids: toggleIds(newUser.library_ids, lib.id),
+                            })}
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>{lib.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button type="submit" className="btn-primary px-4 py-2 text-sm">
+                Create User
+              </button>
+            </form>
+          </section>
+
+        </div>
+      )}
+
+      {/* ── MANAGEMENT TAB ────────────────────────────────────────────────────── */}
+      {activeTab === 'management' && (
+        <div className="space-y-8">
+
+          {/* User Permissions */}
+          <section className="space-y-4">
+            <h2 className="text-xl font-semibold">User Permissions</h2>
+            {users.length === 0 ? (
+              <div className="panel-soft px-4 py-3">
+                <p className="text-sm muted">No users found.</p>
+              </div>
+            ) : (() => {
+                const adminUsers = users.filter((u) => u.role === 'admin');
+                const regularUsers = users.filter((u) => u.role !== 'admin');
+
+                const renderUserCard = (user: UserAccount) => {
+                  const edit = userEdits[user.id] || { role: user.role, library_ids: user.library_ids || [] };
+                  return (
+                    <div key={user.id} className="tile space-y-3 p-4">
+                      <div>
+                        <p className="font-medium">{user.username}</p>
+                        <p className="text-xs muted">{new Date(user.created_ts * 1000).toLocaleString()}</p>
+                      </div>
+                      <select
+                        aria-label={`Role for ${user.username}`}
+                        value={edit.role}
+                        onChange={(e) => updateEditRole(user.id, e.target.value as 'admin' | 'user')}
+                        className="select w-full px-2 py-1.5 text-sm"
+                      >
+                        <option value="user">Simple User</option>
+                        <option value="admin">Admin</option>
+                      </select>
+                      {edit.role === 'user' && libraries.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-xs uppercase tracking-[0.18em] muted">Libraries</p>
+                          <div className="space-y-1">
+                            {libraries.map((lib) => (
+                              <label key={lib.id} className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={edit.library_ids.includes(lib.id)}
+                                  onChange={() => toggleEditLibrary(user.id, lib.id)}
+                                  className="h-4 w-4 [accent-color:var(--purple)]"
+                                />
+                                <span>{lib.name}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={() => saveUserPermissions(user.id)}
+                          className="btn-secondary flex-1 px-3 py-1.5 text-sm"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => deleteUser(user.id)}
+                          className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                };
+
+                return (
+                  <div className="space-y-4">
+                    {adminUsers.length > 0 && (
+                      <div className="space-y-3">
+                        <p className="text-sm font-medium muted">Admin Accounts</p>
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                          {adminUsers.map(renderUserCard)}
+                        </div>
+                      </div>
+                    )}
+                    {adminUsers.length > 0 && regularUsers.length > 0 && (
+                      <div className="border-t border-[var(--border)]" />
+                    )}
+                    {regularUsers.length > 0 && (
+                      <div className="space-y-3">
+                        <p className="text-sm font-medium muted">User Accounts</p>
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                          {regularUsers.map(renderUserCard)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()
+            }
+          </section>
+
+          {/* Libraries */}
+          <section className="space-y-4">
+            <h2 className="text-xl font-semibold">Libraries</h2>
+            {libraries.length === 0 ? (
+              <div className="panel-soft px-4 py-3">
+                <p className="text-sm muted">No libraries configured.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {libraries.map((lib) => (
+                  <div key={lib.id} className="tile space-y-3 p-4">
+                    <form onSubmit={(e) => { e.preventDefault(); saveLibrary(lib.id); }} className="space-y-2">
+                      <input
+                        aria-label={`Library name ${lib.name}`}
+                        value={libraryEdits[lib.id]?.name ?? lib.name}
+                        onChange={(e) => setLibraryEdit(lib.id, 'name', e.target.value)}
+                        className="input w-full px-3 py-2 text-sm"
+                      />
+                      <input
+                        aria-label={`Library path ${lib.name}`}
+                        value={libraryEdits[lib.id]?.path ?? lib.paths[0]?.path ?? ''}
+                        onChange={(e) => setLibraryEdit(lib.id, 'path', e.target.value)}
+                        className="input w-full px-3 py-2 text-sm"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => browseExistingLibraryPath(lib.id)}
+                          disabled={pickingPathForLibraryId === lib.id}
+                          className="btn-secondary flex-1 px-3 py-1.5 text-sm disabled:opacity-50"
+                        >
+                          {pickingPathForLibraryId === lib.id ? 'Opening...' : 'Browse'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => scanLibrary(lib.id)}
+                          className="btn-secondary flex-1 px-3 py-1.5 text-sm"
+                        >
+                          Scan
+                        </button>
+                        <button type="submit" className="btn-primary flex-1 px-3 py-1.5 text-sm">
+                          Save
+                        </button>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={libraryEdits[lib.id]?.show_images ?? lib.settings.show_images}
+                            onChange={(e) => setLibraryEdit(lib.id, 'show_images', e.target.checked)}
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Enable artwork thumbnails</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={libraryEdits[lib.id]?.prefer_local_artwork ?? lib.settings.prefer_local_artwork}
+                            onChange={(e) => setLibraryEdit(lib.id, 'prefer_local_artwork', e.target.checked)}
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Prefer local artwork files</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={libraryEdits[lib.id]?.fetch_online_artwork ?? lib.settings.fetch_online_artwork}
+                            onChange={(e) => setLibraryEdit(lib.id, 'fetch_online_artwork', e.target.checked)}
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Fetch missing artwork online</span>
+                        </label>
+                      </div>
+                    </form>
+                    <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
+                      <p className="text-sm muted">{lib.kind} · {lib.item_count} items</p>
+                      <button
+                        onClick={() => deleteLibrary(lib.id)}
+                        className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-xl font-semibold">Jobs</h2>
+            {jobs.length === 0 ? (
+              <p className="text-sm muted">No jobs</p>
+            ) : (
+              jobs.map((job) => {
+                const isTerminal = !['queued', 'running'].includes(job.status);
+                return (
+                  <div key={job.id} className="tile space-y-2 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-medium">{job.kind}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="chip">{job.status}</span>
+                        {isTerminal && (
+                          <button
+                            onClick={() => deleteJob(job.id)}
+                            className="btn-ghost px-2 py-1 text-xs text-[var(--danger)]"
+                            title="Delete job log"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-xs muted">{Math.round(job.progress * 100)}%</p>
+                    <div className="h-2 overflow-hidden rounded-full bg-white/8">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-[var(--orange)] to-[var(--purple)]"
+                        style={{ width: `${Math.max(0, Math.min(100, Math.round(job.progress * 100)))}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </section>
+
+          <section className="panel space-y-4 p-6">
+            <h2 className="text-xl font-semibold">TMDB Metadata</h2>
+            <p className="text-sm muted">
+              Set a TMDB API key so scans can fetch posters and metadata for detected movies/shows.
+            </p>
+            <form onSubmit={saveTmdbKey} className="space-y-3">
+              <input
+                type="password"
+                value={tmdbApiKey}
+                onChange={(e) => setTmdbApiKey(e.target.value)}
+                placeholder="Enter TMDB API key (leave empty to clear)"
+                className="input w-full px-3 py-2 text-sm"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={savingTmdb}
+                  className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                >
+                  {savingTmdb ? 'Saving...' : 'Save TMDB Key'}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearTmdbKey}
+                  disabled={savingTmdb}
+                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                >
+                  Clear Stored Key
                 </button>
               </div>
-            </div>
-          ))
-        )}
-      </section>
+            </form>
+            <p className="text-xs muted">
+              Status:{' '}
+              {tmdbConfig.configured
+                ? `configured (${tmdbConfig.source || 'unknown'}${tmdbConfig.key_preview ? `, ${tmdbConfig.key_preview}` : ''})`
+                : 'not configured'}
+            </p>
+          </section>
 
-      <section className="space-y-3">
-        <h2 className="text-xl font-semibold">Jobs</h2>
-        {jobs.length === 0 ? (
-          <p className="text-sm muted">No active jobs</p>
-        ) : (
-          jobs.map((job) => (
-            <div
-              key={job.id}
-              className="tile space-y-2 p-3"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-medium">{job.kind}</p>
-                <span className="chip">{job.status}</span>
-              </div>
-              <p className="text-xs muted">{Math.round(job.progress * 100)}%</p>
-              <div className="h-2 overflow-hidden rounded-full bg-white/8">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-[var(--orange)] to-[var(--purple)]"
-                  style={{ width: `${Math.max(0, Math.min(100, Math.round(job.progress * 100)))}%` }}
-                />
-              </div>
-            </div>
-          ))
-        )}
-      </section>
+        </div>
+      )}
+
     </div>
       )}
     </>

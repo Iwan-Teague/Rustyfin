@@ -149,6 +149,9 @@ async fn main() -> anyhow::Result<()> {
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
         ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
+        ),
     };
 
     let app = rustfin_server::routes::build_router(app_state);

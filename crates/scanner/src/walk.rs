@@ -26,11 +26,18 @@ pub struct MediaEntry {
 /// Walk a directory recursively and collect video files, skipping ignored patterns.
 pub fn walk_media_dir(root: &Path) -> Vec<MediaEntry> {
     let mut entries = Vec::new();
-    walk_recursive(root, &mut entries);
+    walk_recursive(root, &mut entries, parser::is_video_file);
     entries
 }
 
-fn walk_recursive(dir: &Path, entries: &mut Vec<MediaEntry>) {
+/// Walk a directory recursively and collect audio files, skipping ignored patterns.
+pub fn walk_audio_dir(root: &Path) -> Vec<MediaEntry> {
+    let mut entries = Vec::new();
+    walk_recursive(root, &mut entries, parser::is_audio_file);
+    entries
+}
+
+fn walk_recursive(dir: &Path, entries: &mut Vec<MediaEntry>, is_media: fn(&str) -> bool) {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
@@ -60,8 +67,8 @@ fn walk_recursive(dir: &Path, entries: &mut Vec<MediaEntry>) {
             if name == "@eaDir" || name == "#recycle" || name == ".Trash" {
                 continue;
             }
-            walk_recursive(&path, entries);
-        } else if parser::is_video_file(&name) {
+            walk_recursive(&path, entries, is_media);
+        } else if is_media(&name) {
             let metadata = match std::fs::metadata(&path) {
                 Ok(m) => m,
                 Err(_) => continue,

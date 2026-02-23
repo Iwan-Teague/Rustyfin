@@ -1820,6 +1820,7 @@ dependencies = [
  "password-hash",
  "rustfin-core",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

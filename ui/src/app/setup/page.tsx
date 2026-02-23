@@ -14,6 +14,7 @@ import {
   completeSetup,
   type SetupError,
 } from '@/lib/setupApi';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 
 type Step = 'loading' | 'welcome' | 'config' | 'admin' | 'libraries' | 'metadata' | 'network' | 'complete' | 'done';
@@ -139,7 +140,10 @@ export default function SetupWizard() {
     }
     setSaving(true);
     try {
-      const idempotencyKey = crypto.randomUUID();
+      const idempotencyKey =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
       await createAdmin(adminUsername, adminPassword, idempotencyKey);
       setStep('metadata');
     } catch (err) {
@@ -235,12 +239,12 @@ export default function SetupWizard() {
       <section className="panel space-y-6 py-10 text-center">
         <div className="text-4xl">Setup Complete</div>
         <p className="text-sm muted sm:text-base">Your Rustyfin server is ready to use.</p>
-        <a
+        <Link
           href="/"
           className="btn-primary inline-flex px-6 py-2.5 text-sm"
         >
           Go to Home
-        </a>
+        </Link>
       </section>
     );
   }
@@ -285,20 +289,22 @@ export default function SetupWizard() {
             Let&apos;s set up your media server. This wizard will guide you through
             configuring your server, creating an admin account, and setting up your preferences.
           </p>
-          <button
-            onClick={handleStart}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Starting...' : 'Get Started'}
-          </button>
+          <form onSubmit={(e) => { e.preventDefault(); handleStart(); }}>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Starting...' : 'Get Started'}
+            </button>
+          </form>
         </section>
       )}
 
       {step === 'config' && (
         <section className="panel space-y-6 p-6 sm:p-7">
           <h2 className="text-2xl font-semibold sm:text-3xl">Server Configuration</h2>
-          <div className="space-y-4">
+          <form onSubmit={(e) => { e.preventDefault(); handleConfig(); }} className="space-y-4">
             <div>
               <label className="mb-1 block text-sm font-medium muted">Server Name</label>
               <input
@@ -349,14 +355,14 @@ export default function SetupWizard() {
                 className={inputClass(false)}
               />
             </div>
-          </div>
-          <button
-            onClick={handleConfig}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Next'}
-          </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Next'}
+            </button>
+          </form>
         </section>
       )}
 
@@ -366,7 +372,7 @@ export default function SetupWizard() {
           <p className="text-sm muted">
             Create the initial administrator account. You&apos;ll use this to log in and manage your server.
           </p>
-          <div className="space-y-4">
+          <form onSubmit={(e) => { e.preventDefault(); handleAdmin(); }} className="space-y-4">
             <div>
               <label className="mb-1 block text-sm font-medium muted">Username</label>
               <input
@@ -408,14 +414,14 @@ export default function SetupWizard() {
                 <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password_confirm[0]}</p>
               )}
             </div>
-          </div>
-          <button
-            onClick={handleAdmin}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Creating...' : 'Next'}
-          </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Creating...' : 'Next'}
+            </button>
+          </form>
         </section>
       )}
 
@@ -425,7 +431,7 @@ export default function SetupWizard() {
           <p className="text-sm muted">
             Set the default language and region for fetching metadata (titles, descriptions, artwork).
           </p>
-          <div className="space-y-4">
+          <form onSubmit={(e) => { e.preventDefault(); handleMetadata(); }} className="space-y-4">
             <div>
               <label className="mb-1 block text-sm font-medium muted">Metadata Language</label>
               <input
@@ -453,14 +459,14 @@ export default function SetupWizard() {
                 <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.metadata_region[0]}</p>
               )}
             </div>
-          </div>
-          <button
-            onClick={handleMetadata}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Next'}
-          </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Next'}
+            </button>
+          </form>
         </section>
       )}
 
@@ -470,7 +476,7 @@ export default function SetupWizard() {
           <p className="text-sm muted">
             Configure remote access and network options.
           </p>
-          <div className="space-y-4">
+          <form onSubmit={(e) => { e.preventDefault(); handleNetwork(); }} className="space-y-4">
             <label className="panel-soft flex cursor-pointer items-center gap-3 px-4 py-3">
               <input
                 type="checkbox"
@@ -489,14 +495,14 @@ export default function SetupWizard() {
               />
               <span className="text-sm">Enable automatic port mapping (UPnP)</span>
             </label>
-          </div>
-          <button
-            onClick={handleNetwork}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Saving...' : 'Next'}
-          </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Next'}
+            </button>
+          </form>
         </section>
       )}
 
@@ -513,13 +519,15 @@ export default function SetupWizard() {
             <div><span className="muted">Locale:</span> {locale} / {region}</div>
             <div><span className="muted">Remote Access:</span> {allowRemote ? 'Enabled' : 'Disabled'}</div>
           </div>
-          <button
-            onClick={handleComplete}
-            disabled={saving}
-            className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
-          >
-            {saving ? 'Completing...' : 'Finish Setup'}
-          </button>
+          <form onSubmit={(e) => { e.preventDefault(); handleComplete(); }}>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+            >
+              {saving ? 'Completing...' : 'Finish Setup'}
+            </button>
+          </form>
         </section>
       )}
     </div>

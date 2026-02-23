@@ -3,7 +3,7 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,12 @@ pub struct CreateRoomInvite {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRoomRequest {
-    pub item_id: String,
+    /// For video rooms: the item to watch.
+    pub item_id: Option<String>,
+    /// For audio rooms: the music library to use.
+    pub audio_library_id: Option<String>,
+    /// Explicit room mode override. Use "youtube" for YouTube watch parties.
+    pub room_mode: Option<String>,
     #[serde(default)]
     pub invites: Vec<CreateRoomInvite>,
     #[serde(default)]
@@ -103,6 +108,9 @@ pub struct RoomResponse {
     pub password_required: bool,
     pub policy: serde_json::Value,
     pub members: Vec<RoomMemberResponse>,
+    pub room_mode: String,
+    pub audio_library_id: Option<String>,
+    pub youtube_video_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +136,22 @@ pub struct InviteResponse {
     pub password_required: bool,
     pub role: String,
     pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AudioTracksQuery {
+    #[serde(default)]
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioTrackResponse {
+    pub id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_art_url: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -268,6 +292,54 @@ fn is_password_required(hash: Option<&str>) -> bool {
     hash.is_some_and(|value| !value.trim().is_empty())
 }
 
+#[derive(Debug, Serialize)]
+pub struct PublicRoomEntry {
+    pub room_id: String,
+    pub host_username: String,
+    pub title: String,
+    pub room_mode: String,
+    pub password_required: bool,
+    pub member_count: i64,
+    pub created_ts: i64,
+}
+
+pub async fn list_public_rooms(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PublicRoomEntry>>, AppError> {
+    let rooms = rustfin_db::repo::watch_party::list_public_rooms(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let entries = rooms
+        .into_iter()
+        .map(|r| {
+            let title = if r.room_mode == "audio" {
+                if r.audio_library_name.is_empty() {
+                    "Music Party".to_string()
+                } else {
+                    format!("🎵 {}", r.audio_library_name)
+                }
+            } else if r.room_mode == "youtube" {
+                "▶ YouTube Party".to_string()
+            } else {
+                r.item_title
+            };
+            PublicRoomEntry {
+                room_id: r.id,
+                host_username: r.host_username,
+                title,
+                room_mode: r.room_mode,
+                password_required: r.password_required,
+                member_count: r.member_count,
+                created_ts: r.created_ts,
+            }
+        })
+        .collect();
+
+    Ok(Json(entries))
+}
+
 pub async fn list_inviteable_users(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -364,25 +436,6 @@ pub async fn create_room(
     )
     .await?;
 
-    let item_id = body.item_id.trim();
-    if item_id.is_empty() {
-        return Err(ApiError::BadRequest("item_id is required".into()).into());
-    }
-
-    let item = rustfin_db::repo::items::get_item(&state.db, item_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
-
-    if item.kind != "movie" && item.kind != "episode" {
-        return Err(ApiError::BadRequest(
-            "watch parties currently support movie and episode items only".into(),
-        )
-        .into());
-    }
-
-    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
-
     let policy = parse_policy(body.policy)?;
     let password = normalize_password(body.password)?;
     let password_hash = match password {
@@ -416,6 +469,90 @@ pub async fn create_room(
         );
     }
 
+    // Determine room mode and item_id
+    let (room_mode, item_id, audio_library_id, track_ids) =
+        if body.room_mode.as_deref() == Some("youtube") {
+            // YouTube room — no media item or library required
+            ("youtube".to_string(), String::new(), None, None)
+        } else if let Some(audio_lib_id) = body.audio_library_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            // Audio room
+            let library = rustfin_db::repo::libraries::get_library(&state.db, audio_lib_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("audio library not found".into()))?;
+
+            if library.kind != "music" {
+                return Err(ApiError::BadRequest(
+                    "audio_library_id must refer to a music library".into(),
+                )
+                .into());
+            }
+
+            ensure_library_access_for_user(
+                &state,
+                &auth.user_id,
+                &auth.role,
+                audio_lib_id,
+            )
+            .await?;
+
+            // Get all tracks from the library
+            let tracks = rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_lib_id, None)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+            if tracks.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "the music library has no tracks; scan it first".into(),
+                )
+                .into());
+            }
+
+            // Shuffle tracks
+            let mut track_ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let seed = chrono::Utc::now().timestamp_millis() as u64;
+            for i in (1..track_ids.len()).rev() {
+                let mut hasher = DefaultHasher::new();
+                (seed ^ i as u64).hash(&mut hasher);
+                let j = (hasher.finish() as usize) % (i + 1);
+                track_ids.swap(i, j);
+            }
+
+            let first_track_id = track_ids[0].clone();
+            (
+                "audio".to_string(),
+                first_track_id,
+                Some(audio_lib_id.to_string()),
+                Some(track_ids),
+            )
+        } else {
+            // Video room
+            let item_id = body
+                .item_id
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| ApiError::BadRequest("item_id is required for video rooms".into()))?;
+
+            let item = rustfin_db::repo::items::get_item(&state.db, item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+
+            if item.kind != "movie" && item.kind != "episode" {
+                return Err(ApiError::BadRequest(
+                    "watch parties currently support movie and episode items only".into(),
+                )
+                .into());
+            }
+
+            ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id)
+                .await?;
+
+            ("video".to_string(), item.id.clone(), None, None)
+        };
+
     let now = chrono::Utc::now().timestamp();
 
     let mut members = Vec::with_capacity(deduped_invites.len() + 1);
@@ -428,17 +565,28 @@ pub async fn create_room(
         joined_ts: Some(now),
     });
 
-    for (user_id, role) in deduped_invites {
-        let user = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
+    // Validate invitees for video rooms (check library access per invitee)
+    for (user_id, role) in &deduped_invites {
+        let user = rustfin_db::repo::users::find_by_id(&state.db, user_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
 
-        ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
+        if room_mode == "video" {
+            // For video rooms, we already have the item's library_id baked in item above.
+            // Re-fetch item to get library_id.
+            let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+            ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
+        } else if let Some(ref lib_id) = audio_library_id {
+            ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
+        }
 
         members.push(rustfin_db::repo::watch_party::NewWatchPartyMember {
-            user_id,
-            role,
+            user_id: user_id.clone(),
+            role: role.clone(),
             status: "invited".to_string(),
             invited_by: Some(auth.user_id.clone()),
             invited_ts: Some(now),
@@ -452,13 +600,29 @@ pub async fn create_room(
     let created = rustfin_db::repo::watch_party::create_room_with_members(
         &state.db,
         &auth.user_id,
-        &item.id,
+        &item_id,
         &policy_json,
         password_hash.as_deref(),
         &members,
+        Some(&room_mode),
+        audio_library_id.as_deref(),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    // For audio rooms, persist the track queue
+    if let Some(ref track_ids) = track_ids {
+        let track_ids_json = serde_json::to_string(track_ids)
+            .map_err(|e| ApiError::Internal(format!("queue serialization error: {e}")))?;
+        rustfin_db::repo::watch_party::upsert_audio_queue(
+            &state.db,
+            &created.id,
+            &track_ids_json,
+            0,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -479,12 +643,14 @@ pub async fn get_room(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
-
-    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    // For video rooms only: verify item and library access
+    if room.room_mode == "video" {
+        let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
+        ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    }
 
     let policy: RoomPolicy = serde_json::from_str(&room.policy_json)
         .map_err(|e| ApiError::Internal(format!("invalid room policy JSON: {e}")))?;
@@ -522,6 +688,17 @@ pub async fn get_room(
         })
         .collect();
 
+    // For YouTube rooms, reflect the live runtime state of the video ID if available
+    let youtube_video_id = if room.room_mode == "youtube" {
+        if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+            runtime.get_youtube_video_id().await.or(room.youtube_video_id)
+        } else {
+            room.youtube_video_id
+        }
+    } else {
+        None
+    };
+
     Ok(Json(RoomResponse {
         room_id: room.id,
         item_id: room.item_id,
@@ -531,6 +708,9 @@ pub async fn get_room(
         policy: serde_json::to_value(policy)
             .map_err(|e| ApiError::Internal(format!("policy serialization error: {e}")))?,
         members,
+        room_mode: room.room_mode,
+        audio_library_id: room.audio_library_id,
+        youtube_video_id,
     }))
 }
 
@@ -558,12 +738,14 @@ pub async fn join_room(
     let policy: RoomPolicy = serde_json::from_str(&room.policy_json)
         .map_err(|e| ApiError::Internal(format!("invalid room policy JSON: {e}")))?;
 
-    let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
-
-    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    // For video rooms only: verify item and library access
+    if room.room_mode == "video" {
+        let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
+        ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    }
 
     let existing_member =
         rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
@@ -624,11 +806,13 @@ pub async fn leave_room(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
-    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    if room.room_mode == "video" {
+        let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
+        ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+    }
 
     let updated = rustfin_db::repo::watch_party::set_member_status(
         &state.db,
@@ -662,6 +846,10 @@ pub async fn end_room(
     rustfin_db::repo::watch_party::set_room_status(&state.db, &room_id, "ended")
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+        let _ = runtime.tx.send(super::protocol::ServerMessage::RoomEnded);
+    }
 
     state.watch_party.remove_runtime(&room_id).await;
 
@@ -717,4 +905,143 @@ pub async fn decline_invite(
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct InviteMembersRequest {
+    invites: Vec<InviteInput>,
+}
+
+#[derive(Deserialize)]
+pub struct InviteInput {
+    user_id: String,
+    role: String,
+}
+
+pub async fn invite_members(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Json(body): Json<InviteMembersRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.status != "lobby" {
+        return Err(ApiError::BadRequest("room is not active".into()).into());
+    }
+
+    let caller = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("you are not in this room".into()))?;
+
+    if caller.status != "joined" {
+        return Err(ApiError::Forbidden("you must be joined to invite others".into()).into());
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let mut count: u32 = 0;
+
+    for invite in body.invites {
+        let user_id = invite.user_id.trim().to_string();
+        if user_id.is_empty() || user_id == auth.user_id {
+            continue;
+        }
+
+        let role = normalize_member_role(&invite.role)?;
+        if role == "host" {
+            return Err(ApiError::BadRequest("invite role cannot be host".into()).into());
+        }
+
+        let user = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
+
+        if room.room_mode == "video" {
+            let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+            ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
+        } else if let Some(ref lib_id) = room.audio_library_id {
+            ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
+        }
+
+        rustfin_db::repo::watch_party::upsert_member(
+            &state.db,
+            &room_id,
+            &rustfin_db::repo::watch_party::NewWatchPartyMember {
+                user_id: user_id.clone(),
+                role,
+                status: "invited".to_string(),
+                invited_by: Some(auth.user_id.clone()),
+                invited_ts: Some(now),
+                joined_ts: None,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        count += 1;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true, "invited": count })))
+}
+
+pub async fn list_audio_tracks(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Query(params): Query<AudioTracksQuery>,
+) -> Result<Json<Vec<AudioTrackResponse>>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    let audio_lib_id = room
+        .audio_library_id
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("this room is not an audio room".into()))?;
+
+    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
+
+    let tracks = rustfin_db::repo::watch_party::get_library_tracks(
+        &state.db,
+        audio_lib_id,
+        params.q.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    // Convert local poster paths to API URLs
+    let responses = tracks
+        .into_iter()
+        .map(|t| {
+            let album_art_url = t.album_art_url.map(|url| {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    url
+                } else {
+                    // It's a local path — find the album item to get the proper API URL.
+                    // We'll return a placeholder that can be constructed by the client.
+                    // For now return the path as-is so the image API can serve it.
+                    url
+                }
+            });
+            AudioTrackResponse {
+                id: t.id,
+                title: t.title,
+                artist: t.artist,
+                album: t.album,
+                album_art_url,
+                duration_ms: t.duration_ms,
+            }
+        })
+        .collect();
+
+    Ok(Json(responses))
 }

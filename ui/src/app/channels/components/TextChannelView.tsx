@@ -1,0 +1,260 @@
+'use client';
+
+import { useEffect, useRef, useState, useCallback } from 'react';
+import type { ChannelEvent, ChannelInfo, ChannelMessage } from '@/lib/channelsApi';
+import { deleteMessage, getMessages } from '@/lib/channelsApi';
+
+interface Props {
+  channel: ChannelInfo;
+  newMessages: ChannelMessage[];
+  currentUserId: string;
+  isAdmin: boolean;
+  wsEvents: ChannelEvent | null;
+  onSendMessage: (content: string) => void;
+}
+
+function relativeTime(ts: number): string {
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function hashColor(userId: string): string {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const colors = [
+    '#e67e22', '#3498db', '#2ecc71', '#9b59b6', '#e74c3c',
+    '#1abc9c', '#f39c12', '#16a085', '#d35400', '#8e44ad',
+  ];
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function Avatar({ userId, username }: { userId: string; username: string }) {
+  const color = hashColor(userId);
+  const initials = username.slice(0, 2).toUpperCase();
+  return (
+    <div
+      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
+      style={{ backgroundColor: color }}
+    >
+      {initials}
+    </div>
+  );
+}
+
+export default function TextChannelView({ channel, newMessages, currentUserId, isAdmin, wsEvents, onSendMessage }: Props) {
+  const [messages, setMessages] = useState<ChannelMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Load initial messages
+  useEffect(() => {
+    setLoading(true);
+    setMessages([]);
+    setHasMore(true);
+    getMessages(channel.id).then((msgs) => {
+      setMessages(msgs);
+      setHasMore(msgs.length >= 50);
+      setLoading(false);
+    });
+  }, [channel.id]);
+
+  // Append real-time messages
+  useEffect(() => {
+    if (newMessages.length === 0) return;
+    const relevant = newMessages.filter((m) => m.channel_id === channel.id);
+    if (relevant.length === 0) return;
+    setMessages((prev) => {
+      const existing = new Set(prev.map((m) => m.id));
+      const toAdd = relevant.filter((m) => !existing.has(m.id));
+      return [...prev, ...toAdd];
+    });
+  }, [newMessages, channel.id]);
+
+  // Remove deleted messages in real time
+  useEffect(() => {
+    if (!wsEvents || wsEvents.type !== 'message_deleted') return;
+    if (wsEvents.channel_id !== channel.id) return;
+    setMessages((prev) => prev.filter((m) => m.id !== wsEvents.message_id));
+  }, [wsEvents, channel.id]);
+
+  const handleDeleteMessage = useCallback(async (messageId: string) => {
+    try {
+      await deleteMessage(channel.id, messageId);
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    } catch {
+      // Silently ignore — the button simply won't work if permissions mismatch
+    } finally {
+      setPendingDeleteId(null);
+    }
+  }, [channel.id]);
+
+  // Auto-scroll to bottom on new messages — scroll the container, not the page
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  // IntersectionObserver for load-more at top
+  useEffect(() => {
+    if (!topSentinelRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !loadingMore && messages.length > 0) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(topSentinelRef.current);
+    return () => observer.disconnect();
+  });
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || messages.length === 0) return;
+    const oldest = messages[0].created_ts;
+    setLoadingMore(true);
+    try {
+      const older = await getMessages(channel.id, oldest, 50);
+      setHasMore(older.length >= 50);
+      if (older.length > 0) {
+        setMessages((prev) => [...older, ...prev]);
+      }
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [channel.id, loadingMore, hasMore, messages]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (draft.trim()) {
+        onSendMessage(draft.trim());
+        setDraft('');
+      }
+    }
+  };
+
+  // Group consecutive messages from same user
+  const grouped = messages.reduce<{ showHeader: boolean; msg: ChannelMessage }[]>((acc, msg, i) => {
+    const prev = messages[i - 1];
+    const showHeader =
+      !prev ||
+      prev.user_id !== msg.user_id ||
+      msg.created_ts - prev.created_ts > 300;
+    acc.push({ showHeader, msg });
+    return acc;
+  }, []);
+
+  return (
+    <div className="flex flex-col flex-1 h-full overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+        <span className="muted">#</span>
+        <span className="font-semibold">{channel.name}</span>
+      </div>
+
+      {/* Message list — min-h-0 lets flex-1 shrink so the input stays pinned */}
+      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-0.5">
+        <div ref={topSentinelRef} className="h-1" />
+        {loadingMore && (
+          <p className="text-xs muted text-center py-2">Loading older messages…</p>
+        )}
+        {loading && (
+          <p className="text-xs muted text-center py-8">Loading…</p>
+        )}
+        {!loading && messages.length === 0 && (
+          <p className="text-xs muted text-center py-8">
+            No messages yet. Say something!
+          </p>
+        )}
+
+        {grouped.map(({ showHeader, msg }) => {
+          const canDelete = isAdmin || msg.user_id === currentUserId;
+          return (
+            <div
+              key={msg.id}
+              className={`group relative ${showHeader ? 'mt-3' : 'mt-0.5'}`}
+            >
+              {showHeader ? (
+                <div className="flex items-start gap-3 pr-8">
+                  <Avatar userId={msg.user_id} username={msg.username} />
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-semibold text-sm">{msg.username}</span>
+                      <span className="text-xs muted">{relativeTime(msg.created_ts)}</span>
+                    </div>
+                    <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="pl-11 pr-8 text-sm whitespace-pre-wrap break-words">
+                  {msg.content}
+                </div>
+              )}
+              {canDelete && (
+                <button
+                  onClick={() => setPendingDeleteId(msg.id)}
+                  className="absolute right-1 top-0 opacity-0 group-hover:opacity-100 btn-ghost px-1.5 py-0.5 text-xs text-red-400 hover:text-red-300 transition-opacity"
+                  title="Delete message"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Input */}
+      <div className="px-4 py-3 border-t border-[var(--border)] shrink-0">
+        <textarea
+          className="panel w-full resize-none rounded-lg px-3 py-2 text-sm"
+          rows={2}
+          placeholder={`Message #${channel.name}`}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={handleKeyDown}
+          maxLength={2000}
+        />
+        <p className="text-xs muted mt-1">Enter to send · Shift+Enter for newline</p>
+      </div>
+
+      {/* Delete message confirmation modal */}
+      {pendingDeleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4">
+            <h2 className="font-semibold text-lg">Delete Message</h2>
+            <p className="text-sm muted">
+              This message will be permanently removed for everyone and cannot be undone.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingDeleteId(null)}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDeleteMessage(pendingDeleteId)}
+                className="btn-ghost px-4 py-2 text-sm text-red-400 hover:text-red-300"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

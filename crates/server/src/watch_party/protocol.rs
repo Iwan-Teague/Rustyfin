@@ -5,6 +5,10 @@ pub enum ClientMessage {
     Play { position_ms: u64 },
     Pause { position_ms: u64 },
     Seek { position_ms: u64 },
+    SkipNext,
+    SkipPrev,
+    PlayTrack { track_id: String },
+    ChangeVideo { video_id: String },
     Ping,
     Pong,
 }
@@ -15,6 +19,16 @@ pub struct PresenceMember {
     pub username: String,
     pub role: String,
     pub connected: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QueueEntry {
+    pub track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_art_url: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,6 +43,31 @@ pub enum ServerMessage {
         server_ts_ms: i64,
         members: Vec<PresenceMember>,
     },
+    AudioState {
+        room_id: String,
+        track_id: String,
+        title: String,
+        artist: String,
+        album: String,
+        album_art_url: Option<String>,
+        duration_ms: Option<u64>,
+        position_ms: u64,
+        playing: bool,
+        updated_ts_ms: i64,
+        server_ts_ms: i64,
+        queue: Vec<QueueEntry>,
+        queue_index: usize,
+        members: Vec<PresenceMember>,
+    },
+    YouTubeState {
+        room_id: String,
+        video_id: String,
+        playing: bool,
+        position_ms: u64,
+        updated_ts_ms: i64,
+        server_ts_ms: i64,
+        members: Vec<PresenceMember>,
+    },
     Presence {
         user_id: String,
         connected: bool,
@@ -37,4 +76,5 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
+    RoomEnded,
 }

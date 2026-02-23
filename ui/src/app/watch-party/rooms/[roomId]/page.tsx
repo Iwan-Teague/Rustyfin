@@ -6,11 +6,18 @@ import { apiFetch, apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import {
   WatchPartyRoomResponse,
+  WatchPartyUser,
+  WsAudioStateMessage,
+  WsYouTubeStateMessage,
   endWatchPartyRoom,
   getWatchPartyRoom,
+  inviteToRoom,
   joinWatchPartyRoom,
   leaveWatchPartyRoom,
+  listWatchPartyUsers,
 } from '@/lib/watchPartyApi';
+import AudioPlayer from '../../components/AudioPlayer';
+import YouTubePlayer from '../../components/YouTubePlayer';
 
 type PlaybackDescriptor = {
   item_id: string;
@@ -58,7 +65,18 @@ type WsPongMessage = {
   type: 'pong';
 };
 
-type WsMessage = WsStateMessage | WsPresenceMessage | WsErrorMessage | WsPongMessage;
+type WsRoomEndedMessage = {
+  type: 'room_ended';
+};
+
+type WsMessage =
+  | WsStateMessage
+  | WsAudioStateMessage
+  | WsYouTubeStateMessage
+  | WsPresenceMessage
+  | WsErrorMessage
+  | WsPongMessage
+  | WsRoomEndedMessage;
 
 type RuntimeConfig = {
   backend_origin?: string | null;
@@ -102,6 +120,8 @@ export default function WatchPartyRoomPage() {
 
   const [room, setRoom] = useState<WatchPartyRoomResponse | null>(null);
   const [roomState, setRoomState] = useState<WsStateMessage | null>(null);
+  const [audioState, setAudioState] = useState<WsAudioStateMessage | null>(null);
+  const [youtubeState, setYoutubeState] = useState<WsYouTubeStateMessage | null>(null);
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [joinPassword, setJoinPassword] = useState('');
   const [joinedRole, setJoinedRole] = useState<string | null>(null);
@@ -113,6 +133,11 @@ export default function WatchPartyRoomPage() {
   const [leaving, setLeaving] = useState(false);
   const [ending, setEnding] = useState(false);
 
+  // In-room invite state
+  const [allUsers, setAllUsers] = useState<WatchPartyUser[]>([]);
+  const [inviteSelections, setInviteSelections] = useState<Record<string, 'viewer' | 'controller'>>({});
+  const [sendingInvites, setSendingInvites] = useState(false);
+
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -123,6 +148,9 @@ export default function WatchPartyRoomPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const sessionIdRef = useRef<string | null>(null);
   const applyingRemoteRef = useRef(false);
+
+  const isAudioRoom = room?.room_mode === 'audio';
+  const isYoutubeRoom = room?.room_mode === 'youtube';
 
   const myMember = useMemo(() => {
     if (!room || !me) return null;
@@ -143,12 +171,12 @@ export default function WatchPartyRoomPage() {
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
 
-  const activeMembers = roomState?.members || room?.members.map((member) => ({
+  const activeMembers = (roomState?.members ?? audioState?.members ?? youtubeState?.members) ?? room?.members.map((member) => ({
     user_id: member.user_id,
     username: member.username,
     role: member.role,
     connected: member.status === 'joined',
-  })) || [];
+  })) ?? [];
 
   const sendWs = useCallback((payload: Record<string, unknown>) => {
     const socket = wsRef.current;
@@ -202,7 +230,12 @@ export default function WatchPartyRoomPage() {
   }, [me, loadRoom]);
 
   useEffect(() => {
-    if (!room || !joinedRole) return;
+    if (!me) return;
+    listWatchPartyUsers().then(setAllUsers).catch(() => {});
+  }, [me]);
+
+  useEffect(() => {
+    if (!room || !joinedRole || isAudioRoom || isYoutubeRoom) return;
 
     let cancelled = false;
 
@@ -220,7 +253,7 @@ export default function WatchPartyRoomPage() {
     return () => {
       cancelled = true;
     };
-  }, [room, joinedRole]);
+  }, [room, joinedRole, isAudioRoom]);
 
   const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
     const video = videoRef.current;
@@ -274,6 +307,15 @@ export default function WatchPartyRoomPage() {
           if (payload.type === 'state') {
             setRoomState(payload);
             void applyRemoteState(payload);
+          } else if (payload.type === 'audio_state') {
+            setAudioState(payload);
+            // Update member list in roomState-like fashion
+            setRoomState((prev) => {
+              if (!prev) return prev;
+              return { ...prev, members: payload.members };
+            });
+          } else if (payload.type === 'youtube_state') {
+            setYoutubeState(payload);
           } else if (payload.type === 'presence') {
             setRoomState((prev) => {
               if (!prev) return prev;
@@ -286,8 +328,21 @@ export default function WatchPartyRoomPage() {
                 ),
               };
             });
+            setAudioState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                members: prev.members.map((member) =>
+                  member.user_id === payload.user_id
+                    ? { ...member, connected: payload.connected }
+                    : member,
+                ),
+              };
+            });
           } else if (payload.type === 'error') {
             setError(payload.message);
+          } else if (payload.type === 'room_ended') {
+            router.push('/watch-party');
           }
         } catch {
           setError('Invalid websocket message received');
@@ -530,11 +585,9 @@ export default function WatchPartyRoomPage() {
     setError('');
     try {
       await endWatchPartyRoom(roomId);
-      await loadRoom();
-      setInfo('Room ended.');
+      router.push('/watch-party');
     } catch (err: any) {
       setError(err?.message || 'Failed to end room');
-    } finally {
       setEnding(false);
     }
   }
@@ -545,6 +598,22 @@ export default function WatchPartyRoomPage() {
       setInfo('Room link copied to clipboard.');
     } catch {
       setError('Failed to copy room link');
+    }
+  }
+
+  async function handleSendInvites() {
+    const payload = Object.entries(inviteSelections).map(([user_id, role]) => ({ user_id, role }));
+    if (payload.length === 0) return;
+    setSendingInvites(true);
+    setError('');
+    try {
+      await inviteToRoom(roomId, payload);
+      setInviteSelections({});
+      setInfo(`Invited ${payload.length} user${payload.length > 1 ? 's' : ''}.`);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to send invites');
+    } finally {
+      setSendingInvites(false);
     }
   }
 
@@ -604,10 +673,12 @@ export default function WatchPartyRoomPage() {
   return (
     <div className="space-y-6 animate-rise">
       <header className="panel space-y-3 p-6 sm:p-7">
-        <span className="chip chip-accent">Watch Party Room</span>
+        <span className="chip chip-accent">
+          {isAudioRoom ? 'Music Party' : isYoutubeRoom ? 'YouTube Party' : 'Watch Party'} Room
+        </span>
         <h1 className="text-3xl font-semibold sm:text-4xl">Room {room.room_id}</h1>
         <p className="text-sm muted">
-          Item: {room.item_id} • Status: {room.status}
+          {isAudioRoom ? 'Music Party' : isYoutubeRoom ? 'YouTube Party' : `Item: ${room.item_id}`} • Status: {room.status}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" className="btn-secondary px-4 py-2 text-sm" onClick={copyLink}>
@@ -624,7 +695,7 @@ export default function WatchPartyRoomPage() {
           {joinedRole === 'host' && (
             <button
               type="button"
-              className="btn-ghost px-4 py-2 text-sm"
+              className="btn-secondary px-4 py-2 text-sm"
               onClick={handleEndRoom}
               disabled={ending}
             >
@@ -642,7 +713,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel space-y-4 p-5 sm:p-6">
           <h2 className="text-xl font-semibold">Join Room</h2>
           <p className="text-sm muted">
-            You must join this room before opening synchronized playback.
+            You must join this room before {isAudioRoom ? 'listening' : isYoutubeRoom ? 'watching YouTube together' : 'opening synchronized playback'}.
           </p>
 
           {room.password_required && (
@@ -669,7 +740,37 @@ export default function WatchPartyRoomPage() {
         </section>
       )}
 
-      {joinedRole && (
+      {joinedRole && isAudioRoom && audioState && (
+        <AudioPlayer
+          audioState={audioState}
+          canControl={canPlayPause}
+          roomId={roomId}
+          sendWs={sendWs}
+        />
+      )}
+
+      {joinedRole && isAudioRoom && !audioState && (
+        <section className="panel p-5 sm:p-6">
+          <p className="text-sm muted">Connecting to music party…</p>
+        </section>
+      )}
+
+      {joinedRole && isYoutubeRoom && (
+        <section className="panel space-y-4 p-5 sm:p-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="chip">Role: {joinedRole}</span>
+            <span className="chip">Controls: {canPlayPause ? 'allowed' : 'host-only'}</span>
+          </div>
+          <YouTubePlayer
+            roomId={roomId}
+            ytState={youtubeState}
+            canControl={canPlayPause}
+            sendWs={sendWs}
+          />
+        </section>
+      )}
+
+      {joinedRole && !isAudioRoom && !isYoutubeRoom && (
         <>
           <section className="panel space-y-4 p-5 sm:p-6">
             <div className="flex flex-wrap items-center gap-2">
@@ -736,25 +837,89 @@ export default function WatchPartyRoomPage() {
               )}
             </div>
           </section>
-
-          <section className="panel space-y-3 p-5 sm:p-6">
-            <h2 className="text-xl font-semibold">Roster</h2>
-            <ul className="space-y-2">
-              {activeMembers.map((member) => (
-                <li key={member.user_id} className="tile rounded-xl px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-medium">{member.username}</p>
-                      <p className="text-xs muted">{member.role}</p>
-                    </div>
-                    <span className="chip">{member.connected ? 'Connected' : 'Offline'}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
         </>
       )}
+
+      {joinedRole && (
+        <section className="panel space-y-3 p-5 sm:p-6">
+          <h2 className="text-xl font-semibold">Roster</h2>
+          <ul className="space-y-2">
+            {activeMembers.map((member) => (
+              <li key={member.user_id} className="tile rounded-xl px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">{member.username}</p>
+                    <p className="text-xs muted">{member.role}</p>
+                  </div>
+                  <span className="chip">{member.connected ? 'Connected' : 'Offline'}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* In-room invite panel */}
+      {joinedRole && allUsers.length > 0 && (() => {
+        const memberIds = new Set(activeMembers.map((m) => m.user_id));
+        const invitable = allUsers.filter((u) => u.id !== me!.id && !memberIds.has(u.id));
+        if (invitable.length === 0) return null;
+        return (
+          <section className="panel space-y-4 p-5 sm:p-6">
+            <h2 className="text-xl font-semibold">Invite to Room</h2>
+            <ul className="space-y-2">
+              {invitable.map((user) => {
+                const checked = user.id in inviteSelections;
+                const role = inviteSelections[user.id] ?? 'viewer';
+                return (
+                  <li key={user.id} className="tile rounded-xl px-3 py-2">
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setInviteSelections((prev) => {
+                            const next = { ...prev };
+                            if (next[user.id] !== undefined) {
+                              delete next[user.id];
+                            } else {
+                              next[user.id] = 'viewer';
+                            }
+                            return next;
+                          });
+                        }}
+                        className="h-4 w-4 shrink-0"
+                      />
+                      <span className="flex-1 text-sm font-medium">{user.username}</span>
+                      <select
+                        className="select px-2 py-1.5 text-sm"
+                        value={role}
+                        onChange={(e) =>
+                          setInviteSelections((prev) => ({
+                            ...prev,
+                            [user.id]: e.target.value as 'viewer' | 'controller',
+                          }))
+                        }
+                      >
+                        <option value="viewer">Viewer</option>
+                        <option value="controller">Controller</option>
+                      </select>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              type="button"
+              className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
+              onClick={handleSendInvites}
+              disabled={sendingInvites || Object.keys(inviteSelections).length === 0}
+            >
+              {sendingInvites ? 'Sending…' : 'Send Invites'}
+            </button>
+          </section>
+        );
+      })()}
     </div>
   );
 }

@@ -130,10 +130,11 @@ fn api_router() -> Router<AppState> {
             "/watch-party",
             crate::watch_party::router::watch_party_router(),
         )
+        .nest("/channels", crate::channels::router::channels_router())
         .route("/events", get(sse_events))
         // Jobs
         .route("/jobs", get(list_jobs))
-        .route("/jobs/{id}", get(get_job))
+        .route("/jobs/{id}", get(get_job).delete(delete_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
 }
 
@@ -944,6 +945,22 @@ async fn cancel_job(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn delete_job(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let deleted = rustfin_db::repo::jobs::delete_job(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if !deleted {
+        return Err(ApiError::BadRequest("job not found or still active".into()).into());
+    }
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------
