@@ -112,9 +112,9 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const next = useCallback(() => {
-    setCurrentIndex((idx) => Math.min(idx + 1, queue.length - 1));
+    setCurrentIndex((idx) => idx + 1);
     setProgress(0);
-  }, [queue.length]);
+  }, []);
 
   const prev = useCallback(() => {
     const audio = audioRef.current;
