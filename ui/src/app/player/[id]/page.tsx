@@ -32,6 +32,12 @@ type MediaInfo = {
   }>;
 };
 
+type DirectSupportResult = {
+  supported: boolean;
+  reason?: string;
+  tooltip?: string;
+};
+
 const DIRECT_MIME_BY_CONTAINER: Array<[string, string]> = [
   ['mp4', 'video/mp4'],
   ['mov', 'video/quicktime'],
@@ -73,6 +79,10 @@ function buildDirectContentType(info: MediaInfo | null): string | null {
   return mime;
 }
 
+function buildDirectUnsupportedMessage(contentType: string): string {
+  return `Direct Play is not supported for this media type in your browser (${contentType}). Use Transcode (HLS), which is slower but compatible. To use Direct Play, add support for this media type.`;
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -88,6 +98,8 @@ export default function PlayerPage() {
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
+  const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
+  const [directSupportMessage, setDirectSupportMessage] = useState('');
   const autoStartedRef = useRef(false);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
@@ -108,10 +120,16 @@ export default function PlayerPage() {
     }
   }, []);
 
-  const evaluateDirectSupport = useCallback(async () => {
+  const evaluateDirectSupport = useCallback(async (): Promise<DirectSupportResult> => {
     const video = videoRef.current;
-    if (!video) return true;
-    if (!directContentType) return true;
+    if (!video) return { supported: true };
+    if (!directContentType) return { supported: true };
+
+    const unsupported = {
+      supported: false,
+      reason: buildDirectUnsupportedMessage(directContentType),
+      tooltip: `Media type not supported: ${directContentType}`,
+    };
 
     const nav = navigator as Navigator & {
       mediaCapabilities?: {
@@ -131,14 +149,15 @@ export default function PlayerPage() {
             framerate: mediaInfo.video.framerate || 24,
           },
         });
-        if (!result.supported) return false;
+        if (!result.supported) return unsupported;
       } catch {
         // Fall back to canPlayType below.
       }
     }
 
     const canPlay = video.canPlayType(directContentType);
-    return canPlay === 'probably' || canPlay === 'maybe';
+    if (canPlay !== 'probably' && canPlay !== 'maybe') return unsupported;
+    return { supported: true };
   }, [directContentType, mediaInfo]);
 
   const startHls = useCallback(async () => {
@@ -169,6 +188,7 @@ export default function PlayerPage() {
       destroyHls();
       setSessionId(data.session_id);
       setMode('hls');
+      setDirectSupportMessage('');
 
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = data.hls_url;
@@ -210,17 +230,23 @@ export default function PlayerPage() {
       return;
     }
 
-    setStartingDirect(true);
+      setStartingDirect(true);
     setError('');
     setDirectFallbackTriggered(false);
     try {
-      const canDirect = await evaluateDirectSupport();
-      if (!canDirect) {
-        setError('Direct Play is not supported for this media in your browser. Switching to HLS.');
+      const support = await evaluateDirectSupport();
+      setDirectSupport(support);
+      if (!support.supported) {
+        setDirectSupportMessage(
+          support.reason ||
+            'Direct Play is not supported for this media type in your browser. Use Transcode (HLS).',
+        );
+        setMode('hls');
         await startHls();
         return;
       }
 
+      setDirectSupportMessage('');
       destroyHls();
       setMode('direct');
       video.src = descriptor.direct_url;
@@ -241,6 +267,8 @@ export default function PlayerPage() {
     setMediaInfo(null);
     setSessionId(null);
     setError('');
+    setDirectSupport(null);
+    setDirectSupportMessage('');
 
     apiJson<PlaybackDescriptor>(`/items/${id}/playback`)
       .then((data) => {
@@ -265,6 +293,33 @@ export default function PlayerPage() {
       cancelled = true;
     };
   }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!canStartPlayback) {
+      setDirectSupport(null);
+      setDirectSupportMessage('');
+      return;
+    }
+
+    (async () => {
+      const support = await evaluateDirectSupport();
+      if (cancelled) return;
+      setDirectSupport(support);
+      if (!support.supported) {
+        setDirectSupportMessage(
+          support.reason ||
+            'Direct Play is not supported for this media type in your browser. Use Transcode (HLS).',
+        );
+      } else {
+        setDirectSupportMessage('');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canStartPlayback, evaluateDirectSupport]);
 
   // Auto-start direct play (load without playing) once the descriptor is ready
   useEffect(() => {
@@ -301,15 +356,26 @@ export default function PlayerPage() {
     return () => clearInterval(interval);
   }, [id]);
 
+  const directPlayUnsupported = directSupport?.supported === false;
+  const directPlayDisabled =
+    !canStartPlayback || startingDirect || startingHls || directPlayUnsupported;
+  const directPlayDisabledReason = !canStartPlayback
+    ? 'No playable media file is attached to this item.'
+    : directPlayUnsupported
+      ? (directSupport?.tooltip ?? 'Media type not supported')
+      : 'Use browser-native Direct Play';
+
   return (
     <div className="space-y-5 animate-rise">
       <header className="space-y-2">
-        <span className="chip">Playback Console</span>
         <h1 className="text-3xl font-semibold">Player</h1>
         <p className="text-sm muted">Item ID: {id}</p>
       </header>
 
       {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
+      {directSupportMessage && (
+        <p className="notice-error rounded-xl px-4 py-2 text-sm">{directSupportMessage}</p>
+      )}
       {loadingDescriptor && (
         <p className="panel-soft rounded-xl px-4 py-2 text-sm muted">Preparing playback descriptor…</p>
       )}
@@ -336,11 +402,19 @@ export default function PlayerPage() {
 
       <div className="panel-soft flex flex-wrap items-center gap-3 px-4 py-4">
         <p className="mr-2 text-sm muted">Mode:</p>
+        <span className="chip">
+          {mode === 'direct' ? 'Using Direct Play' : 'Using Transcode (HLS)'}
+        </span>
         <button
           onClick={() => void startDirectPlay()}
-          disabled={!canStartPlayback || startingDirect || startingHls}
-          className={`px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50 ${
-            mode === 'direct' ? 'btn-primary' : 'btn-secondary'
+          disabled={directPlayDisabled}
+          title={directPlayDisabledReason}
+          className={`px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
+            directPlayUnsupported
+              ? 'bg-slate-700 text-slate-300 border border-slate-500/50'
+              : mode === 'direct'
+                ? 'btn-primary'
+                : 'btn-secondary'
           }`}
         >
           {startingDirect ? 'Starting…' : 'Direct Play'}

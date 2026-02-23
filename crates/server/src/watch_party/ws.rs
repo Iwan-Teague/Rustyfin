@@ -388,6 +388,13 @@ fn consume_message_budget(timestamps: &mut VecDeque<Instant>) -> bool {
     true
 }
 
+fn is_valid_youtube_video_id(value: &str) -> bool {
+    value.len() == 11
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 fn decode_client_message(message: Message) -> Result<ClientMessage, AppError> {
     match message {
         Message::Text(payload) => {
@@ -426,10 +433,13 @@ async fn authorize_ws_connection(
             .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
 
         if claims.role != "admin" {
-            let allowed =
-                rustfin_db::repo::users::is_library_allowed(&state.db, &claims.sub, &item.library_id)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+            let allowed = rustfin_db::repo::users::is_library_allowed(
+                &state.db,
+                &claims.sub,
+                &item.library_id,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
             if !allowed {
                 return Err(ApiError::Forbidden("library access denied".into()).into());
             }
@@ -490,7 +500,10 @@ async fn handle_client_message(
 
             if context.room_mode == "audio" {
                 runtime
-                    .apply_audio_action(AudioAction::SetPlayingState { position_ms, playing: true })
+                    .apply_audio_action(AudioAction::SetPlayingState {
+                        position_ms,
+                        playing: true,
+                    })
                     .await;
             } else {
                 runtime
@@ -516,7 +529,10 @@ async fn handle_client_message(
 
             if context.room_mode == "audio" {
                 runtime
-                    .apply_audio_action(AudioAction::SetPlayingState { position_ms, playing: false })
+                    .apply_audio_action(AudioAction::SetPlayingState {
+                        position_ms,
+                        playing: false,
+                    })
                     .await;
             } else {
                 runtime
@@ -629,8 +645,9 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            if let Some(new_queue) =
-                runtime.apply_audio_action(AudioAction::PlayTrack { track_id }).await
+            if let Some(new_queue) = runtime
+                .apply_audio_action(AudioAction::PlayTrack { track_id })
+                .await
             {
                 let track_ids_json = serde_json::to_string(&new_queue.track_ids)
                     .unwrap_or_else(|_| "[]".to_string());
@@ -652,8 +669,8 @@ async fn handle_client_message(
                 send_error(socket, "change_video is only valid in YouTube rooms").await?;
                 return Ok(());
             }
-            if video_id.is_empty() {
-                send_error(socket, "video_id must not be empty").await?;
+            if !is_valid_youtube_video_id(&video_id) {
+                send_error(socket, "video_id must be a valid 11-character YouTube ID").await?;
                 return Ok(());
             }
             let (room_status, policy, role) =
@@ -746,10 +763,7 @@ async fn build_state_message(
     // authoritative update so late joiners sync close to live host time.
     let (position_ms, updated_ts_ms) = if snapshot.playing && now_ms > snapshot.updated_ts_ms {
         let elapsed_ms = (now_ms - snapshot.updated_ts_ms) as u64;
-        (
-            snapshot.position_ms.saturating_add(elapsed_ms),
-            now_ms,
-        )
+        (snapshot.position_ms.saturating_add(elapsed_ms), now_ms)
     } else {
         (snapshot.position_ms, snapshot.updated_ts_ms)
     };
@@ -804,15 +818,16 @@ async fn build_audio_state_message(
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let (position_ms, updated_ts_ms) = if queue_snapshot.playing && now_ms > queue_snapshot.updated_ts_ms {
-        let elapsed_ms = (now_ms - queue_snapshot.updated_ts_ms) as u64;
-        (
-            queue_snapshot.position_ms.saturating_add(elapsed_ms),
-            now_ms,
-        )
-    } else {
-        (queue_snapshot.position_ms, queue_snapshot.updated_ts_ms)
-    };
+    let (position_ms, updated_ts_ms) =
+        if queue_snapshot.playing && now_ms > queue_snapshot.updated_ts_ms {
+            let elapsed_ms = (now_ms - queue_snapshot.updated_ts_ms) as u64;
+            (
+                queue_snapshot.position_ms.saturating_add(elapsed_ms),
+                now_ms,
+            )
+        } else {
+            (queue_snapshot.position_ms, queue_snapshot.updated_ts_ms)
+        };
 
     // Get current track ID
     let current_track_id = queue_snapshot
@@ -827,23 +842,37 @@ async fn build_audio_state_message(
         None => return Err(ApiError::Internal("audio room missing library id".into()).into()),
     };
 
-    let all_db_tracks = rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let all_db_tracks =
+        rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let track_metadata: HashMap<String, (String, String, String, Option<String>, Option<u64>)> =
         all_db_tracks
             .into_iter()
-            .map(|t| (t.id.clone(), (t.title, t.album, t.artist, t.album_art_url, t.duration_ms)))
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    (t.title, t.album, t.artist, t.album_art_url, t.duration_ms),
+                )
+            })
             .collect();
 
-    let (current_title, current_album, current_artist, current_art, current_dur) =
-        track_metadata
-            .get(&current_track_id)
-            .cloned()
-            .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None));
+    let (current_title, current_album, current_artist, current_art, current_dur) = track_metadata
+        .get(&current_track_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            (
+                "Unknown".to_string(),
+                String::new(),
+                String::new(),
+                None,
+                None,
+            )
+        });
 
-    let queue: Vec<QueueEntry> = queue_snapshot.track_ids
+    let queue: Vec<QueueEntry> = queue_snapshot
+        .track_ids
         .iter()
         .map(|tid| {
             let (title, album, artist, art, dur) = track_metadata

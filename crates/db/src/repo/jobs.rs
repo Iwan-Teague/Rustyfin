@@ -109,12 +109,11 @@ pub async fn update_job_status(
 /// Delete a job log entry. Only permitted for terminal states (completed, failed, cancelled, error).
 /// Returns true if a row was deleted, false if not found or still active.
 pub async fn delete_job(pool: &SqlitePool, job_id: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM job WHERE id = ? AND status NOT IN ('queued', 'running')",
-    )
-    .bind(job_id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM job WHERE id = ? AND status NOT IN ('queued', 'running')")
+            .bind(job_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 

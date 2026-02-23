@@ -13,12 +13,18 @@ pub fn watch_party_router() -> Router<AppState> {
             "/eligible-libraries",
             post(super::handlers::eligible_libraries),
         )
-        .route("/rooms", get(super::handlers::list_public_rooms).post(super::handlers::create_room))
+        .route(
+            "/rooms",
+            get(super::handlers::list_public_rooms).post(super::handlers::create_room),
+        )
         .route("/rooms/{room_id}", get(super::handlers::get_room))
         .route("/rooms/{room_id}/join", post(super::handlers::join_room))
         .route("/rooms/{room_id}/leave", post(super::handlers::leave_room))
         .route("/rooms/{room_id}/end", post(super::handlers::end_room))
-        .route("/rooms/{room_id}/invite", post(super::handlers::invite_members))
+        .route(
+            "/rooms/{room_id}/invite",
+            post(super::handlers::invite_members),
+        )
         .route(
             "/rooms/{room_id}/audio/tracks",
             get(super::handlers::list_audio_tracks),

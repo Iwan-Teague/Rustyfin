@@ -16,6 +16,7 @@ import {
   leaveWatchPartyRoom,
   listWatchPartyUsers,
 } from '@/lib/watchPartyApi';
+import { formatElapsedSeconds } from '@/lib/time';
 import AudioPlayer from '../../components/AudioPlayer';
 import YouTubePlayer from '../../components/YouTubePlayer';
 
@@ -142,6 +143,7 @@ export default function WatchPartyRoomPage() {
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const wsRef = useRef<WebSocket | null>(null);
   const hlsRef = useRef<any>(null);
@@ -170,6 +172,12 @@ export default function WatchPartyRoomPage() {
   }, [room, joinedRole]);
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
+
+  const roomDurationSeconds = useMemo(() => {
+    if (!room) return 0;
+    const endTs = room.ended_ts ?? Math.floor(nowMs / 1000);
+    return Math.max(0, endTs - room.created_ts);
+  }, [room, nowMs]);
 
   const activeMembers = (roomState?.members ?? audioState?.members ?? youtubeState?.members) ?? room?.members.map((member) => ({
     user_id: member.user_id,
@@ -233,6 +241,12 @@ export default function WatchPartyRoomPage() {
     if (!me) return;
     listWatchPartyUsers().then(setAllUsers).catch(() => {});
   }, [me]);
+
+  useEffect(() => {
+    if (!room || room.status === 'ended') return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [room]);
 
   useEffect(() => {
     if (!room || !joinedRole || isAudioRoom || isYoutubeRoom) return;
@@ -422,7 +436,7 @@ export default function WatchPartyRoomPage() {
       if (!cancelled) {
         setWsConnected(false);
         setError(
-          'Watch-party websocket connection failed. Restart with ./scripts/start.sh --build and retry.',
+          'Watch-party websocket connection failed. Restart with ./scripts/start.sh and retry.',
         );
       }
     };
@@ -702,6 +716,7 @@ export default function WatchPartyRoomPage() {
               {ending ? 'Ending…' : 'End room'}
             </button>
           )}
+          <span className="chip">Duration: {formatElapsedSeconds(roomDurationSeconds)}</span>
           <span className="chip">WS: {wsConnected ? 'connected' : 'disconnected'}</span>
         </div>
       </header>
