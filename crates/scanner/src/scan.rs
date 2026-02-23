@@ -208,6 +208,7 @@ async fn ensure_media_file(
     path: &str,
     entry: &walk::MediaEntry,
     existing_file_id: Option<&str>,
+    probe_duration: bool,
 ) -> Result<String, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
 
@@ -226,21 +227,49 @@ async fn ensure_media_file(
         return Ok(existing_id.to_string());
     }
 
+    let duration_ms = if probe_duration {
+        probe_audio_duration_ms(path)
+    } else {
+        None
+    };
+
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO media_file (id, path, size_bytes, mtime_ts, created_ts, updated_ts) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO media_file (id, path, size_bytes, mtime_ts, duration_ms, created_ts, updated_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(path)
     .bind(entry.size_bytes as i64)
     .bind(entry.mtime_ts)
+    .bind(duration_ms)
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
 
     Ok(id)
+}
+
+/// Run ffprobe on an audio file and return its duration in milliseconds.
+/// Returns `None` if ffprobe is not available or the output cannot be parsed.
+fn probe_audio_duration_ms(path: &str) -> Option<i64> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            path,
+        ])
+        .output()
+        .ok()?;
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let duration_str = json["format"]["duration"].as_str()?;
+    let duration_secs: f64 = duration_str.parse().ok()?;
+    Some((duration_secs * 1000.0) as i64)
 }
 
 async fn link_file_to_item(
@@ -341,7 +370,7 @@ async fn create_movie_item(
 ) -> Result<(), sqlx::Error> {
     let item_id =
         find_or_create_item(pool, library_id, "movie", None, &info.title, info.year).await?;
-    let file_id = ensure_media_file(pool, file_path, entry, existing_file_id).await?;
+    let file_id = ensure_media_file(pool, file_path, entry, existing_file_id, false).await?;
     link_file_to_item(pool, &item_id, &file_id).await?;
 
     Ok(())
@@ -390,7 +419,7 @@ async fn create_episode_item(
     )
     .await?;
 
-    let file_id = ensure_media_file(pool, file_path, entry, existing_file_id).await?;
+    let file_id = ensure_media_file(pool, file_path, entry, existing_file_id, false).await?;
     link_file_to_item(pool, &episode_id, &file_id).await?;
 
     Ok(())
@@ -529,7 +558,7 @@ async fn parse_music_library(
                 .await?;
 
         let file_id =
-            ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref()).await?;
+            ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref(), true).await?;
         link_file_to_item(pool, &track_id, &file_id).await?;
 
         result.added += 1;
