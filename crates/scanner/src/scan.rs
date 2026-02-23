@@ -24,6 +24,13 @@ pub async fn run_library_scan(
             continue;
         }
 
+        if library_kind == "music" {
+            let sub = parse_music_library(pool, library_id, root).await.map_err(ScanError::Db)?;
+            result.added += sub.added;
+            result.skipped += sub.skipped;
+            continue;
+        }
+
         let entries = walk::walk_media_dir(root);
         info!(
             library_id = library_id,
@@ -385,6 +392,136 @@ async fn create_episode_item(
     link_file_to_item(pool, &episode_id, &file_id).await?;
 
     Ok(())
+}
+
+// ─── Music library scanner ───────────────────────────────────────────────────
+
+/// Scan a music library root directory and create artist/album/track items.
+async fn parse_music_library(
+    pool: &sqlx::SqlitePool,
+    library_id: &str,
+    root: &Path,
+) -> Result<ScanResult, sqlx::Error> {
+    let entries = walk::walk_audio_dir(root);
+    info!(
+        library_id = library_id,
+        path = %root.display(),
+        files_found = entries.len(),
+        "scan found audio files"
+    );
+
+    let mut result = ScanResult::default();
+
+    for entry in &entries {
+        let path_str = entry.path.to_string_lossy().to_string();
+
+        let existing = get_existing_media_file(pool, &path_str).await?;
+        let existing_file_id = match existing {
+            Some(existing) if existing.has_mapping => {
+                result.skipped += 1;
+                continue;
+            }
+            Some(existing) => Some(existing.id),
+            None => None,
+        };
+
+        let rel = entry.path.strip_prefix(root).unwrap_or(&entry.path);
+        let components: Vec<_> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+
+        let track_title = {
+            let filename = rel.file_name().unwrap_or_default().to_string_lossy().to_string();
+            // Strip extension
+            if let Some(pos) = filename.rfind('.') {
+                filename[..pos].to_string()
+            } else {
+                filename
+            }
+        };
+
+        let (artist_name, album_name, album_dir) = match components.len() {
+            3 => {
+                // Artist/Album/track.mp3
+                let artist = components[0].clone();
+                let album = components[1].clone();
+                let album_dir = root.join(&artist).join(&album);
+                (Some(artist), Some(album), Some(album_dir))
+            }
+            2 => {
+                // Album/track.mp3
+                let album = components[0].clone();
+                let album_dir = root.join(&album);
+                (None, Some(album), Some(album_dir))
+            }
+            _ => {
+                // track.mp3 directly in root
+                (None, None, None)
+            }
+        };
+
+        // Create artist item if present
+        let artist_id = if let Some(ref artist) = artist_name {
+            Some(find_or_create_item(pool, library_id, "artist", None, artist, None).await?)
+        } else {
+            None
+        };
+
+        // Create album item if present
+        let album_id = if let Some(ref album) = album_name {
+            let parent = artist_id.as_deref();
+            let album_id =
+                find_or_create_item(pool, library_id, "album", parent, album, None).await?;
+
+            // Look for cover art in the album directory
+            if let Some(ref dir) = album_dir {
+                let cover_names = ["cover.jpg", "folder.jpg", "album.jpg", "front.jpg",
+                                   "cover.png", "folder.png", "album.png", "front.png"];
+                for cover_name in &cover_names {
+                    let cover_path = dir.join(cover_name);
+                    if cover_path.exists() {
+                        let cover_str = cover_path.to_string_lossy().to_string();
+                        // Only update if poster_url is not already set
+                        let existing_art: Option<(Option<String>,)> = sqlx::query_as(
+                            "SELECT poster_url FROM item WHERE id = ?",
+                        )
+                        .bind(&album_id)
+                        .fetch_optional(pool)
+                        .await?;
+                        if existing_art.and_then(|(p,)| p).is_none() {
+                            sqlx::query(
+                                "UPDATE item SET poster_url = ?, updated_ts = ? WHERE id = ?",
+                            )
+                            .bind(&cover_str)
+                            .bind(chrono::Utc::now().timestamp())
+                            .bind(&album_id)
+                            .execute(pool)
+                            .await?;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            Some(album_id)
+        } else {
+            None
+        };
+
+        // Create track item under album (or artist if no album, or directly under library)
+        let track_parent = album_id.as_deref().or(artist_id.as_deref());
+        let track_id =
+            find_or_create_item(pool, library_id, "track", track_parent, &track_title, None)
+                .await?;
+
+        let file_id = ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref()).await?;
+        link_file_to_item(pool, &track_id, &file_id).await?;
+
+        result.added += 1;
+    }
+
+    Ok(result)
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────

@@ -21,12 +21,31 @@ export type WatchPartyInviteInput = {
   role: 'viewer' | 'controller';
 };
 
-export type CreateWatchPartyRoomRequest = {
-  item_id: string;
-  invites: WatchPartyInviteInput[];
-  password?: string;
-  policy: WatchPartyPolicy;
-};
+export type CreateWatchPartyRoomRequest =
+  | {
+      item_id: string;
+      audio_library_id?: never;
+      room_mode?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    }
+  | {
+      audio_library_id: string;
+      item_id?: never;
+      room_mode?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    }
+  | {
+      room_mode: 'youtube';
+      item_id?: never;
+      audio_library_id?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    };
 
 export type CreateWatchPartyRoomResponse = {
   room_id: string;
@@ -48,6 +67,9 @@ export type WatchPartyRoomResponse = {
   password_required: boolean;
   policy: WatchPartyPolicy;
   members: WatchPartyRoomMember[];
+  room_mode: string;
+  audio_library_id?: string;
+  youtube_video_id?: string | null;
 };
 
 export type JoinWatchPartyRoomResponse = {
@@ -66,6 +88,67 @@ export type WatchPartyInvite = {
   role: string;
   status: string;
 };
+
+export type AudioTrack = {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  album_art_url?: string;
+  duration_ms?: number;
+};
+
+export type QueueEntry = AudioTrack & { track_id: string };
+
+export type WsPresenceMember = {
+  user_id: string;
+  username: string;
+  role: string;
+  connected: boolean;
+};
+
+export type WsAudioStateMessage = {
+  type: 'audio_state';
+  room_id: string;
+  track_id: string;
+  title: string;
+  artist: string;
+  album: string;
+  album_art_url?: string;
+  duration_ms?: number;
+  position_ms: number;
+  playing: boolean;
+  updated_ts_ms: number;
+  server_ts_ms: number;
+  queue: QueueEntry[];
+  queue_index: number;
+  members: WsPresenceMember[];
+};
+
+export type WsYouTubeStateMessage = {
+  type: 'youtube_state';
+  room_id: string;
+  video_id: string;
+  playing: boolean;
+  position_ms: number;
+  updated_ts_ms: number;
+  server_ts_ms: number;
+  members: WsPresenceMember[];
+};
+
+export type PublicRoom = {
+  room_id: string;
+  host_username: string;
+  title: string;
+  room_mode: string;
+  password_required: boolean;
+  member_count: number;
+  created_ts: number;
+};
+
+export async function listPublicRooms(): Promise<PublicRoom[]> {
+  return apiJson<PublicRoom[]>('/watch-party/rooms');
+}
 
 export async function listWatchPartyUsers(): Promise<WatchPartyUser[]> {
   return apiJson<WatchPartyUser[]>('/watch-party/users');
@@ -125,4 +208,19 @@ export async function declineWatchPartyInvite(roomId: string): Promise<void> {
   await apiJson(`/watch-party/invites/${roomId}/decline`, {
     method: 'POST',
   });
+}
+
+export async function inviteToRoom(
+  roomId: string,
+  invites: { user_id: string; role: 'viewer' | 'controller' }[],
+): Promise<void> {
+  await apiJson(`/watch-party/rooms/${roomId}/invite`, {
+    method: 'POST',
+    body: JSON.stringify({ invites }),
+  });
+}
+
+export async function listAudioTracks(roomId: string, q?: string): Promise<AudioTrack[]> {
+  const query = q ? `?q=${encodeURIComponent(q)}` : '';
+  return apiJson<AudioTrack[]>(`/watch-party/rooms/${roomId}/audio/tracks${query}`);
 }

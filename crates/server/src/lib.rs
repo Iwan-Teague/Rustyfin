@@ -4,6 +4,7 @@
     clippy::should_implement_trait
 )]
 pub mod artwork;
+pub mod channels;
 pub mod auth;
 pub mod error;
 pub mod library_scan;

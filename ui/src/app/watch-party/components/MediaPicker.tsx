@@ -50,7 +50,7 @@ export default function MediaPicker({
   const eligibleSet = useMemo(() => new Set(eligibleLibraryIds), [eligibleLibraryIds]);
 
   const visibleLibraries = useMemo(
-    () => libraries.filter((library) => eligibleSet.has(library.id)),
+    () => libraries.filter((library) => eligibleSet.has(library.id) && library.kind !== 'music'),
     [libraries, eligibleSet],
   );
 

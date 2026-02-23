@@ -1,3 +1,4 @@
+pub mod channels;
 pub mod episodes;
 pub mod idempotency;
 pub mod items;

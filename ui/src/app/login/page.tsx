@@ -74,10 +74,6 @@ export default function LoginPage() {
             Sign In
           </button>
         </form>
-
-        <p className="text-xs muted">
-          Tip: if this is your first run, default credentials are <span className="font-semibold">admin/admin</span>.
-        </p>
       </div>
     </div>
   );

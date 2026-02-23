@@ -15,9 +15,9 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::manager::{PlaybackAction, RoomRuntime};
+use super::manager::{AudioAction, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
-use super::protocol::{ClientMessage, PresenceMember, ServerMessage};
+use super::protocol::{ClientMessage, PresenceMember, QueueEntry, ServerMessage};
 
 const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
 const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
@@ -35,6 +35,8 @@ struct ConnectionContext {
     room_id: String,
     item_id: String,
     user_id: String,
+    room_mode: String,
+    audio_library_id: Option<String>,
 }
 
 pub async fn ws_connect(
@@ -195,9 +197,38 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
 
     debug!(room_id = %room_id, user_id = %context.user_id, "watch party ws authenticated");
 
+    // Load audio queue from DB for audio rooms to pass to get_or_create_runtime
+    let audio_track_ids = if context.room_mode == "audio" {
+        rustfin_db::repo::watch_party::get_audio_queue(&state.db, &context.room_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(ids, _)| ids)
+    } else {
+        None
+    };
+
+    // Load youtube_video_id from DB for YouTube rooms
+    let youtube_video_id = if context.room_mode == "youtube" {
+        rustfin_db::repo::watch_party::get_room(&state.db, &context.room_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.youtube_video_id)
+    } else {
+        None
+    };
+
     let runtime = state
         .watch_party
-        .get_or_create_runtime(&context.room_id, &context.item_id)
+        .get_or_create_runtime(
+            &context.room_id,
+            &context.item_id,
+            &context.room_mode,
+            context.audio_library_id.as_deref(),
+            audio_track_ids,
+            youtube_video_id,
+        )
         .await;
 
     {
@@ -241,7 +272,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             outbound = subscription.recv() => {
                 match outbound {
                     Ok(message) => {
+                        let is_terminal = matches!(message, ServerMessage::RoomEnded);
                         if send_server_message(&mut socket, &message).await.is_err() {
+                            break;
+                        }
+                        if is_terminal {
                             break;
                         }
                     }
@@ -308,6 +343,24 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         {
             if room.status == "ended" {
                 state.watch_party.remove_runtime(&context.room_id).await;
+            } else {
+                // Schedule auto-end: if room is still empty after 5 minutes, end it
+                let state_clone = state.clone();
+                let room_id_clone = context.room_id.clone();
+                let runtime_clone = runtime.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                    let still_empty = runtime_clone.connected_user_ids.read().await.is_empty();
+                    if still_empty {
+                        let _ = rustfin_db::repo::watch_party::set_room_status(
+                            &state_clone.db,
+                            &room_id_clone,
+                            "ended",
+                        )
+                        .await;
+                        state_clone.watch_party.remove_runtime(&room_id_clone).await;
+                    }
+                });
             }
         }
     }
@@ -365,18 +418,21 @@ async fn authorize_ws_connection(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
+    // For video rooms only: verify library access
+    if room.room_mode == "video" {
+        let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("watch party item not found".into()))?;
 
-    if claims.role != "admin" {
-        let allowed =
-            rustfin_db::repo::users::is_library_allowed(&state.db, &claims.sub, &item.library_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-        if !allowed {
-            return Err(ApiError::Forbidden("library access denied".into()).into());
+        if claims.role != "admin" {
+            let allowed =
+                rustfin_db::repo::users::is_library_allowed(&state.db, &claims.sub, &item.library_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+            if !allowed {
+                return Err(ApiError::Forbidden("library access denied".into()).into());
+            }
         }
     }
 
@@ -393,6 +449,8 @@ async fn authorize_ws_connection(
         room_id: room.id,
         item_id: room.item_id,
         user_id: claims.sub.clone(),
+        room_mode: room.room_mode,
+        audio_library_id: room.audio_library_id,
     })
 }
 
@@ -430,9 +488,15 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            runtime
-                .apply_action(PlaybackAction::Play { position_ms })
-                .await;
+            if context.room_mode == "audio" {
+                runtime
+                    .apply_audio_action(AudioAction::SetPlayingState { position_ms, playing: true })
+                    .await;
+            } else {
+                runtime
+                    .apply_action(PlaybackAction::Play { position_ms })
+                    .await;
+            }
             runtime.touch_activity().await;
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
@@ -450,9 +514,15 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            runtime
-                .apply_action(PlaybackAction::Pause { position_ms })
-                .await;
+            if context.room_mode == "audio" {
+                runtime
+                    .apply_audio_action(AudioAction::SetPlayingState { position_ms, playing: false })
+                    .await;
+            } else {
+                runtime
+                    .apply_action(PlaybackAction::Pause { position_ms })
+                    .await;
+            }
             runtime.touch_activity().await;
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
@@ -470,9 +540,140 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            runtime
-                .apply_action(PlaybackAction::Seek { position_ms })
+            if context.room_mode == "audio" {
+                runtime
+                    .apply_audio_action(AudioAction::SetPlayingState {
+                        position_ms,
+                        playing: runtime
+                            .snapshot_audio_queue()
+                            .await
+                            .map(|q| q.playing)
+                            .unwrap_or(false),
+                    })
+                    .await;
+            } else {
+                runtime
+                    .apply_action(PlaybackAction::Seek { position_ms })
+                    .await;
+            }
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::SkipNext => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "skip is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            if let Some(new_queue) = runtime.apply_audio_action(AudioAction::SkipNext).await {
+                let track_ids_json = serde_json::to_string(&new_queue.track_ids)
+                    .unwrap_or_else(|_| "[]".to_string());
+                let _ = rustfin_db::repo::watch_party::upsert_audio_queue(
+                    &state.db,
+                    &context.room_id,
+                    &track_ids_json,
+                    new_queue.current_index,
+                )
                 .await;
+            }
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::SkipPrev => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "skip is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            if let Some(new_queue) = runtime.apply_audio_action(AudioAction::SkipPrev).await {
+                let track_ids_json = serde_json::to_string(&new_queue.track_ids)
+                    .unwrap_or_else(|_| "[]".to_string());
+                let _ = rustfin_db::repo::watch_party::upsert_audio_queue(
+                    &state.db,
+                    &context.room_id,
+                    &track_ids_json,
+                    new_queue.current_index,
+                )
+                .await;
+            }
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::PlayTrack { track_id } => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "play track is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            if let Some(new_queue) =
+                runtime.apply_audio_action(AudioAction::PlayTrack { track_id }).await
+            {
+                let track_ids_json = serde_json::to_string(&new_queue.track_ids)
+                    .unwrap_or_else(|_| "[]".to_string());
+                let _ = rustfin_db::repo::watch_party::upsert_audio_queue(
+                    &state.db,
+                    &context.room_id,
+                    &track_ids_json,
+                    new_queue.current_index,
+                )
+                .await;
+            }
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ChangeVideo { video_id } => {
+            let video_id = video_id.trim().to_string();
+            if context.room_mode != "youtube" {
+                send_error(socket, "change_video is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+            if video_id.is_empty() {
+                send_error(socket, "video_id must not be empty").await?;
+                return Ok(());
+            }
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "changing video is not allowed for this user").await?;
+                return Ok(());
+            }
+
+            runtime.set_youtube_video_id(video_id.clone()).await;
+            let _ = rustfin_db::repo::watch_party::update_youtube_video_id(
+                &state.db,
+                &context.room_id,
+                &video_id,
+            )
+            .await;
             runtime.touch_activity().await;
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
@@ -530,6 +731,13 @@ async fn build_state_message(
     runtime: &RoomRuntime,
     room_id: &str,
 ) -> Result<ServerMessage, AppError> {
+    if runtime.room_mode == "audio" {
+        return build_audio_state_message(state, runtime, room_id).await;
+    }
+    if runtime.room_mode == "youtube" {
+        return build_youtube_state_message(state, runtime, room_id).await;
+    }
+
     let snapshot = runtime.snapshot_state().await;
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -574,6 +782,175 @@ async fn build_state_message(
     Ok(ServerMessage::State {
         room_id: room_id.to_string(),
         item_id: runtime.item_id.clone(),
+        playing: snapshot.playing,
+        position_ms,
+        updated_ts_ms,
+        server_ts_ms: now_ms,
+        members: member_summaries,
+    })
+}
+
+async fn build_audio_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let queue_snapshot = match runtime.snapshot_audio_queue().await {
+        Some(q) => q,
+        None => {
+            return Err(ApiError::Internal("audio queue not initialized".into()).into());
+        }
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let (position_ms, updated_ts_ms) = if queue_snapshot.playing && now_ms > queue_snapshot.updated_ts_ms {
+        let elapsed_ms = (now_ms - queue_snapshot.updated_ts_ms) as u64;
+        (
+            queue_snapshot.position_ms.saturating_add(elapsed_ms),
+            now_ms,
+        )
+    } else {
+        (queue_snapshot.position_ms, queue_snapshot.updated_ts_ms)
+    };
+
+    // Get current track ID
+    let current_track_id = queue_snapshot
+        .track_ids
+        .get(queue_snapshot.current_index)
+        .cloned()
+        .unwrap_or_default();
+
+    // Fetch metadata for all tracks in one query via the library
+    let audio_library_id = match runtime.audio_library_id.as_deref() {
+        Some(id) => id,
+        None => return Err(ApiError::Internal("audio room missing library id".into()).into()),
+    };
+
+    let all_db_tracks = rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let track_metadata: HashMap<String, (String, String, String, Option<String>, Option<u64>)> =
+        all_db_tracks
+            .into_iter()
+            .map(|t| (t.id.clone(), (t.title, t.album, t.artist, t.album_art_url, t.duration_ms)))
+            .collect();
+
+    let (current_title, current_album, current_artist, current_art, current_dur) =
+        track_metadata
+            .get(&current_track_id)
+            .cloned()
+            .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None));
+
+    let queue: Vec<QueueEntry> = queue_snapshot.track_ids
+        .iter()
+        .map(|tid| {
+            let (title, album, artist, art, dur) = track_metadata
+                .get(tid)
+                .cloned()
+                .unwrap_or_else(|| (tid.clone(), String::new(), String::new(), None, None));
+            QueueEntry {
+                track_id: tid.clone(),
+                title,
+                artist,
+                album,
+                album_art_url: art,
+                duration_ms: dur,
+            }
+        })
+        .collect();
+
+    let connected = runtime.connected_user_ids.read().await.clone();
+
+    let members_db = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .into_iter()
+        .map(|u| (u.id, u.username))
+        .collect();
+
+    let member_summaries = members_db
+        .into_iter()
+        .filter(|m| m.status != "declined")
+        .map(|member| PresenceMember {
+            user_id: member.user_id.clone(),
+            username: usernames
+                .get(&member.user_id)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            role: member.role,
+            connected: connected.contains(&member.user_id) && member.status == "joined",
+        })
+        .collect();
+
+    Ok(ServerMessage::AudioState {
+        room_id: room_id.to_string(),
+        track_id: current_track_id,
+        title: current_title,
+        artist: current_artist,
+        album: current_album,
+        album_art_url: current_art,
+        duration_ms: current_dur,
+        position_ms,
+        playing: queue_snapshot.playing,
+        updated_ts_ms,
+        server_ts_ms: now_ms,
+        queue,
+        queue_index: queue_snapshot.current_index,
+        members: member_summaries,
+    })
+}
+
+async fn build_youtube_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let snapshot = runtime.snapshot_state().await;
+    let video_id = runtime.get_youtube_video_id().await.unwrap_or_default();
+    let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let (position_ms, updated_ts_ms) = if snapshot.playing && now_ms > snapshot.updated_ts_ms {
+        let elapsed_ms = (now_ms - snapshot.updated_ts_ms) as u64;
+        (snapshot.position_ms.saturating_add(elapsed_ms), now_ms)
+    } else {
+        (snapshot.position_ms, snapshot.updated_ts_ms)
+    };
+
+    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .into_iter()
+        .map(|u| (u.id, u.username))
+        .collect();
+
+    let member_summaries = members
+        .into_iter()
+        .filter(|m| m.status != "declined")
+        .map(|member| PresenceMember {
+            user_id: member.user_id.clone(),
+            username: usernames
+                .get(&member.user_id)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            role: member.role,
+            connected: connected.contains(&member.user_id) && member.status == "joined",
+        })
+        .collect();
+
+    Ok(ServerMessage::YouTubeState {
+        room_id: room_id.to_string(),
+        video_id,
         playing: snapshot.playing,
         position_ms,
         updated_ts_ms,

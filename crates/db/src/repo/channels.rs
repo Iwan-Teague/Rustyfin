@@ -1,0 +1,214 @@
+use sqlx::SqlitePool;
+
+#[derive(Debug, Clone)]
+pub struct ChannelRow {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub position: i64,
+    pub is_private: bool,
+    pub created_by: String,
+    pub created_ts: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageRow {
+    pub id: String,
+    pub channel_id: String,
+    pub user_id: String,
+    pub username: String,
+    pub content: String,
+    pub created_ts: i64,
+}
+
+pub async fn list_channels(pool: &SqlitePool) -> Result<Vec<ChannelRow>, sqlx::Error> {
+    let rows: Vec<(String, String, String, i64, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, name, kind, position, is_private, created_by, created_ts \
+         FROM channel ORDER BY position, created_ts",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
+            id,
+            name,
+            kind,
+            position,
+            is_private: is_private != 0,
+            created_by,
+            created_ts,
+        })
+        .collect())
+}
+
+pub async fn get_channel(pool: &SqlitePool, id: &str) -> Result<Option<ChannelRow>, sqlx::Error> {
+    let row: Option<(String, String, String, i64, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, name, kind, position, is_private, created_by, created_ts \
+         FROM channel WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
+        id,
+        name,
+        kind,
+        position,
+        is_private: is_private != 0,
+        created_by,
+        created_ts,
+    }))
+}
+
+pub async fn create_channel(
+    pool: &SqlitePool,
+    name: &str,
+    kind: &str,
+    is_private: bool,
+    created_by: &str,
+    position: i64,
+) -> Result<ChannelRow, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let is_private_int: i64 = if is_private { 1 } else { 0 };
+
+    sqlx::query(
+        "INSERT INTO channel (id, name, kind, position, is_private, created_by, created_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(kind)
+    .bind(position)
+    .bind(is_private_int)
+    .bind(created_by)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(ChannelRow {
+        id,
+        name: name.to_string(),
+        kind: kind.to_string(),
+        position,
+        is_private,
+        created_by: created_by.to_string(),
+        created_ts: now,
+    })
+}
+
+pub async fn rename_channel(pool: &SqlitePool, id: &str, name: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE channel SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_channel(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_message(pool: &SqlitePool, id: &str) -> Result<Option<MessageRow>, sqlx::Error> {
+    let row: Option<(String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, channel_id, user_id, username, content, created_ts \
+         FROM channel_message WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+        id,
+        channel_id,
+        user_id,
+        username,
+        content,
+        created_ts,
+    }))
+}
+
+pub async fn delete_message(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel_message WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn list_messages(
+    pool: &SqlitePool,
+    channel_id: &str,
+    limit: i64,
+    before_ts: i64,
+) -> Result<Vec<MessageRow>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, channel_id, user_id, username, content, created_ts \
+         FROM channel_message \
+         WHERE channel_id = ? AND created_ts < ? \
+         ORDER BY created_ts DESC \
+         LIMIT ?",
+    )
+    .bind(channel_id)
+    .bind(before_ts)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut messages: Vec<MessageRow> = rows
+        .into_iter()
+        .map(|(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+            id,
+            channel_id,
+            user_id,
+            username,
+            content,
+            created_ts,
+        })
+        .collect();
+
+    // Reverse to ascending order
+    messages.reverse();
+    Ok(messages)
+}
+
+pub async fn create_message(
+    pool: &SqlitePool,
+    channel_id: &str,
+    user_id: &str,
+    username: &str,
+    content: &str,
+) -> Result<MessageRow, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO channel_message (id, channel_id, user_id, username, content, created_ts) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(username)
+    .bind(content)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(MessageRow {
+        id,
+        channel_id: channel_id.to_string(),
+        user_id: user_id.to_string(),
+        username: username.to_string(),
+        content: content.to_string(),
+        created_ts: now,
+    })
+}

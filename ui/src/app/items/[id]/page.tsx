@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { apiJson } from '@/lib/api';
 
@@ -76,12 +77,12 @@ export default function ItemPage() {
           {item.overview && <p className="max-w-3xl leading-relaxed muted">{item.overview}</p>}
 
           {isPlayable && (
-            <a
+            <Link
               href={`/player/${id}`}
               className="btn-primary inline-flex px-6 py-2.5 text-sm"
             >
               Play Now
-            </a>
+            </Link>
           )}
         </div>
       </div>
@@ -93,7 +94,7 @@ export default function ItemPage() {
           </h2>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
             {children.map((child) => (
-              <a
+              <Link
                 key={child.id}
                 href={`/items/${child.id}`}
                 className="tile tile-hover block overflow-hidden"
@@ -115,7 +116,7 @@ export default function ItemPage() {
                     <p className="text-xs muted">Episode</p>
                   )}
                 </div>
-              </a>
+              </Link>
             ))}
           </div>
         </section>

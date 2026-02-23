@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { apiJson } from '@/lib/api';
 
@@ -68,7 +69,7 @@ export default function LibraryPage() {
       ) : (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
           {visibleItems.map((item) => (
-            <a key={item.id} href={`/items/${item.id}`} className="group block">
+            <Link key={item.id} href={`/items/${item.id}`} className="group block">
               <div className="tile tile-hover aspect-[2/3] overflow-hidden">
                 {item.poster_url ? (
                   <img
@@ -84,7 +85,7 @@ export default function LibraryPage() {
               </div>
               <p className="mt-2 truncate text-sm font-medium">{item.title}</p>
               {item.year && <p className="text-xs muted">{item.year}</p>}
-            </a>
+            </Link>
           ))}
         </div>
       )}
