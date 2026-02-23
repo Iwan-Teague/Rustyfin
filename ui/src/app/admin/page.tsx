@@ -465,7 +465,6 @@ export default function AdminPage() {
       {!authLoading && me?.role === 'admin' && (
     <div className="space-y-8 animate-rise">
       <header className="space-y-2">
-        <span className="chip">Server Controls</span>
         <h1 className="text-3xl font-semibold sm:text-4xl">Admin Dashboard</h1>
       </header>
 

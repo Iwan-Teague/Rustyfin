@@ -323,7 +323,7 @@ pub async fn list_public_rooms(
                     format!("🎵 {}", r.audio_library_name)
                 }
             } else if r.room_mode == "youtube" {
-                "▶ YouTube Party".to_string()
+                "YouTube Party".to_string()
             } else {
                 r.item_title
             };

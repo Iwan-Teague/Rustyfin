@@ -67,7 +67,6 @@ export default function LibrariesPage() {
   return (
     <div className="space-y-8 animate-rise">
       <header className="space-y-2">
-        <span className="chip">Collection Browser</span>
         <h1 className="text-3xl font-semibold sm:text-4xl">Libraries</h1>
         <p className="text-sm muted sm:text-base">
           Explore all configured media directories and jump into items instantly.

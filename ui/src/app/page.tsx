@@ -144,7 +144,6 @@ export default function HomePage() {
   if (!me) {
     return (
       <section className="panel animate-rise space-y-4 p-6 sm:p-8">
-        <span className="chip chip-accent">Home</span>
         <h1 className="text-3xl font-semibold sm:text-4xl">Sign in to open your server home</h1>
         <p className="text-sm muted sm:text-base">
           Setup is complete. Sign in to see libraries, active channels, and watch parties.
@@ -160,7 +159,6 @@ export default function HomePage() {
     <div className="space-y-7 animate-rise">
       <header className="panel space-y-3 p-6 sm:p-8">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="chip chip-accent">Home</span>
           {voiceSession && (
             <Link
               href="/channels"

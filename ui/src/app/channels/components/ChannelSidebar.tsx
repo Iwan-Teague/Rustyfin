@@ -180,7 +180,7 @@ export default function ChannelSidebar({
           <span className="muted shrink-0">{icon}</span>
           <span className="truncate flex-1">{ch.name}</span>
           {ch.kind === 'voice' && members.length > 0 && (
-            <span className="chip text-xs shrink-0">{members.length}</span>
+            <span className="text-xs shrink-0 muted">{members.length}</span>
           )}
           {isAdmin && (
             <div className="relative shrink-0">
