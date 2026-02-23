@@ -23,6 +23,12 @@ interface VoiceSession {
   muted: boolean;
 }
 
+interface PersistedVoiceSession {
+  channelId: string;
+  channelName: string;
+  wantMic: boolean;
+}
+
 export interface ChannelsContextValue {
   wsReady: boolean;
   sendWs: (msg: object) => void;
@@ -52,6 +58,40 @@ export function useChannels() {
 function getWsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${window.location.host}/api/v1/channels/ws`;
+}
+
+const VOICE_SESSION_KEY = 'channels_voice_session_v1';
+
+function loadPersistedVoiceSession(): PersistedVoiceSession | null {
+  try {
+    const raw = sessionStorage.getItem(VOICE_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedVoiceSession;
+    if (!parsed?.channelId || !parsed?.channelName) return null;
+    return {
+      channelId: parsed.channelId,
+      channelName: parsed.channelName,
+      wantMic: Boolean(parsed.wantMic),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function savePersistedVoiceSession(session: PersistedVoiceSession) {
+  try {
+    sessionStorage.setItem(VOICE_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clearPersistedVoiceSession() {
+  try {
+    sessionStorage.removeItem(VOICE_SESSION_KEY);
+  } catch {
+    // ignore storage errors
+  }
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
@@ -96,7 +136,11 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   // ── WebSocket lifecycle with auto-reconnect ──────────────────────────────────
 
   useEffect(() => {
-    if (!me || authLoading) {
+    if (authLoading) {
+      return;
+    }
+
+    if (!me) {
       // Logged out — cancel any pending reconnect and close the socket
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
@@ -107,6 +151,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoiceSession(null);
       setVoicePresence({});
       setVoiceActiveSince({});
+      clearPersistedVoiceSession();
       pendingVoiceRef.current = null;
       return;
     }
@@ -158,6 +203,35 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               stream: isStreamActive ? stream : null,
             };
             ws.send(JSON.stringify({ type: 'join_voice', channel_id: prevSession.channelId }));
+          } else if (!pendingVoiceRef.current) {
+            const persisted = loadPersistedVoiceSession();
+            if (!persisted) return;
+
+            const target = event.channels.find(
+              (c) => c.id === persisted.channelId && c.kind === 'voice',
+            );
+            if (!target) {
+              clearPersistedVoiceSession();
+              return;
+            }
+
+            void (async () => {
+              let stream: MediaStream | null = null;
+              if (persisted.wantMic && navigator.mediaDevices?.getUserMedia) {
+                try {
+                  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                } catch {
+                  stream = null;
+                }
+              }
+
+              pendingVoiceRef.current = {
+                channelId: target.id,
+                channelName: target.name,
+                stream,
+              };
+              ws.send(JSON.stringify({ type: 'join_voice', channel_id: target.id }));
+            })();
           }
         } else if (event.type === 'voice_presence') {
           setVoicePresence((prev) => {
@@ -192,6 +266,11 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           const pending = pendingVoiceRef.current;
           if (pending && pending.channelId === event.channel_id) {
             pendingVoiceRef.current = null;
+            savePersistedVoiceSession({
+              channelId: event.channel_id,
+              channelName: pending.channelName,
+              wantMic: pending.stream !== null,
+            });
             setVoiceSession({
               channelId: event.channel_id,
               channelName: pending.channelName,
@@ -225,6 +304,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             prev.map((c) => (c.id === event.channel.id ? event.channel : c)),
           );
         } else if (event.type === 'channel_deleted') {
+          if (voiceSessionRef.current?.channelId === event.channel_id) {
+            clearPersistedVoiceSession();
+          }
           setChannels((prev) => prev.filter((c) => c.id !== event.channel_id));
         } else if (event.type === 'message_deleted') {
           setNewMessages((prev) => prev.filter((m) => m.id !== event.message_id));
@@ -286,6 +368,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   // Returns null on success, or an error string on failure.
   const joinVoice = useCallback(
     async (channelId: string, channelName: string): Promise<string | null> => {
+      // New join intent supersedes any persisted session.
+      clearPersistedVoiceSession();
+
       // Leave any existing session first
       if (pendingVoiceRef.current || voiceSession) {
         sendWs({ type: 'leave_voice', channel_id: voiceSession?.channelId ?? pendingVoiceRef.current?.channelId });
@@ -318,11 +403,13 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       sendWs({ type: 'leave_voice', channel_id: voiceSession.channelId });
       voiceSession.localStream?.getTracks().forEach((t) => t.stop());
       setVoiceSession(null);
+      clearPersistedVoiceSession();
     }
     if (pendingVoiceRef.current) {
       sendWs({ type: 'leave_voice', channel_id: pendingVoiceRef.current.channelId });
       pendingVoiceRef.current.stream?.getTracks().forEach((t) => t.stop());
       pendingVoiceRef.current = null;
+      clearPersistedVoiceSession();
     }
   }, [voiceSession, sendWs]);
 
