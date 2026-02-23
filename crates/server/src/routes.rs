@@ -983,6 +983,7 @@ struct ItemResponse {
     thumb_url: Option<String>,
     created_ts: i64,
     updated_ts: i64,
+    duration_ms: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -1034,6 +1035,7 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool
         },
         created_ts: item.created_ts,
         updated_ts: item.updated_ts,
+        duration_ms: item.duration_ms,
     }
 }
 
