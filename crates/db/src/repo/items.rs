@@ -16,6 +16,7 @@ pub struct ItemRow {
     pub thumb_url: Option<String>,
     pub created_ts: i64,
     pub updated_ts: i64,
+    pub duration_ms: Option<i64>,
 }
 
 pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow>, sqlx::Error> {
@@ -62,16 +63,22 @@ pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<Item
         Option<String>,
         i64,
         i64,
+        Option<i64>,
     )> = sqlx::query_as(
-        "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
-         poster_url, backdrop_url, logo_url, thumb_url, \
-         created_ts, updated_ts FROM item WHERE parent_id = ? ORDER BY title",
+        "SELECT i.id, i.library_id, i.kind, i.parent_id, i.title, i.sort_title, i.year, \
+         i.overview, i.poster_url, i.backdrop_url, i.logo_url, i.thumb_url, \
+         i.created_ts, i.updated_ts, \
+         (SELECT mf2.duration_ms FROM episode_file_map efm2 \
+          JOIN media_file mf2 ON mf2.id = efm2.file_id \
+          WHERE efm2.episode_item_id = i.id LIMIT 1) AS duration_ms \
+         FROM item i \
+         WHERE i.parent_id = ? ORDER BY i.title",
     )
     .bind(parent_id)
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(row_to_item).collect())
+    Ok(rows.into_iter().map(row_to_item_full).collect())
 }
 
 pub async fn get_library_items(
@@ -250,6 +257,45 @@ fn row_to_item(
         thumb_url: r.11,
         created_ts: r.12,
         updated_ts: r.13,
+        duration_ms: None,
+    }
+}
+
+fn row_to_item_full(
+    r: (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+        Option<i64>,
+    ),
+) -> ItemRow {
+    ItemRow {
+        id: r.0,
+        library_id: r.1,
+        kind: r.2,
+        parent_id: r.3,
+        title: r.4,
+        sort_title: r.5,
+        year: r.6,
+        overview: r.7,
+        poster_url: r.8,
+        backdrop_url: r.9,
+        logo_url: r.10,
+        thumb_url: r.11,
+        created_ts: r.12,
+        updated_ts: r.13,
+        duration_ms: r.14,
     }
 }
 
