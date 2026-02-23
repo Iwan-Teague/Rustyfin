@@ -7,7 +7,9 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(git -C \"C:/Users/Iwan/Desktop/Rusty/Rustyfin\" log --oneline -3)",
+      "Bash(git -C \"C:/Users/Iwan/Desktop/Rusty/Rustyfin\" log --oneline -5)"
     ]
   }
 }

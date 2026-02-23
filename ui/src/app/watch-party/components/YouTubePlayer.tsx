@@ -172,7 +172,10 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     playerRef.current = new window.YT.Player(playerDivId, {
       width: '100%',
       height: '100%',
-      videoId: '',
+      // No videoId here — passing '' causes YouTube to serve an error page (/embed/ with no
+      // video ID) which means the IFrame API JS never initialises, onReady never fires, and
+      // playerReady stays false permanently.  Videos are loaded later via cueVideoById /
+      // loadVideoById once ytState with a video_id arrives from the WebSocket.
       host: 'https://www.youtube-nocookie.com',
       playerVars: {
         autoplay: 0,
