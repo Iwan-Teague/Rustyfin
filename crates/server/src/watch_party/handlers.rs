@@ -470,10 +470,10 @@ pub async fn create_room(
     }
 
     // Determine room mode and item_id
-    let (room_mode, item_id, audio_library_id, track_ids) =
+    let (room_mode, item_id, audio_library_id, track_ids): (String, Option<String>, Option<String>, Option<Vec<String>>) =
         if body.room_mode.as_deref() == Some("youtube") {
             // YouTube room — no media item or library required
-            ("youtube".to_string(), String::new(), None, None)
+            ("youtube".to_string(), None, None, None)
         } else if let Some(audio_lib_id) = body.audio_library_id.as_deref().filter(|s| !s.trim().is_empty()) {
             // Audio room
             let library = rustfin_db::repo::libraries::get_library(&state.db, audio_lib_id)
@@ -523,7 +523,7 @@ pub async fn create_room(
             let first_track_id = track_ids[0].clone();
             (
                 "audio".to_string(),
-                first_track_id,
+                Some(first_track_id),
                 Some(audio_lib_id.to_string()),
                 Some(track_ids),
             )
@@ -550,7 +550,7 @@ pub async fn create_room(
             ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id)
                 .await?;
 
-            ("video".to_string(), item.id.clone(), None, None)
+            ("video".to_string(), Some(item.id.clone()), None, None)
         };
 
     let now = chrono::Utc::now().timestamp();
@@ -575,7 +575,7 @@ pub async fn create_room(
         if room_mode == "video" {
             // For video rooms, we already have the item's library_id baked in item above.
             // Re-fetch item to get library_id.
-            let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+            let item = rustfin_db::repo::items::get_item(&state.db, item_id.as_deref().unwrap_or_default())
                 .await
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
                 .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
@@ -600,7 +600,7 @@ pub async fn create_room(
     let created = rustfin_db::repo::watch_party::create_room_with_members(
         &state.db,
         &auth.user_id,
-        &item_id,
+        item_id.as_deref(),
         &policy_json,
         password_hash.as_deref(),
         &members,
