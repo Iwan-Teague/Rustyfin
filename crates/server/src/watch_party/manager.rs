@@ -215,7 +215,10 @@ impl RoomRuntime {
                 queue.position_ms = 0;
                 queue.playing = true;
             }
-            AudioAction::SetPlayingState { position_ms, playing } => {
+            AudioAction::SetPlayingState {
+                position_ms,
+                playing,
+            } => {
                 queue.position_ms = position_ms;
                 queue.playing = playing;
             }

@@ -5,13 +5,34 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMsg {
-    Auth { token: String },
-    JoinVoice { channel_id: String },
-    LeaveVoice { channel_id: String },
-    RtcOffer { to_user_id: String, channel_id: String, sdp: String },
-    RtcAnswer { to_user_id: String, channel_id: String, sdp: String },
-    RtcIce { to_user_id: String, channel_id: String, candidate: String },
-    SendMessage { channel_id: String, content: String },
+    Auth {
+        token: String,
+    },
+    JoinVoice {
+        channel_id: String,
+    },
+    LeaveVoice {
+        channel_id: String,
+    },
+    RtcOffer {
+        to_user_id: String,
+        channel_id: String,
+        sdp: String,
+    },
+    RtcAnswer {
+        to_user_id: String,
+        channel_id: String,
+        sdp: String,
+    },
+    RtcIce {
+        to_user_id: String,
+        channel_id: String,
+        candidate: String,
+    },
+    SendMessage {
+        channel_id: String,
+        content: String,
+    },
     Ping,
 }
 
@@ -21,12 +42,14 @@ pub enum ChannelEvent {
     Hello {
         channels: Vec<ChannelInfo>,
         voice_presence: HashMap<String, Vec<UserInfo>>,
+        voice_active_since_ts: HashMap<String, i64>,
     },
     VoicePresence {
         channel_id: String,
         user_id: String,
         username: String,
         joined: bool,
+        active_since_ts: Option<i64>,
     },
     VoiceJoined {
         channel_id: String,

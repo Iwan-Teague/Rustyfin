@@ -28,6 +28,7 @@ export interface ChannelsContextValue {
   sendWs: (msg: object) => void;
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
+  voiceActiveSince: Record<string, number>;
   newMessages: ChannelMessage[];
   lastWsEvent: ChannelEvent | null;
   voiceSession: VoiceSession | null;
@@ -61,6 +62,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [wsReady, setWsReady] = useState(false);
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [voicePresence, setVoicePresence] = useState<Record<string, UserInfo[]>>({});
+  const [voiceActiveSince, setVoiceActiveSince] = useState<Record<string, number>>({});
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
@@ -103,6 +105,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       wsRef.current?.close();
       wsRef.current = null;
       setVoiceSession(null);
+      setVoicePresence({});
+      setVoiceActiveSince({});
       pendingVoiceRef.current = null;
       return;
     }
@@ -140,6 +144,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         if (event.type === 'hello') {
           setChannels(event.channels);
           setVoicePresence(event.voice_presence);
+          setVoiceActiveSince(event.voice_active_since_ts ?? {});
           setWsReady(true);
           // Auto-rejoin voice channel if there was an active session before the reconnect
           const prevSession = voiceSessionRef.current;
@@ -173,6 +178,15 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               else next[event.channel_id] = updated;
               return next;
             }
+          });
+          setVoiceActiveSince((prev) => {
+            const next = { ...prev };
+            if (event.active_since_ts == null) {
+              delete next[event.channel_id];
+            } else {
+              next[event.channel_id] = event.active_since_ts;
+            }
+            return next;
           });
         } else if (event.type === 'voice_joined') {
           const pending = pendingVoiceRef.current;
@@ -329,6 +343,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     sendWs,
     channels,
     voicePresence,
+    voiceActiveSince,
     newMessages,
     lastWsEvent,
     voiceSession,

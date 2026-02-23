@@ -50,8 +50,20 @@ export type MessageInfo = {
 };
 
 export type ChannelEvent =
-  | { type: 'hello'; channels: ChannelInfo[]; voice_presence: Record<string, UserInfo[]> }
-  | { type: 'voice_presence'; channel_id: string; user_id: string; username: string; joined: boolean }
+  | {
+      type: 'hello';
+      channels: ChannelInfo[];
+      voice_presence: Record<string, UserInfo[]>;
+      voice_active_since_ts: Record<string, number>;
+    }
+  | {
+      type: 'voice_presence';
+      channel_id: string;
+      user_id: string;
+      username: string;
+      joined: boolean;
+      active_since_ts?: number | null;
+    }
   | { type: 'voice_joined'; channel_id: string; existing_members: UserInfo[] }
   | { type: 'rtc_offer'; from_user_id: string; channel_id: string; sdp: string }
   | { type: 'rtc_answer'; from_user_id: string; channel_id: string; sdp: string }

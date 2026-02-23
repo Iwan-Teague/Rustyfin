@@ -18,6 +18,7 @@ export default function ChannelsPage() {
     sendWs,
     channels,
     voicePresence,
+    voiceActiveSince,
     newMessages,
     lastWsEvent,
   } = useChannels();
@@ -94,6 +95,7 @@ export default function ChannelsPage() {
         <ChannelSidebar
           channels={channels}
           voicePresence={voicePresence}
+          voiceActiveSince={voiceActiveSince}
           activeChannelId={activeChannelId}
           isAdmin={me.role === 'admin'}
           onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}

@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
+import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 
 interface Props {
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
+  voiceActiveSince: Record<string, number>;
   activeChannelId: string | null;
   isAdmin: boolean;
   onSelect: (id: string) => void;
@@ -133,6 +135,7 @@ function ChannelContextMenu({ channel, onClose, onDelete }: ContextMenuProps) {
 export default function ChannelSidebar({
   channels,
   voicePresence,
+  voiceActiveSince,
   activeChannelId,
   isAdmin,
   onSelect,
@@ -141,9 +144,17 @@ export default function ChannelSidebar({
   onDeleteChannel,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState<MenuState | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const textChannels = channels.filter((c) => c.kind === 'text');
   const voiceChannels = channels.filter((c) => c.kind === 'voice');
+  const hasActiveVoice = Object.keys(voiceActiveSince).length > 0;
+
+  useEffect(() => {
+    if (!hasActiveVoice) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasActiveVoice]);
 
   const channelRowClass = (id: string) => {
     const isActive = id === activeChannelId;
@@ -157,6 +168,7 @@ export default function ChannelSidebar({
 
   function ChannelRow({ ch, icon }: { ch: ChannelInfo; icon: React.ReactNode }) {
     const members = voicePresence[ch.id] ?? [];
+    const activeSinceTs = voiceActiveSince[ch.id];
     const isMenuOpen = menuOpen?.channelId === ch.id;
 
     return (
@@ -192,6 +204,11 @@ export default function ChannelSidebar({
             </div>
           )}
         </div>
+        {ch.kind === 'voice' && members.length > 0 && activeSinceTs !== undefined && (
+          <div className="pl-8 py-0.5 text-[11px] muted">
+            Live for {formatElapsedSeconds(elapsedSinceSeconds(activeSinceTs, nowMs))}
+          </div>
+        )}
         {/* Voice member rows */}
         {ch.kind === 'voice' && members.map((u) => (
           <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-1.5">

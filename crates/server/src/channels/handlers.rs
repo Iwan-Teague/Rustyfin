@@ -218,14 +218,10 @@ pub async fn get_messages(
         .before
         .unwrap_or_else(|| chrono::Utc::now().timestamp() + 1);
 
-    let messages = rustfin_db::repo::channels::list_messages(
-        &state.db,
-        &channel_id,
-        limit,
-        before_ts,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let messages =
+        rustfin_db::repo::channels::list_messages(&state.db, &channel_id, limit, before_ts)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let response: Vec<MessageResponse> = messages
         .into_iter()
@@ -287,7 +283,9 @@ pub async fn send_message(
         return Err(ApiError::BadRequest("message content cannot be empty".into()).into());
     }
     if content.len() > 2000 {
-        return Err(ApiError::BadRequest("message content too long (max 2000 chars)".into()).into());
+        return Err(
+            ApiError::BadRequest("message content too long (max 2000 chars)".into()).into(),
+        );
     }
 
     // Ensure channel exists
@@ -306,18 +304,16 @@ pub async fn send_message(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    state
-        .channel_manager
-        .broadcast(ChannelEvent::NewMessage {
-            msg: MessageInfo {
-                id: row.id.clone(),
-                channel_id: row.channel_id.clone(),
-                user_id: row.user_id.clone(),
-                username: row.username.clone(),
-                content: row.content.clone(),
-                created_ts: row.created_ts,
-            },
-        });
+    state.channel_manager.broadcast(ChannelEvent::NewMessage {
+        msg: MessageInfo {
+            id: row.id.clone(),
+            channel_id: row.channel_id.clone(),
+            user_id: row.user_id.clone(),
+            username: row.username.clone(),
+            content: row.content.clone(),
+            created_ts: row.created_ts,
+        },
+    });
 
     Ok((
         StatusCode::CREATED,

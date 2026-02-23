@@ -30,6 +30,7 @@ declare namespace YT {
     getPlayerState(): number;
     getVideoData(): { title: string; video_id: string };
     loadVideoById(videoId: string, startSeconds?: number): void;
+    cueVideoById(videoId: string, startSeconds?: number): void;
     destroy(): void;
   }
 
@@ -43,10 +44,15 @@ declare namespace YT {
       playsinline?: 0 | 1;
       rel?: 0 | 1;
       modestbranding?: 0 | 1;
+      enablejsapi?: 0 | 1;
+      iv_load_policy?: 1 | 3;
+      origin?: string;
     };
+    host?: string;
     events?: {
       onReady?: (event: { target: YT.Player }) => void;
       onStateChange?: (event: { target: YT.Player; data: number }) => void;
+      onError?: (event: { target: YT.Player; data: number }) => void;
     };
   }
 }
@@ -58,23 +64,58 @@ type Props = {
   sendWs: (payload: Record<string, unknown>) => void;
 };
 
+const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+function isValidVideoId(value: string): boolean {
+  return YOUTUBE_ID_RE.test(value);
+}
+
 function extractVideoId(input: string): string | null {
   const trimmed = input.trim();
   try {
     const url = new URL(trimmed);
-    if (url.hostname.endsWith('youtube.com')) {
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com') {
       const id = url.searchParams.get('v');
-      if (id && /^[A-Za-z0-9_-]{11}$/.test(id)) return id;
+      if (id && isValidVideoId(id)) return id;
+      const pathParts = url.pathname.split('/').filter(Boolean);
+      if (pathParts.length >= 2 && ['embed', 'shorts', 'live'].includes(pathParts[0])) {
+        const candidate = pathParts[1];
+        if (isValidVideoId(candidate)) return candidate;
+      }
     }
-    if (url.hostname === 'youtu.be') {
+    if (host === 'youtube-nocookie.com') {
+      const pathParts = url.pathname.split('/').filter(Boolean);
+      if (pathParts.length >= 2 && pathParts[0] === 'embed') {
+        const candidate = pathParts[1];
+        if (isValidVideoId(candidate)) return candidate;
+      }
+    }
+    if (host === 'youtu.be') {
       const id = url.pathname.replace('/', '').split('?')[0];
-      if (/^[A-Za-z0-9_-]{11}$/.test(id)) return id;
+      if (isValidVideoId(id)) return id;
     }
   } catch {
     // Not a URL
   }
-  if (/^[A-Za-z0-9_-]{11}$/.test(trimmed)) return trimmed;
+  if (isValidVideoId(trimmed)) return trimmed;
   return null;
+}
+
+function mapPlayerErrorCode(code: number): string {
+  if (code === 2) return 'YouTube rejected this video identifier. Use a valid YouTube URL or ID.';
+  if (code === 5) return 'The browser could not play this embedded YouTube stream.';
+  if (code === 100) return 'This YouTube video is unavailable or private.';
+  if (code === 101 || code === 150) {
+    return 'This YouTube video cannot be embedded by the uploader. Try another video.';
+  }
+  return 'YouTube player failed to load this video.';
+}
+
+function clampSeconds(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  return value;
 }
 
 export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: Props) {
@@ -88,6 +129,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
   const [videoInput, setVideoInput] = useState('');
   const [videoTitle, setVideoTitle] = useState('');
   const [playerReady, setPlayerReady] = useState(false);
+  const [playerError, setPlayerError] = useState('');
 
   // Keep refs in sync so event callbacks always see fresh values
   useEffect(() => { canControlRef.current = canControl; }, [canControl]);
@@ -97,6 +139,8 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     if (applyingRemoteRef.current) return;
     const player = event.target;
     const posMs = Math.floor(player.getCurrentTime() * 1000);
+    const data = player.getVideoData();
+    if (data?.title) setVideoTitle(data.title);
 
     if (event.data === 1 /* PLAYING */) {
       if (canControlRef.current) {
@@ -116,20 +160,31 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
 
   const initPlayer = useCallback(() => {
     if (playerRef.current) return;
+    const origin = window.location.origin;
     playerRef.current = new window.YT.Player(playerDivId, {
       width: '100%',
       height: '100%',
       videoId: '',
+      host: 'https://www.youtube-nocookie.com',
       playerVars: {
         autoplay: 0,
         controls: 1,
         playsinline: 1,
         rel: 0,
         modestbranding: 1,
+        enablejsapi: 1,
+        iv_load_policy: 3,
+        origin,
       },
       events: {
-        onReady: () => setPlayerReady(true),
+        onReady: () => {
+          setPlayerReady(true);
+          setPlayerError('');
+        },
         onStateChange: handlePlayerStateChange,
+        onError: (event) => {
+          setPlayerError(mapPlayerErrorCode(event.data));
+        },
       },
     });
   }, [playerDivId, handlePlayerStateChange]);
@@ -174,14 +229,20 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     if (ytState.video_id && ytState.video_id !== lastVideoIdRef.current) {
       lastVideoIdRef.current = ytState.video_id;
       applyingRemoteRef.current = true;
+      setPlayerError('');
+      setVideoTitle('');
 
       const nowMs = Date.now();
       const elapsed = nowMs - ytState.server_ts_ms;
       const projectedSecs = ytState.playing
-        ? (ytState.position_ms + elapsed) / 1000
-        : ytState.position_ms / 1000;
+        ? clampSeconds((ytState.position_ms + elapsed) / 1000)
+        : clampSeconds(ytState.position_ms / 1000);
 
-      player.loadVideoById(ytState.video_id, Math.max(0, projectedSecs));
+      if (ytState.playing) {
+        player.loadVideoById(ytState.video_id, projectedSecs);
+      } else {
+        player.cueVideoById(ytState.video_id, projectedSecs);
+      }
 
       // After the video loads, enforce the playing/paused state
       window.setTimeout(() => {
@@ -207,7 +268,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     const nowMs = Date.now();
     const elapsed = nowMs - ytState.server_ts_ms;
     const projectedMs = ytState.playing ? ytState.position_ms + elapsed : ytState.position_ms;
-    const projectedSecs = projectedMs / 1000;
+    const projectedSecs = clampSeconds(projectedMs / 1000);
     const currentSecs = player.getCurrentTime();
 
     if (Math.abs(currentSecs - projectedSecs) > 1.5) {
@@ -236,8 +297,8 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       const nowMs = Date.now();
       const elapsed = nowMs - ytState.server_ts_ms;
       const projectedSecs = ytState.playing
-        ? (ytState.position_ms + elapsed) / 1000
-        : ytState.position_ms / 1000;
+        ? clampSeconds((ytState.position_ms + elapsed) / 1000)
+        : clampSeconds(ytState.position_ms / 1000);
 
       if (Math.abs(player.getCurrentTime() - projectedSecs) > 1.5) {
         applyingRemoteRef.current = true;
@@ -253,6 +314,8 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     const id = extractVideoId(videoInput);
     if (!id) return;
     setVideoInput('');
+    setPlayerError('');
+    setVideoTitle('');
     sendWs({ type: 'change_video', video_id: id });
   }
 
@@ -300,6 +363,10 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
 
       {videoTitle && (
         <p className="text-sm font-medium truncate muted">▶ {videoTitle}</p>
+      )}
+
+      {playerError && (
+        <p className="text-xs text-red-300">{playerError}</p>
       )}
 
       {!canControl && (

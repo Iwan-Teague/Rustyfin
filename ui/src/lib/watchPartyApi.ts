@@ -64,6 +64,8 @@ export type WatchPartyRoomResponse = {
   item_id: string;
   host_user_id: string;
   status: 'lobby' | 'ended' | string;
+  created_ts: number;
+  ended_ts?: number | null;
   password_required: boolean;
   policy: WatchPartyPolicy;
   members: WatchPartyRoomMember[];

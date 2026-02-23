@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, header};
 use axum::response::IntoResponse;
 use futures::SinkExt;
@@ -119,28 +119,25 @@ pub async fn ws_handler(
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     // ── Auth phase ────────────────────────────────────────────────────────────
-    let first_msg = match tokio::time::timeout(
-        Duration::from_secs(AUTH_DEADLINE_SECONDS),
-        socket.recv(),
-    )
-    .await
-    {
-        Ok(Some(Ok(msg))) => msg,
-        Ok(Some(Err(err))) => {
-            warn!(error = %err, "channels ws receive failed before auth");
-            let _ = socket.close().await;
-            return;
-        }
-        Ok(None) => {
-            let _ = socket.close().await;
-            return;
-        }
-        Err(_) => {
-            let _ = send_error(&mut socket, "authentication message timeout").await;
-            let _ = socket.close().await;
-            return;
-        }
-    };
+    let first_msg =
+        match tokio::time::timeout(Duration::from_secs(AUTH_DEADLINE_SECONDS), socket.recv()).await
+        {
+            Ok(Some(Ok(msg))) => msg,
+            Ok(Some(Err(err))) => {
+                warn!(error = %err, "channels ws receive failed before auth");
+                let _ = socket.close().await;
+                return;
+            }
+            Ok(None) => {
+                let _ = socket.close().await;
+                return;
+            }
+            Err(_) => {
+                let _ = send_error(&mut socket, "authentication message timeout").await;
+                let _ = socket.close().await;
+                return;
+            }
+        };
 
     let token = match decode_client_msg(first_msg) {
         Ok(ClientMsg::Auth { token }) => token,
@@ -262,14 +259,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     state.channel_manager.unregister_user(&user_id).await;
 
     let left_channels = state.channel_manager.leave_all_voice(&user_id).await;
-    for channel_id in left_channels {
+    for left in left_channels {
         state
             .channel_manager
             .broadcast(ChannelEvent::VoicePresence {
-                channel_id,
+                channel_id: left.channel_id,
                 user_id: user_id.clone(),
                 username: username.clone(),
                 joined: false,
+                active_since_ts: left.active_since_ts,
             });
     }
 
@@ -285,13 +283,16 @@ async fn dispatch(
 ) -> Result<(), AppError> {
     match msg {
         ClientMsg::Auth { .. } => {
-            send_error(socket, "auth message is only allowed as the first websocket message")
-                .await?;
+            send_error(
+                socket,
+                "auth message is only allowed as the first websocket message",
+            )
+            .await?;
             Err(ApiError::BadRequest("duplicate auth message".into()).into())
         }
 
         ClientMsg::JoinVoice { channel_id } => {
-            let existing = state
+            let join_result = state
                 .channel_manager
                 .join_voice(&channel_id, user_id, username)
                 .await;
@@ -304,6 +305,7 @@ async fn dispatch(
                     user_id: user_id.to_string(),
                     username: username.to_string(),
                     joined: true,
+                    active_since_ts: Some(join_result.active_since_ts),
                 });
 
             // Tell the joiner who's already here
@@ -313,7 +315,7 @@ async fn dispatch(
                     user_id,
                     ChannelEvent::VoiceJoined {
                         channel_id,
-                        existing_members: existing,
+                        existing_members: join_result.existing_members,
                     },
                 )
                 .await;
@@ -322,7 +324,7 @@ async fn dispatch(
         }
 
         ClientMsg::LeaveVoice { channel_id } => {
-            state
+            let active_since_ts = state
                 .channel_manager
                 .leave_voice(&channel_id, user_id)
                 .await;
@@ -334,12 +336,17 @@ async fn dispatch(
                     user_id: user_id.to_string(),
                     username: username.to_string(),
                     joined: false,
+                    active_since_ts,
                 });
 
             Ok(())
         }
 
-        ClientMsg::RtcOffer { to_user_id, channel_id, sdp } => {
+        ClientMsg::RtcOffer {
+            to_user_id,
+            channel_id,
+            sdp,
+        } => {
             state
                 .channel_manager
                 .send_to_user(
@@ -354,7 +361,11 @@ async fn dispatch(
             Ok(())
         }
 
-        ClientMsg::RtcAnswer { to_user_id, channel_id, sdp } => {
+        ClientMsg::RtcAnswer {
+            to_user_id,
+            channel_id,
+            sdp,
+        } => {
             state
                 .channel_manager
                 .send_to_user(
@@ -369,7 +380,11 @@ async fn dispatch(
             Ok(())
         }
 
-        ClientMsg::RtcIce { to_user_id, channel_id, candidate } => {
+        ClientMsg::RtcIce {
+            to_user_id,
+            channel_id,
+            candidate,
+        } => {
             state
                 .channel_manager
                 .send_to_user(
@@ -384,7 +399,10 @@ async fn dispatch(
             Ok(())
         }
 
-        ClientMsg::SendMessage { channel_id, content } => {
+        ClientMsg::SendMessage {
+            channel_id,
+            content,
+        } => {
             let content = content.trim().to_string();
             if content.is_empty() {
                 let _ = send_error(socket, "message content cannot be empty").await;
@@ -415,18 +433,16 @@ async fn dispatch(
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-            state
-                .channel_manager
-                .broadcast(ChannelEvent::NewMessage {
-                    msg: MessageInfo {
-                        id: row.id,
-                        channel_id: row.channel_id,
-                        user_id: row.user_id,
-                        username: row.username,
-                        content: row.content,
-                        created_ts: row.created_ts,
-                    },
-                });
+            state.channel_manager.broadcast(ChannelEvent::NewMessage {
+                msg: MessageInfo {
+                    id: row.id,
+                    channel_id: row.channel_id,
+                    user_id: row.user_id,
+                    username: row.username,
+                    content: row.content,
+                    created_ts: row.created_ts,
+                },
+            });
 
             Ok(())
         }
@@ -453,10 +469,12 @@ async fn build_hello(state: &AppState) -> ChannelEvent {
         .collect();
 
     let voice_presence = state.channel_manager.voice_snapshot().await;
+    let voice_active_since_ts = state.channel_manager.voice_active_since_snapshot().await;
 
     ChannelEvent::Hello {
         channels,
         voice_presence,
+        voice_active_since_ts,
     }
 }
 
@@ -491,9 +509,9 @@ fn decode_client_msg(message: Message) -> Result<ClientMsg, AppError> {
             serde_json::from_str::<ClientMsg>(payload.as_ref())
                 .map_err(|_| ApiError::BadRequest("invalid websocket message".into()).into())
         }
-        Message::Binary(_) => Err(
-            ApiError::BadRequest("binary websocket messages are not supported".into()).into(),
-        ),
+        Message::Binary(_) => {
+            Err(ApiError::BadRequest("binary websocket messages are not supported".into()).into())
+        }
         Message::Ping(_) => Ok(ClientMsg::Ping),
         Message::Pong(_) => Ok(ClientMsg::Ping),
         Message::Close(_) => Err(ApiError::BadRequest("websocket closed".into()).into()),

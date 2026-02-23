@@ -24,6 +24,7 @@ import MediaPicker, {
 import UserInvitePicker, { SelectedInvite } from './components/UserInvitePicker';
 import RoomOptions from './components/RoomOptions';
 import InvitesPanel from './components/InvitesPanel';
+import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 
 type LibrarySummary = {
   id: string;
@@ -64,6 +65,7 @@ export default function WatchPartyPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const selectedInviteIds = useMemo(() => Object.keys(selectedInvites), [selectedInvites]);
 
@@ -178,6 +180,12 @@ export default function WatchPartyPage() {
       cancelled = true;
     };
   }, [selectedInviteIds, me, selectedLibraryId, selectedAudioLibraryId, allLibraries]);
+
+  useEffect(() => {
+    if (publicRooms.length === 0) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [publicRooms.length]);
 
   function setPolicyField<K extends keyof WatchPartyPolicy>(key: K, value: WatchPartyPolicy[K]) {
     setPolicy((prev) => ({ ...prev, [key]: value }));
@@ -324,6 +332,8 @@ export default function WatchPartyPage() {
                   <p className="text-xs muted">
                     Hosted by {room.host_username}
                     {room.member_count > 0 && ` · ${room.member_count} watching`}
+                    {' · '}
+                    {formatElapsedSeconds(elapsedSinceSeconds(room.created_ts, nowMs))}
                   </p>
                   {room.password_required && (
                     <span className="chip text-xs">🔒 Password</span>

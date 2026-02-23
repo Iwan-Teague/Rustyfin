@@ -496,9 +496,15 @@ pub async fn get_library_tracks(
     library_id: &str,
     query: Option<&str>,
 ) -> Result<Vec<AudioTrackRow>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<i64>)> =
-        sqlx::query_as(
-            "SELECT t.id, t.title, \
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT t.id, t.title, \
                     album.title, \
                     artist.title, \
                     album.poster_url, \
@@ -510,21 +516,23 @@ pub async fn get_library_tracks(
              LEFT JOIN media_file mf ON mf.id = efm.file_id \
              WHERE t.library_id = ? AND t.kind = 'track' \
              ORDER BY artist.title NULLS LAST, album.title NULLS LAST, t.title",
-        )
-        .bind(library_id)
-        .fetch_all(pool)
-        .await?;
+    )
+    .bind(library_id)
+    .fetch_all(pool)
+    .await?;
 
     let tracks: Vec<AudioTrackRow> = rows
         .into_iter()
-        .map(|(id, title, album, artist, album_art_url, duration_ms)| AudioTrackRow {
-            id,
-            title,
-            album: album.unwrap_or_default(),
-            artist: artist.unwrap_or_default(),
-            album_art_url,
-            duration_ms: duration_ms.map(|ms| ms as u64),
-        })
+        .map(
+            |(id, title, album, artist, album_art_url, duration_ms)| AudioTrackRow {
+                id,
+                title,
+                album: album.unwrap_or_default(),
+                artist: artist.unwrap_or_default(),
+                album_art_url,
+                duration_ms: duration_ms.map(|ms| ms as u64),
+            },
+        )
         .collect();
 
     if let Some(q) = query.filter(|s| !s.trim().is_empty()) {

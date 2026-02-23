@@ -31,15 +31,17 @@ pub async fn list_channels(pool: &SqlitePool) -> Result<Vec<ChannelRow>, sqlx::E
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
-            id,
-            name,
-            kind,
-            position,
-            is_private: is_private != 0,
-            created_by,
-            created_ts,
-        })
+        .map(
+            |(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
+                id,
+                name,
+                kind,
+                position,
+                is_private: is_private != 0,
+                created_by,
+                created_ts,
+            },
+        )
         .collect())
 }
 
@@ -52,15 +54,17 @@ pub async fn get_channel(pool: &SqlitePool, id: &str) -> Result<Option<ChannelRo
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
-        id,
-        name,
-        kind,
-        position,
-        is_private: is_private != 0,
-        created_by,
-        created_ts,
-    }))
+    Ok(row.map(
+        |(id, name, kind, position, is_private, created_by, created_ts)| ChannelRow {
+            id,
+            name,
+            kind,
+            position,
+            is_private: is_private != 0,
+            created_by,
+            created_ts,
+        },
+    ))
 }
 
 pub async fn create_channel(
@@ -126,14 +130,16 @@ pub async fn get_message(pool: &SqlitePool, id: &str) -> Result<Option<MessageRo
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, channel_id, user_id, username, content, created_ts)| MessageRow {
-        id,
-        channel_id,
-        user_id,
-        username,
-        content,
-        created_ts,
-    }))
+    Ok(row.map(
+        |(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+            id,
+            channel_id,
+            user_id,
+            username,
+            content,
+            created_ts,
+        },
+    ))
 }
 
 pub async fn delete_message(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
@@ -165,14 +171,16 @@ pub async fn list_messages(
 
     let mut messages: Vec<MessageRow> = rows
         .into_iter()
-        .map(|(id, channel_id, user_id, username, content, created_ts)| MessageRow {
-            id,
-            channel_id,
-            user_id,
-            username,
-            content,
-            created_ts,
-        })
+        .map(
+            |(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+                id,
+                channel_id,
+                user_id,
+                username,
+                content,
+                created_ts,
+            },
+        )
         .collect();
 
     // Reverse to ascending order

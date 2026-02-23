@@ -25,7 +25,9 @@ pub async fn run_library_scan(
         }
 
         if library_kind == "music" {
-            let sub = parse_music_library(pool, library_id, root).await.map_err(ScanError::Db)?;
+            let sub = parse_music_library(pool, library_id, root)
+                .await
+                .map_err(ScanError::Db)?;
             result.added += sub.added;
             result.skipped += sub.skipped;
             continue;
@@ -432,7 +434,11 @@ async fn parse_music_library(
             .collect();
 
         let track_title = {
-            let filename = rel.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let filename = rel
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             // Strip extension
             if let Some(pos) = filename.rfind('.') {
                 filename[..pos].to_string()
@@ -476,19 +482,26 @@ async fn parse_music_library(
 
             // Look for cover art in the album directory
             if let Some(ref dir) = album_dir {
-                let cover_names = ["cover.jpg", "folder.jpg", "album.jpg", "front.jpg",
-                                   "cover.png", "folder.png", "album.png", "front.png"];
+                let cover_names = [
+                    "cover.jpg",
+                    "folder.jpg",
+                    "album.jpg",
+                    "front.jpg",
+                    "cover.png",
+                    "folder.png",
+                    "album.png",
+                    "front.png",
+                ];
                 for cover_name in &cover_names {
                     let cover_path = dir.join(cover_name);
                     if cover_path.exists() {
                         let cover_str = cover_path.to_string_lossy().to_string();
                         // Only update if poster_url is not already set
-                        let existing_art: Option<(Option<String>,)> = sqlx::query_as(
-                            "SELECT poster_url FROM item WHERE id = ?",
-                        )
-                        .bind(&album_id)
-                        .fetch_optional(pool)
-                        .await?;
+                        let existing_art: Option<(Option<String>,)> =
+                            sqlx::query_as("SELECT poster_url FROM item WHERE id = ?")
+                                .bind(&album_id)
+                                .fetch_optional(pool)
+                                .await?;
                         if existing_art.and_then(|(p,)| p).is_none() {
                             sqlx::query(
                                 "UPDATE item SET poster_url = ?, updated_ts = ? WHERE id = ?",
@@ -515,7 +528,8 @@ async fn parse_music_library(
             find_or_create_item(pool, library_id, "track", track_parent, &track_title, None)
                 .await?;
 
-        let file_id = ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref()).await?;
+        let file_id =
+            ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref()).await?;
         link_file_to_item(pool, &track_id, &file_id).await?;
 
         result.added += 1;
