@@ -351,6 +351,13 @@ export default function WatchPartyPage() {
         </section>
       )}
 
+      <InvitesPanel
+        invites={invites}
+        onJoin={(roomId) => router.push(`/watch-party/rooms/${roomId}`)}
+        onDecline={handleDeclineInvite}
+        decliningRoomId={decliningRoomId}
+      />
+
       {/* Create room section */}
       <section className="space-y-3">
         <h2 className="text-xl font-semibold sm:text-2xl">Create a Room</h2>
@@ -491,13 +498,6 @@ export default function WatchPartyPage() {
           </section>
         </div>
       </div>
-
-      <InvitesPanel
-        invites={invites}
-        onJoin={(roomId) => router.push(`/watch-party/rooms/${roomId}`)}
-        onDecline={handleDeclineInvite}
-        decliningRoomId={decliningRoomId}
-      />
 
       {roomMode !== 'youtube' && visibleLibraries.length === 0 && musicLibraries.length === 0 && (
         <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
