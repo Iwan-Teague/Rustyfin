@@ -1,6 +1,7 @@
 'use client';
 
 import { WatchPartyInvite } from '@/lib/watchPartyApi';
+import { roleLabel } from '@/lib/watchPartyRoles';
 
 type Props = {
   invites: WatchPartyInvite[];
@@ -27,7 +28,7 @@ export default function InvitesPanel({ invites, onJoin, onDecline, decliningRoom
                 <div>
                   <p className="text-sm font-medium">{invite.item_title}</p>
                   <p className="text-xs muted">
-                    Host: {invite.host_username} • Role: {invite.role}
+                    Host: {invite.host_username} • Role: {roleLabel(invite.role, 'video')}
                     {invite.password_required ? ' • Password required' : ''}
                   </p>
                 </div>

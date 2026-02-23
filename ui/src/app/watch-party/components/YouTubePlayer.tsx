@@ -382,7 +382,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
 
       {!canControl && (
         <p className="text-xs muted">
-          You are a viewer — only the host and controllers can change the video.
+          You are not an admin — only admins can change the video.
         </p>
       )}
     </section>

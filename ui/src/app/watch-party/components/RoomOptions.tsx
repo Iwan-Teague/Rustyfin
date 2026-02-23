@@ -1,6 +1,9 @@
 'use client';
 
+import { nonAdminRoleLabel, type WatchPartyRoomMode } from '@/lib/watchPartyRoles';
+
 type Props = {
+  roomMode: WatchPartyRoomMode;
   password: string;
   allowPlayPause: boolean;
   allowSeek: boolean;
@@ -14,6 +17,7 @@ type Props = {
 };
 
 export default function RoomOptions({
+  roomMode,
   password,
   allowPlayPause,
   allowSeek,
@@ -25,6 +29,7 @@ export default function RoomOptions({
   onInviteOnlyChange,
   onDefaultJoinRoleChange,
 }: Props) {
+  const memberLabel = nonAdminRoleLabel(roomMode);
   return (
     <section className="panel space-y-4 p-5 sm:p-6">
       <div className="space-y-2">
@@ -76,15 +81,15 @@ export default function RoomOptions({
         </div>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Default role for link joins</span>
+          <span className="mb-1 block text-xs uppercase tracking-wide muted">Default access for link joins</span>
           <select
             className="select px-3 py-2 text-sm"
-            aria-label="Default role for link joins"
+            aria-label="Default access for link joins"
             value={defaultJoinRole}
             onChange={(e) => onDefaultJoinRoleChange(e.target.value as 'viewer' | 'controller')}
           >
-            <option value="viewer">Viewer</option>
-            <option value="controller">Controller</option>
+            <option value="viewer">{memberLabel}</option>
+            <option value="controller">Admin</option>
           </select>
         </label>
       </div>

@@ -17,6 +17,7 @@ import {
   listWatchPartyUsers,
 } from '@/lib/watchPartyApi';
 import { formatElapsedSeconds } from '@/lib/time';
+import { nonAdminRoleLabel, roleLabel } from '@/lib/watchPartyRoles';
 import AudioPlayer from '../../components/AudioPlayer';
 import YouTubePlayer from '../../components/YouTubePlayer';
 
@@ -153,6 +154,9 @@ export default function WatchPartyRoomPage() {
 
   const isAudioRoom = room?.room_mode === 'audio';
   const isYoutubeRoom = room?.room_mode === 'youtube';
+  const effectiveRoomMode = room?.room_mode ?? 'video';
+  const memberRoleDisplay = nonAdminRoleLabel(effectiveRoomMode);
+  const joinedRoleDisplay = joinedRole ? roleLabel(joinedRole, effectiveRoomMode) : '';
 
   const myMember = useMemo(() => {
     if (!room || !me) return null;
@@ -785,7 +789,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isYoutubeRoom && (
         <section className="panel space-y-4 p-5 sm:p-6">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="chip">Role: {joinedRole}</span>
+            <span className="chip">Role: {joinedRoleDisplay}</span>
             <span className="chip">Controls: {canPlayPause ? 'allowed' : 'host-only'}</span>
           </div>
           <YouTubePlayer
@@ -801,7 +805,7 @@ export default function WatchPartyRoomPage() {
         <>
           <section className="panel space-y-4 p-5 sm:p-6">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="chip">Role: {joinedRole}</span>
+              <span className="chip">Role: {joinedRoleDisplay}</span>
               <span className="chip">Play/Pause: {canPlayPause ? 'allowed' : 'host-only'}</span>
               <span className="chip">Seek: {canSeek ? 'allowed' : 'host-only'}</span>
             </div>
@@ -876,7 +880,7 @@ export default function WatchPartyRoomPage() {
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <p className="text-sm font-medium">{member.username}</p>
-                    <p className="text-xs muted">{member.role}</p>
+                    <p className="text-xs muted">{roleLabel(member.role, effectiveRoomMode)}</p>
                   </div>
                   <span className="chip">{member.connected ? 'Connected' : 'Offline'}</span>
                 </div>
@@ -928,8 +932,8 @@ export default function WatchPartyRoomPage() {
                           }))
                         }
                       >
-                        <option value="viewer">Viewer</option>
-                        <option value="controller">Controller</option>
+                        <option value="viewer">{memberRoleDisplay}</option>
+                        <option value="controller">Admin</option>
                       </select>
                     </div>
                   </li>
