@@ -515,6 +515,7 @@ export default function AdminPage() {
                 >
                   <option value="movies">Movies</option>
                   <option value="tv_shows">TV Shows</option>
+                  <option value="music">Music</option>
                 </select>
                 <input
                   placeholder="/path/to/media"
