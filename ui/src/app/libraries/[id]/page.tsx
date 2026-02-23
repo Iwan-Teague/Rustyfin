@@ -5,25 +5,37 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { apiJson } from '@/lib/api';
 
+interface Library {
+  id: string;
+  name: string;
+  kind: string;
+}
+
 interface Item {
   id: string;
   title: string;
   kind: string;
   year?: number;
-  overview?: string;
   poster_url?: string;
 }
 
 export default function LibraryPage() {
   const params = useParams();
   const id = params.id as string;
+  const [library, setLibrary] = useState<Library | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    apiJson<Item[]>(`/libraries/${id}/items`)
-      .then(setItems)
+    Promise.all([
+      apiJson<Library>(`/libraries/${id}`),
+      apiJson<Item[]>(`/libraries/${id}/items`),
+    ])
+      .then(([lib, libItems]) => {
+        setLibrary(lib);
+        setItems(libItems);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
@@ -41,19 +53,20 @@ export default function LibraryPage() {
     );
   }
 
+  const isMusic = library?.kind === 'music';
+
   return (
     <div className="space-y-6 animate-rise">
       <header className="space-y-2">
-        <span className="chip">Library View</span>
-        <h1 className="text-3xl font-semibold">Library</h1>
-        <p className="text-sm muted">Library ID: {id}</p>
+        <span className="chip">{isMusic ? 'Music Library' : 'Library View'}</span>
+        <h1 className="text-3xl font-semibold">{library?.name ?? 'Library'}</h1>
         <p className="text-sm muted">
-          Showing {visibleItems.length} of {items.length} items
+          Showing {visibleItems.length} of {items.length} {isMusic ? 'artists' : 'items'}
         </p>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search titles in this library"
+          placeholder={isMusic ? 'Search artists…' : 'Search titles in this library'}
           className="input mt-2 w-full max-w-md px-3 py-2 text-sm"
         />
       </header>
@@ -62,11 +75,35 @@ export default function LibraryPage() {
         <div className="panel px-6 py-8">
           <p className="text-sm muted">
             {items.length === 0
-              ? 'No media items were found in this library yet.'
+              ? 'No media items were found in this library yet. Try scanning the library.'
               : 'No items match your search.'}
           </p>
         </div>
+      ) : isMusic ? (
+        /* ── Music: square artist grid ── */
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
+          {visibleItems.map((item) => (
+            <Link key={item.id} href={`/items/${item.id}`} className="group block">
+              <div className="tile tile-hover aspect-square overflow-hidden">
+                {item.poster_url ? (
+                  <img
+                    src={item.poster_url}
+                    alt={item.title}
+                    className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-4xl muted">
+                    ♪
+                  </div>
+                )}
+              </div>
+              <p className="mt-2 truncate text-sm font-medium">{item.title}</p>
+              <p className="text-xs muted">Artist</p>
+            </Link>
+          ))}
+        </div>
       ) : (
+        /* ── Video: existing poster grid ── */
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
           {visibleItems.map((item) => (
             <Link key={item.id} href={`/items/${item.id}`} className="group block">
