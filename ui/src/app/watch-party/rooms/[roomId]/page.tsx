@@ -770,6 +770,7 @@ export default function WatchPartyRoomPage() {
         <AudioPlayer
           audioState={audioState}
           canControl={canPlayPause}
+          canSeek={canSeek}
           roomId={roomId}
           sendWs={sendWs}
         />

@@ -93,7 +93,7 @@ export default function MiniPlayer() {
 
       {/* Volume + stop */}
       <div className="flex items-center gap-2 w-32 shrink-0 justify-end">
-        <span className="text-sm muted">🔊</span>
+        <span className="text-sm muted">Volume:</span>
         <input
           type="range"
           min={0}
