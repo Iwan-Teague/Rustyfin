@@ -53,7 +53,7 @@ pub struct NewWatchPartyMember {
 pub async fn create_room_with_members(
     pool: &SqlitePool,
     host_user_id: &str,
-    item_id: &str,
+    item_id: Option<&str>,
     policy_json: &str,
     join_password_hash: Option<&str>,
     members: &[NewWatchPartyMember],
@@ -106,7 +106,7 @@ pub async fn create_room_with_members(
     Ok(WatchPartyRoomRow {
         id: room_id,
         host_user_id: host_user_id.to_string(),
-        item_id: item_id.to_string(),
+        item_id: item_id.unwrap_or_default().to_string(),
         status: "lobby".to_string(),
         policy_json: policy_json.to_string(),
         join_password_hash: join_password_hash.map(str::to_string),
@@ -124,7 +124,7 @@ pub async fn get_room(
 ) -> Result<Option<WatchPartyRoomRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, String, Option<String>, i64, i64, String, Option<String>, Option<String>)> =
         sqlx::query_as(
-            "SELECT id, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id \
+            "SELECT id, host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id \
              FROM watch_party_room WHERE id = ?",
         )
         .bind(room_id)

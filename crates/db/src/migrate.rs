@@ -34,6 +34,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "008_channels",
         include_str!("../migrations/008_channels.sql"),
     ),
+    (
+        "009_youtube_watchparty",
+        include_str!("../migrations/009_youtube_watchparty.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
@@ -60,14 +64,17 @@ pub async fn run(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         }
 
         info!(migration = name, "applying migration");
-        // Execute migration statements (split on semicolons for multi-statement)
+        // Execute all statements for this migration on a single connection so
+        // session-scoped PRAGMAs (e.g. PRAGMA foreign_keys = OFF) take effect.
+        let mut conn = pool.acquire().await?;
         for statement in sql.split(';') {
             let trimmed = statement.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            sqlx::query(trimmed).execute(pool).await?;
+            sqlx::query(trimmed).execute(&mut *conn).await?;
         }
+        drop(conn);
 
         let now = chrono::Utc::now().timestamp();
         sqlx::query("INSERT INTO _migrations (name, applied_ts) VALUES (?, ?)")
