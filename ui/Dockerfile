@@ -34,6 +34,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 # Update next.config.js to use environment variable for backend URL
 RUN sed -i "s|http://localhost:8096|http://rustfin:8096|g" next.config.js
+RUN sed -i "s|http://localhost:8099|http://rustfin-calendar:8099|g" next.config.js
 
 RUN npm run build
 

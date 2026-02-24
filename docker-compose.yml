@@ -36,7 +36,31 @@ services:
     depends_on:
       rustfin:
         condition: service_healthy
+      rustfin-calendar:
+        condition: service_started
     restart: unless-stopped
+
+  rustfin-calendar:
+    build:
+      context: .
+      dockerfile: crates/calendar/Dockerfile
+    environment:
+      - RUST_LOG=info
+      - RUSTFIN_CALENDAR_BIND=0.0.0.0:8099
+      - RUSTFIN_DB=/config/rustfin.db
+      - RUSTFIN_AUTH_BASE_URL=http://rustfin:8096
+    volumes:
+      - rustfin-config:/config
+    depends_on:
+      rustfin:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8099/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
   # HTTPS edge proxy for browser clients (required for LAN microphone permissions).
   rustfin-edge:
@@ -53,6 +77,8 @@ services:
       - rustfin-caddy-config:/config
     depends_on:
       rustfin:
+        condition: service_healthy
+      rustfin-calendar:
         condition: service_healthy
       rustfin-ui:
         condition: service_started

@@ -8,6 +8,9 @@
 :443 {
   tls /etc/caddy/certs/tls.crt /etc/caddy/certs/tls.key
 
+  @calendar path /api/v1/calendar/*
+  reverse_proxy @calendar rustfin-calendar:8099
+
   @backend path /api/* /stream/* /health
   reverse_proxy @backend rustfin:8096
 

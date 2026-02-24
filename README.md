@@ -37,6 +37,11 @@ Rustyfin is a lightweight, single-binary media server that provides a complete m
   - Server-Sent Events (SSE) for live progress updates
   - Scan progress, metadata refresh, and job status notifications
 
+- 📅 **Integrated Calendar**
+  - Dedicated Rust calendar service running as a separate Docker container
+  - Global admin events plus per-user personal events
+  - Recurring yearly birthdays with derived age display
+
 - 🐳 **Docker-Ready**
   - Multi-stage Docker builds for minimal image size
   - Pre-configured compose files for CPU and GPU acceleration
@@ -52,6 +57,7 @@ Rustyfin is built as a **modular monolith** - a single server process with clear
 - **`crates/scanner`** - Media file discovery and parsing
 - **`crates/metadata`** - External metadata provider integration (TMDB)
 - **`crates/transcoder`** - FFmpeg orchestration for transcoding
+- **`crates/calendar`** - Standalone calendar API service (Rust + Axum)
 - **`ui`** - Next.js web application for user interface
 
 ## Tech Stack

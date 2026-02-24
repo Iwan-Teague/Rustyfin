@@ -1,4 +1,5 @@
 const apiBaseUrl = process.env.RUSTYFIN_API_BASE_URL || 'http://localhost:8096';
+const calendarApiBaseUrl = process.env.RUSTYFIN_CALENDAR_API_BASE_URL || 'http://localhost:8099';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -9,6 +10,10 @@ const nextConfig = {
   },
   async rewrites() {
     return [
+      {
+        source: '/api/v1/calendar/:path*',
+        destination: `${calendarApiBaseUrl}/api/v1/calendar/:path*`,
+      },
       {
         source: '/api/:path*',
         destination: `${apiBaseUrl}/api/:path*`,

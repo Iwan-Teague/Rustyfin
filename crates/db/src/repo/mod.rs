@@ -1,3 +1,4 @@
+pub mod calendar;
 pub mod channels;
 pub mod episodes;
 pub mod idempotency;
