@@ -228,6 +228,82 @@ fn is_valid_youtube_video_id(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+fn extract_youtube_video_id_from_input(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if is_valid_youtube_video_id(trimmed) {
+        return Some(trimmed.to_string());
+    }
+
+    let url = reqwest::Url::parse(trimmed).ok()?;
+    let host = url
+        .host_str()
+        .map(|h| h.to_ascii_lowercase())
+        .unwrap_or_default();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+
+    match host {
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" => {
+            if let Some(video_id) = url
+                .query_pairs()
+                .find_map(|(k, v)| if k == "v" { Some(v.into_owned()) } else { None })
+            {
+                if is_valid_youtube_video_id(&video_id) {
+                    return Some(video_id);
+                }
+            }
+
+            let segments: Vec<&str> = url.path_segments()?.collect();
+            if segments.len() >= 2 && matches!(segments[0], "embed" | "shorts" | "live") {
+                let candidate = segments[1].trim();
+                if is_valid_youtube_video_id(candidate) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        "youtube-nocookie.com" => {
+            let segments: Vec<&str> = url.path_segments()?.collect();
+            if segments.len() >= 2 && segments[0] == "embed" {
+                let candidate = segments[1].trim();
+                if is_valid_youtube_video_id(candidate) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        "youtu.be" => {
+            let candidate = url.path().trim_matches('/').trim();
+            if is_valid_youtube_video_id(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+        _ => {}
+    }
+
+    None
+}
+
+fn normalize_youtube_search_query(raw_query: &str) -> Result<String, AppError> {
+    let query = raw_query.trim().to_string();
+    if query.len() < YOUTUBE_SEARCH_MIN_QUERY_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "search query must be at least {YOUTUBE_SEARCH_MIN_QUERY_LEN} characters"
+        ))
+        .into());
+    }
+    if query.len() > YOUTUBE_SEARCH_MAX_QUERY_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "search query must be <= {YOUTUBE_SEARCH_MAX_QUERY_LEN} characters"
+        ))
+        .into());
+    }
+    Ok(query)
+}
+
+fn normalize_youtube_search_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(YOUTUBE_SEARCH_DEFAULT_LIMIT)
+        .clamp(1, YOUTUBE_SEARCH_MAX_LIMIT)
+}
+
 fn extract_json_object_after_marker(source: &str, marker: &str) -> Option<String> {
     let marker_idx = source.find(marker)?;
     let bytes = source.as_bytes();
@@ -454,6 +530,75 @@ async fn fetch_youtube_video_metadata(
             .thumbnail_url
             .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")),
     })
+}
+
+pub(crate) async fn perform_youtube_search(
+    raw_query: &str,
+    limit: Option<usize>,
+) -> Result<(String, Vec<YouTubeSearchResult>), AppError> {
+    let query = normalize_youtube_search_query(raw_query)?;
+    let limit = normalize_youtube_search_limit(limit);
+    let client = reqwest::Client::new();
+
+    let mut results = Vec::new();
+    if let Some(video_id) = extract_youtube_video_id_from_input(&query) {
+        if let Some(metadata) = fetch_youtube_video_metadata(&client, &video_id).await {
+            results.push(metadata);
+        }
+    }
+
+    if results.is_empty() {
+        let url = reqwest::Url::parse_with_params(
+            YOUTUBE_SEARCH_URL,
+            &[
+                ("search_query", query.as_str()),
+                ("hl", "en"),
+                ("persist_hl", "1"),
+            ],
+        )
+        .map_err(|e| ApiError::Internal(format!("failed to build youtube search url: {e}")))?;
+
+        let response = client
+            .get(url)
+            .timeout(Duration::from_secs(YOUTUBE_SEARCH_TIMEOUT_SECONDS))
+            .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|e| ApiError::Internal(format!("youtube search request failed: {e}")))?;
+
+        if response.url().as_str().contains("consent.youtube.com") {
+            return Err(ApiError::BadRequest(
+                "youtube search was blocked by a consent/interstitial page on this network".into(),
+            )
+            .into());
+        }
+
+        if !response.status().is_success() {
+            return Err(ApiError::BadRequest(format!(
+                "youtube search failed with status {}",
+                response.status()
+            ))
+            .into());
+        }
+
+        let search_html = response
+            .text()
+            .await
+            .map_err(|e| ApiError::Internal(format!("youtube search response read failed: {e}")))?;
+
+        results = parse_youtube_search_results(&search_html, limit);
+    }
+
+    if results.is_empty() {
+        return Err(ApiError::BadRequest(
+            "youtube search did not return parseable video results".into(),
+        )
+        .into());
+    }
+
+    Ok((query, results))
 }
 
 fn normalize_member_role(role: &str) -> Result<String, AppError> {
@@ -1316,68 +1461,7 @@ pub async fn search_youtube(
         return Err(ApiError::Forbidden("room membership is not joined".into()).into());
     }
 
-    let query = params.q.trim();
-    if query.len() < YOUTUBE_SEARCH_MIN_QUERY_LEN {
-        return Err(ApiError::BadRequest(format!(
-            "search query must be at least {YOUTUBE_SEARCH_MIN_QUERY_LEN} characters"
-        ))
-        .into());
-    }
-    if query.len() > YOUTUBE_SEARCH_MAX_QUERY_LEN {
-        return Err(ApiError::BadRequest(format!(
-            "search query must be <= {YOUTUBE_SEARCH_MAX_QUERY_LEN} characters"
-        ))
-        .into());
-    }
-
-    let limit = params
-        .limit
-        .unwrap_or(YOUTUBE_SEARCH_DEFAULT_LIMIT)
-        .clamp(1, YOUTUBE_SEARCH_MAX_LIMIT);
-
-    let url = reqwest::Url::parse_with_params(
-        YOUTUBE_SEARCH_URL,
-        &[("search_query", query), ("hl", "en"), ("persist_hl", "1")],
-    )
-    .map_err(|e| ApiError::Internal(format!("failed to build youtube search url: {e}")))?;
-
-    let response = reqwest::Client::new()
-        .get(url)
-        .timeout(Duration::from_secs(YOUTUBE_SEARCH_TIMEOUT_SECONDS))
-        .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
-        .send()
-        .await
-        .map_err(|e| ApiError::Internal(format!("youtube search request failed: {e}")))?;
-
-    if response.url().as_str().contains("consent.youtube.com") {
-        return Err(ApiError::BadRequest(
-            "youtube search was blocked by a consent/interstitial page on this network".into(),
-        )
-        .into());
-    }
-
-    if !response.status().is_success() {
-        return Err(ApiError::BadRequest(format!(
-            "youtube search failed with status {}",
-            response.status()
-        ))
-        .into());
-    }
-
-    let search_html = response
-        .text()
-        .await
-        .map_err(|e| ApiError::Internal(format!("youtube search response read failed: {e}")))?;
-
-    let results = parse_youtube_search_results(&search_html, limit);
-    if results.is_empty() {
-        return Err(ApiError::BadRequest(
-            "youtube search did not return parseable video results".into(),
-        )
-        .into());
-    }
+    let (_, results) = perform_youtube_search(&params.q, params.limit).await?;
     Ok(Json(results))
 }
 

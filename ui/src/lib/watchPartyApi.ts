@@ -143,6 +143,8 @@ export type WsYouTubeStateMessage = {
   updated_ts_ms: number;
   server_ts_ms: number;
   queue: string[];
+  search_query: string;
+  search_results: YouTubeSearchResult[];
   members: WsPresenceMember[];
 };
 

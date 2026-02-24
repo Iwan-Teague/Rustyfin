@@ -14,6 +14,7 @@ pub enum ClientMessage {
     PlayQueuedVideo { queue_index: usize },
     RemoveQueuedVideo { queue_index: usize },
     MoveQueuedVideo { from_index: usize, to_index: usize },
+    SearchYouTube { query: String },
     Ping,
     Pong,
 }
@@ -34,6 +35,14 @@ pub struct QueueEntry {
     pub album: String,
     pub album_art_url: Option<String>,
     pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct YouTubeSearchEntry {
+    pub video_id: String,
+    pub title: String,
+    pub channel: String,
+    pub thumbnail_url: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -73,6 +82,8 @@ pub enum ServerMessage {
         updated_ts_ms: i64,
         server_ts_ms: i64,
         queue: Vec<String>,
+        search_query: String,
+        search_results: Vec<YouTubeSearchEntry>,
         members: Vec<PresenceMember>,
     },
     Presence {

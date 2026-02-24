@@ -15,9 +15,12 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
+use super::handlers::perform_youtube_search;
 use super::manager::{AudioAction, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
-use super::protocol::{ClientMessage, PresenceMember, QueueEntry, ServerMessage};
+use super::protocol::{
+    ClientMessage, PresenceMember, QueueEntry, ServerMessage, YouTubeSearchEntry,
+};
 
 const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
 const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
@@ -1182,6 +1185,53 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::SearchYouTube { query } => {
+            if context.room_mode != "youtube" {
+                send_error(socket, "search_youtube is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let (search_query, search_results) =
+                match perform_youtube_search(&query, Some(12)).await {
+                    Ok((search_query, search_results)) => (search_query, search_results),
+                    Err(err) => {
+                        send_error(socket, &err.0.to_string()).await?;
+                        return Ok(());
+                    }
+                };
+
+            let shared_results: Vec<YouTubeSearchEntry> = search_results
+                .into_iter()
+                .map(|entry| YouTubeSearchEntry {
+                    video_id: entry.video_id,
+                    title: entry.title,
+                    channel: entry.channel,
+                    thumbnail_url: entry.thumbnail_url,
+                })
+                .collect();
+
+            runtime
+                .set_youtube_search_state(search_query.clone(), shared_results.clone())
+                .await;
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                query = %search_query,
+                results = shared_results.len(),
+                "accepted youtube search_youtube command"
+            );
+
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
     }
 }
 
@@ -1430,6 +1480,7 @@ async fn build_youtube_state_message(
     let snapshot = runtime.snapshot_state().await;
     let video_id = runtime.get_youtube_video_id().await.unwrap_or_default();
     let queue = runtime.snapshot_youtube_queue().await;
+    let (search_query, search_results) = runtime.snapshot_youtube_search().await;
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
@@ -1473,6 +1524,8 @@ async fn build_youtube_state_message(
         updated_ts_ms,
         server_ts_ms: now_ms,
         queue,
+        search_query,
+        search_results,
         members: member_summaries,
     })
 }
