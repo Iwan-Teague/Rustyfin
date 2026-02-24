@@ -42,6 +42,16 @@ export type CreateWatchPartyRoomRequest =
       room_mode: 'youtube';
       item_id?: never;
       audio_library_id?: never;
+      web_url?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    }
+  | {
+      room_mode: 'web';
+      web_url?: string;
+      item_id?: never;
+      audio_library_id?: never;
       invites: WatchPartyInviteInput[];
       password?: string;
       policy: WatchPartyPolicy;
@@ -72,6 +82,7 @@ export type WatchPartyRoomResponse = {
   room_mode: string;
   audio_library_id?: string;
   youtube_video_id?: string | null;
+  web_url?: string | null;
 };
 
 export type JoinWatchPartyRoomResponse = {
@@ -97,11 +108,19 @@ export type ReconfigureWatchPartyRoomRequest =
       youtube_video_id?: string;
       item_id?: never;
       audio_library_id?: never;
+      web_url?: never;
+    }
+  | {
+      room_mode: 'web';
+      web_url?: string;
+      item_id?: never;
+      audio_library_id?: never;
+      youtube_video_id?: never;
     };
 
 export type ReconfigureWatchPartyRoomResponse = {
   ok: boolean;
-  room_mode: 'video' | 'audio' | 'youtube' | string;
+  room_mode: 'video' | 'audio' | 'youtube' | 'web' | string;
 };
 
 export type WatchPartyInvite = {
@@ -180,12 +199,22 @@ export type WsYouTubeStateMessage = {
   members: WsPresenceMember[];
 };
 
+export type WsWebStateMessage = {
+  type: 'web_state';
+  room_id: string;
+  url: string;
+  updated_ts_ms: number;
+  server_ts_ms: number;
+  members: WsPresenceMember[];
+};
+
 export type WsRoomReconfiguredMessage = {
   type: 'room_reconfigured';
   room_mode: string;
   item_id: string;
   audio_library_id?: string | null;
   youtube_video_id?: string | null;
+  web_url?: string | null;
 };
 
 export type PublicRoom = {

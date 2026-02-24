@@ -38,6 +38,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "009_youtube_watchparty",
         include_str!("../migrations/009_youtube_watchparty.sql"),
     ),
+    (
+        "010_web_watchparty",
+        include_str!("../migrations/010_web_watchparty.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

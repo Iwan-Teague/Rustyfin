@@ -72,6 +72,8 @@ pub struct RoomRuntime {
     pub youtube_queue: RwLock<Vec<String>>,
     pub youtube_search_query: RwLock<String>,
     pub youtube_search_results: RwLock<Vec<YouTubeSearchEntry>>,
+    pub web_url: RwLock<String>,
+    pub web_updated_ts_ms: RwLock<i64>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -95,6 +97,8 @@ impl RoomRuntime {
             youtube_queue: RwLock::new(Vec::new()),
             youtube_search_query: RwLock::new(String::new()),
             youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -122,6 +126,8 @@ impl RoomRuntime {
             youtube_queue: RwLock::new(Vec::new()),
             youtube_search_query: RwLock::new(String::new()),
             youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -141,9 +147,33 @@ impl RoomRuntime {
             youtube_queue: RwLock::new(Vec::new()),
             youtube_search_query: RwLock::new(String::new()),
             youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+        }
+    }
+
+    pub fn new_web(room_id: String, initial_url: String) -> Self {
+        let (tx, _) = broadcast::channel(256);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self {
+            room_id,
+            item_id: String::new(),
+            room_mode: "web".to_string(),
+            audio_library_id: None,
+            state: RwLock::new(PlaybackState::default()),
+            audio_queue: None,
+            youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(initial_url),
+            web_updated_ts_ms: RwLock::new(now_ms),
+            connected_user_ids: RwLock::new(HashSet::new()),
+            tx,
+            last_activity_ts_ms: RwLock::new(now_ms),
         }
     }
 
@@ -173,6 +203,29 @@ impl RoomRuntime {
             self.youtube_search_query.read().await.clone(),
             self.youtube_search_results.read().await.clone(),
         )
+    }
+
+    pub async fn get_web_url(&self) -> String {
+        self.web_url.read().await.clone()
+    }
+
+    pub async fn set_web_url(&self, url: String) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let mut guard = self.web_url.write().await;
+            *guard = url;
+        }
+        {
+            let mut updated = self.web_updated_ts_ms.write().await;
+            *updated = now_ms;
+        }
+        self.touch_activity().await;
+    }
+
+    pub async fn snapshot_web_state(&self) -> (String, i64) {
+        let url = self.web_url.read().await.clone();
+        let updated_ts_ms = *self.web_updated_ts_ms.read().await;
+        (url, updated_ts_ms)
     }
 
     pub async fn set_youtube_search_state(
@@ -405,6 +458,7 @@ impl WatchPartyManager {
         audio_library_id: Option<&str>,
         audio_track_ids: Option<Vec<String>>,
         youtube_video_id: Option<String>,
+        web_url: Option<String>,
     ) -> Arc<RoomRuntime> {
         {
             let rooms = self.rooms.read().await;
@@ -439,6 +493,11 @@ impl WatchPartyManager {
                     )
                 } else if room_mode == "youtube" {
                     RoomRuntime::new_youtube(room_id.to_string(), youtube_video_id)
+                } else if room_mode == "web" {
+                    RoomRuntime::new_web(
+                        room_id.to_string(),
+                        web_url.unwrap_or_else(|| "https://www.mozilla.org/".to_string()),
+                    )
                 } else {
                     RoomRuntime::new_video(room_id.to_string(), item_id.to_string())
                 };

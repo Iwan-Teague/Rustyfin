@@ -41,6 +41,9 @@ pub enum ClientMessage {
     SearchYouTube {
         query: String,
     },
+    ChangeWebUrl {
+        url: String,
+    },
     Ping,
     Pong,
 }
@@ -113,6 +116,13 @@ pub enum ServerMessage {
         search_results: Vec<YouTubeSearchEntry>,
         members: Vec<PresenceMember>,
     },
+    WebState {
+        room_id: String,
+        url: String,
+        updated_ts_ms: i64,
+        server_ts_ms: i64,
+        members: Vec<PresenceMember>,
+    },
     Presence {
         user_id: String,
         connected: bool,
@@ -126,6 +136,7 @@ pub enum ServerMessage {
         item_id: String,
         audio_library_id: Option<String>,
         youtube_video_id: Option<String>,
+        web_url: Option<String>,
     },
     RoomEnded,
 }
