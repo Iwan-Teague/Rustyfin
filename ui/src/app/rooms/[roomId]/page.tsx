@@ -247,6 +247,7 @@ export default function WatchPartyRoomPage() {
     const endTs = room.ended_ts ?? Math.floor(nowMs / 1000);
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
+  const roomDisplayName = room?.room_name?.trim() || '';
 
   const activeMembers = (roomState?.members ?? audioState?.members ?? webState?.members ?? youtubeState?.members) ?? room?.members.map((member) => ({
     user_id: member.user_id,
@@ -1205,8 +1206,9 @@ export default function WatchPartyRoomPage() {
               {roomPanelExpanded ? 'Hide room details' : 'Show room details'}
             </p>
             <p className="text-[11px] muted truncate">
-              Room {room.room_id}
+              {roomDisplayName || `Room ${room.room_id}`}
             </p>
+            {roomDisplayName && <p className="text-[11px] muted truncate">Room {room.room_id}</p>}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

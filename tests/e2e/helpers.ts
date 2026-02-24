@@ -2,12 +2,12 @@ import { expect, Page } from '@playwright/test';
 
 export const ADMIN = {
   username: 'admin',
-  password: 'AdminPassword123!' // >= 12 chars
+  password: 'AdminPassword123!' // >= 6 chars
 };
 
 export const USER = {
   username: 'basicuser',
-  password: 'UserPassword123!' // >= 12 chars
+  password: 'UserPassword123!' // >= 6 chars
 };
 
 export async function runSetupWizard(page: Page) {

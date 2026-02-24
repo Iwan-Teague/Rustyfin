@@ -391,7 +391,7 @@ export default function SetupWizard() {
               <label className="mb-1 block text-sm font-medium muted">Password</label>
               <input
                 type="password"
-                minLength={12}
+                minLength={6}
                 value={adminPassword}
                 onChange={(e) => setAdminPassword(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password))}
@@ -399,13 +399,13 @@ export default function SetupWizard() {
               {fieldErrors.password && (
                 <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password[0]}</p>
               )}
-              <p className="mt-1 text-xs muted">Minimum 12 characters</p>
+              <p className="mt-1 text-xs muted">Minimum 6 characters</p>
             </div>
             <div>
               <label className="mb-1 block text-sm font-medium muted">Confirm Password</label>
               <input
                 type="password"
-                minLength={12}
+                minLength={6}
                 value={adminPasswordConfirm}
                 onChange={(e) => setAdminPasswordConfirm(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password_confirm))}

@@ -679,8 +679,8 @@ export default function AdminPage() {
                 />
                 <input
                   type="password"
-                  placeholder="Password (min 12 chars)"
-                  minLength={12}
+                  placeholder="Password (min 6 chars)"
+                  minLength={6}
                   value={newUser.password}
                   onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   className="input px-3 py-2 text-sm"

@@ -15,7 +15,7 @@ test('@permissions non-admin must not access /admin (regression)', async ({ page
 
   // Create a user
   await createUserSection.locator('input[placeholder="Username"]').first().fill(USER.username);
-  await createUserSection.locator('input[placeholder="Password (min 12 chars)"]').first().fill(USER.password);
+  await createUserSection.locator('input[placeholder="Password (min 6 chars)"]').first().fill(USER.password);
 
   // Assign the specific created library to this simple user.
   const allowedLibCheckbox = createUserSection

@@ -61,6 +61,7 @@ export default function WatchPartyPage() {
   const [selectedLibraryId, setSelectedLibraryId] = useState('');
   const [selectedItem, setSelectedItem] = useState<MediaItemNode | null>(null);
   const [selectedAudioLibraryId, setSelectedAudioLibraryId] = useState('');
+  const [roomName, setRoomName] = useState('');
   const [policy, setPolicy] = useState<WatchPartyPolicy>(DEFAULT_POLICY);
   const [password, setPassword] = useState('');
 
@@ -284,6 +285,7 @@ export default function WatchPartyPage() {
         user_id,
         role: config.role,
       }));
+      const normalizedRoomName = roomName.trim();
 
       if (roomMode === 'audio') {
         if (!selectedAudioLibraryId) {
@@ -292,6 +294,7 @@ export default function WatchPartyPage() {
         }
 
         const payload = {
+          room_name: normalizedRoomName || undefined,
           audio_library_id: selectedAudioLibraryId,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
@@ -303,6 +306,7 @@ export default function WatchPartyPage() {
         router.push(created.join_path);
       } else if (watchSource === 'web') {
         const payload = {
+          room_name: normalizedRoomName || undefined,
           room_mode: 'web' as const,
           web_url: webStartUrl.trim() || undefined,
           invites: invitesPayload,
@@ -315,6 +319,7 @@ export default function WatchPartyPage() {
         router.push(created.join_path);
       } else if (watchSource === 'youtube') {
         const payload = {
+          room_name: normalizedRoomName || undefined,
           room_mode: 'youtube' as const,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
@@ -336,6 +341,7 @@ export default function WatchPartyPage() {
         }
 
         const payload = {
+          room_name: normalizedRoomName || undefined,
           item_id: selectedItem.id,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
@@ -434,28 +440,42 @@ export default function WatchPartyPage() {
       </section>
 
       <section className="panel p-5 sm:p-6">
-        <div className="flex gap-2 flex-wrap">
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'watch' ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setRoomMode('watch')}
-          >
-            Watch Together
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setRoomMode('audio')}
-          >
-            Listen Together
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'play' ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setRoomMode('play')}
-          >
-            Play Together
-          </button>
+        <div className="space-y-3">
+          <label className="block text-sm">
+            <span className="mb-1 block text-xs uppercase tracking-wide muted">Room Name</span>
+            <input
+              type="text"
+              value={roomName}
+              onChange={(e) => setRoomName(e.target.value)}
+              className="input px-3 py-2 text-sm"
+              placeholder="Optional room name"
+              maxLength={120}
+            />
+          </label>
+
+          <div className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'watch' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setRoomMode('watch')}
+            >
+              Watch Together
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setRoomMode('audio')}
+            >
+              Listen Together
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'play' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setRoomMode('play')}
+            >
+              Play Together
+            </button>
+          </div>
         </div>
       </section>
 
