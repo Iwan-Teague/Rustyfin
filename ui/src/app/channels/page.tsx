@@ -22,6 +22,7 @@ export default function ChannelsPage() {
     newMessages,
     lastWsEvent,
     voiceSession,
+    joinVoice,
   } = useChannels();
 
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
@@ -56,7 +57,7 @@ export default function ChannelsPage() {
 
   if (authLoading || !me) {
     return (
-      <div className="flex items-center justify-center h-full py-20">
+      <div className="flex items-center justify-center h-full py-20 animate-rise">
         <span className="muted">Loading…</span>
       </div>
     );
@@ -94,7 +95,7 @@ export default function ChannelsPage() {
   };
 
   return (
-    <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)]">
+    <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)] animate-rise">
       {/* Sidebar */}
       <div className={['sm:flex shrink-0 h-full', sidebarOpen ? 'flex' : 'hidden'].join(' ')}>
         <ChannelSidebar
@@ -104,6 +105,9 @@ export default function ChannelsPage() {
           activeChannelId={activeChannelId}
           isAdmin={me.role === 'admin'}
           onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
+          onQuickJoinVoice={(id, name) => {
+            void joinVoice(id, name);
+          }}
           onCreateText={() => { setCreateModal({ kind: 'text' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
           onCreateVoice={() => { setCreateModal({ kind: 'voice' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
           onDeleteChannel={handleDeleteChannel}

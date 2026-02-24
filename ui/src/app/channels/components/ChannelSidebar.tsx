@@ -12,6 +12,7 @@ interface Props {
   activeChannelId: string | null;
   isAdmin: boolean;
   onSelect: (id: string) => void;
+  onQuickJoinVoice: (id: string, name: string) => void;
   onCreateText: () => void;
   onCreateVoice: () => void;
   onDeleteChannel: (id: string) => void;
@@ -29,6 +30,18 @@ interface ContextMenuProps {
   onClose: () => void;
   onDelete: () => void;
   membersInChannel?: number;
+}
+
+function userBubbleColor(userId: string): string {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const colors = [
+    '#e67e22', '#3498db', '#2ecc71', '#9b59b6', '#e74c3c',
+    '#1abc9c', '#f39c12', '#16a085', '#d35400', '#8e44ad',
+  ];
+  return colors[Math.abs(hash) % colors.length];
 }
 
 function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }: ContextMenuProps) {
@@ -160,6 +173,7 @@ interface ChannelRowProps {
   menuOpen: MenuState | null;
   setMenuOpen: (state: MenuState | null) => void;
   onSelect: (id: string) => void;
+  onQuickJoinVoice: (id: string, name: string) => void;
   onDeleteChannel: (id: string) => void;
 }
 
@@ -174,11 +188,13 @@ function ChannelRow({
   menuOpen,
   setMenuOpen,
   onSelect,
+  onQuickJoinVoice,
   onDeleteChannel,
 }: ChannelRowProps) {
   const members = voicePresence[ch.id] ?? [];
   const activeSinceTs = voiceActiveSince[ch.id];
   const isMenuOpen = menuOpen?.channelId === ch.id;
+  const lastTapAtRef = useRef(0);
 
   const isActive = ch.id === activeChannelId;
   const rowClass = [
@@ -193,11 +209,27 @@ function ChannelRow({
       <div
         className={rowClass}
         onClick={() => onSelect(ch.id)}
+        onDoubleClick={() => {
+          if (ch.kind !== 'voice') return;
+          onQuickJoinVoice(ch.id, ch.name);
+        }}
+        onTouchEnd={() => {
+          if (ch.kind !== 'voice') return;
+          const now = Date.now();
+          if (now - lastTapAtRef.current < 320) {
+            onQuickJoinVoice(ch.id, ch.name);
+          }
+          lastTapAtRef.current = now;
+        }}
       >
         <span className="muted shrink-0">{icon}</span>
         <span className="truncate flex-1">{ch.name}</span>
         {ch.kind === 'voice' && members.length > 0 && (
-          <span className="text-xs shrink-0 muted">{members.length}</span>
+          <span className="text-xs shrink-0 muted inline-flex items-center">
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-black/20 text-[10px] font-semibold">
+              {members.length}
+            </span>
+          </span>
         )}
         {isAdmin && (
           <div className="relative shrink-0">
@@ -229,9 +261,15 @@ function ChannelRow({
       )}
       {/* Voice member rows */}
       {ch.kind === 'voice' && members.map((u) => (
-        <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-          {u.username}
+        <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-2">
+          <span
+            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white shrink-0"
+            style={{ backgroundColor: userBubbleColor(u.user_id) }}
+            aria-hidden="true"
+          >
+            {u.username.slice(0, 2).toUpperCase()}
+          </span>
+          <span className="truncate">{u.username}</span>
         </div>
       ))}
     </div>
@@ -247,6 +285,7 @@ export default function ChannelSidebar({
   activeChannelId,
   isAdmin,
   onSelect,
+  onQuickJoinVoice,
   onCreateText,
   onCreateVoice,
   onDeleteChannel,
@@ -267,7 +306,7 @@ export default function ChannelSidebar({
   return (
     <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-y-auto">
       {/* Server header */}
-      <div className="px-4 py-3 border-b border-[var(--border)] font-semibold text-sm tracking-wide">
+      <div className="h-14 px-4 border-b border-[var(--border)] font-semibold text-sm tracking-wide flex items-center">
         Rustyfin
       </div>
 
@@ -302,6 +341,7 @@ export default function ChannelSidebar({
               menuOpen={menuOpen}
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
+              onQuickJoinVoice={onQuickJoinVoice}
               onDeleteChannel={onDeleteChannel}
             />
           ))}
@@ -341,6 +381,7 @@ export default function ChannelSidebar({
               menuOpen={menuOpen}
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
+              onQuickJoinVoice={onQuickJoinVoice}
               onDeleteChannel={onDeleteChannel}
             />
           ))}

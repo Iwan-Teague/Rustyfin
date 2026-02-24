@@ -30,7 +30,7 @@ function ParticipantCard({ userInfo }: { userInfo: UserInfo }) {
   return (
     <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
       <div
-        className="w-24 h-24 rounded-full flex items-center justify-center text-3xl font-bold text-white"
+        className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
         style={{ backgroundColor: color }}
       >
         {initials}
@@ -67,10 +67,13 @@ export default function VoiceChannelView({
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* Header — channel name, member count, and controls all inline */}
-      <div className="px-4 py-3 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+      <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0 overflow-x-auto whitespace-nowrap">
         <span className="font-semibold truncate">{channel.name}</span>
         <span className="chip text-xs shrink-0">
-          {members.length} member{members.length !== 1 ? 's' : ''}
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-black/20 text-[10px] font-semibold mr-1">
+            {members.length}
+          </span>
+          member{members.length !== 1 ? 's' : ''}
         </span>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">

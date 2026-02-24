@@ -203,7 +203,7 @@ export default function HomePage() {
             )}
           </Link>
 
-          <Link href="/watch-party" className="tile tile-hover p-5 flex flex-col gap-1">
+          <Link href="/rooms" className="tile tile-hover p-5 flex flex-col gap-1">
             <span className="font-semibold">Watch Party</span>
             <span className="text-xs muted">Watch together</span>
           </Link>
@@ -276,13 +276,13 @@ export default function HomePage() {
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold sm:text-2xl">Active Watch Parties</h2>
-            <Link href="/watch-party" className="text-sm text-[var(--orange-soft)]">View all</Link>
+            <Link href="/rooms" className="text-sm text-[var(--orange-soft)]">View all</Link>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {publicRooms.map((room) => (
               <Link
                 key={room.room_id}
-                href={`/watch-party/rooms/${room.room_id}`}
+                href={`/rooms/${room.room_id}`}
                 className="tile tile-hover p-4 flex flex-col gap-2"
               >
                 <div className="flex items-start justify-between gap-2">

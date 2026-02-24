@@ -1189,7 +1189,7 @@ pub async fn create_room(
         StatusCode::CREATED,
         Json(CreateRoomResponse {
             room_id: created.id.clone(),
-            join_path: format!("/watch-party/rooms/{}", created.id),
+            join_path: format!("/rooms/{}", created.id),
         }),
     ))
 }

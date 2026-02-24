@@ -19,7 +19,7 @@ export default function NavBar() {
   const navLinks = [
     { href: '/libraries', label: 'Libraries' },
     { href: '/channels', label: 'Channels' },
-    { href: '/watch-party', label: 'Watch Party' },
+    { href: '/rooms', label: 'Rooms' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
 
