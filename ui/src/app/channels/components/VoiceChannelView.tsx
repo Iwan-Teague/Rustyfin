@@ -28,12 +28,16 @@ function ParticipantCard({
   userInfo,
   isSpeaking,
   isSelf,
+  sliderLabel,
+  sliderDisabled,
   volume,
   onVolumeChange,
 }: {
   userInfo: UserInfo;
   isSpeaking: boolean;
   isSelf: boolean;
+  sliderLabel: string;
+  sliderDisabled: boolean;
   volume: number;
   onVolumeChange: (nextVolume: number) => void;
 }) {
@@ -62,23 +66,21 @@ function ParticipantCard({
         </div>
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
-      {!isSelf && (
-        <div className="w-full space-y-1">
-          <div className="flex items-center justify-between text-[11px] muted">
-            <span>Volume</span>
-            <span>{volumePercent}%</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={volumePercent}
-            onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
-            className="w-full accent-[var(--orange-soft)]"
-            aria-label={`Adjust ${userInfo.username} volume`}
-          />
+      <div className="w-full space-y-1">
+        <div className="flex items-center justify-end text-[11px] muted">
+          <span>{volumePercent}%</span>
         </div>
-      )}
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={volumePercent}
+          disabled={sliderDisabled}
+          onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
+          className="w-full accent-[var(--orange-soft)] disabled:opacity-40 disabled:cursor-not-allowed"
+          aria-label={sliderLabel}
+        />
+      </div>
       {isSelf && <span className="text-[11px] muted">You</span>}
     </div>
   );
@@ -95,11 +97,13 @@ export default function VoiceChannelView({
     voiceSession,
     voiceSpeaking,
     remoteVolumes,
+    localMicGain,
     joinVoice,
     leaveVoice,
     toggleMute,
     toggleDeafen,
     setRemoteVolume,
+    setLocalMicGain,
   } = useChannels();
   const [error, setError] = useState<string | null>(null);
 
@@ -176,8 +180,20 @@ export default function VoiceChannelView({
                 userInfo={u}
                 isSpeaking={speakingIds.has(u.user_id)}
                 isSelf={u.user_id === currentUserId}
-                volume={u.user_id === currentUserId ? 1 : (remoteVolumes[u.user_id] ?? 1)}
-                onVolumeChange={(nextVolume) => setRemoteVolume(u.user_id, nextVolume)}
+                sliderLabel={
+                  u.user_id === currentUserId
+                    ? `Adjust your microphone volume`
+                    : `Adjust ${u.username} volume`
+                }
+                sliderDisabled={u.user_id === currentUserId && !Boolean(voiceSession?.localStream)}
+                volume={u.user_id === currentUserId ? localMicGain : (remoteVolumes[u.user_id] ?? 1)}
+                onVolumeChange={(nextVolume) => {
+                  if (u.user_id === currentUserId) {
+                    setLocalMicGain(nextVolume);
+                    return;
+                  }
+                  setRemoteVolume(u.user_id, nextVolume);
+                }}
               />
             ))}
           </div>

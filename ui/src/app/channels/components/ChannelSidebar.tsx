@@ -29,7 +29,7 @@ interface MenuState {
 interface ContextMenuProps {
   channel: ChannelInfo;
   onClose: () => void;
-  onDelete: () => void;
+  onRequestDelete: () => void;
   membersInChannel?: number;
 }
 
@@ -45,8 +45,8 @@ function userBubbleColor(userId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }: ContextMenuProps) {
-  const [view, setView] = useState<'menu' | 'rename' | 'confirm' | 'error'>('menu');
+function ChannelContextMenu({ channel, onClose, onRequestDelete, membersInChannel = 0 }: ContextMenuProps) {
+  const [view, setView] = useState<'menu' | 'rename' | 'error'>('menu');
   const [renameValue, setRenameValue] = useState(channel.name);
   const [renameError, setRenameError] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
@@ -101,7 +101,8 @@ function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }
               if (channel.kind === 'voice' && membersInChannel > 0) {
                 setView('error');
               } else {
-                setView('confirm');
+                onRequestDelete();
+                onClose();
               }
             }}
           >
@@ -128,22 +129,6 @@ function ChannelContextMenu({ channel, onClose, onDelete, membersInChannel = 0 }
           <div className="flex gap-1 justify-end">
             <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs">Cancel</button>
             <button onClick={handleRename} className="btn-primary px-2 py-1 text-xs">Save</button>
-          </div>
-        </div>
-      )}
-
-      {view === 'confirm' && (
-        <div className="px-3 py-2 space-y-2">
-          <p className="text-xs font-semibold">Delete &ldquo;{channel.name}&rdquo;?</p>
-          <p className="text-xs muted">All messages will be lost. This cannot be undone.</p>
-          <div className="flex gap-1 justify-end">
-            <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs">Cancel</button>
-            <button
-              onClick={() => { onDelete(); onClose(); }}
-              className="btn-primary px-2 py-1 text-xs bg-red-500 hover:bg-red-600"
-            >
-              Delete
-            </button>
           </div>
         </div>
       )}
@@ -176,7 +161,7 @@ interface ChannelRowProps {
   setMenuOpen: (state: MenuState | null) => void;
   onSelect: (id: string) => void;
   onQuickJoinVoice: (id: string, name: string) => void;
-  onDeleteChannel: (id: string) => void;
+  onRequestDeleteChannel: (channel: ChannelInfo) => void;
 }
 
 function ChannelRow({
@@ -192,7 +177,7 @@ function ChannelRow({
   setMenuOpen,
   onSelect,
   onQuickJoinVoice,
-  onDeleteChannel,
+  onRequestDeleteChannel,
 }: ChannelRowProps) {
   const members = voicePresence[ch.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[ch.id] ?? []);
@@ -242,7 +227,7 @@ function ChannelRow({
                 e.stopPropagation();
                 setMenuOpen(isMenuOpen ? null : { channelId: ch.id, channelName: ch.name });
               }}
-              className="btn-ghost px-1 py-0.5 text-xs opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+              className="btn-ghost px-1 py-0.5 text-xs opacity-60 md:opacity-0 md:group-hover:opacity-60 hover:!opacity-100 transition-opacity"
               title="Channel options"
             >
               ⋯
@@ -251,7 +236,7 @@ function ChannelRow({
               <ChannelContextMenu
                 channel={ch}
                 onClose={() => setMenuOpen(null)}
-                onDelete={() => onDeleteChannel(ch.id)}
+                onRequestDelete={() => onRequestDeleteChannel(ch)}
                 membersInChannel={members.length}
               />
             )}
@@ -309,6 +294,7 @@ export default function ChannelSidebar({
   onDeleteChannel,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState<MenuState | null>(null);
+  const [pendingDeleteChannel, setPendingDeleteChannel] = useState<ChannelInfo | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const textChannels = channels.filter((c) => c.kind === 'text');
@@ -361,7 +347,7 @@ export default function ChannelSidebar({
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
               onQuickJoinVoice={onQuickJoinVoice}
-              onDeleteChannel={onDeleteChannel}
+              onRequestDeleteChannel={setPendingDeleteChannel}
             />
           ))}
 
@@ -402,7 +388,7 @@ export default function ChannelSidebar({
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
               onQuickJoinVoice={onQuickJoinVoice}
-              onDeleteChannel={onDeleteChannel}
+              onRequestDeleteChannel={setPendingDeleteChannel}
             />
           ))}
 
@@ -411,6 +397,37 @@ export default function ChannelSidebar({
           )}
         </section>
       </div>
+
+      {pendingDeleteChannel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
+            <h2 className="font-semibold text-lg">Delete Channel</h2>
+            <p className="text-sm muted">
+              Delete &ldquo;{pendingDeleteChannel.name}&rdquo;? All messages will be lost and this cannot be undone.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingDeleteChannel(null)}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  onDeleteChannel(pendingDeleteChannel.id);
+                  setPendingDeleteChannel(null);
+                  if (menuOpen?.channelId === pendingDeleteChannel.id) {
+                    setMenuOpen(null);
+                  }
+                }}
+                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

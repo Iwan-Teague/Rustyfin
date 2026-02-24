@@ -23,7 +23,7 @@ const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
 const AUTH_DEADLINE_SECONDS: u64 = 3;
 const PING_INTERVAL_SECONDS: u64 = 20;
 const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
-const MAX_MESSAGES_PER_WINDOW: usize = 80;
+const MAX_MESSAGES_PER_WINDOW: usize = 300;
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 

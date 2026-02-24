@@ -12,6 +12,7 @@ interface Props {
   sendWs: (msg: object) => void;
   deafened: boolean;
   remoteVolumes: Record<string, number>;
+  localMicGain: number;
   onSpeakingChange: (channelId: string, userId: string, speaking: boolean) => void;
 }
 
@@ -36,6 +37,10 @@ function createPeerConfig(): RTCConfiguration {
   };
 }
 
+function isAudioTransceiver(transceiver: RTCRtpTransceiver): boolean {
+  return transceiver.receiver.track.kind === 'audio';
+}
+
 export default function VoiceEngine({
   localStream,
   channelId,
@@ -45,12 +50,19 @@ export default function VoiceEngine({
   sendWs,
   deafened,
   remoteVolumes,
+  localMicGain,
   onSpeakingChange,
 }: Props) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const speakingMonitorsRef = useRef<Map<string, SpeakingMonitor>>(new Map());
   const audioContextRef = useRef<AudioContext | null>(null);
+  const localMicContextRef = useRef<AudioContext | null>(null);
+  const localMicGainNodeRef = useRef<GainNode | null>(null);
+  const localMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const localMicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const localMicProcessedStreamRef = useRef<MediaStream | null>(null);
+  const localMicInputTrackIdRef = useRef<string | null>(null);
 
   function getAudioContext(): AudioContext | null {
     if (audioContextRef.current) {
@@ -129,9 +141,87 @@ export default function VoiceEngine({
     void audioContext.resume().catch(() => {});
   }
 
+  function ensureReceiveAudio(pc: RTCPeerConnection) {
+    const hasAudioTransceiver = pc.getTransceivers().some(isAudioTransceiver);
+    if (!hasAudioTransceiver) {
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+    }
+  }
+
+  function teardownLocalMicPipeline() {
+    localMicSourceRef.current?.disconnect();
+    localMicGainNodeRef.current?.disconnect();
+    localMicDestinationRef.current?.disconnect();
+    if (localMicContextRef.current) {
+      void localMicContextRef.current.close().catch(() => {});
+    }
+    localMicSourceRef.current = null;
+    localMicGainNodeRef.current = null;
+    localMicDestinationRef.current = null;
+    localMicContextRef.current = null;
+    localMicProcessedStreamRef.current = null;
+    localMicInputTrackIdRef.current = null;
+  }
+
+  function getOutboundStream(): MediaStream | null {
+    if (!localStream) return null;
+    const inputTrack = localStream.getAudioTracks()[0];
+    if (!inputTrack) return null;
+
+    const hasValidPipeline =
+      localMicProcessedStreamRef.current &&
+      localMicInputTrackIdRef.current === inputTrack.id &&
+      localMicContextRef.current &&
+      localMicContextRef.current.state !== 'closed' &&
+      localMicGainNodeRef.current;
+
+    if (hasValidPipeline) {
+      return localMicProcessedStreamRef.current;
+    }
+
+    teardownLocalMicPipeline();
+
+    try {
+      const audioContextCtor =
+        window.AudioContext ||
+        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!audioContextCtor) {
+        return localStream;
+      }
+      const context = new audioContextCtor();
+      const source = context.createMediaStreamSource(localStream);
+      const gainNode = context.createGain();
+      const destination = context.createMediaStreamDestination();
+      gainNode.gain.value = localMicGain;
+      source.connect(gainNode);
+      gainNode.connect(destination);
+      localMicContextRef.current = context;
+      localMicSourceRef.current = source;
+      localMicGainNodeRef.current = gainNode;
+      localMicDestinationRef.current = destination;
+      localMicProcessedStreamRef.current = destination.stream;
+      localMicInputTrackIdRef.current = inputTrack.id;
+      void context.resume().catch(() => {});
+      return destination.stream;
+    } catch (err) {
+      console.warn('VoiceEngine: mic gain pipeline unavailable, falling back to raw stream', err);
+      teardownLocalMicPipeline();
+      return localStream;
+    }
+  }
+
   function addLocalTracks(pc: RTCPeerConnection) {
-    if (!localStream) return;
-    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream!));
+    const outboundStream = getOutboundStream();
+    if (!outboundStream) {
+      ensureReceiveAudio(pc);
+      return;
+    }
+    const audioTracks = outboundStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      ensureReceiveAudio(pc);
+      return;
+    }
+    audioTracks.forEach((track) => pc.addTrack(track, outboundStream));
   }
 
   function getPeerVolume(userId: string): number {
@@ -145,13 +235,32 @@ export default function VoiceEngine({
     if (!el) {
       el = document.createElement('audio');
       el.autoplay = true;
-      el.style.display = 'none';
+      el.setAttribute('playsinline', 'true');
+      el.preload = 'auto';
+      // Keep element effectively invisible while avoiding display:none autoplay quirks.
+      el.style.position = 'fixed';
+      el.style.width = '1px';
+      el.style.height = '1px';
+      el.style.opacity = '0';
+      el.style.pointerEvents = 'none';
+      el.style.left = '-9999px';
+      el.style.top = '-9999px';
       document.body.appendChild(el);
       audioElementsRef.current.set(userId, el);
     }
     el.muted = deafened;
     el.volume = getPeerVolume(userId);
     el.srcObject = stream;
+    const tryPlay = () => {
+      const playPromise = el?.play();
+      if (playPromise) {
+        void playPromise.catch((err) => {
+          console.warn('VoiceEngine: remote audio autoplay blocked until user interaction', err);
+        });
+      }
+    };
+    el.onloadedmetadata = tryPlay;
+    tryPlay();
     startSpeakingMonitor(userId, stream);
   }
 
@@ -239,6 +348,7 @@ export default function VoiceEngine({
       for (const userId of Array.from(speakingMonitorsRef.current.keys())) {
         stopSpeakingMonitor(userId);
       }
+      teardownLocalMicPipeline();
       if (audioContextRef.current) {
         void audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
@@ -249,21 +359,62 @@ export default function VoiceEngine({
 
   useEffect(() => {
     if (!localStream) {
+      teardownLocalMicPipeline();
       stopSpeakingMonitor(currentUserId);
       return;
     }
+    getOutboundStream();
     startSpeakingMonitor(currentUserId, localStream);
-    return () => stopSpeakingMonitor(currentUserId);
+    return () => {
+      stopSpeakingMonitor(currentUserId);
+      teardownLocalMicPipeline();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localStream, currentUserId, channelId]);
+
+  useEffect(() => {
+    if (localMicGainNodeRef.current) {
+      localMicGainNodeRef.current.gain.value = localMicGain;
+    }
+  }, [localMicGain]);
 
   useEffect(() => {
     audioElementsRef.current.forEach((audio, userId) => {
       audio.muted = deafened;
       audio.volume = getPeerVolume(userId);
+      if (!deafened) {
+        const playPromise = audio.play();
+        if (playPromise) {
+          void playPromise.catch(() => {});
+        }
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deafened, remoteVolumes]);
+
+  useEffect(() => {
+    const nudgeAudio = () => {
+      const audioContext = getAudioContext();
+      if (audioContext && audioContext.state !== 'running') {
+        void audioContext.resume().catch(() => {});
+      }
+      audioElementsRef.current.forEach((audio) => {
+        if (audio.muted) return;
+        const playPromise = audio.play();
+        if (playPromise) {
+          void playPromise.catch(() => {});
+        }
+      });
+    };
+
+    window.addEventListener('pointerdown', nudgeAudio, { passive: true });
+    window.addEventListener('keydown', nudgeAudio);
+    return () => {
+      window.removeEventListener('pointerdown', nudgeAudio);
+      window.removeEventListener('keydown', nudgeAudio);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Handle incoming WS events
   useEffect(() => {

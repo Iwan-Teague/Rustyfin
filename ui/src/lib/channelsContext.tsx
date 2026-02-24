@@ -38,6 +38,7 @@ export interface ChannelsContextValue {
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
   remoteVolumes: Record<string, number>;
+  localMicGain: number;
   newMessages: ChannelMessage[];
   lastWsEvent: ChannelEvent | null;
   voiceSession: VoiceSession | null;
@@ -46,6 +47,7 @@ export interface ChannelsContextValue {
   toggleMute: () => void;
   toggleDeafen: () => void;
   setRemoteVolume: (userId: string, volume: number) => void;
+  setLocalMicGain: (volume: number) => void;
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -110,6 +112,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [voiceActiveSince, setVoiceActiveSince] = useState<Record<string, number>>({});
   const [voiceSpeaking, setVoiceSpeaking] = useState<Record<string, string[]>>({});
   const [remoteVolumes, setRemoteVolumes] = useState<Record<string, number>>({});
+  const [localMicGain, setLocalMicGainState] = useState(1);
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
@@ -503,6 +506,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const setLocalMicGain = useCallback((volume: number) => {
+    const clamped = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+    const rounded = Math.round(clamped * 100) / 100;
+    setLocalMicGainState((prev) => (prev === rounded ? prev : rounded));
+  }, []);
+
   const handleSpeakingChange = useCallback(
     (channelId: string, userId: string, speaking: boolean) => {
       setVoiceSpeaking((prev) => {
@@ -538,6 +547,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     voiceActiveSince,
     voiceSpeaking,
     remoteVolumes,
+    localMicGain,
     newMessages,
     lastWsEvent,
     voiceSession,
@@ -546,6 +556,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     toggleMute,
     toggleDeafen,
     setRemoteVolume,
+    setLocalMicGain,
   };
 
   return (
@@ -563,6 +574,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           sendWs={sendWs}
           deafened={voiceSession.deafened}
           remoteVolumes={remoteVolumes}
+          localMicGain={localMicGain}
           onSpeakingChange={handleSpeakingChange}
         />
       )}

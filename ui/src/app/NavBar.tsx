@@ -97,7 +97,6 @@ export default function NavBar() {
             className="chip border-green-500/50 text-green-400 mr-2"
           >
             <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
-            🔊
           </Link>
         )}
 
