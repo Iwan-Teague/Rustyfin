@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
 
-use super::protocol::ServerMessage;
+use super::protocol::{ServerMessage, YouTubeSearchEntry};
 
 const MAX_ACTIVE_ROOMS: usize = 512;
 const EMPTY_ROOM_TTL_SECONDS: i64 = 5 * 60;
@@ -70,6 +70,8 @@ pub struct RoomRuntime {
     pub audio_queue: Option<RwLock<AudioQueueState>>,
     pub youtube_video_id: RwLock<Option<String>>,
     pub youtube_queue: RwLock<Vec<String>>,
+    pub youtube_search_query: RwLock<String>,
+    pub youtube_search_results: RwLock<Vec<YouTubeSearchEntry>>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -91,6 +93,8 @@ impl RoomRuntime {
             audio_queue: None,
             youtube_video_id: RwLock::new(None),
             youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -116,6 +120,8 @@ impl RoomRuntime {
             })),
             youtube_video_id: RwLock::new(None),
             youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -133,6 +139,8 @@ impl RoomRuntime {
             audio_queue: None,
             youtube_video_id: RwLock::new(initial_video_id),
             youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -158,6 +166,29 @@ impl RoomRuntime {
 
     pub async fn snapshot_youtube_queue(&self) -> Vec<String> {
         self.youtube_queue.read().await.clone()
+    }
+
+    pub async fn snapshot_youtube_search(&self) -> (String, Vec<YouTubeSearchEntry>) {
+        (
+            self.youtube_search_query.read().await.clone(),
+            self.youtube_search_results.read().await.clone(),
+        )
+    }
+
+    pub async fn set_youtube_search_state(
+        &self,
+        search_query: String,
+        search_results: Vec<YouTubeSearchEntry>,
+    ) {
+        {
+            let mut query = self.youtube_search_query.write().await;
+            *query = search_query;
+        }
+        {
+            let mut results = self.youtube_search_results.write().await;
+            *results = search_results;
+        }
+        self.touch_activity().await;
     }
 
     pub async fn youtube_queue_video_at(&self, queue_index: usize) -> Option<String> {

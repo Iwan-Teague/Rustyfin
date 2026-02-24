@@ -5,7 +5,6 @@ import {
   WsYouTubeStateMessage,
   YouTubeSearchResult,
   lookupYouTubeVideos,
-  searchYouTubeVideos,
 } from '@/lib/watchPartyApi';
 
 // Minimal YouTube IFrame API type declarations
@@ -78,38 +77,6 @@ function isValidVideoId(value: string): boolean {
   return YOUTUBE_ID_RE.test(value);
 }
 
-function extractVideoId(input: string): string | null {
-  const trimmed = input.trim();
-  try {
-    const url = new URL(trimmed);
-    const host = url.hostname.toLowerCase().replace(/^www\./, '');
-    if (host === 'youtube.com' || host === 'm.youtube.com' || host === 'music.youtube.com') {
-      const id = url.searchParams.get('v');
-      if (id && isValidVideoId(id)) return id;
-      const pathParts = url.pathname.split('/').filter(Boolean);
-      if (pathParts.length >= 2 && ['embed', 'shorts', 'live'].includes(pathParts[0])) {
-        const candidate = pathParts[1];
-        if (isValidVideoId(candidate)) return candidate;
-      }
-    }
-    if (host === 'youtube-nocookie.com') {
-      const pathParts = url.pathname.split('/').filter(Boolean);
-      if (pathParts.length >= 2 && pathParts[0] === 'embed') {
-        const candidate = pathParts[1];
-        if (isValidVideoId(candidate)) return candidate;
-      }
-    }
-    if (host === 'youtu.be') {
-      const id = url.pathname.replace('/', '').split('?')[0];
-      if (isValidVideoId(id)) return id;
-    }
-  } catch {
-    // Not a URL
-  }
-  if (isValidVideoId(trimmed)) return trimmed;
-  return null;
-}
-
 function mapPlayerErrorCode(code: number): string {
   if (code === 2) return 'YouTube rejected this video identifier. Use a valid YouTube URL or ID.';
   if (code === 5) return 'The browser could not play this embedded YouTube stream.';
@@ -154,7 +121,8 @@ export default function YouTubePlayer({
   const lastVideoIdRef = useRef('');
   const pendingVideoIdRef = useRef<string | null>(null);
   const pendingVideoAckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchRequestIdRef = useRef(0);
+  const pendingSearchQueryRef = useRef<string | null>(null);
+  const pendingSearchAckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchPanelRef = useRef<HTMLDivElement | null>(null);
   const searchResultsListRef = useRef<HTMLUListElement | null>(null);
   const pendingQueueTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -169,12 +137,13 @@ export default function YouTubePlayer({
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState('');
   const [searchInput, setSearchInput] = useState('');
-  const [searchResults, setSearchResults] = useState<YouTubeSearchResult[]>([]);
   const [queueMetaById, setQueueMetaById] = useState<Record<string, YouTubeSearchResult>>({});
   const [pendingQueueById, setPendingQueueById] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [debugEntries, setDebugEntries] = useState<string[]>([]);
+  const sharedSearchQuery = ytState?.search_query ?? '';
+  const searchResults = ytState?.search_results ?? [];
 
   const logDebug = useCallback((message: string) => {
     const line = `${new Date().toISOString()} ${message}`;
@@ -191,6 +160,14 @@ export default function YouTubePlayer({
       pendingVideoAckTimeoutRef.current = null;
     }
     pendingVideoIdRef.current = null;
+  }, []);
+
+  const clearPendingSearchAck = useCallback(() => {
+    if (pendingSearchAckTimeoutRef.current !== null) {
+      clearTimeout(pendingSearchAckTimeoutRef.current);
+      pendingSearchAckTimeoutRef.current = null;
+    }
+    pendingSearchQueryRef.current = null;
   }, []);
 
   const clearPendingQueueMarker = useCallback((videoId: string) => {
@@ -251,6 +228,34 @@ export default function YouTubePlayer({
       }
     }
   }, [ytState?.queue, ytState?.video_id, pendingQueueById, clearPendingQueueMarker]);
+
+  useEffect(() => {
+    if (!ytState) return;
+
+    if (sharedSearchQuery && sharedSearchQuery !== searchInput) {
+      setSearchInput(sharedSearchQuery);
+    }
+
+    if (searchResults.length > 0) {
+      setQueueMetaById((prev) => {
+        const next = { ...prev };
+        for (const result of searchResults) {
+          next[result.video_id] = result;
+        }
+        return next;
+      });
+    }
+
+    if (pendingSearchQueryRef.current && sharedSearchQuery === pendingSearchQueryRef.current) {
+      clearPendingSearchAck();
+      setSearching(false);
+      setSearchError(searchResults.length === 0 ? 'No YouTube results found for that query.' : '');
+      window.requestAnimationFrame(() => {
+        searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+      });
+      logDebug(`youtube shared search update query="${sharedSearchQuery}" results=${searchResults.length}`);
+    }
+  }, [ytState, sharedSearchQuery, searchResults, searchInput, clearPendingSearchAck, logDebug]);
 
   const handlePlayerStateChange = useCallback((event: { target: YT.Player; data: number }) => {
     if (applyingRemoteRef.current) return;
@@ -389,6 +394,7 @@ export default function YouTubePlayer({
   useEffect(() => {
     return () => {
       clearPendingVideoAck();
+      clearPendingSearchAck();
       for (const timer of Object.values(pendingQueueTimeoutsRef.current)) {
         clearTimeout(timer);
       }
@@ -397,7 +403,7 @@ export default function YouTubePlayer({
       playerRef.current = null;
       logDebug('component unmounted and player destroyed');
     };
-  }, [clearPendingVideoAck, logDebug]);
+  }, [clearPendingSearchAck, clearPendingVideoAck, logDebug]);
 
   // Apply remote YouTube state from WebSocket
   useEffect(() => {
@@ -600,54 +606,34 @@ export default function YouTubePlayer({
       setSearchError('Enter at least 2 characters to search.');
       return;
     }
+    if (!wsConnected) {
+      setSearchError('Cannot search while realtime connection is offline.');
+      return;
+    }
+    if (!canControl && !canQueue) {
+      setSearchError('You must join the room to search videos.');
+      return;
+    }
+
+    const sent = sendWs({ type: 'search_youtube', query });
+    if (!sent) {
+      setSearchError('Failed to send search command. Reconnect and retry.');
+      logDebug(`youtube search send failed query="${query}"`);
+      return;
+    }
+
+    clearPendingSearchAck();
+    pendingSearchQueryRef.current = query;
+    pendingSearchAckTimeoutRef.current = setTimeout(() => {
+      if (pendingSearchQueryRef.current !== query) return;
+      setSearching(false);
+      setSearchError('No shared search update received yet. Check websocket/debug trace and retry.');
+      logDebug(`youtube search timeout waiting for shared update query="${query}"`);
+    }, 8000);
     setSearchError('');
     setSearching(true);
     resetSearchViewport();
-    const requestId = searchRequestIdRef.current + 1;
-    searchRequestIdRef.current = requestId;
-    const directVideoId = extractVideoId(query);
-    logDebug(`youtube search requested query="${query}" direct_video_id=${directVideoId || 'none'}`);
-
-    try {
-      let results: YouTubeSearchResult[] = [];
-
-      if (directVideoId) {
-        results = await lookupYouTubeVideos(roomId, [directVideoId]);
-        logDebug(
-          `youtube direct lookup query="${query}" video_id=${directVideoId} results=${results.length}`,
-        );
-      }
-
-      if (results.length === 0) {
-        results = await searchYouTubeVideos(roomId, query, 12);
-      }
-
-      if (searchRequestIdRef.current !== requestId) return;
-      setSearchResults(results);
-      window.requestAnimationFrame(() => {
-        searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
-      });
-      setQueueMetaById((prev) => {
-        const next = { ...prev };
-        for (const result of results) {
-          next[result.video_id] = result;
-        }
-        return next;
-      });
-      if (results.length === 0) {
-        setSearchError('No YouTube results found for that query.');
-      }
-      logDebug(`youtube search success query="${query}" results=${results.length}`);
-    } catch (err: any) {
-      if (searchRequestIdRef.current !== requestId) return;
-      const message = err?.message || 'YouTube search failed.';
-      setSearchError(message);
-      logDebug(`youtube search failed query="${query}" error=${message}`);
-    } finally {
-      if (searchRequestIdRef.current === requestId) {
-        setSearching(false);
-      }
-    }
+    logDebug(`youtube search requested query="${query}"`);
   }
 
   async function copyDiagnostics() {
