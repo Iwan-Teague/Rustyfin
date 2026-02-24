@@ -29,6 +29,8 @@ type Props = {
   eligibleLibraryIds: string[];
   selectedLibraryId: string;
   selectedItem: MediaItemNode | null;
+  layout?: 'split' | 'stacked';
+  noShadow?: boolean;
   onLibraryChange: (libraryId: string) => void;
   onSelectItem: (item: MediaItemNode | null) => void;
 };
@@ -38,6 +40,8 @@ export default function MediaPicker({
   eligibleLibraryIds,
   selectedLibraryId,
   selectedItem,
+  layout = 'split',
+  noShadow = false,
   onLibraryChange,
   onSelectItem,
 }: Props) {
@@ -109,7 +113,7 @@ export default function MediaPicker({
   const isPlayable = (item: MediaItemNode) => item.kind === 'movie' || item.kind === 'episode';
 
   return (
-    <section className="panel space-y-4 p-5 sm:p-6">
+    <section className="panel space-y-4 p-5 sm:p-6" style={noShadow ? { boxShadow: 'none' } : undefined}>
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Media Selection</h2>
         <p className="text-sm muted">
@@ -117,7 +121,7 @@ export default function MediaPicker({
         </p>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-[1fr_2fr]">
+      <div className={layout === 'stacked' ? 'space-y-3' : 'grid gap-3 md:grid-cols-[1fr_2fr]'}>
         <div className="space-y-2">
           <label htmlFor="watch-party-library" className="block text-xs uppercase tracking-wide muted">
             Library

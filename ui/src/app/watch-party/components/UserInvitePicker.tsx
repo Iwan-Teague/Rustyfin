@@ -13,6 +13,7 @@ type Props = {
   currentUserId: string;
   roomMode: WatchPartyRoomMode;
   selected: Record<string, SelectedInvite>;
+  noShadow?: boolean;
   onToggle: (userId: string, initialRole?: 'viewer' | 'controller') => void;
   onRoleChange: (userId: string, role: 'viewer' | 'controller') => void;
 };
@@ -22,6 +23,7 @@ export default function UserInvitePicker({
   currentUserId,
   roomMode,
   selected,
+  noShadow = false,
   onToggle,
   onRoleChange,
 }: Props) {
@@ -30,7 +32,7 @@ export default function UserInvitePicker({
   const memberLabel = nonAdminRoleLabel(roomMode);
 
   return (
-    <section className="panel space-y-4 p-5 sm:p-6">
+    <section className="panel space-y-4 p-5 sm:p-6" style={noShadow ? { boxShadow: 'none' } : undefined}>
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Invite Users</h2>
         <p className="text-sm muted">Set each user's access level, then check the box to invite them.</p>

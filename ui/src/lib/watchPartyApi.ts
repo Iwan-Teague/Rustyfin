@@ -79,6 +79,31 @@ export type JoinWatchPartyRoomResponse = {
   role: 'host' | 'controller' | 'viewer' | string;
 };
 
+export type ReconfigureWatchPartyRoomRequest =
+  | {
+      room_mode: 'video';
+      item_id: string;
+      audio_library_id?: never;
+      youtube_video_id?: never;
+    }
+  | {
+      room_mode: 'audio';
+      audio_library_id: string;
+      item_id?: never;
+      youtube_video_id?: never;
+    }
+  | {
+      room_mode: 'youtube';
+      youtube_video_id?: string;
+      item_id?: never;
+      audio_library_id?: never;
+    };
+
+export type ReconfigureWatchPartyRoomResponse = {
+  ok: boolean;
+  room_mode: 'video' | 'audio' | 'youtube' | string;
+};
+
 export type WatchPartyInvite = {
   room_id: string;
   item_id: string;
@@ -89,6 +114,12 @@ export type WatchPartyInvite = {
   password_required: boolean;
   role: string;
   status: string;
+};
+
+export type InviteMembersResponse = {
+  ok: boolean;
+  invited: number;
+  cooldown_blocked_users: string[];
 };
 
 export type AudioTrack = {
@@ -105,6 +136,7 @@ export type YouTubeSearchResult = {
   title: string;
   channel: string;
   thumbnail_url: string;
+  view_count?: number | null;
 };
 
 export type QueueEntry = AudioTrack & { track_id: string };
@@ -146,6 +178,14 @@ export type WsYouTubeStateMessage = {
   search_query: string;
   search_results: YouTubeSearchResult[];
   members: WsPresenceMember[];
+};
+
+export type WsRoomReconfiguredMessage = {
+  type: 'room_reconfigured';
+  room_mode: string;
+  item_id: string;
+  audio_library_id?: string | null;
+  youtube_video_id?: string | null;
 };
 
 export type PublicRoom = {
@@ -200,6 +240,16 @@ export async function joinWatchPartyRoom(
   });
 }
 
+export async function reconfigureWatchPartyRoom(
+  roomId: string,
+  payload: ReconfigureWatchPartyRoomRequest,
+): Promise<ReconfigureWatchPartyRoomResponse> {
+  return apiJson<ReconfigureWatchPartyRoomResponse>(`/watch-party/rooms/${roomId}/reconfigure`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function leaveWatchPartyRoom(roomId: string): Promise<void> {
   await apiJson(`/watch-party/rooms/${roomId}/leave`, {
     method: 'POST',
@@ -225,8 +275,8 @@ export async function declineWatchPartyInvite(roomId: string): Promise<void> {
 export async function inviteToRoom(
   roomId: string,
   invites: { user_id: string; role: 'viewer' | 'controller' }[],
-): Promise<void> {
-  await apiJson(`/watch-party/rooms/${roomId}/invite`, {
+): Promise<InviteMembersResponse> {
+  return apiJson<InviteMembersResponse>(`/watch-party/rooms/${roomId}/invite`, {
     method: 'POST',
     body: JSON.stringify({ invites }),
   });

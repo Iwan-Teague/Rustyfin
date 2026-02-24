@@ -279,7 +279,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             outbound = subscription.recv() => {
                 match outbound {
                     Ok(message) => {
-                        let is_terminal = matches!(message, ServerMessage::RoomEnded);
+                        let is_terminal = matches!(
+                            message,
+                            ServerMessage::RoomEnded | ServerMessage::RoomReconfigured { .. }
+                        );
                         if send_server_message(&mut socket, &message).await.is_err() {
                             break;
                         }
@@ -336,11 +339,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         connected: false,
     });
 
-    let _ = rustfin_db::repo::watch_party::set_member_status(
+    let _ = rustfin_db::repo::watch_party::touch_member_last_seen(
         &state.db,
         &context.room_id,
         &context.user_id,
-        "left",
     )
     .await;
 
@@ -1214,6 +1216,7 @@ async fn handle_client_message(
                     title: entry.title,
                     channel: entry.channel,
                     thumbnail_url: entry.thumbnail_url,
+                    view_count: entry.view_count,
                 })
                 .collect();
 
