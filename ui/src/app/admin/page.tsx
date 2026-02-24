@@ -390,10 +390,6 @@ export default function AdminPage() {
 
   async function createUser(e: React.FormEvent) {
     e.preventDefault();
-    if (newUser.role === 'user' && newUser.library_ids.length === 0) {
-      setErr('Simple users must have at least one library assigned');
-      return;
-    }
     try {
       await apiJson('/users', {
         method: 'POST',
@@ -443,10 +439,6 @@ export default function AdminPage() {
   async function saveUserPermissions(userId: string) {
     const edit = userEdits[userId];
     if (!edit) return;
-    if (edit.role === 'user' && edit.library_ids.length === 0) {
-      setErr('Simple users must have at least one library assigned');
-      return;
-    }
     try {
       await apiJson(`/users/${userId}`, {
         method: 'PATCH',
@@ -713,7 +705,7 @@ export default function AdminPage() {
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Allowed Libraries</p>
                   {libraries.length === 0 ? (
-                    <p className="text-xs muted">Create at least one library before creating simple users.</p>
+                    <p className="text-xs muted">No libraries configured yet. You can create this user now and assign access later.</p>
                   ) : (
                     <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                       {libraries.map((lib) => (

@@ -24,18 +24,62 @@ function hashColor(userId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-function ParticipantCard({ userInfo }: { userInfo: UserInfo }) {
+function ParticipantCard({
+  userInfo,
+  isSpeaking,
+  isSelf,
+  volume,
+  onVolumeChange,
+}: {
+  userInfo: UserInfo;
+  isSpeaking: boolean;
+  isSelf: boolean;
+  volume: number;
+  onVolumeChange: (nextVolume: number) => void;
+}) {
   const color = hashColor(userInfo.user_id);
   const initials = userInfo.username.slice(0, 2).toUpperCase();
+  const volumePercent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
   return (
     <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
       <div
-        className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
-        style={{ backgroundColor: color }}
+        className="rounded-full p-[3px] transition-all duration-150"
+        style={
+          isSpeaking
+            ? {
+                background:
+                  'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
+                boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
+              }
+            : undefined
+        }
       >
-        {initials}
+        <div
+          className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
+          style={{ backgroundColor: color }}
+        >
+          {initials}
+        </div>
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
+      {!isSelf && (
+        <div className="w-full space-y-1">
+          <div className="flex items-center justify-between text-[11px] muted">
+            <span>Volume</span>
+            <span>{volumePercent}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={volumePercent}
+            onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
+            className="w-full accent-[var(--orange-soft)]"
+            aria-label={`Adjust ${userInfo.username} volume`}
+          />
+        </div>
+      )}
+      {isSelf && <span className="text-[11px] muted">You</span>}
     </div>
   );
 }
@@ -47,12 +91,23 @@ export default function VoiceChannelView({
   currentUsername,
   wsEvents,
 }: Props) {
-  const { voiceSession, joinVoice, leaveVoice, toggleMute } = useChannels();
+  const {
+    voiceSession,
+    voiceSpeaking,
+    remoteVolumes,
+    joinVoice,
+    leaveVoice,
+    toggleMute,
+    toggleDeafen,
+    setRemoteVolume,
+  } = useChannels();
   const [error, setError] = useState<string | null>(null);
 
   const members = voicePresence[channel.id] ?? [];
+  const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
   const isConnected = voiceSession?.channelId === channel.id;
   const muted = isConnected ? (voiceSession?.muted ?? false) : false;
+  const deafened = isConnected ? (voiceSession?.deafened ?? false) : false;
 
   async function handleConnect() {
     setError(null);
@@ -95,6 +150,12 @@ export default function VoiceChannelView({
               ) : (
                 <span className="text-xs muted px-2">Listening</span>
               )}
+              <button
+                onClick={toggleDeafen}
+                className={`btn-secondary px-3 py-1.5 text-sm ${deafened ? 'text-[var(--orange-soft)]' : ''}`}
+              >
+                {deafened ? 'Undeafen' : 'Deafen'}
+              </button>
               <button onClick={handleDisconnect} className="btn-secondary px-3 py-1.5 text-sm text-red-400">
                 Disconnect
               </button>
@@ -110,7 +171,14 @@ export default function VoiceChannelView({
         ) : (
           <div className="flex flex-wrap gap-3">
             {members.map((u) => (
-              <ParticipantCard key={u.user_id} userInfo={u} />
+              <ParticipantCard
+                key={u.user_id}
+                userInfo={u}
+                isSpeaking={speakingIds.has(u.user_id)}
+                isSelf={u.user_id === currentUserId}
+                volume={u.user_id === currentUserId ? 1 : (remoteVolumes[u.user_id] ?? 1)}
+                onVolumeChange={(nextVolume) => setRemoteVolume(u.user_id, nextVolume)}
+              />
             ))}
           </div>
         )}

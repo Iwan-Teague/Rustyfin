@@ -164,6 +164,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     let user_id = claims.sub.clone();
     let username = claims.username.clone();
+    let role = claims.role.clone();
 
     debug!(user_id = %user_id, "channels ws authenticated");
 
@@ -248,7 +249,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     }
                 };
 
-                if dispatch(&state, &user_id, &username, &mut socket, msg).await.is_err() {
+                if dispatch(&state, &user_id, &username, &role, &mut socket, msg).await.is_err() {
                     break;
                 }
             }
@@ -278,6 +279,7 @@ async fn dispatch(
     state: &AppState,
     user_id: &str,
     username: &str,
+    role: &str,
     socket: &mut WebSocket,
     msg: ClientMsg,
 ) -> Result<(), AppError> {
@@ -418,8 +420,16 @@ async fn dispatch(
                 .await
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-            if ch.is_none() {
+            let Some(ch) = ch else {
                 let _ = send_error(socket, "channel not found").await;
+                return Ok(());
+            };
+            if ch.kind != "text" {
+                let _ = send_error(socket, "messages are only supported in text channels").await;
+                return Ok(());
+            }
+            if ch.is_private && role != "admin" {
+                let _ = send_error(socket, "channel access denied").await;
                 return Ok(());
             }
 
@@ -440,6 +450,7 @@ async fn dispatch(
                     user_id: row.user_id,
                     username: row.username,
                     content: row.content,
+                    attachments: vec![],
                     created_ts: row.created_ts,
                 },
             });

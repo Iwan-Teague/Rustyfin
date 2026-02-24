@@ -21,6 +21,7 @@ interface VoiceSession {
   localStream: MediaStream | null; // null = listen-only (no mic)
   existingMembers: UserInfo[];
   muted: boolean;
+  deafened: boolean;
 }
 
 interface PersistedVoiceSession {
@@ -35,12 +36,16 @@ export interface ChannelsContextValue {
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
+  voiceSpeaking: Record<string, string[]>;
+  remoteVolumes: Record<string, number>;
   newMessages: ChannelMessage[];
   lastWsEvent: ChannelEvent | null;
   voiceSession: VoiceSession | null;
   joinVoice: (channelId: string, channelName: string) => Promise<string | null>;
   leaveVoice: () => void;
   toggleMute: () => void;
+  toggleDeafen: () => void;
+  setRemoteVolume: (userId: string, volume: number) => void;
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -103,6 +108,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [voicePresence, setVoicePresence] = useState<Record<string, UserInfo[]>>({});
   const [voiceActiveSince, setVoiceActiveSince] = useState<Record<string, number>>({});
+  const [voiceSpeaking, setVoiceSpeaking] = useState<Record<string, string[]>>({});
+  const [remoteVolumes, setRemoteVolumes] = useState<Record<string, number>>({});
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
@@ -151,6 +158,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoiceSession(null);
       setVoicePresence({});
       setVoiceActiveSince({});
+      setVoiceSpeaking({});
+      setRemoteVolumes({});
       clearPersistedVoiceSession();
       pendingVoiceRef.current = null;
       return;
@@ -190,6 +199,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           setChannels(event.channels);
           setVoicePresence(event.voice_presence);
           setVoiceActiveSince(event.voice_active_since_ts ?? {});
+          setVoiceSpeaking({});
           setWsReady(true);
           // Auto-rejoin voice channel if there was an active session before the reconnect
           const prevSession = voiceSessionRef.current;
@@ -253,6 +263,24 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               return next;
             }
           });
+          if (!event.joined) {
+            setVoiceSpeaking((prev) => {
+              const channelSpeaking = prev[event.channel_id];
+              if (!channelSpeaking || !channelSpeaking.includes(event.user_id)) {
+                return prev;
+              }
+              const nextChannelSpeaking = channelSpeaking.filter(
+                (userId) => userId !== event.user_id,
+              );
+              const next = { ...prev };
+              if (nextChannelSpeaking.length === 0) {
+                delete next[event.channel_id];
+              } else {
+                next[event.channel_id] = nextChannelSpeaking;
+              }
+              return next;
+            });
+          }
           setVoiceActiveSince((prev) => {
             const next = { ...prev };
             if (event.active_since_ts == null) {
@@ -277,6 +305,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               localStream: pending.stream,
               existingMembers: event.existing_members,
               muted: false,
+              deafened: false,
             });
           }
         } else if (event.type === 'new_message') {
@@ -289,6 +318,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               user_id: msg.user_id,
               username: msg.username,
               content: msg.content,
+              attachments: msg.attachments || [],
               created_ts: msg.created_ts,
             },
           ]);
@@ -373,10 +403,20 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
 
       // Leave any existing session first
       if (pendingVoiceRef.current || voiceSession) {
+        const previousChannelId =
+          voiceSession?.channelId ?? pendingVoiceRef.current?.channelId ?? null;
         sendWs({ type: 'leave_voice', channel_id: voiceSession?.channelId ?? pendingVoiceRef.current?.channelId });
         voiceSession?.localStream?.getTracks().forEach((t) => t.stop());
         pendingVoiceRef.current?.stream?.getTracks().forEach((t) => t.stop());
         pendingVoiceRef.current = null;
+        if (previousChannelId) {
+          setVoiceSpeaking((prev) => {
+            if (!(previousChannelId in prev)) return prev;
+            const next = { ...prev };
+            delete next[previousChannelId];
+            return next;
+          });
+        }
         setVoiceSession(null);
       }
 
@@ -417,6 +457,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     if (voiceSession) {
       sendWs({ type: 'leave_voice', channel_id: voiceSession.channelId });
       voiceSession.localStream?.getTracks().forEach((t) => t.stop());
+      setVoiceSpeaking((prev) => {
+        if (!(voiceSession.channelId in prev)) return prev;
+        const next = { ...prev };
+        delete next[voiceSession.channelId];
+        return next;
+      });
       setVoiceSession(null);
       clearPersistedVoiceSession();
     }
@@ -438,6 +484,50 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const toggleDeafen = useCallback(() => {
+    setVoiceSession((prev) => {
+      if (!prev) return prev;
+      return { ...prev, deafened: !prev.deafened };
+    });
+  }, []);
+
+  const setRemoteVolume = useCallback((userId: string, volume: number) => {
+    const clamped = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+    const rounded = Math.round(clamped * 100) / 100;
+    setRemoteVolumes((prev) => {
+      if (prev[userId] === rounded) return prev;
+      return {
+        ...prev,
+        [userId]: rounded,
+      };
+    });
+  }, []);
+
+  const handleSpeakingChange = useCallback(
+    (channelId: string, userId: string, speaking: boolean) => {
+      setVoiceSpeaking((prev) => {
+        const channelSpeaking = prev[channelId] ?? [];
+        const alreadySpeaking = channelSpeaking.includes(userId);
+        if (speaking && alreadySpeaking) return prev;
+        if (!speaking && !alreadySpeaking) return prev;
+
+        const next = { ...prev };
+        if (speaking) {
+          next[channelId] = [...channelSpeaking, userId];
+        } else {
+          const filtered = channelSpeaking.filter((id) => id !== userId);
+          if (filtered.length === 0) {
+            delete next[channelId];
+          } else {
+            next[channelId] = filtered;
+          }
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
   // ── Context value ────────────────────────────────────────────────────────────
 
   const value: ChannelsContextValue = {
@@ -446,12 +536,16 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     channels,
     voicePresence,
     voiceActiveSince,
+    voiceSpeaking,
+    remoteVolumes,
     newMessages,
     lastWsEvent,
     voiceSession,
     joinVoice,
     leaveVoice,
     toggleMute,
+    toggleDeafen,
+    setRemoteVolume,
   };
 
   return (
@@ -467,6 +561,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           existingMembers={voiceSession.existingMembers}
           wsEvents={lastWsEvent}
           sendWs={sendWs}
+          deafened={voiceSession.deafened}
+          remoteVolumes={remoteVolumes}
+          onSpeakingChange={handleSpeakingChange}
         />
       )}
       {/* Floating bar shown on every page while in a voice channel */}
@@ -474,8 +571,10 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         <VoiceBar
           channelName={voiceSession.channelName}
           muted={voiceSession.muted}
+          deafened={voiceSession.deafened}
           hasLocalStream={voiceSession.localStream !== null}
           onToggleMute={toggleMute}
+          onToggleDeafen={toggleDeafen}
           onLeave={leaveVoice}
         />
       )}

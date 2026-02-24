@@ -1,14 +1,23 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use std::path::Path as StdPath;
+use tokio::fs;
+use tracing::warn;
 
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
-use super::protocol::{ChannelEvent, ChannelInfo, MessageInfo};
+use super::protocol::{ChannelEvent, ChannelInfo, MessageAttachmentInfo, MessageInfo};
+
+const MAX_MESSAGE_CHARS: usize = 2000;
+const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+const CHANNEL_UPLOADS_DIR: &str = "channel_uploads";
 
 // ── Request / response types ─────────────────────────────────────────────────
 
@@ -44,7 +53,18 @@ pub struct MessageResponse {
     pub user_id: String,
     pub username: String,
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<MessageAttachmentResponse>,
     pub created_ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageAttachmentResponse {
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub download_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +98,146 @@ fn channel_to_info(row: &rustfin_db::repo::channels::ChannelRow) -> ChannelInfo 
         kind: row.kind.clone(),
         position: row.position,
         is_private: row.is_private,
+    }
+}
+
+async fn get_accessible_channel(
+    state: &AppState,
+    auth: &AuthUser,
+    channel_id: &str,
+) -> Result<rustfin_db::repo::channels::ChannelRow, AppError> {
+    let channel = rustfin_db::repo::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
+
+    if channel.is_private && auth.role != "admin" {
+        return Err(ApiError::Forbidden("channel access denied".into()).into());
+    }
+
+    Ok(channel)
+}
+
+fn attachment_to_response(
+    attachment: &rustfin_db::repo::channels::MessageAttachmentRow,
+) -> MessageAttachmentResponse {
+    MessageAttachmentResponse {
+        id: attachment.id.clone(),
+        filename: attachment.filename.clone(),
+        content_type: attachment.content_type.clone(),
+        size_bytes: attachment.size_bytes,
+        download_path: format!("/api/v1/channels/attachments/{}", attachment.id),
+    }
+}
+
+fn attachment_to_info(
+    attachment: &rustfin_db::repo::channels::MessageAttachmentRow,
+) -> MessageAttachmentInfo {
+    MessageAttachmentInfo {
+        id: attachment.id.clone(),
+        filename: attachment.filename.clone(),
+        content_type: attachment.content_type.clone(),
+        size_bytes: attachment.size_bytes,
+        download_path: format!("/api/v1/channels/attachments/{}", attachment.id),
+    }
+}
+
+async fn list_message_attachment_responses(
+    state: &AppState,
+    message_id: &str,
+) -> Result<Vec<MessageAttachmentResponse>, AppError> {
+    let attachments = rustfin_db::repo::channels::list_message_attachments(&state.db, message_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(attachments.iter().map(attachment_to_response).collect())
+}
+
+fn sanitize_file_name(raw: &str) -> String {
+    let from_path = StdPath::new(raw)
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("upload.bin");
+    let cleaned: String = from_path
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ' ') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "upload.bin".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn sanitize_extension(raw_ext: &str) -> Option<String> {
+    let cleaned: String = raw_ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn infer_content_type(filename: &str, provided: Option<&str>) -> String {
+    if let Some(content_type) = provided.map(str::trim).filter(|v| !v.is_empty()) {
+        return content_type.to_string();
+    }
+
+    let ext = StdPath::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "png" => "image/png".to_string(),
+        "gif" => "image/gif".to_string(),
+        "webp" => "image/webp".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        "pdf" => "application/pdf".to_string(),
+        "txt" => "text/plain".to_string(),
+        "md" => "text/markdown".to_string(),
+        "csv" => "text/csv".to_string(),
+        "doc" => "application/msword".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        "xls" => "application/vnd.ms-excel".to_string(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+        "ppt" => "application/vnd.ms-powerpoint".to_string(),
+        "pptx" => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn sanitize_content_disposition_filename(raw: &str) -> String {
+    let sanitized: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() || ch == ' ' {
+                if matches!(ch, '"' | '\\') { '_' } else { ch }
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.trim().is_empty() {
+        "file".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -187,9 +347,26 @@ pub async fn delete_channel(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
 
+    let attachments = rustfin_db::repo::channels::list_channel_attachments(&state.db, &existing.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
     rustfin_db::repo::channels::delete_channel(&state.db, &existing.id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    for attachment in attachments {
+        if let Err(err) = fs::remove_file(&attachment.storage_path).await {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    attachment_id = %attachment.id,
+                    path = %attachment.storage_path,
+                    error = %err,
+                    "failed deleting channel attachment file after channel delete"
+                );
+            }
+        }
+    }
 
     state
         .channel_manager
@@ -202,16 +379,17 @@ pub async fn delete_channel(
 
 /// GET /channels/:id/messages
 pub async fn get_messages(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
     Query(params): Query<MessagesQuery>,
 ) -> Result<Json<Vec<MessageResponse>>, AppError> {
-    // Ensure channel exists
-    rustfin_db::repo::channels::get_channel(&state.db, &channel_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "text" {
+        return Err(
+            ApiError::BadRequest("messages are only supported in text channels".into()).into(),
+        );
+    }
 
     let limit = params.limit.unwrap_or(50).min(200);
     let before_ts = params
@@ -223,17 +401,19 @@ pub async fn get_messages(
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    let response: Vec<MessageResponse> = messages
-        .into_iter()
-        .map(|m| MessageResponse {
+    let mut response: Vec<MessageResponse> = Vec::with_capacity(messages.len());
+    for m in messages {
+        let attachments = list_message_attachment_responses(&state, &m.id).await?;
+        response.push(MessageResponse {
             id: m.id,
             channel_id: m.channel_id,
             user_id: m.user_id,
             username: m.username,
             content: m.content,
+            attachments,
             created_ts: m.created_ts,
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(response))
 }
@@ -244,6 +424,13 @@ pub async fn delete_message(
     State(state): State<AppState>,
     Path((channel_id, message_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "text" {
+        return Err(
+            ApiError::BadRequest("messages are only supported in text channels".into()).into(),
+        );
+    }
+
     let msg = rustfin_db::repo::channels::get_message(&state.db, &message_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -257,9 +444,26 @@ pub async fn delete_message(
         return Err(ApiError::Forbidden("cannot delete another user's message".into()).into());
     }
 
+    let attachments = rustfin_db::repo::channels::list_message_attachments(&state.db, &message_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
     rustfin_db::repo::channels::delete_message(&state.db, &message_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    for attachment in attachments {
+        if let Err(err) = fs::remove_file(&attachment.storage_path).await {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    attachment_id = %attachment.id,
+                    path = %attachment.storage_path,
+                    error = %err,
+                    "failed deleting channel attachment file after message delete"
+                );
+            }
+        }
+    }
 
     state
         .channel_manager
@@ -282,17 +486,19 @@ pub async fn send_message(
     if content.is_empty() {
         return Err(ApiError::BadRequest("message content cannot be empty".into()).into());
     }
-    if content.len() > 2000 {
-        return Err(
-            ApiError::BadRequest("message content too long (max 2000 chars)".into()).into(),
-        );
+    if content.len() > MAX_MESSAGE_CHARS {
+        return Err(ApiError::BadRequest(format!(
+            "message content too long (max {MAX_MESSAGE_CHARS} chars)"
+        ))
+        .into());
     }
 
-    // Ensure channel exists
-    rustfin_db::repo::channels::get_channel(&state.db, &channel_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "text" {
+        return Err(
+            ApiError::BadRequest("messages are only supported in text channels".into()).into(),
+        );
+    }
 
     let row = rustfin_db::repo::channels::create_message(
         &state.db,
@@ -311,6 +517,7 @@ pub async fn send_message(
             user_id: row.user_id.clone(),
             username: row.username.clone(),
             content: row.content.clone(),
+            attachments: vec![],
             created_ts: row.created_ts,
         },
     });
@@ -323,7 +530,212 @@ pub async fn send_message(
             user_id: row.user_id,
             username: row.username,
             content: row.content,
+            attachments: vec![],
             created_ts: row.created_ts,
         }),
     ))
+}
+
+/// POST /channels/:id/attachments (multipart form fields: file, optional content)
+pub async fn upload_attachment_message(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<MessageResponse>), AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "text" {
+        return Err(
+            ApiError::BadRequest("attachments are only supported in text channels".into()).into(),
+        );
+    }
+
+    let mut maybe_content: Option<String> = None;
+    let mut maybe_filename: Option<String> = None;
+    let mut maybe_content_type: Option<String> = None;
+    let mut maybe_file_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("invalid multipart form: {e}")))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+        if field_name == "content" && maybe_content.is_none() {
+            let text = field
+                .text()
+                .await
+                .map_err(|e| ApiError::BadRequest(format!("invalid content field: {e}")))?;
+            maybe_content = Some(text);
+            continue;
+        }
+
+        if field_name == "file" && maybe_file_bytes.is_none() {
+            maybe_filename = field.file_name().map(|v| v.to_string());
+            maybe_content_type = field.content_type().map(|v| v.to_string());
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| ApiError::BadRequest(format!("invalid file field: {e}")))?;
+            if bytes.is_empty() {
+                return Err(ApiError::BadRequest("uploaded file is empty".into()).into());
+            }
+            if bytes.len() > MAX_ATTACHMENT_BYTES {
+                return Err(ApiError::BadRequest(format!(
+                    "file too large (max {} MB)",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ))
+                .into());
+            }
+            maybe_file_bytes = Some(bytes.to_vec());
+        }
+    }
+
+    let file_bytes = maybe_file_bytes
+        .ok_or_else(|| ApiError::BadRequest("multipart form requires a file field".into()))?;
+    let file_name = sanitize_file_name(maybe_filename.as_deref().unwrap_or("upload.bin"));
+    let content_type = infer_content_type(&file_name, maybe_content_type.as_deref());
+    let mut message_content = maybe_content.unwrap_or_default().trim().to_string();
+    if message_content.len() > MAX_MESSAGE_CHARS {
+        return Err(ApiError::BadRequest(format!(
+            "message content too long (max {MAX_MESSAGE_CHARS} chars)"
+        ))
+        .into());
+    }
+    if message_content.is_empty() {
+        message_content = format!("Shared file: {file_name}");
+    }
+
+    let upload_dir = state.cache_dir.join(CHANNEL_UPLOADS_DIR).join(&channel_id);
+    fs::create_dir_all(&upload_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create upload directory: {e}")))?;
+
+    let attachment_id = uuid::Uuid::new_v4().to_string();
+    let ext = StdPath::new(&file_name)
+        .extension()
+        .and_then(|v| v.to_str())
+        .and_then(sanitize_extension);
+    let stored_file_name = match ext {
+        Some(ext) => format!("{attachment_id}.{ext}"),
+        None => attachment_id.clone(),
+    };
+    let stored_path = upload_dir.join(stored_file_name);
+
+    fs::write(&stored_path, &file_bytes)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed saving uploaded file: {e}")))?;
+
+    let row = rustfin_db::repo::channels::create_message(
+        &state.db,
+        &channel_id,
+        &auth.user_id,
+        &auth.username,
+        &message_content,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let attachment = match rustfin_db::repo::channels::create_message_attachment(
+        &state.db,
+        &row.id,
+        &channel_id,
+        &file_name,
+        &content_type,
+        file_bytes.len() as i64,
+        &stored_path.to_string_lossy(),
+    )
+    .await
+    {
+        Ok(attachment) => attachment,
+        Err(err) => {
+            let _ = rustfin_db::repo::channels::delete_message(&state.db, &row.id).await;
+            let _ = fs::remove_file(&stored_path).await;
+            return Err(ApiError::Internal(format!("db error: {err}")).into());
+        }
+    };
+
+    let attachment_info = attachment_to_info(&attachment);
+    let attachment_response = attachment_to_response(&attachment);
+
+    state.channel_manager.broadcast(ChannelEvent::NewMessage {
+        msg: MessageInfo {
+            id: row.id.clone(),
+            channel_id: row.channel_id.clone(),
+            user_id: row.user_id.clone(),
+            username: row.username.clone(),
+            content: row.content.clone(),
+            attachments: vec![attachment_info],
+            created_ts: row.created_ts,
+        },
+    });
+
+    Ok((
+        StatusCode::CREATED,
+        Json(MessageResponse {
+            id: row.id,
+            channel_id: row.channel_id,
+            user_id: row.user_id,
+            username: row.username,
+            content: row.content,
+            attachments: vec![attachment_response],
+            created_ts: row.created_ts,
+        }),
+    ))
+}
+
+/// GET /channels/attachments/:attachment_id
+pub async fn download_attachment(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(attachment_id): Path<String>,
+) -> Result<Response, AppError> {
+    let attachment = rustfin_db::repo::channels::get_message_attachment(&state.db, &attachment_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("attachment not found".into()))?;
+
+    let _channel = get_accessible_channel(&state, &auth, &attachment.channel_id).await?;
+
+    let bytes = fs::read(&attachment.storage_path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::NotFound("attachment file not found".into())
+        } else {
+            ApiError::Internal(format!("failed reading attachment file: {e}"))
+        }
+    })?;
+
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+
+    let content_type = HeaderValue::from_str(&attachment.content_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    headers.insert(header::CONTENT_TYPE, content_type);
+
+    let safe_name = sanitize_content_disposition_filename(&attachment.filename);
+    let disposition_mode = if attachment.content_type.starts_with("image/")
+        || attachment.content_type.starts_with("text/")
+        || attachment.content_type == "application/pdf"
+    {
+        "inline"
+    } else {
+        "attachment"
+    };
+    if let Ok(disposition) =
+        HeaderValue::from_str(&format!("{disposition_mode}; filename=\"{safe_name}\""))
+    {
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+    }
+    if let Ok(content_length) = HeaderValue::from_str(&attachment.size_bytes.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, content_length);
+    }
+
+    Ok(response)
 }

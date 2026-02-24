@@ -5,12 +5,22 @@ import { useState } from 'react';
 interface Props {
   channelName: string;
   muted: boolean;
+  deafened: boolean;
   hasLocalStream: boolean;
   onToggleMute: () => void;
+  onToggleDeafen: () => void;
   onLeave: () => void;
 }
 
-export default function VoiceBar({ channelName, muted, hasLocalStream, onToggleMute, onLeave }: Props) {
+export default function VoiceBar({
+  channelName,
+  muted,
+  deafened,
+  hasLocalStream,
+  onToggleMute,
+  onToggleDeafen,
+  onLeave,
+}: Props) {
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
 
   const handleDisconnect = () => {
@@ -37,6 +47,13 @@ export default function VoiceBar({ channelName, muted, hasLocalStream, onToggleM
             Listening
           </span>
         )}
+        <button
+          onClick={onToggleDeafen}
+          className={`btn-ghost px-2 py-1 text-sm leading-none ${deafened ? 'text-[var(--orange-soft)]' : ''}`}
+          title={deafened ? 'Undeafen (hear others)' : 'Deafen (mute others locally)'}
+        >
+          {deafened ? 'Undeafen' : 'Deafen'}
+        </button>
         <button
           onClick={() => setConfirmingDisconnect(true)}
           className="btn-ghost px-2 py-1 text-base leading-none text-red-400 hover:text-red-300"

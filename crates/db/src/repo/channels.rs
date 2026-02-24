@@ -21,6 +21,18 @@ pub struct MessageRow {
     pub created_ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct MessageAttachmentRow {
+    pub id: String,
+    pub message_id: String,
+    pub channel_id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub storage_path: String,
+    pub created_ts: i64,
+}
+
 pub async fn list_channels(pool: &SqlitePool) -> Result<Vec<ChannelRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, i64, i64, String, i64)> = sqlx::query_as(
         "SELECT id, name, kind, position, is_private, created_by, created_ts \
@@ -219,4 +231,160 @@ pub async fn create_message(
         content: content.to_string(),
         created_ts: now,
     })
+}
+
+pub async fn create_message_attachment(
+    pool: &SqlitePool,
+    message_id: &str,
+    channel_id: &str,
+    filename: &str,
+    content_type: &str,
+    size_bytes: i64,
+    storage_path: &str,
+) -> Result<MessageAttachmentRow, sqlx::Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO channel_message_attachment \
+         (id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(message_id)
+    .bind(channel_id)
+    .bind(filename)
+    .bind(content_type)
+    .bind(size_bytes)
+    .bind(storage_path)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(MessageAttachmentRow {
+        id,
+        message_id: message_id.to_string(),
+        channel_id: channel_id.to_string(),
+        filename: filename.to_string(),
+        content_type: content_type.to_string(),
+        size_bytes,
+        storage_path: storage_path.to_string(),
+        created_ts: now,
+    })
+}
+
+pub async fn list_message_attachments(
+    pool: &SqlitePool,
+    message_id: &str,
+) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
+         FROM channel_message_attachment \
+         WHERE message_id = ? \
+         ORDER BY created_ts, id",
+    )
+    .bind(message_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            )| MessageAttachmentRow {
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            },
+        )
+        .collect())
+}
+
+pub async fn list_channel_attachments(
+    pool: &SqlitePool,
+    channel_id: &str,
+) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
+         FROM channel_message_attachment \
+         WHERE channel_id = ? \
+         ORDER BY created_ts, id",
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            )| MessageAttachmentRow {
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            },
+        )
+        .collect())
+}
+
+pub async fn get_message_attachment(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<MessageAttachmentRow>, sqlx::Error> {
+    let row: Option<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
+         FROM channel_message_attachment \
+         WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(
+            id,
+            message_id,
+            channel_id,
+            filename,
+            content_type,
+            size_bytes,
+            storage_path,
+            created_ts,
+        )| MessageAttachmentRow {
+            id,
+            message_id,
+            channel_id,
+            filename,
+            content_type,
+            size_bytes,
+            storage_path,
+            created_ts,
+        },
+    ))
 }

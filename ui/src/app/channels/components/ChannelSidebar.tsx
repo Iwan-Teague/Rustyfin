@@ -9,6 +9,7 @@ interface Props {
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
+  voiceSpeaking: Record<string, string[]>;
   activeChannelId: string | null;
   isAdmin: boolean;
   onSelect: (id: string) => void;
@@ -167,6 +168,7 @@ interface ChannelRowProps {
   icon: ReactNode;
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
+  voiceSpeaking: Record<string, string[]>;
   nowMs: number;
   isAdmin: boolean;
   activeChannelId: string | null;
@@ -182,6 +184,7 @@ function ChannelRow({
   icon,
   voicePresence,
   voiceActiveSince,
+  voiceSpeaking,
   nowMs,
   isAdmin,
   activeChannelId,
@@ -192,6 +195,7 @@ function ChannelRow({
   onDeleteChannel,
 }: ChannelRowProps) {
   const members = voicePresence[ch.id] ?? [];
+  const speakingIds = new Set(voiceSpeaking[ch.id] ?? []);
   const activeSinceTs = voiceActiveSince[ch.id];
   const isMenuOpen = menuOpen?.channelId === ch.id;
   const lastTapAtRef = useRef(0);
@@ -263,11 +267,24 @@ function ChannelRow({
       {ch.kind === 'voice' && members.map((u) => (
         <div key={u.user_id} className="pl-8 py-0.5 text-xs muted flex items-center gap-2">
           <span
-            className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white shrink-0"
-            style={{ backgroundColor: userBubbleColor(u.user_id) }}
+            className="inline-flex rounded-full p-[2px] transition-all duration-150 shrink-0"
+            style={
+              speakingIds.has(u.user_id)
+                ? {
+                    background:
+                      'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
+                    boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
+                  }
+                : undefined
+            }
             aria-hidden="true"
           >
-            {u.username.slice(0, 2).toUpperCase()}
+            <span
+              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+              style={{ backgroundColor: userBubbleColor(u.user_id) }}
+            >
+              {u.username.slice(0, 2).toUpperCase()}
+            </span>
           </span>
           <span className="truncate">{u.username}</span>
         </div>
@@ -282,6 +299,7 @@ export default function ChannelSidebar({
   channels,
   voicePresence,
   voiceActiveSince,
+  voiceSpeaking,
   activeChannelId,
   isAdmin,
   onSelect,
@@ -335,6 +353,7 @@ export default function ChannelSidebar({
               icon="#"
               voicePresence={voicePresence}
               voiceActiveSince={voiceActiveSince}
+              voiceSpeaking={voiceSpeaking}
               nowMs={nowMs}
               isAdmin={isAdmin}
               activeChannelId={activeChannelId}
@@ -375,6 +394,7 @@ export default function ChannelSidebar({
               icon=""
               voicePresence={voicePresence}
               voiceActiveSince={voiceActiveSince}
+              voiceSpeaking={voiceSpeaking}
               nowMs={nowMs}
               isAdmin={isAdmin}
               activeChannelId={activeChannelId}
