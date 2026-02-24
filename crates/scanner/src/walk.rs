@@ -25,66 +25,69 @@ pub struct MediaEntry {
 
 /// Walk a directory recursively and collect video files, skipping ignored patterns.
 pub fn walk_media_dir(root: &Path) -> Vec<MediaEntry> {
-    let mut entries = Vec::new();
-    walk_recursive(root, &mut entries, parser::is_video_file);
-    entries
+    walk_recursive(root, parser::is_video_file)
 }
 
 /// Walk a directory recursively and collect audio files, skipping ignored patterns.
 pub fn walk_audio_dir(root: &Path) -> Vec<MediaEntry> {
-    let mut entries = Vec::new();
-    walk_recursive(root, &mut entries, parser::is_audio_file);
-    entries
+    walk_recursive(root, parser::is_audio_file)
 }
 
-fn walk_recursive(dir: &Path, entries: &mut Vec<MediaEntry>, is_media: fn(&str) -> bool) {
-    let read_dir = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) => {
-            tracing::warn!(path = %dir.display(), error = %e, "cannot read directory");
-            return;
-        }
-    };
+fn walk_recursive(root: &Path, is_media: fn(&str) -> bool) -> Vec<MediaEntry> {
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
 
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
-
-        // Skip hidden files/dirs and ignored patterns
-        if name.starts_with('.') || parser::should_ignore(&name) {
-            debug!(path = %path.display(), "skipping ignored entry");
-            continue;
-        }
-
-        if path.is_dir() {
-            let lower_name = name.to_ascii_lowercase();
-            if SKIP_DIR_NAMES.iter().any(|d| lower_name == *d) {
-                debug!(path = %path.display(), "skipping known non-media directory");
+    while let Some(dir) = stack.pop() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                tracing::warn!(path = %dir.display(), error = %e, "cannot read directory");
                 continue;
             }
-            // Skip known junk directories
-            if name == "@eaDir" || name == "#recycle" || name == ".Trash" {
+        };
+
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+
+            // Skip hidden files/dirs and ignored patterns
+            if name.starts_with('.') || parser::should_ignore(&name) {
+                debug!(path = %path.display(), "skipping ignored entry");
                 continue;
             }
-            walk_recursive(&path, entries, is_media);
-        } else if is_media(&name) {
-            let metadata = match std::fs::metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mtime = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
 
-            entries.push(MediaEntry {
-                path,
-                size_bytes: metadata.len(),
-                mtime_ts: mtime,
-            });
+            if path.is_dir() {
+                let lower_name = name.to_ascii_lowercase();
+                if SKIP_DIR_NAMES.iter().any(|d| lower_name == *d) {
+                    debug!(path = %path.display(), "skipping known non-media directory");
+                    continue;
+                }
+                // Skip known junk directories
+                if name == "@eaDir" || name == "#recycle" || name == ".Trash" {
+                    continue;
+                }
+                stack.push(path);
+            } else if is_media(&name) {
+                let metadata = match std::fs::metadata(&path) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mtime = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                entries.push(MediaEntry {
+                    path,
+                    size_bytes: metadata.len(),
+                    mtime_ts: mtime,
+                });
+            }
         }
     }
+
+    entries
 }

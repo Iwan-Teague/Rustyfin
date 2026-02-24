@@ -137,6 +137,7 @@ export default function PlayerPage() {
       };
     };
 
+    let mediaCapabilitiesUnsupported = false;
     if (nav.mediaCapabilities?.decodingInfo && mediaInfo?.video) {
       try {
         const result = await nav.mediaCapabilities.decodingInfo({
@@ -149,14 +150,31 @@ export default function PlayerPage() {
             framerate: mediaInfo.video.framerate || 24,
           },
         });
-        if (!result.supported) return unsupported;
+        mediaCapabilitiesUnsupported = !result.supported;
       } catch {
         // Fall back to canPlayType below.
       }
     }
 
     const canPlay = video.canPlayType(directContentType);
-    if (canPlay !== 'probably' && canPlay !== 'maybe') return unsupported;
+    if (canPlay === 'probably' || canPlay === 'maybe') return { supported: true };
+
+    // Some browsers report unsupported for strict codec strings even when
+    // container-level MP4 playback works in practice.
+    const baseMime = directContentType.split(';', 1)[0]?.trim() || '';
+    if (baseMime && baseMime !== directContentType) {
+      const canPlayBase = video.canPlayType(baseMime);
+      if (canPlayBase === 'probably' || canPlayBase === 'maybe') {
+        return {
+          supported: true,
+          tooltip: `Codec details could not be verified (${directContentType}). Trying Direct Play.`,
+        };
+      }
+    }
+
+    // Keep compatibility checks advisory: we still allow trying Direct Play
+    // to match watch-party behavior and only fall back if playback actually fails.
+    if (mediaCapabilitiesUnsupported) return unsupported;
     return { supported: true };
   }, [directContentType, mediaInfo]);
 
@@ -241,12 +259,10 @@ export default function PlayerPage() {
           support.reason ||
             'Direct Play is not supported for this media type in your browser. Use Transcode (HLS).',
         );
-        setMode('hls');
-        await startHls();
-        return;
+      } else {
+        setDirectSupportMessage('');
       }
 
-      setDirectSupportMessage('');
       destroyHls();
       setMode('direct');
       video.src = descriptor.direct_url;
@@ -358,11 +374,11 @@ export default function PlayerPage() {
 
   const directPlayUnsupported = directSupport?.supported === false;
   const directPlayDisabled =
-    !canStartPlayback || startingDirect || startingHls || directPlayUnsupported;
+    !canStartPlayback || startingDirect || startingHls;
   const directPlayDisabledReason = !canStartPlayback
     ? 'No playable media file is attached to this item.'
     : directPlayUnsupported
-      ? (directSupport?.tooltip ?? 'Media type not supported')
+      ? (directSupport?.tooltip ?? 'Compatibility check failed, but you can still try Direct Play.')
       : 'Use browser-native Direct Play';
 
   return (
@@ -411,7 +427,7 @@ export default function PlayerPage() {
           title={directPlayDisabledReason}
           className={`px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
             directPlayUnsupported
-              ? 'bg-slate-700 text-slate-300 border border-slate-500/50'
+              ? 'bg-amber-800/30 text-amber-200 border border-amber-500/50'
               : mode === 'direct'
                 ? 'btn-primary'
                 : 'btn-secondary'

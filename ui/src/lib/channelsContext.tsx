@@ -380,20 +380,35 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         setVoiceSession(null);
       }
 
-      // Try to get the microphone; fall back to listen-only if unavailable or denied
+      // Try to get the microphone; fall back to listen-only if unavailable or denied.
       let stream: MediaStream | null = null;
-      if (navigator.mediaDevices?.getUserMedia) {
+      let micStatusMessage: string | null = null;
+      if (!window.isSecureContext) {
+        micStatusMessage =
+          'Microphone requires a secure origin. Open Rustyfin over HTTPS on your LAN address to talk in voice channels.';
+      } else if (!navigator.mediaDevices?.getUserMedia) {
+        micStatusMessage =
+          'Microphone API is unavailable in this browser context. Joined as listener.';
+      } else {
         try {
           stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        } catch {
-          // No mic or permission denied — join as listener
+        } catch (error) {
+          const name = error instanceof DOMException ? error.name : '';
+          if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+            micStatusMessage =
+              'Microphone permission was denied. Joined as listener until mic access is allowed.';
+          } else if (name === 'NotFoundError') {
+            micStatusMessage = 'No microphone was found on this device. Joined as listener.';
+          } else {
+            micStatusMessage = 'Unable to access microphone. Joined as listener.';
+          }
           stream = null;
         }
       }
 
       pendingVoiceRef.current = { channelId, channelName, stream };
       sendWs({ type: 'join_voice', channel_id: channelId });
-      return null;
+      return micStatusMessage;
     },
     [voiceSession, sendWs],
   );

@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, header};
 use axum::response::IntoResponse;
 use futures::SinkExt;
 use rustfin_core::error::ApiError;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::auth::validate_token;
 use crate::error::AppError;
@@ -26,6 +26,9 @@ const IDLE_TIMEOUT_SECONDS: u64 = 120;
 const PING_INTERVAL_SECONDS: u64 = 20;
 const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
 const MAX_MESSAGES_PER_WINDOW: usize = 80;
+const YOUTUBE_VALIDATION_TIMEOUT_SECONDS: u64 = 6;
+const YOUTUBE_WATCH_URL: &str = "https://www.youtube.com/watch";
+const YOUTUBE_VALIDATION_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
@@ -195,7 +198,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         }
     };
 
-    debug!(room_id = %room_id, user_id = %context.user_id, "watch party ws authenticated");
+    info!(room_id = %room_id, user_id = %context.user_id, "watch party ws authenticated");
 
     // Load audio queue from DB for audio rooms to pass to get_or_create_runtime
     let audio_track_ids = if context.room_mode == "audio" {
@@ -235,6 +238,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         let mut connected = runtime.connected_user_ids.write().await;
         connected.insert(context.user_id.clone());
     }
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &context.room_id).await;
     runtime.touch_activity().await;
 
     let mut subscription = runtime.tx.subscribe();
@@ -345,23 +349,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             if room.status == "ended" {
                 state.watch_party.remove_runtime(&context.room_id).await;
             } else {
-                // Schedule auto-end: if room is still empty after 5 minutes, end it
-                let state_clone = state.clone();
-                let room_id_clone = context.room_id.clone();
-                let runtime_clone = runtime.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(5 * 60)).await;
-                    let still_empty = runtime_clone.connected_user_ids.read().await.is_empty();
-                    if still_empty {
-                        let _ = rustfin_db::repo::watch_party::set_room_status(
-                            &state_clone.db,
-                            &room_id_clone,
-                            "ended",
-                        )
+                // Mark the time the lobby became empty. A background sweeper ends
+                // empty rooms after 5 minutes across all watch-party modes.
+                let _ =
+                    rustfin_db::repo::watch_party::touch_room_updated(&state.db, &context.room_id)
                         .await;
-                        state_clone.watch_party.remove_runtime(&room_id_clone).await;
-                    }
-                });
             }
         }
     }
@@ -394,6 +386,154 @@ fn is_valid_youtube_video_id(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn extract_json_object_after_marker(source: &str, marker: &str) -> Option<String> {
+    let marker_idx = source.find(marker)?;
+    let bytes = source.as_bytes();
+    let mut start = marker_idx + marker.len();
+
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    if start >= bytes.len() || bytes[start] != b'{' {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in source[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+
+        if ch == '{' {
+            depth += 1;
+            continue;
+        }
+
+        if ch == '}' {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                let end = start + offset + ch.len_utf8();
+                return Some(source[start..end].to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn youtube_playability_reason(playability: &serde_json::Value) -> String {
+    if let Some(reason) = playability
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return reason.to_string();
+    }
+
+    if let Some(reason) = playability
+        .pointer("/errorScreen/playerErrorMessageRenderer/reason/simpleText")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return reason.to_string();
+    }
+
+    if let Some(runs) = playability
+        .pointer("/errorScreen/playerErrorMessageRenderer/reason/runs")
+        .and_then(serde_json::Value::as_array)
+    {
+        let mut merged = String::new();
+        for run in runs {
+            if let Some(text) = run.get("text").and_then(serde_json::Value::as_str) {
+                merged.push_str(text);
+            }
+        }
+        let merged = merged.trim();
+        if !merged.is_empty() {
+            return merged.to_string();
+        }
+    }
+
+    "This YouTube video cannot be embedded by the uploader. Try another video.".to_string()
+}
+
+async fn youtube_embed_block_reason(video_id: &str) -> Option<String> {
+    let url = reqwest::Url::parse_with_params(
+        YOUTUBE_WATCH_URL,
+        &[("v", video_id), ("hl", "en"), ("persist_hl", "1")],
+    )
+    .ok()?;
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(YOUTUBE_VALIDATION_TIMEOUT_SECONDS))
+        .header(reqwest::header::USER_AGENT, YOUTUBE_VALIDATION_USER_AGENT)
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .send()
+        .await
+        .ok()?;
+
+    if response.url().as_str().contains("consent.youtube.com") {
+        return Some(
+            "YouTube validation was blocked by a consent/interstitial page on this network."
+                .to_string(),
+        );
+    }
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let html = response.text().await.ok()?;
+    let initial_player_response =
+        extract_json_object_after_marker(&html, "var ytInitialPlayerResponse = ")
+            .or_else(|| extract_json_object_after_marker(&html, "ytInitialPlayerResponse = "))?;
+
+    let player_json: serde_json::Value = serde_json::from_str(&initial_player_response).ok()?;
+    let playability = player_json.get("playabilityStatus")?;
+
+    if playability
+        .get("playableInEmbed")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        return Some(youtube_playability_reason(playability));
+    }
+
+    match playability
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+    {
+        "ERROR" | "UNPLAYABLE" | "LOGIN_REQUIRED" => Some(youtube_playability_reason(playability)),
+        _ => None,
+    }
 }
 
 fn decode_client_message(message: Message) -> Result<ClientMessage, AppError> {
@@ -490,13 +630,35 @@ async fn handle_client_message(
             let (room_status, policy, role) =
                 refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
             if room_status != "lobby" {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    status = %room_status,
+                    "rejecting play command: room not active"
+                );
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    role = %role,
+                    "rejecting play command: permission denied"
+                );
                 send_error(socket, "play/pause is not allowed for this user").await?;
                 send_current_state(socket, state, runtime, &context.room_id).await?;
                 return Ok(());
+            }
+            if context.room_mode == "youtube" {
+                info!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    position_ms = position_ms,
+                    "accepted youtube play command"
+                );
             }
 
             if context.room_mode == "audio" {
@@ -519,13 +681,35 @@ async fn handle_client_message(
             let (room_status, policy, role) =
                 refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
             if room_status != "lobby" {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    status = %room_status,
+                    "rejecting pause command: room not active"
+                );
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    role = %role,
+                    "rejecting pause command: permission denied"
+                );
                 send_error(socket, "play/pause is not allowed for this user").await?;
                 send_current_state(socket, state, runtime, &context.room_id).await?;
                 return Ok(());
+            }
+            if context.room_mode == "youtube" {
+                info!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    position_ms = position_ms,
+                    "accepted youtube pause command"
+                );
             }
 
             if context.room_mode == "audio" {
@@ -548,13 +732,35 @@ async fn handle_client_message(
             let (room_status, policy, role) =
                 refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
             if room_status != "lobby" {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    status = %room_status,
+                    "rejecting seek command: room not active"
+                );
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
             if !can_seek(&role, &policy) {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    role = %role,
+                    "rejecting seek command: permission denied"
+                );
                 send_error(socket, "seek is not allowed for this user").await?;
                 send_current_state(socket, state, runtime, &context.room_id).await?;
                 return Ok(());
+            }
+            if context.room_mode == "youtube" {
+                info!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    position_ms = position_ms,
+                    "accepted youtube seek command"
+                );
             }
 
             if context.room_mode == "audio" {
@@ -667,23 +873,70 @@ async fn handle_client_message(
         ClientMessage::ChangeVideo { video_id } => {
             let video_id = video_id.trim().to_string();
             if context.room_mode != "youtube" {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    room_mode = %context.room_mode,
+                    "rejecting change_video: invalid room mode"
+                );
                 send_error(socket, "change_video is only valid in YouTube rooms").await?;
                 return Ok(());
             }
             if !is_valid_youtube_video_id(&video_id) {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    raw_video_id = %video_id,
+                    "rejecting change_video: invalid video id format"
+                );
                 send_error(socket, "video_id must be a valid 11-character YouTube ID").await?;
                 return Ok(());
             }
             let (room_status, policy, role) =
                 refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
             if room_status != "lobby" {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    status = %room_status,
+                    "rejecting change_video: room not active"
+                );
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    role = %role,
+                    "rejecting change_video: permission denied"
+                );
                 send_error(socket, "changing video is not allowed for this user").await?;
                 return Ok(());
             }
+
+            if let Some(reason) = youtube_embed_block_reason(&video_id).await {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    video_id = %video_id,
+                    reason = %reason,
+                    "rejecting change_video: video is not embeddable"
+                );
+                send_error(
+                    socket,
+                    &format!("YouTube rejected this video for embed playback: {reason}"),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                video_id = %video_id,
+                "accepted youtube change_video command"
+            );
 
             runtime.set_youtube_video_id(video_id.clone()).await;
             let _ = rustfin_db::repo::watch_party::update_youtube_video_id(
@@ -693,6 +946,239 @@ async fn handle_client_message(
             )
             .await;
             runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::QueueVideo { video_id } => {
+            let video_id = video_id.trim().to_string();
+            if context.room_mode != "youtube" {
+                send_error(socket, "queue_video is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+            if !is_valid_youtube_video_id(&video_id) {
+                send_error(socket, "video_id must be a valid 11-character YouTube ID").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            if let Some(reason) = youtube_embed_block_reason(&video_id).await {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    video_id = %video_id,
+                    reason = %reason,
+                    "rejecting queue_video: video is not embeddable"
+                );
+                send_error(
+                    socket,
+                    &format!("YouTube rejected this queued video for embed playback: {reason}"),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let Some(queue) = runtime.enqueue_youtube_video_unique(video_id.clone()).await else {
+                send_error(
+                    socket,
+                    "video is already queued or currently playing in this room",
+                )
+                .await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                video_id = %video_id,
+                queue_len = queue.len(),
+                "accepted youtube queue_video command"
+            );
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::AdvanceQueue { expected_video_id } => {
+            if context.room_mode != "youtube" {
+                send_error(socket, "advance_queue is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+            let expected_video_id = expected_video_id.trim().to_string();
+            if !expected_video_id.is_empty() && !is_valid_youtube_video_id(&expected_video_id) {
+                send_error(
+                    socket,
+                    "expected_video_id must be a valid 11-character YouTube ID",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "advance queue is not allowed for this user").await?;
+                return Ok(());
+            }
+
+            // Drop non-embeddable queued videos so auto-advance lands on something playable.
+            for _ in 0..5 {
+                let Some(next_video_id) = runtime.youtube_queue_video_at(0).await else {
+                    break;
+                };
+                let Some(reason) = youtube_embed_block_reason(&next_video_id).await else {
+                    break;
+                };
+                let _ = runtime.remove_youtube_queue_index(0).await;
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    video_id = %next_video_id,
+                    reason = %reason,
+                    "dropped non-embeddable video while advancing queue"
+                );
+            }
+
+            let advanced = runtime.advance_youtube_queue(&expected_video_id).await;
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                expected_video_id = %expected_video_id,
+                advanced = advanced,
+                "processed youtube advance_queue command"
+            );
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::PlayQueuedVideo { queue_index } => {
+            if context.room_mode != "youtube" {
+                send_error(socket, "play_queued_video is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "playing queued videos is not allowed for this user").await?;
+                return Ok(());
+            }
+
+            let Some(queued_video_id) = runtime.youtube_queue_video_at(queue_index).await else {
+                send_error(socket, "invalid queue index").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+
+            if let Some(reason) = youtube_embed_block_reason(&queued_video_id).await {
+                warn!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    queue_index = queue_index,
+                    video_id = %queued_video_id,
+                    reason = %reason,
+                    "rejecting play_queued_video: video is not embeddable"
+                );
+                send_error(
+                    socket,
+                    &format!("Queued YouTube video cannot be embedded: {reason}"),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let Some(video_id) = runtime.play_youtube_queue_index_now(queue_index).await else {
+                send_error(socket, "invalid queue index").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+
+            let _ = rustfin_db::repo::watch_party::update_youtube_video_id(
+                &state.db,
+                &context.room_id,
+                &video_id,
+            )
+            .await;
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                queue_index = queue_index,
+                video_id = %video_id,
+                "accepted youtube play_queued_video command"
+            );
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::RemoveQueuedVideo { queue_index } => {
+            if context.room_mode != "youtube" {
+                send_error(socket, "remove_queued_video is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let Some(queue) = runtime.remove_youtube_queue_index(queue_index).await else {
+                send_error(socket, "invalid queue index").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                queue_index = queue_index,
+                queue_len = queue.len(),
+                "accepted youtube remove_queued_video command"
+            );
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::MoveQueuedVideo {
+            from_index,
+            to_index,
+        } => {
+            if context.room_mode != "youtube" {
+                send_error(socket, "move_queued_video is only valid in YouTube rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let Some(queue) = runtime.move_youtube_queue_item(from_index, to_index).await else {
+                send_error(socket, "invalid queue indexes").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                from_index = from_index,
+                to_index = to_index,
+                queue_len = queue.len(),
+                "accepted youtube move_queued_video command"
+            );
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
@@ -943,6 +1429,7 @@ async fn build_youtube_state_message(
 ) -> Result<ServerMessage, AppError> {
     let snapshot = runtime.snapshot_state().await;
     let video_id = runtime.get_youtube_video_id().await.unwrap_or_default();
+    let queue = runtime.snapshot_youtube_queue().await;
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
@@ -985,6 +1472,7 @@ async fn build_youtube_state_message(
         position_ms,
         updated_ts_ms,
         server_ts_ms: now_ms,
+        queue,
         members: member_summaries,
     })
 }

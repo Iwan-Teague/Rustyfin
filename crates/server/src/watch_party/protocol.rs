@@ -9,6 +9,11 @@ pub enum ClientMessage {
     SkipPrev,
     PlayTrack { track_id: String },
     ChangeVideo { video_id: String },
+    QueueVideo { video_id: String },
+    AdvanceQueue { expected_video_id: String },
+    PlayQueuedVideo { queue_index: usize },
+    RemoveQueuedVideo { queue_index: usize },
+    MoveQueuedVideo { from_index: usize, to_index: usize },
     Ping,
     Pong,
 }
@@ -59,6 +64,7 @@ pub enum ServerMessage {
         queue_index: usize,
         members: Vec<PresenceMember>,
     },
+    #[serde(rename = "youtube_state")]
     YouTubeState {
         room_id: String,
         video_id: String,
@@ -66,6 +72,7 @@ pub enum ServerMessage {
         position_ms: u64,
         updated_ts_ms: i64,
         server_ts_ms: i64,
+        queue: Vec<String>,
         members: Vec<PresenceMember>,
     },
     Presence {

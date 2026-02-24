@@ -666,7 +666,9 @@ async fn create_library(
 ) -> Result<(axum::http::StatusCode, Json<LibraryResponse>), AppError> {
     // Validate kind
     if body.kind != "movies" && body.kind != "tv_shows" && body.kind != "music" {
-        return Err(ApiError::BadRequest("kind must be 'movies', 'tv_shows', or 'music'".into()).into());
+        return Err(
+            ApiError::BadRequest("kind must be 'movies', 'tv_shows', or 'music'".into()).into(),
+        );
     }
     let normalized_paths = validate_and_normalize_paths(&body.paths)?;
 

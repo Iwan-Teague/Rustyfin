@@ -30,8 +30,6 @@ services:
   # Frontend UI
   rustfin-ui:
     build: ./ui
-    ports:
-      - "${RUSTFIN_UI_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
       - RUSTYFIN_BROWSER_BACKEND_ORIGIN=${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-http://localhost:8096}
@@ -40,7 +38,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # HTTPS edge proxy for browser clients (required for LAN microphone permissions).
+  rustfin-edge:
+    image: caddy:2
+    ports:
+      - "${RUSTFIN_UI_PORT:-3000}:443"
+    environment:
+      - RUSTFIN_PUBLIC_HOST=${RUSTFIN_PUBLIC_HOST:-localhost}
+    volumes:
+      - ./scripts/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${RUSTFIN_EDGE_TLS_CERT:-./.tmp/edge-tls/tls.crt}:/etc/caddy/certs/tls.crt:ro
+      - ${RUSTFIN_EDGE_TLS_KEY:-./.tmp/edge-tls/tls.key}:/etc/caddy/certs/tls.key:ro
+      - rustfin-caddy-data:/data
+      - rustfin-caddy-config:/config
+    depends_on:
+      rustfin:
+        condition: service_healthy
+      rustfin-ui:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   rustfin-config:
   rustfin-cache:
   rustfin-transcode:
+  rustfin-caddy-data:
+  rustfin-caddy-config:

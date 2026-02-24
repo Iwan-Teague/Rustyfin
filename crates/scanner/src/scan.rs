@@ -113,15 +113,19 @@ pub async fn run_library_scan(
 /// Parse a relative path for a movie entry.
 /// Supports: `Movie (Year)/Movie (Year).mkv` or just `Movie.Year.mkv`
 fn parse_movie_entry(rel: &Path) -> ParsedMedia {
-    // Try folder name first if there's a parent directory
-    if let Some(parent) = rel.parent() {
-        if parent != Path::new("") {
-            let folder = parent.to_string_lossy();
-            let parsed = parser::parse_filename(&folder);
+    // Walk up all ancestor directories and prefer the nearest folder with a year.
+    let mut cursor = rel.parent();
+    while let Some(parent) = cursor {
+        if parent == Path::new("") {
+            break;
+        }
+        if let Some(folder_name) = parent.file_name().and_then(|n| n.to_str()) {
+            let parsed = parser::parse_filename(folder_name);
             if matches!(&parsed, ParsedMedia::Movie(m) if m.year.is_some()) {
                 return parsed;
             }
         }
+        cursor = parent.parent();
     }
     // Fall back to filename
     let name = rel.file_name().unwrap_or_default().to_string_lossy();
@@ -166,12 +170,96 @@ fn parse_tv_entry(rel: &Path) -> ParsedMedia {
 /// Walk up from the file to find the series root directory name.
 /// Typical structure: `Show Name/Season XX/file.mkv` — we want `Show Name`.
 fn find_series_dir(rel: &Path) -> Option<String> {
-    let components: Vec<_> = rel
+    let mut dirs: Vec<_> = rel
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect();
-    // First component is the series directory
-    components.first().cloned()
+    if dirs.is_empty() {
+        return None;
+    }
+    // Drop filename.
+    dirs.pop();
+    if dirs.is_empty() {
+        return None;
+    }
+
+    // Prefer directory before a season-like folder (e.g. Show/Season 01/file.mkv),
+    // even when extra category folders exist above the series directory.
+    if let Some(season_idx) = dirs.iter().position(|d| is_season_dir(d)) {
+        if season_idx > 0 {
+            return Some(dirs[season_idx - 1].clone());
+        }
+    }
+
+    // Fallback: nearest parent directory.
+    dirs.last().cloned()
+}
+
+fn is_season_dir(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    if lower.starts_with("season ") {
+        return lower["season ".len()..].trim().parse::<u32>().is_ok();
+    }
+    if lower.len() >= 2 && lower.starts_with('s') {
+        return lower[1..].parse::<u32>().is_ok();
+    }
+    false
+}
+
+fn is_disc_dir(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    if lower.starts_with("disc ") || lower.starts_with("disk ") {
+        let tail = lower.split_once(' ').map(|(_, t)| t.trim()).unwrap_or("");
+        return !tail.is_empty() && tail.parse::<u32>().is_ok();
+    }
+    if lower.starts_with("cd ") {
+        let tail = lower["cd ".len()..].trim();
+        return !tail.is_empty() && tail.parse::<u32>().is_ok();
+    }
+    false
+}
+
+fn infer_music_artist_album(
+    root: &Path,
+    rel: &Path,
+) -> (Option<String>, Option<String>, Option<std::path::PathBuf>) {
+    let mut dirs: Vec<String> = rel
+        .parent()
+        .map(|p| {
+            p.components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if dirs.is_empty() {
+        return (None, None, None);
+    }
+
+    // Strip disc-like folders from the end, preserving album grouping for
+    // structures like Artist/Album/Disc 1/track.ext.
+    while dirs.len() > 1 && dirs.last().is_some_and(|name| is_disc_dir(name)) {
+        dirs.pop();
+    }
+
+    let album_name = dirs.last().cloned();
+    let artist_name = if dirs.len() >= 2 {
+        Some(dirs[dirs.len() - 2].clone())
+    } else {
+        None
+    };
+
+    let album_dir = if dirs.is_empty() {
+        None
+    } else {
+        let mut rel_dir = std::path::PathBuf::new();
+        for seg in &dirs {
+            rel_dir.push(seg);
+        }
+        Some(root.join(rel_dir))
+    };
+
+    (artist_name, album_name, album_dir)
 }
 
 // ─── DB helpers ──────────────────────────────────────────────────────────────
@@ -255,14 +343,7 @@ async fn ensure_media_file(
 /// Returns `None` if ffprobe is not available or the output cannot be parsed.
 fn probe_audio_duration_ms(path: &str) -> Option<i64> {
     let output = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            path,
-        ])
+        .args(["-v", "quiet", "-print_format", "json", "-show_format", path])
         .output()
         .ok()?;
 
@@ -457,10 +538,6 @@ async fn parse_music_library(
         };
 
         let rel = entry.path.strip_prefix(root).unwrap_or(&entry.path);
-        let components: Vec<_> = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .collect();
 
         let track_title = {
             let filename = rel
@@ -476,25 +553,7 @@ async fn parse_music_library(
             }
         };
 
-        let (artist_name, album_name, album_dir) = match components.len() {
-            3 => {
-                // Artist/Album/track.mp3
-                let artist = components[0].clone();
-                let album = components[1].clone();
-                let album_dir = root.join(&artist).join(&album);
-                (Some(artist), Some(album), Some(album_dir))
-            }
-            2 => {
-                // Album/track.mp3
-                let album = components[0].clone();
-                let album_dir = root.join(&album);
-                (None, Some(album), Some(album_dir))
-            }
-            _ => {
-                // track.mp3 directly in root
-                (None, None, None)
-            }
-        };
+        let (artist_name, album_name, album_dir) = infer_music_artist_album(root, rel);
 
         // Create artist item if present
         let artist_id = if let Some(ref artist) = artist_name {
@@ -581,4 +640,46 @@ pub enum ScanError {
     Db(sqlx::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_movie_entry_uses_deep_ancestor_with_year() {
+        let rel = Path::new("Archive/4K/The Matrix (1999)/Extras/scene.mkv");
+        let parsed = parse_movie_entry(rel);
+        assert_eq!(
+            parsed,
+            ParsedMedia::Movie(parser::MovieInfo {
+                title: "The Matrix".to_string(),
+                year: Some(1999),
+            })
+        );
+    }
+
+    #[test]
+    fn find_series_dir_prefers_folder_before_season_in_deep_tree() {
+        let rel = Path::new("Category/Drama/Breaking Bad/Season 01/S01E02.mkv");
+        assert_eq!(find_series_dir(rel), Some("Breaking Bad".to_string()));
+    }
+
+    #[test]
+    fn infer_music_artist_album_handles_deep_branches_and_disc_folders() {
+        let root = Path::new("/media/music");
+        let rel = Path::new("Genre/Artist/Album/Disc 1/01 Track.mp3");
+        let (artist, album, album_dir) = infer_music_artist_album(root, rel);
+        assert_eq!(artist.as_deref(), Some("Artist"));
+        assert_eq!(album.as_deref(), Some("Album"));
+        assert_eq!(
+            album_dir,
+            Some(
+                Path::new("/media/music")
+                    .join("Genre")
+                    .join("Artist")
+                    .join("Album")
+            )
+        );
+    }
 }

@@ -154,6 +154,18 @@ async fn main() -> anyhow::Result<()> {
         ),
     };
 
+    // Spawn watch-party empty-lobby cleanup task.
+    {
+        let watch_party = app_state.watch_party.clone();
+        let db = app_state.db.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                watch_party.cleanup_empty_lobbies(&db).await;
+            }
+        });
+    }
+
     let app = rustfin_server::routes::build_router(app_state);
 
     let bind_addr = std::env::var("RUSTFIN_BIND").unwrap_or_else(|_| "0.0.0.0:8096".to_string());

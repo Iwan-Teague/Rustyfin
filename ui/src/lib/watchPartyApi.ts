@@ -100,6 +100,13 @@ export type AudioTrack = {
   duration_ms?: number;
 };
 
+export type YouTubeSearchResult = {
+  video_id: string;
+  title: string;
+  channel: string;
+  thumbnail_url: string;
+};
+
 export type QueueEntry = AudioTrack & { track_id: string };
 
 export type WsPresenceMember = {
@@ -128,13 +135,14 @@ export type WsAudioStateMessage = {
 };
 
 export type WsYouTubeStateMessage = {
-  type: 'youtube_state';
+  type: 'youtube_state' | 'you_tube_state';
   room_id: string;
   video_id: string;
   playing: boolean;
   position_ms: number;
   updated_ts_ms: number;
   server_ts_ms: number;
+  queue: string[];
   members: WsPresenceMember[];
 };
 
@@ -225,4 +233,27 @@ export async function inviteToRoom(
 export async function listAudioTracks(roomId: string, q?: string): Promise<AudioTrack[]> {
   const query = q ? `?q=${encodeURIComponent(q)}` : '';
   return apiJson<AudioTrack[]>(`/watch-party/rooms/${roomId}/audio/tracks${query}`);
+}
+
+export async function searchYouTubeVideos(
+  roomId: string,
+  q: string,
+  limit = 10,
+): Promise<YouTubeSearchResult[]> {
+  const params = new URLSearchParams();
+  params.set('q', q);
+  params.set('limit', String(limit));
+  return apiJson<YouTubeSearchResult[]>(
+    `/watch-party/rooms/${roomId}/youtube/search?${params.toString()}`,
+  );
+}
+
+export async function lookupYouTubeVideos(
+  roomId: string,
+  videoIds: string[],
+): Promise<YouTubeSearchResult[]> {
+  return apiJson<YouTubeSearchResult[]>(`/watch-party/rooms/${roomId}/youtube/lookup`, {
+    method: 'POST',
+    body: JSON.stringify({ video_ids: videoIds }),
+  });
 }

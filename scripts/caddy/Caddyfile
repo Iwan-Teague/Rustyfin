@@ -1,0 +1,15 @@
+{
+  admin off
+}
+
+# HTTPS edge for UI + API proxying.
+# Use a fixed :443 listener so clients without SNI (common on direct IP access)
+# still complete TLS with the mounted certificate.
+:443 {
+  tls /etc/caddy/certs/tls.crt /etc/caddy/certs/tls.key
+
+  @backend path /api/* /stream/* /health
+  reverse_proxy @backend rustfin:8096
+
+  reverse_proxy rustfin-ui:3000
+}

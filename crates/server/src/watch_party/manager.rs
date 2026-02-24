@@ -6,6 +6,7 @@ use tokio::sync::{RwLock, broadcast};
 use super::protocol::ServerMessage;
 
 const MAX_ACTIVE_ROOMS: usize = 512;
+const EMPTY_ROOM_TTL_SECONDS: i64 = 5 * 60;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackState {
@@ -68,6 +69,7 @@ pub struct RoomRuntime {
     pub state: RwLock<PlaybackState>,
     pub audio_queue: Option<RwLock<AudioQueueState>>,
     pub youtube_video_id: RwLock<Option<String>>,
+    pub youtube_queue: RwLock<Vec<String>>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -88,6 +90,7 @@ impl RoomRuntime {
             state: RwLock::new(PlaybackState::default()),
             audio_queue: None,
             youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -112,6 +115,7 @@ impl RoomRuntime {
                 ..AudioQueueState::default()
             })),
             youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -128,6 +132,7 @@ impl RoomRuntime {
             state: RwLock::new(PlaybackState::default()),
             audio_queue: None,
             youtube_video_id: RwLock::new(initial_video_id),
+            youtube_queue: RwLock::new(Vec::new()),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -149,6 +154,117 @@ impl RoomRuntime {
         state.updated_ts_ms = chrono::Utc::now().timestamp_millis();
         let mut activity = self.last_activity_ts_ms.write().await;
         *activity = state.updated_ts_ms;
+    }
+
+    pub async fn snapshot_youtube_queue(&self) -> Vec<String> {
+        self.youtube_queue.read().await.clone()
+    }
+
+    pub async fn youtube_queue_video_at(&self, queue_index: usize) -> Option<String> {
+        self.youtube_queue.read().await.get(queue_index).cloned()
+    }
+
+    pub async fn enqueue_youtube_video(&self, video_id: String) -> Vec<String> {
+        let mut queue = self.youtube_queue.write().await;
+        queue.push(video_id);
+        let snapshot = queue.clone();
+        drop(queue);
+        self.touch_activity().await;
+        snapshot
+    }
+
+    pub async fn enqueue_youtube_video_unique(&self, video_id: String) -> Option<Vec<String>> {
+        if self.get_youtube_video_id().await.as_deref() == Some(video_id.as_str()) {
+            return None;
+        }
+
+        let mut queue = self.youtube_queue.write().await;
+        if queue.iter().any(|queued| queued == &video_id) {
+            return None;
+        }
+
+        queue.push(video_id);
+        let snapshot = queue.clone();
+        drop(queue);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn remove_youtube_queue_index(&self, queue_index: usize) -> Option<Vec<String>> {
+        let mut queue = self.youtube_queue.write().await;
+        if queue_index >= queue.len() {
+            return None;
+        }
+        queue.remove(queue_index);
+        let snapshot = queue.clone();
+        drop(queue);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn move_youtube_queue_item(
+        &self,
+        from_index: usize,
+        to_index: usize,
+    ) -> Option<Vec<String>> {
+        let mut queue = self.youtube_queue.write().await;
+        if from_index >= queue.len() || to_index >= queue.len() {
+            return None;
+        }
+        if from_index != to_index {
+            let item = queue.remove(from_index);
+            queue.insert(to_index, item);
+        }
+        let snapshot = queue.clone();
+        drop(queue);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn play_youtube_queue_index_now(&self, queue_index: usize) -> Option<String> {
+        let next_video_id = {
+            let mut queue = self.youtube_queue.write().await;
+            if queue_index >= queue.len() {
+                return None;
+            }
+            queue.remove(queue_index)
+        };
+
+        self.set_youtube_video_id(next_video_id.clone()).await;
+        self.apply_action(PlaybackAction::Play { position_ms: 0 })
+            .await;
+        self.touch_activity().await;
+        Some(next_video_id)
+    }
+
+    /// Advance to the next queued YouTube video if the currently playing video
+    /// still matches `expected_current_video_id`. Returns true when advanced.
+    pub async fn advance_youtube_queue(&self, expected_current_video_id: &str) -> bool {
+        let current_video_id = self.get_youtube_video_id().await.unwrap_or_default();
+        if !expected_current_video_id.is_empty() && current_video_id != expected_current_video_id {
+            return false;
+        }
+
+        let next_video_id = {
+            let mut queue = self.youtube_queue.write().await;
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        };
+
+        if let Some(next_video_id) = next_video_id {
+            self.set_youtube_video_id(next_video_id).await;
+            true
+        } else {
+            let mut state = self.state.write().await;
+            state.playing = false;
+            state.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+            let mut activity = self.last_activity_ts_ms.write().await;
+            *activity = state.updated_ts_ms;
+            false
+        }
     }
 
     pub async fn snapshot_state(&self) -> PlaybackState {
@@ -308,5 +424,42 @@ impl WatchPartyManager {
     pub async fn remove_runtime(&self, room_id: &str) {
         let mut rooms = self.rooms.write().await;
         rooms.remove(room_id);
+    }
+
+    pub async fn cleanup_empty_lobbies(&self, db: &sqlx::SqlitePool) {
+        let cutoff_ts = chrono::Utc::now().timestamp() - EMPTY_ROOM_TTL_SECONDS;
+        let candidate_room_ids =
+            match rustfin_db::repo::watch_party::list_lobby_room_ids_updated_before(db, cutoff_ts)
+                .await
+            {
+                Ok(ids) => ids,
+                Err(err) => {
+                    tracing::warn!(error = %err, "watch party empty-lobby cleanup query failed");
+                    return;
+                }
+            };
+
+        for room_id in candidate_room_ids {
+            let runtime = self.get_runtime(&room_id).await;
+            if let Some(runtime) = runtime.as_ref() {
+                let connected_count = runtime.connected_user_ids.read().await.len();
+                if connected_count > 0 {
+                    continue;
+                }
+            }
+
+            match rustfin_db::repo::watch_party::set_room_status(db, &room_id, "ended").await {
+                Ok(true) => {
+                    if let Some(runtime) = runtime {
+                        let _ = runtime.tx.send(ServerMessage::RoomEnded);
+                    }
+                    self.remove_runtime(&room_id).await;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(room_id = %room_id, error = %err, "watch party cleanup failed to end room");
+                }
+            }
+        }
     }
 }

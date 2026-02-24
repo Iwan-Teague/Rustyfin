@@ -1,7 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { WsYouTubeStateMessage } from '@/lib/watchPartyApi';
+import {
+  WsYouTubeStateMessage,
+  YouTubeSearchResult,
+  lookupYouTubeVideos,
+  searchYouTubeVideos,
+} from '@/lib/watchPartyApi';
 
 // Minimal YouTube IFrame API type declarations
 declare global {
@@ -61,7 +66,10 @@ type Props = {
   roomId: string;
   ytState: WsYouTubeStateMessage | null;
   canControl: boolean;
-  sendWs: (payload: Record<string, unknown>) => void;
+  canQueue: boolean;
+  wsConnected: boolean;
+  sendWs: (payload: Record<string, unknown>) => boolean;
+  onDebugLog?: (message: string) => void;
 };
 
 const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
@@ -109,6 +117,9 @@ function mapPlayerErrorCode(code: number): string {
   if (code === 101 || code === 150) {
     return 'This YouTube video cannot be embedded by the uploader. Try another video.';
   }
+  if (code === 153) {
+    return 'YouTube blocked this request due to missing referrer/client metadata. Open the room over HTTPS and try again.';
+  }
   return 'YouTube player failed to load this video.';
 }
 
@@ -118,25 +129,128 @@ function clampSeconds(value: number): number {
   return value;
 }
 
-export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: Props) {
+function mapStateCode(code: number): string {
+  if (code === -1) return 'UNSTARTED';
+  if (code === 0) return 'ENDED';
+  if (code === 1) return 'PLAYING';
+  if (code === 2) return 'PAUSED';
+  if (code === 3) return 'BUFFERING';
+  if (code === 5) return 'CUED';
+  return `UNKNOWN(${code})`;
+}
+
+export default function YouTubePlayer({
+  roomId,
+  ytState,
+  canControl,
+  canQueue,
+  wsConnected,
+  sendWs,
+  onDebugLog,
+}: Props) {
   const playerRef = useRef<YT.Player | null>(null);
   const playerDivId = `yt-player-${roomId}`;
   const applyingRemoteRef = useRef(false);
   const lastVideoIdRef = useRef('');
+  const pendingVideoIdRef = useRef<string | null>(null);
+  const pendingVideoAckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRequestIdRef = useRef(0);
+  const searchPanelRef = useRef<HTMLDivElement | null>(null);
+  const searchResultsListRef = useRef<HTMLUListElement | null>(null);
+  const pendingQueueTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const queueLookupFailedRef = useRef<Set<string>>(new Set());
   const canControlRef = useRef(canControl);
   const sendWsRef = useRef(sendWs);
+  const onDebugLogRef = useRef<typeof onDebugLog>(onDebugLog);
   // Always mirrors the latest ytState so event callbacks can read it without stale closure values
   const ytStateRef = useRef<WsYouTubeStateMessage | null>(ytState);
 
-  const [videoInput, setVideoInput] = useState('');
   const [videoTitle, setVideoTitle] = useState('');
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [searchResults, setSearchResults] = useState<YouTubeSearchResult[]>([]);
+  const [queueMetaById, setQueueMetaById] = useState<Record<string, YouTubeSearchResult>>({});
+  const [pendingQueueById, setPendingQueueById] = useState<Record<string, boolean>>({});
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [debugEntries, setDebugEntries] = useState<string[]>([]);
+
+  const logDebug = useCallback((message: string) => {
+    const line = `${new Date().toISOString()} ${message}`;
+    setDebugEntries((prev) => [...prev.slice(-119), line]);
+    if (typeof window !== 'undefined') {
+      console.info(`[watch-party:youtube:${roomId}] ${message}`);
+    }
+    onDebugLogRef.current?.(message);
+  }, [roomId]);
+
+  const clearPendingVideoAck = useCallback(() => {
+    if (pendingVideoAckTimeoutRef.current !== null) {
+      clearTimeout(pendingVideoAckTimeoutRef.current);
+      pendingVideoAckTimeoutRef.current = null;
+    }
+    pendingVideoIdRef.current = null;
+  }, []);
+
+  const clearPendingQueueMarker = useCallback((videoId: string) => {
+    const timer = pendingQueueTimeoutsRef.current[videoId];
+    if (timer) {
+      clearTimeout(timer);
+      delete pendingQueueTimeoutsRef.current[videoId];
+    }
+    setPendingQueueById((prev) => {
+      if (!prev[videoId]) return prev;
+      const next = { ...prev };
+      delete next[videoId];
+      return next;
+    });
+  }, []);
+
+  const markPendingQueue = useCallback((videoId: string) => {
+    clearPendingQueueMarker(videoId);
+    setPendingQueueById((prev) => ({ ...prev, [videoId]: true }));
+    pendingQueueTimeoutsRef.current[videoId] = setTimeout(() => {
+      clearPendingQueueMarker(videoId);
+    }, 6000);
+  }, [clearPendingQueueMarker]);
 
   // Keep refs in sync so event callbacks always see fresh values
   useEffect(() => { canControlRef.current = canControl; }, [canControl]);
   useEffect(() => { sendWsRef.current = sendWs; }, [sendWs]);
+  useEffect(() => { onDebugLogRef.current = onDebugLog; }, [onDebugLog]);
   useEffect(() => { ytStateRef.current = ytState; }, [ytState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    logDebug(
+      `component mounted origin=${window.location.origin} secure_context=${window.isSecureContext}`,
+    );
+  }, [logDebug]);
+
+  useEffect(() => {
+    if ((!canControl && !canQueue) || wsConnected) return;
+    setPlayerError('Realtime connection is offline. Reconnect to load or control YouTube playback.');
+    logDebug('ws disconnected while youtube controls are available');
+  }, [canControl, canQueue, wsConnected, logDebug]);
+
+  useEffect(() => {
+    if (!ytState?.video_id) return;
+    if (pendingVideoIdRef.current && pendingVideoIdRef.current === ytState.video_id) {
+      logDebug(`received youtube_state for requested video_id=${ytState.video_id}`);
+      clearPendingVideoAck();
+    }
+  }, [ytState?.video_id, clearPendingVideoAck, logDebug]);
+
+  useEffect(() => {
+    const currentVideoId = ytState?.video_id || '';
+    const queueSet = new Set(ytState?.queue ?? []);
+    for (const videoId of Object.keys(pendingQueueById)) {
+      if (videoId === currentVideoId || queueSet.has(videoId)) {
+        clearPendingQueueMarker(videoId);
+      }
+    }
+  }, [ytState?.queue, ytState?.video_id, pendingQueueById, clearPendingQueueMarker]);
 
   const handlePlayerStateChange = useCallback((event: { target: YT.Player; data: number }) => {
     if (applyingRemoteRef.current) return;
@@ -144,10 +258,17 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     const posMs = Math.floor(player.getCurrentTime() * 1000);
     const data = player.getVideoData();
     if (data?.title) setVideoTitle(data.title);
+    logDebug(
+      `player onStateChange state=${mapStateCode(event.data)} position_ms=${posMs} video_id=${data?.video_id || 'none'}`,
+    );
 
     if (event.data === 1 /* PLAYING */) {
       if (canControlRef.current) {
-        sendWsRef.current({ type: 'play', position_ms: posMs });
+        const sent = sendWsRef.current({ type: 'play', position_ms: posMs });
+        if (!sent) {
+          setPlayerError('Failed to send play command. Reconnect the room and retry.');
+          logDebug('failed to send play command over websocket');
+        }
       } else {
         // Viewer: only revert play when the remote state is paused/unset.
         // If the remote state says "playing", the PLAYING event is expected (buffering
@@ -161,14 +282,35 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       }
     } else if (event.data === 2 /* PAUSED */) {
       if (canControlRef.current) {
-        sendWsRef.current({ type: 'pause', position_ms: posMs });
+        const sent = sendWsRef.current({ type: 'pause', position_ms: posMs });
+        if (!sent) {
+          setPlayerError('Failed to send pause command. Reconnect the room and retry.');
+          logDebug('failed to send pause command over websocket');
+        }
+      }
+    } else if (event.data === 0 /* ENDED */) {
+      if (canControlRef.current) {
+        const endedVideoId = data?.video_id || ytStateRef.current?.video_id || '';
+        if (endedVideoId) {
+          const sent = sendWsRef.current({
+            type: 'advance_queue',
+            expected_video_id: endedVideoId,
+          });
+          if (!sent) {
+            setPlayerError('Failed to auto-advance YouTube queue. Reconnect and retry.');
+            logDebug(`failed to send advance_queue command video_id=${endedVideoId}`);
+          } else {
+            logDebug(`sent advance_queue command expected_video_id=${endedVideoId}`);
+          }
+        }
       }
     }
-  }, []);
+  }, [logDebug]);
 
   const initPlayer = useCallback(() => {
     if (playerRef.current) return;
     const origin = window.location.origin;
+    logDebug(`initializing iframe player origin=${origin}`);
     playerRef.current = new window.YT.Player(playerDivId, {
       width: '100%',
       height: '100%',
@@ -176,7 +318,7 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       // video ID) which means the IFrame API JS never initialises, onReady never fires, and
       // playerReady stays false permanently.  Videos are loaded later via cueVideoById /
       // loadVideoById once ytState with a video_id arrives from the WebSocket.
-      host: 'https://www.youtube-nocookie.com',
+      host: 'https://www.youtube.com',
       playerVars: {
         autoplay: 0,
         controls: 1,
@@ -191,45 +333,71 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
         onReady: () => {
           setPlayerReady(true);
           setPlayerError('');
+          logDebug('iframe player ready');
         },
         onStateChange: handlePlayerStateChange,
         onError: (event) => {
-          setPlayerError(mapPlayerErrorCode(event.data));
+          const playerData = event.target.getVideoData();
+          const reason = mapPlayerErrorCode(event.data);
+          setPlayerError(`${reason} (code ${event.data})`);
+          logDebug(
+            `iframe player error code=${event.data} reason="${reason}" video_id=${playerData?.video_id || 'none'} title="${playerData?.title || ''}"`,
+          );
         },
       },
     });
-  }, [playerDivId, handlePlayerStateChange]);
+  }, [playerDivId, handlePlayerStateChange, logDebug]);
 
   // Load YouTube IFrame API
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     if (window.YT && window.YT.Player) {
+      logDebug('iframe API already available on window');
       initPlayer();
       return;
     }
 
     const prev = window.onYouTubeIframeAPIReady;
     window.onYouTubeIframeAPIReady = () => {
+      logDebug('window.onYouTubeIframeAPIReady fired');
       if (prev) prev();
       initPlayer();
     };
 
     if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+      logDebug('injecting iframe_api script');
       const script = document.createElement('script');
       script.src = 'https://www.youtube.com/iframe_api';
       script.async = true;
+      script.onload = () => {
+        logDebug('iframe_api script loaded');
+      };
+      script.onerror = () => {
+        const message =
+          'Failed to load YouTube IFrame API script. Check network, DNS, or content blockers.';
+        setPlayerError(message);
+        logDebug('iframe_api script load failed');
+      };
       document.head.appendChild(script);
+    } else {
+      logDebug('iframe_api script already present in document');
     }
-  }, [initPlayer]);
+  }, [initPlayer, logDebug]);
 
   // Destroy player on unmount
   useEffect(() => {
     return () => {
+      clearPendingVideoAck();
+      for (const timer of Object.values(pendingQueueTimeoutsRef.current)) {
+        clearTimeout(timer);
+      }
+      pendingQueueTimeoutsRef.current = {};
       playerRef.current?.destroy();
       playerRef.current = null;
+      logDebug('component unmounted and player destroyed');
     };
-  }, []);
+  }, [clearPendingVideoAck, logDebug]);
 
   // Apply remote YouTube state from WebSocket
   useEffect(() => {
@@ -242,6 +410,9 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
       applyingRemoteRef.current = true;
       setPlayerError('');
       setVideoTitle('');
+      logDebug(
+        `applying remote video change video_id=${ytState.video_id} playing=${ytState.playing} position_ms=${ytState.position_ms}`,
+      );
 
       const nowMs = Date.now();
       const elapsed = nowMs - ytState.server_ts_ms;
@@ -283,6 +454,9 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     const currentSecs = player.getCurrentTime();
 
     if (Math.abs(currentSecs - projectedSecs) > 1.5) {
+      logDebug(
+        `sync correction seek current_s=${currentSecs.toFixed(2)} target_s=${projectedSecs.toFixed(2)}`,
+      );
       player.seekTo(projectedSecs, true);
     }
 
@@ -312,6 +486,9 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
         : clampSeconds(ytState.position_ms / 1000);
 
       if (Math.abs(player.getCurrentTime() - projectedSecs) > 1.5) {
+        logDebug(
+          `drift correction seek current_s=${player.getCurrentTime().toFixed(2)} target_s=${projectedSecs.toFixed(2)}`,
+        );
         applyingRemoteRef.current = true;
         player.seekTo(projectedSecs, true);
         window.setTimeout(() => { applyingRemoteRef.current = false; }, 300);
@@ -321,41 +498,289 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
     return () => window.clearInterval(interval);
   }, [ytState, playerReady]);
 
-  function handleVideoSubmit() {
-    const id = extractVideoId(videoInput);
-    if (!id) return;
-    setVideoInput('');
+  const queue = ytState?.queue ?? [];
+  const queueSet = new Set(queue);
+
+  const isQueueBlocked = useCallback((videoId: string) => {
+    if (!isValidVideoId(videoId)) return false;
+    if (pendingQueueById[videoId]) return true;
+    if (ytState?.video_id === videoId) return true;
+    return queueSet.has(videoId);
+  }, [pendingQueueById, queueSet, ytState?.video_id]);
+
+  const submitVideoId = useCallback((videoId: string, mode: 'load' | 'queue', source: string) => {
+    if (!isValidVideoId(videoId)) {
+      setPlayerError('Invalid YouTube video ID.');
+      logDebug(`${mode} rejected from ${source}: invalid video id`);
+      return false;
+    }
+    if (!wsConnected) {
+      setPlayerError('Cannot load video while realtime connection is offline.');
+      logDebug(`${mode} rejected from ${source}: websocket is disconnected`);
+      return false;
+    }
+
+    if (mode === 'load' && !canControl) {
+      setPlayerError('Only room admins can load the current YouTube video.');
+      logDebug(`load rejected from ${source}: user lacks control permission`);
+      return false;
+    }
+    if (mode === 'queue' && !canQueue) {
+      setPlayerError('You must join the room to add YouTube videos to queue.');
+      logDebug(`queue rejected from ${source}: user is not allowed to queue`);
+      return false;
+    }
+    if (mode === 'queue' && isQueueBlocked(videoId)) {
+      setPlayerError('This video is already queued (or currently playing).');
+      logDebug(`queue rejected from ${source}: already queued video_id=${videoId}`);
+      return false;
+    }
     setPlayerError('');
+
+    const payload =
+      mode === 'load'
+        ? { type: 'change_video', video_id: videoId }
+        : { type: 'queue_video', video_id: videoId };
+    if (mode === 'queue') {
+      markPendingQueue(videoId);
+    }
+    logDebug(`sending ${payload.type} command video_id=${videoId} source=${source}`);
+    const sent = sendWs(payload);
+    if (!sent) {
+      if (mode === 'queue') {
+        clearPendingQueueMarker(videoId);
+      }
+      setPlayerError(
+        mode === 'load'
+          ? 'Failed to send video change command. Reconnect the room and retry.'
+          : 'Failed to queue YouTube video. Reconnect the room and retry.',
+      );
+      logDebug(`${payload.type} send failed source=${source}`);
+      return false;
+    }
+
+    if (mode === 'queue') {
+      logDebug(`queued video_id=${videoId} source=${source}`);
+      return true;
+    }
+
     setVideoTitle('');
-    sendWs({ type: 'change_video', video_id: id });
+    clearPendingVideoAck();
+    pendingVideoIdRef.current = videoId;
+    pendingVideoAckTimeoutRef.current = setTimeout(() => {
+      if (pendingVideoIdRef.current !== videoId) return;
+      const message =
+        'No room state update received after loading this video. Check websocket/auth logs below.';
+      setPlayerError(message);
+      logDebug(
+        `timeout waiting for youtube_state acknowledgement video_id=${videoId} source=${source}`,
+      );
+    }, 8000);
+    return true;
+  }, [
+    canControl,
+    canQueue,
+    clearPendingQueueMarker,
+    clearPendingVideoAck,
+    isQueueBlocked,
+    logDebug,
+    markPendingQueue,
+    sendWs,
+    wsConnected,
+  ]);
+
+  const resetSearchViewport = useCallback(() => {
+    searchPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+  }, []);
+
+  async function runSearch() {
+    const query = searchInput.trim();
+    if (query.length < 2) {
+      setSearchError('Enter at least 2 characters to search.');
+      return;
+    }
+    setSearchError('');
+    setSearching(true);
+    resetSearchViewport();
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    const directVideoId = extractVideoId(query);
+    logDebug(`youtube search requested query="${query}" direct_video_id=${directVideoId || 'none'}`);
+
+    try {
+      let results: YouTubeSearchResult[] = [];
+
+      if (directVideoId) {
+        results = await lookupYouTubeVideos(roomId, [directVideoId]);
+        logDebug(
+          `youtube direct lookup query="${query}" video_id=${directVideoId} results=${results.length}`,
+        );
+      }
+
+      if (results.length === 0) {
+        results = await searchYouTubeVideos(roomId, query, 12);
+      }
+
+      if (searchRequestIdRef.current !== requestId) return;
+      setSearchResults(results);
+      window.requestAnimationFrame(() => {
+        searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+      });
+      setQueueMetaById((prev) => {
+        const next = { ...prev };
+        for (const result of results) {
+          next[result.video_id] = result;
+        }
+        return next;
+      });
+      if (results.length === 0) {
+        setSearchError('No YouTube results found for that query.');
+      }
+      logDebug(`youtube search success query="${query}" results=${results.length}`);
+    } catch (err: any) {
+      if (searchRequestIdRef.current !== requestId) return;
+      const message = err?.message || 'YouTube search failed.';
+      setSearchError(message);
+      logDebug(`youtube search failed query="${query}" error=${message}`);
+    } finally {
+      if (searchRequestIdRef.current === requestId) {
+        setSearching(false);
+      }
+    }
   }
 
-  const isValidInput = extractVideoId(videoInput) !== null;
+  async function copyDiagnostics() {
+    try {
+      await navigator.clipboard.writeText(debugEntries.join('\n'));
+      logDebug('copied local youtube diagnostics to clipboard');
+    } catch {
+      logDebug('failed to copy local youtube diagnostics');
+      setPlayerError('Failed to copy diagnostics to clipboard.');
+    }
+  }
   const hasVideo = !!(ytState?.video_id);
+
+  const requestQueuePlayNow = useCallback((queueIndex: number) => {
+    if (!canControl) {
+      setPlayerError('Only room admins can play queued videos now.');
+      return;
+    }
+    if (!wsConnected) {
+      setPlayerError('Cannot control queue while realtime connection is offline.');
+      return;
+    }
+    const sent = sendWs({ type: 'play_queued_video', queue_index: queueIndex });
+    if (!sent) {
+      setPlayerError('Failed to play queued video now. Reconnect and retry.');
+      logDebug(`play_queued_video send failed queue_index=${queueIndex}`);
+      return;
+    }
+    setPlayerError('');
+    logDebug(`play_queued_video sent queue_index=${queueIndex}`);
+  }, [canControl, wsConnected, sendWs, logDebug]);
+
+  const requestQueueRemove = useCallback((queueIndex: number) => {
+    if (!canQueue) {
+      setPlayerError('You must join the room to edit queue.');
+      return;
+    }
+    if (!wsConnected) {
+      setPlayerError('Cannot edit queue while realtime connection is offline.');
+      return;
+    }
+    const sent = sendWs({ type: 'remove_queued_video', queue_index: queueIndex });
+    if (!sent) {
+      setPlayerError('Failed to remove queued video. Reconnect and retry.');
+      logDebug(`remove_queued_video send failed queue_index=${queueIndex}`);
+      return;
+    }
+    setPlayerError('');
+    logDebug(`remove_queued_video sent queue_index=${queueIndex}`);
+  }, [canQueue, wsConnected, sendWs, logDebug]);
+
+  const requestQueueMove = useCallback((fromIndex: number, toIndex: number) => {
+    if (!canQueue) {
+      setPlayerError('You must join the room to edit queue.');
+      return;
+    }
+    if (!wsConnected) {
+      setPlayerError('Cannot edit queue while realtime connection is offline.');
+      return;
+    }
+    if (toIndex < 0 || toIndex >= queue.length || fromIndex === toIndex) {
+      return;
+    }
+    const sent = sendWs({
+      type: 'move_queued_video',
+      from_index: fromIndex,
+      to_index: toIndex,
+    });
+    if (!sent) {
+      setPlayerError('Failed to reorder queue. Reconnect and retry.');
+      logDebug(`move_queued_video send failed from=${fromIndex} to=${toIndex}`);
+      return;
+    }
+    setPlayerError('');
+    logDebug(`move_queued_video sent from=${fromIndex} to=${toIndex}`);
+  }, [canQueue, wsConnected, queue.length, sendWs, logDebug]);
+
+  useEffect(() => {
+    if (queue.length === 0) return;
+    const uniqueMissing = Array.from(new Set(queue)).filter(
+      (videoId) =>
+        isValidVideoId(videoId) &&
+        !queueMetaById[videoId] &&
+        !queueLookupFailedRef.current.has(videoId),
+    );
+
+    if (uniqueMissing.length === 0) return;
+
+    let cancelled = false;
+    const requestIds = uniqueMissing.slice(0, 12);
+
+    (async () => {
+      try {
+        const resolved = await lookupYouTubeVideos(roomId, requestIds);
+        if (cancelled) return;
+
+        if (resolved.length > 0) {
+          setQueueMetaById((prev) => {
+            const next = { ...prev };
+            for (const result of resolved) {
+              next[result.video_id] = result;
+            }
+            return next;
+          });
+        }
+
+        const foundIds = new Set(resolved.map((result) => result.video_id));
+        for (const videoId of requestIds) {
+          if (!foundIds.has(videoId)) {
+            queueLookupFailedRef.current.add(videoId);
+          }
+        }
+        logDebug(
+          `youtube queue metadata resolved requested=${requestIds.length} resolved=${resolved.length}`,
+        );
+      } catch (err: any) {
+        if (cancelled) return;
+        for (const videoId of requestIds) {
+          queueLookupFailedRef.current.add(videoId);
+        }
+        logDebug(
+          `youtube queue metadata lookup failed error=${String(err?.message || err)}`,
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [queue, queueMetaById, roomId, logDebug]);
 
   return (
     <section className="space-y-4">
-      {canControl && (
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={videoInput}
-            onChange={(e) => setVideoInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleVideoSubmit(); }}
-            placeholder="Paste YouTube URL or video ID…"
-            className="input flex-1 px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-            onClick={handleVideoSubmit}
-            disabled={!isValidInput}
-          >
-            Load
-          </button>
-        </div>
-      )}
-
       <div
         className="tile overflow-hidden rounded-2xl border border-white/10 bg-black relative"
         style={{ aspectRatio: '16/9', width: '100%' }}
@@ -364,9 +789,14 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
             <p className="text-sm muted text-center px-6">
               {canControl
-                ? 'Paste a YouTube URL or video ID above to get started.'
+                ? 'Search YouTube below or paste a YouTube URL to get started.'
                 : 'Waiting for host to select a video…'}
             </p>
+          </div>
+        )}
+        {!playerReady && (
+          <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+            <p className="text-sm muted text-center px-6">Initializing YouTube player…</p>
           </div>
         )}
         <div id={playerDivId} className="h-full w-full" />
@@ -376,15 +806,219 @@ export default function YouTubePlayer({ roomId, ytState, canControl, sendWs }: P
         <p className="text-sm font-medium truncate muted">{videoTitle}</p>
       )}
 
+      {(canControl || canQueue) && (
+        <div ref={searchPanelRef} className="panel-soft rounded-xl px-3 py-3 space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  void runSearch();
+                }
+              }}
+              placeholder="Search YouTube or paste a video URL…"
+              className="input flex-1 px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+              onClick={() => {
+                void runSearch();
+              }}
+              disabled={searching || searchInput.trim().length < 2}
+            >
+              {searching ? 'Searching…' : 'Search'}
+            </button>
+          </div>
+
+          {searchError && (
+            <p className="text-xs text-red-300">{searchError}</p>
+          )}
+
+          {searchResults.length > 0 && (
+            <ul ref={searchResultsListRef} className="space-y-2 max-h-80 overflow-y-auto pr-1">
+              {searchResults.map((result) => {
+                const queued = isQueueBlocked(result.video_id);
+                return (
+                  <li key={result.video_id} className="tile rounded-xl px-2 py-2">
+                    <div className="flex items-start gap-3">
+                      <img
+                        src={result.thumbnail_url}
+                        alt={result.title}
+                        className="h-16 w-28 rounded-md object-cover border border-white/10"
+                        loading="lazy"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium leading-5 line-clamp-2">{result.title}</p>
+                        <p className="text-xs muted mt-1 truncate">{result.channel}</p>
+                        <p className="text-[11px] muted mt-1 font-mono">{result.video_id}</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {canControl && (
+                          <button
+                            type="button"
+                            className="btn-primary px-3 py-1.5 text-xs"
+                            onClick={() => {
+                              setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
+                              submitVideoId(result.video_id, 'load', 'search_result');
+                            }}
+                          >
+                            Load
+                          </button>
+                        )}
+                        {canQueue && (
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-1.5 text-xs"
+                            onClick={() => {
+                              setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
+                              submitVideoId(result.video_id, 'queue', 'search_result');
+                            }}
+                            disabled={queued || !wsConnected}
+                            title={
+                              queued
+                                ? 'Already queued (or currently playing)'
+                                : 'Add this video to play next'
+                            }
+                          >
+                            {queued ? 'Queued' : 'Queue'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {queue.length > 0 && (
+        <div className="panel-soft rounded-xl px-3 py-3">
+          <p className="mb-2 text-xs uppercase tracking-wide muted">
+            Up Next ({queue.length})
+          </p>
+          <ul className="space-y-1 text-xs">
+            {queue.map((videoId, idx) => (
+              <li key={`${videoId}-${idx}`} className="tile rounded-lg px-2 py-1.5">
+                <div className="flex items-start gap-2">
+                  {queueMetaById[videoId] ? (
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      {canControl ? (
+                        <button
+                          type="button"
+                          className="text-left text-xs hover:underline"
+                          onClick={() => requestQueuePlayNow(idx)}
+                          title="Play this queued video now"
+                        >
+                          {idx + 1}. {queueMetaById[videoId].title}
+                        </button>
+                      ) : (
+                        <p className="text-xs">
+                          {idx + 1}. {queueMetaById[videoId].title}
+                        </p>
+                      )}
+                      <p className="text-[11px] muted truncate">
+                        {queueMetaById[videoId].channel}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="min-w-0 flex-1">
+                      <span className="font-mono">{idx + 1}. {videoId}</span>
+                    </div>
+                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {canControl && (
+                      <button
+                        type="button"
+                        className="btn-primary px-2 py-1 text-[11px]"
+                        onClick={() => requestQueuePlayNow(idx)}
+                        disabled={!wsConnected}
+                        title="Play this video immediately"
+                      >
+                        Play now
+                      </button>
+                    )}
+                    {canQueue && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-secondary px-2 py-1 text-[11px]"
+                          onClick={() => requestQueueMove(idx, idx - 1)}
+                          disabled={!wsConnected || idx === 0}
+                          title="Move up"
+                        >
+                          Up
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-2 py-1 text-[11px]"
+                          onClick={() => requestQueueMove(idx, idx + 1)}
+                          disabled={!wsConnected || idx === queue.length - 1}
+                          title="Move down"
+                        >
+                          Down
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-2 py-1 text-[11px]"
+                          onClick={() => requestQueueRemove(idx)}
+                          disabled={!wsConnected}
+                          title="Remove from queue"
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {playerError && (
         <p className="text-xs text-red-300">{playerError}</p>
       )}
 
-      {!canControl && (
-        <p className="text-xs muted">
-          You are not an admin — only admins can change the video.
+      {!wsConnected && (
+        <p className="text-xs text-red-300">
+          Realtime connection is disconnected. Video load/play commands will not sync until reconnected.
         </p>
       )}
+
+      {!canControl && (
+        <p className="text-xs muted">
+          You are not an admin — only admins can play/pause/seek or load the current video.
+        </p>
+      )}
+
+      <details className="panel-soft rounded-xl px-3 py-2 text-xs" open>
+        <summary className="cursor-pointer select-none font-medium">YouTube debug trace</summary>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-secondary px-3 py-1 text-xs"
+            onClick={copyDiagnostics}
+          >
+            Copy local trace
+          </button>
+          <span className="text-[11px] muted">Entries: {debugEntries.length}</span>
+        </div>
+        <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-2 py-2 text-[11px] leading-5 text-white/80">
+          {debugEntries.length === 0 ? (
+            <p className="muted">No player events yet.</p>
+          ) : (
+            <pre className="whitespace-pre-wrap break-words font-mono">
+              {debugEntries.join('\n')}
+            </pre>
+          )}
+        </div>
+      </details>
     </section>
   );
 }
