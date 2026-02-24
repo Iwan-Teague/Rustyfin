@@ -319,7 +319,7 @@ Start-DirectoryPickerHelper
 $env:RUSTFIN_PICKER_HELPER_PORT          = $PickerHelperPort
 $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL = if ($env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL) { $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL } else { "http://host.docker.internal:${PickerHelperPort}/pick" }
 $env:RUSTFIN_MEDIA_HOST_PATH             = if ($env:RUSTFIN_MEDIA_HOST_PATH)             { $env:RUSTFIN_MEDIA_HOST_PATH }             else { $env:RUSTFIN_MEDIA_PATH }
-$env:RUSTFIN_MEDIA_CONTAINER_ROOT        = if ($env:RUSTFIN_MEDIA_CONTAINER_ROOT)        { $env:RUSTFIN_MEDIA_CONTAINER_ROOT }        else { "/media" }
+$env:RUSTFIN_MEDIA_CONTAINER_ROOT        = if ($env:RUSTFIN_MEDIA_CONTAINER_ROOT)        { $env:RUSTFIN_MEDIA_CONTAINER_ROOT }        else { $env:RUSTFIN_MEDIA_PATH }
 
 function Test-PortInUse {
     param([int]$Port)
@@ -354,6 +354,65 @@ function Get-PrimaryLanIPv4 {
     return $null
 }
 
+function Test-IsIPv4 {
+    param([string]$Value)
+    return $Value -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+}
+
+function Ensure-EdgeTlsCert {
+    param([string]$HostName)
+    $certDir  = Join-Path $SafeTmpDir "edge-tls"
+    $certPath = Join-Path $certDir "tls.crt"
+    $keyPath  = Join-Path $certDir "tls.key"
+    $metaPath = Join-Path $certDir "meta.host"
+
+    New-Item -ItemType Directory -Force -Path $certDir | Out-Null
+
+    $needRegen = $false
+    if (-not (Test-Path $certPath) -or -not (Test-Path $keyPath)) {
+        $needRegen = $true
+    } elseif (-not (Test-Path $metaPath) -or (Get-Content $metaPath -Raw -ErrorAction SilentlyContinue).Trim() -ne $HostName) {
+        $needRegen = $true
+    }
+
+    if (-not $needRegen) {
+        $env:RUSTFIN_EDGE_TLS_CERT = $certPath
+        $env:RUSTFIN_EDGE_TLS_KEY  = $keyPath
+        return
+    }
+
+    if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+        Write-Die "openssl is required to generate local TLS certificates"
+    }
+
+    $san = "DNS:localhost,IP:127.0.0.1"
+    if (Test-IsIPv4 $HostName) {
+        $san += ",IP:$HostName"
+    } else {
+        $san += ",DNS:$HostName"
+    }
+
+    if (Test-Path $certPath) { Remove-Item $certPath -Force }
+    if (Test-Path $keyPath)  { Remove-Item $keyPath  -Force }
+
+    & openssl req `
+        -x509 `
+        -newkey rsa:2048 `
+        -sha256 `
+        -days 365 `
+        -nodes `
+        -keyout $keyPath `
+        -out $certPath `
+        -subj "/CN=$HostName" `
+        -addext "subjectAltName=$san" 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -ne 0) { Write-Die "Failed generating local TLS cert" }
+
+    Set-Content -Path $metaPath -Value $HostName -NoNewline
+    $env:RUSTFIN_EDGE_TLS_CERT = $certPath
+    $env:RUSTFIN_EDGE_TLS_KEY  = $keyPath
+}
+
 $projectRunning = $false
 $runningQ = docker compose -f $ComposeFile ps --status running -q 2>$null
 if ($runningQ) { $projectRunning = $true }
@@ -385,6 +444,8 @@ if (-not $publicHost) {
     $lanIp = Get-PrimaryLanIPv4
     $publicHost = if ($lanIp) { $lanIp } else { "localhost" }
 }
+$env:RUSTFIN_PUBLIC_HOST = $publicHost
+Ensure-EdgeTlsCert $publicHost
 
 if ($userBrowserBackendOrigin) {
     $env:RUSTYFIN_BROWSER_BACKEND_ORIGIN = $userBrowserBackendOrigin
@@ -415,6 +476,8 @@ Write-Info "UI port: $($env:RUSTFIN_UI_PORT)"
 Write-Info "Public host: $publicHost"
 Write-Info "Browser backend origin: $($env:RUSTYFIN_BROWSER_BACKEND_ORIGIN)"
 Write-Info "WebSocket allowed origins: $($env:RUSTFIN_WS_ALLOWED_ORIGINS)"
+Write-Info "UI transport: HTTPS (secure context for microphone/WebRTC on LAN)"
+Write-Info "Edge TLS cert: $($env:RUSTFIN_EDGE_TLS_CERT)"
 
 if ($DoBuild) {
     if ($NoCacheBuild) {
@@ -482,8 +545,9 @@ if ($Detach -and $HealthCheck) {
 
 Write-Success "Rustyfin stack is up."
 Write-Host "  Backend: http://localhost:${backendPort}"
-Write-Host "  UI:      http://localhost:${uiPort}"
+Write-Host "  UI:      https://localhost:${uiPort}"
 if ($publicHost -ne "localhost" -and $publicHost -ne "127.0.0.1") {
     Write-Host "  Backend (LAN): http://${publicHost}:${backendPort}"
-    Write-Host "  UI (LAN):      http://${publicHost}:${uiPort}"
+    Write-Host "  UI (LAN):      https://${publicHost}:${uiPort}"
 }
+Write-Host "  Note: if your browser warns about a local certificate, accept/trust it to enable microphone access."
