@@ -1972,6 +1972,13 @@ async fn pick_directory(_admin: AdminUser) -> Result<Json<PickDirectoryResponse>
     Ok(Json(PickDirectoryResponse { path }))
 }
 
+fn host_start_script() -> &'static str {
+    match std::env::var("RUSTFIN_HOST_OS").as_deref() {
+        Ok("windows") => ".\\scripts\\start.ps1",
+        _ => "./scripts/start.sh",
+    }
+}
+
 fn open_directory_picker() -> Result<String, ApiError> {
     let in_container = std::path::Path::new("/.dockerenv").exists();
 
@@ -1984,9 +1991,10 @@ fn open_directory_picker() -> Result<String, ApiError> {
     }
 
     if in_container {
-        return Err(ApiError::BadRequest(
-            "native directory picker is unavailable in containers; start Rustyfin with ./scripts/start.sh so Browse can open your host file picker".into(),
-        ));
+        return Err(ApiError::BadRequest(format!(
+            "native directory picker is unavailable in containers; start Rustyfin with {} so Browse can open your host file picker",
+            host_start_script()
+        )));
     }
 
     if let Ok(raw) = std::env::var("RUSTFIN_DIRECTORY_PICKER_PATH") {
@@ -2011,7 +2019,8 @@ fn open_directory_picker_via_helper(url: &str) -> Result<String, ApiError> {
     let client = reqwest::blocking::Client::new();
     let res = client.post(url).send().map_err(|e| {
         ApiError::BadRequest(format!(
-            "directory picker helper is unavailable ({e}); restart with ./scripts/start.sh"
+            "directory picker helper is unavailable ({e}); restart with {}",
+            host_start_script()
         ))
     })?;
 
@@ -2049,9 +2058,10 @@ fn map_host_path_to_container_path(selected_path: &str) -> Result<String, ApiErr
     let in_container = std::path::Path::new("/.dockerenv").exists();
     if host_root.is_empty() {
         if in_container {
-            return Err(ApiError::BadRequest(
-                "media host root is not configured; set RUSTFIN_MEDIA_HOST_PATH and restart with ./scripts/start.sh".into(),
-            ));
+            return Err(ApiError::BadRequest(format!(
+                "media host root is not configured; set RUSTFIN_MEDIA_HOST_PATH and restart with {}",
+                host_start_script()
+            )));
         }
         return Ok(selected_path.to_string());
     }
@@ -2135,9 +2145,10 @@ POSIX path of chosenFolder"#;
 fn open_directory_picker_native() -> Result<String, ApiError> {
     // Containerized builds cannot show host desktop pickers.
     if std::path::Path::new("/.dockerenv").exists() {
-        return Err(ApiError::BadRequest(
-            "native directory picker is unavailable in this container; use ./scripts/start.sh so Browse can open the host file picker".into(),
-        ));
+        return Err(ApiError::BadRequest(format!(
+            "native directory picker is unavailable in this container; use {} so Browse can open the host file picker",
+            host_start_script()
+        )));
     }
 
     #[cfg(target_os = "linux")]
