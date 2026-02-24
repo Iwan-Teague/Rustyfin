@@ -15,7 +15,7 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::handlers::perform_youtube_search;
+use super::handlers::{normalize_web_room_url, perform_youtube_search};
 use super::manager::{AudioAction, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
@@ -43,6 +43,7 @@ struct ConnectionContext {
     user_id: String,
     room_mode: String,
     audio_library_id: Option<String>,
+    web_url: Option<String>,
 }
 
 pub async fn ws_connect(
@@ -225,6 +226,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         None
     };
 
+    // Load persisted initial URL for web rooms.
+    let web_url = if context.room_mode == "web" {
+        rustfin_db::repo::watch_party::get_room(&state.db, &context.room_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|r| r.web_url)
+    } else {
+        context.web_url.clone()
+    };
+
     let runtime = state
         .watch_party
         .get_or_create_runtime(
@@ -234,6 +246,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             context.audio_library_id.as_deref(),
             audio_track_ids,
             youtube_video_id,
+            web_url,
         )
         .await;
 
@@ -607,6 +620,7 @@ async fn authorize_ws_connection(
         user_id: claims.sub.clone(),
         room_mode: room.room_mode,
         audio_library_id: room.audio_library_id,
+        web_url: room.web_url,
     })
 }
 
@@ -643,6 +657,10 @@ async fn handle_client_message(
                     "rejecting play command: room not active"
                 );
                 send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode == "web" {
+                send_error(socket, "play is not valid in web rooms").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
@@ -696,6 +714,10 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
+            if context.room_mode == "web" {
+                send_error(socket, "pause is not valid in web rooms").await?;
+                return Ok(());
+            }
             if !can_play_pause(&role, &policy) {
                 warn!(
                     room_id = %context.room_id,
@@ -745,6 +767,10 @@ async fn handle_client_message(
                     "rejecting seek command: room not active"
                 );
                 send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode == "web" {
+                send_error(socket, "seek is not valid in web rooms").await?;
                 return Ok(());
             }
             if !can_seek(&role, &policy) {
@@ -1187,6 +1213,42 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::ChangeWebUrl { url } => {
+            if context.room_mode != "web" {
+                send_error(socket, "change_web_url is only valid in web rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "changing web URL is not allowed for this user").await?;
+                return Ok(());
+            }
+
+            let normalized_url = normalize_web_room_url(&url)?;
+            runtime.set_web_url(normalized_url.clone()).await;
+            let _ = rustfin_db::repo::watch_party::update_web_url(
+                &state.db,
+                &context.room_id,
+                &normalized_url,
+            )
+            .await;
+
+            info!(
+                room_id = %context.room_id,
+                user_id = %context.user_id,
+                url = %normalized_url,
+                "accepted web change_web_url command"
+            );
+
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
         ClientMessage::SearchYouTube { query } => {
             if context.room_mode != "youtube" {
                 send_error(socket, "search_youtube is only valid in YouTube rooms").await?;
@@ -1294,6 +1356,9 @@ async fn build_state_message(
     if runtime.room_mode == "youtube" {
         return build_youtube_state_message(state, runtime, room_id).await;
     }
+    if runtime.room_mode == "web" {
+        return build_web_state_message(state, runtime, room_id).await;
+    }
 
     let snapshot = runtime.snapshot_state().await;
     let connected = runtime.connected_user_ids.read().await.clone();
@@ -1338,6 +1403,49 @@ async fn build_state_message(
         item_id: runtime.item_id.clone(),
         playing: snapshot.playing,
         position_ms,
+        updated_ts_ms,
+        server_ts_ms: now_ms,
+        members: member_summaries,
+    })
+}
+
+async fn build_web_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let (url, updated_ts_ms) = runtime.snapshot_web_state().await;
+    let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .into_iter()
+        .map(|u| (u.id, u.username))
+        .collect();
+
+    let member_summaries = members
+        .into_iter()
+        .filter(|m| m.status != "declined" && m.status != "left")
+        .map(|member| PresenceMember {
+            user_id: member.user_id.clone(),
+            username: usernames
+                .get(&member.user_id)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            role: member.role,
+            connected: connected.contains(&member.user_id) && member.status == "joined",
+        })
+        .collect();
+
+    Ok(ServerMessage::WebState {
+        room_id: room_id.to_string(),
+        url,
         updated_ts_ms,
         server_ts_ms: now_ms,
         members: member_summaries,

@@ -33,7 +33,7 @@ type LibrarySummary = {
 };
 
 type RoomMode = 'watch' | 'audio' | 'play';
-type WatchSource = 'local' | 'youtube';
+type WatchSource = 'local' | 'youtube' | 'web';
 type RightPanelTab = 'invites' | 'options';
 
 const DEFAULT_POLICY: WatchPartyPolicy = {
@@ -54,6 +54,7 @@ export default function WatchPartyPage() {
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
   const [watchSource, setWatchSource] = useState<WatchSource>('local');
+  const [webStartUrl, setWebStartUrl] = useState('');
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('invites');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
   const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
@@ -78,6 +79,8 @@ export default function WatchPartyPage() {
     ? 'audio'
     : watchSource === 'youtube'
       ? 'youtube'
+      : watchSource === 'web'
+        ? 'web'
       : 'video';
 
   const musicLibraries = useMemo(
@@ -298,6 +301,18 @@ export default function WatchPartyPage() {
         const created = await createWatchPartyRoom(payload);
         setMessage(`Room created: ${created.room_id}`);
         router.push(created.join_path);
+      } else if (watchSource === 'web') {
+        const payload = {
+          room_mode: 'web' as const,
+          web_url: webStartUrl.trim() || undefined,
+          invites: invitesPayload,
+          password: password.trim() ? password.trim() : undefined,
+          policy,
+        };
+
+        const created = await createWatchPartyRoom(payload);
+        setMessage(`Room created: ${created.room_id}`);
+        router.push(created.join_path);
       } else if (watchSource === 'youtube') {
         const payload = {
           room_mode: 'youtube' as const,
@@ -355,7 +370,7 @@ export default function WatchPartyPage() {
       ? false
       : roomMode === 'audio'
         ? !!selectedAudioLibraryId
-        : watchSource === 'youtube'
+        : watchSource === 'youtube' || watchSource === 'web'
           ? true
           : !!selectedItem;
   const fixedColumnHeightStyle = fixedColumnHeightPx
@@ -448,7 +463,7 @@ export default function WatchPartyPage() {
         <section className="space-y-4">
           {roomMode === 'watch' && (
             <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-              {(['local', 'youtube'] as const).map((source) => (
+              {(['local', 'youtube', 'web'] as const).map((source) => (
                 <button
                   key={source}
                   type="button"
@@ -459,7 +474,7 @@ export default function WatchPartyPage() {
                       : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
                   }`}
                 >
-                  {source === 'local' ? 'Local Media' : 'YouTube'}
+                  {source === 'local' ? 'Local Media' : source === 'youtube' ? 'YouTube' : 'Web'}
                 </button>
               ))}
             </div>
@@ -478,6 +493,29 @@ export default function WatchPartyPage() {
                     onLibraryChange={setSelectedLibraryId}
                     onSelectItem={setSelectedItem}
                   />
+                ) : watchSource === 'web' ? (
+                  <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
+                    <div className="space-y-2">
+                      <h2 className="text-xl font-semibold">Watch Together (Web)</h2>
+                      <p className="text-sm muted">
+                        Enter a URL to open for everyone in a shared web room.
+                      </p>
+                    </div>
+                    <label className="block text-sm">
+                      <span className="mb-1 block text-xs uppercase tracking-wide muted">Initial URL</span>
+                      <input
+                        type="text"
+                        value={webStartUrl}
+                        onChange={(e) => setWebStartUrl(e.target.value)}
+                        className="input px-3 py-2 text-sm"
+                        placeholder="https://www.mozilla.org/"
+                        maxLength={2048}
+                      />
+                    </label>
+                    <p className="text-xs muted">
+                      Hosts/admins can change the URL live inside the room. Some websites block iframe embedding.
+                    </p>
+                  </section>
                 ) : (
                   <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
                     <div className="space-y-2">

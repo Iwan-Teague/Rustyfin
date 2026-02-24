@@ -10,6 +10,7 @@ import {
   WatchPartyUser,
   WsAudioStateMessage,
   WsRoomReconfiguredMessage,
+  WsWebStateMessage,
   WsYouTubeStateMessage,
   endWatchPartyRoom,
   getEligibleLibraries,
@@ -24,6 +25,7 @@ import { formatElapsedSeconds } from '@/lib/time';
 import { nonAdminRoleLabel, roleLabel } from '@/lib/watchPartyRoles';
 import AudioPlayer from '../components/AudioPlayer';
 import MediaPicker, { MediaItemNode, MediaLibrary } from '../components/MediaPicker';
+import WebPlayer from '../components/WebPlayer';
 import YouTubePlayer from '../components/YouTubePlayer';
 
 type PlaybackDescriptor = {
@@ -81,11 +83,12 @@ type WsRoomEndedMessage = {
   type: 'room_ended';
 };
 
-type RoomMode = 'video' | 'audio' | 'youtube';
+type RoomMode = 'video' | 'audio' | 'youtube' | 'web';
 
 type WsMessage =
   | WsStateMessage
   | WsAudioStateMessage
+  | WsWebStateMessage
   | WsYouTubeStateMessage
   | WsRoomReconfiguredMessage
   | WsPresenceMessage
@@ -136,6 +139,7 @@ export default function WatchPartyRoomPage() {
   const [room, setRoom] = useState<WatchPartyRoomResponse | null>(null);
   const [roomState, setRoomState] = useState<WsStateMessage | null>(null);
   const [audioState, setAudioState] = useState<WsAudioStateMessage | null>(null);
+  const [webState, setWebState] = useState<WsWebStateMessage | null>(null);
   const [youtubeState, setYoutubeState] = useState<WsYouTubeStateMessage | null>(null);
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [joinPassword, setJoinPassword] = useState('');
@@ -163,10 +167,11 @@ export default function WatchPartyRoomPage() {
   const [allLibraries, setAllLibraries] = useState<MediaLibrary[]>([]);
   const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
   const [reconfigureMode, setReconfigureMode] = useState<RoomMode>('video');
-  const [reconfigureWatchSource, setReconfigureWatchSource] = useState<'video' | 'youtube'>('video');
+  const [reconfigureWatchSource, setReconfigureWatchSource] = useState<'video' | 'youtube' | 'web'>('video');
   const [reconfigureVideoLibraryId, setReconfigureVideoLibraryId] = useState('');
   const [reconfigureVideoItem, setReconfigureVideoItem] = useState<MediaItemNode | null>(null);
   const [reconfigureAudioLibraryId, setReconfigureAudioLibraryId] = useState('');
+  const [reconfigureWebUrl, setReconfigureWebUrl] = useState('');
   const [reconfigureDirty, setReconfigureDirty] = useState(false);
   const [reconfiguring, setReconfiguring] = useState(false);
   const [roomPanelExpanded, setRoomPanelExpanded] = useState(false);
@@ -196,6 +201,7 @@ export default function WatchPartyRoomPage() {
   }, [clearInfoTimeout]);
 
   const isAudioRoom = room?.room_mode === 'audio';
+  const isWebRoom = room?.room_mode === 'web';
   const isYoutubeRoom = room?.room_mode === 'youtube';
   const effectiveRoomMode = room?.room_mode ?? 'video';
   const memberRoleDisplay = nonAdminRoleLabel(effectiveRoomMode);
@@ -242,7 +248,7 @@ export default function WatchPartyRoomPage() {
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
 
-  const activeMembers = (roomState?.members ?? audioState?.members ?? youtubeState?.members) ?? room?.members.map((member) => ({
+  const activeMembers = (roomState?.members ?? audioState?.members ?? webState?.members ?? youtubeState?.members) ?? room?.members.map((member) => ({
     user_id: member.user_id,
     username: member.username,
     role: member.role,
@@ -359,7 +365,10 @@ export default function WatchPartyRoomPage() {
 
   useEffect(() => {
     if (!room) return;
-    const mode = room.room_mode === 'audio' || room.room_mode === 'youtube' ? room.room_mode : 'video';
+    const mode =
+      room.room_mode === 'audio' || room.room_mode === 'youtube' || room.room_mode === 'web'
+        ? room.room_mode
+        : 'video';
     if (!reconfigureDirty) {
       setReconfigureMode(mode);
       if (mode === 'audio') {
@@ -367,8 +376,11 @@ export default function WatchPartyRoomPage() {
         return;
       }
       setReconfigureWatchSource(mode);
+      if (mode === 'web') {
+        setReconfigureWebUrl(room.web_url || '');
+      }
     }
-  }, [room?.room_mode, reconfigureDirty]);
+  }, [room?.room_mode, room?.web_url, reconfigureDirty]);
 
   useEffect(() => {
     if (!room || !me || joinedRole !== 'host') return;
@@ -427,7 +439,7 @@ export default function WatchPartyRoomPage() {
   }, [joinedRole, refreshRoom]);
 
   useEffect(() => {
-    if (!room || !joinedRole || isAudioRoom || isYoutubeRoom) return;
+    if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom) return;
 
     let cancelled = false;
 
@@ -445,7 +457,7 @@ export default function WatchPartyRoomPage() {
     return () => {
       cancelled = true;
     };
-  }, [room, joinedRole, isAudioRoom, isYoutubeRoom]);
+  }, [room, joinedRole, isAudioRoom, isWebRoom, isYoutubeRoom]);
 
   const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
     const video = videoRef.current;
@@ -522,6 +534,13 @@ export default function WatchPartyRoomPage() {
               if (!prev) return prev;
               return { ...prev, members: payload.members };
             });
+          } else if (payload.type === 'web_state') {
+            appendDebug(`web state url=${payload.url || 'none'} updated_ts_ms=${payload.updated_ts_ms}`);
+            setWebState(payload);
+            setRoomState((prev) => {
+              if (!prev) return prev;
+              return { ...prev, members: payload.members };
+            });
           } else if (payload.type === 'youtube_state' || payload.type === 'you_tube_state') {
             appendDebug(
               `youtube state video_id=${payload.video_id || 'none'} playing=${payload.playing} position_ms=${payload.position_ms}`,
@@ -532,14 +551,16 @@ export default function WatchPartyRoomPage() {
             });
           } else if (payload.type === 'room_reconfigured') {
             appendDebug(
-              `room reconfigured mode=${payload.room_mode} item_id=${payload.item_id || 'none'} audio_library_id=${payload.audio_library_id || 'none'} youtube_video_id=${payload.youtube_video_id || 'none'}`,
+              `room reconfigured mode=${payload.room_mode} item_id=${payload.item_id || 'none'} audio_library_id=${payload.audio_library_id || 'none'} youtube_video_id=${payload.youtube_video_id || 'none'} web_url=${payload.web_url || 'none'}`,
             );
             setInfo('Room configuration changed. Refreshing room mode…');
             setReconfigureDirty(false);
             setReconfigureVideoItem(null);
+            setReconfigureWebUrl(payload.web_url || '');
             setDescriptor(null);
             setRoomState(null);
             setAudioState(null);
+            setWebState(null);
             setYoutubeState(null);
             destroyHls();
             if (sessionIdRef.current) {
@@ -572,6 +593,17 @@ export default function WatchPartyRoomPage() {
               };
             });
             setYoutubeState((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                members: prev.members.map((member) =>
+                  member.user_id === payload.user_id
+                    ? { ...member, connected: payload.connected }
+                    : member,
+                ),
+              };
+            });
+            setWebState((prev) => {
               if (!prev) return prev;
               return {
                 ...prev,
@@ -917,7 +949,7 @@ export default function WatchPartyRoomPage() {
   }, [room?.item_id, room?.room_mode]);
 
   useEffect(() => {
-    if (!room || !joinedRole || isAudioRoom || isYoutubeRoom || !descriptor) return;
+    if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || !descriptor) return;
     if (startingDirect || startingHls) return;
     if (autoPreloadedItemRef.current === room.item_id) return;
 
@@ -951,6 +983,7 @@ export default function WatchPartyRoomPage() {
     joinedRole,
     isAudioRoom,
     isYoutubeRoom,
+    isWebRoom,
     descriptor,
     startingDirect,
     startingHls,
@@ -1071,6 +1104,11 @@ export default function WatchPartyRoomPage() {
       payload = {
         room_mode: 'audio',
         audio_library_id: reconfigureAudioLibraryId,
+      };
+    } else if (reconfigureMode === 'web') {
+      payload = {
+        room_mode: 'web',
+        web_url: reconfigureWebUrl.trim() || undefined,
       };
     } else {
       payload = {
@@ -1218,7 +1256,7 @@ export default function WatchPartyRoomPage() {
                 <div className="space-y-1">
                   <h2 className="text-xl font-semibold">Reconfigure Room</h2>
                   <p className="text-sm muted">
-                    Switch between Watch Together and Listen Together without creating a new room.
+                    Switch between Watch Together, Listen Together, and Web without creating a new room.
                   </p>
                 </div>
 
@@ -1246,9 +1284,9 @@ export default function WatchPartyRoomPage() {
                     </button>
                   </div>
                   <div className="flex w-full justify-end sm:w-auto">
-                    <button
-                      type="button"
-                      className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
+                      <button
+                        type="button"
+                        className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
                       onClick={handleReconfigureRoom}
                       disabled={
                         reconfiguring ||
@@ -1265,7 +1303,7 @@ export default function WatchPartyRoomPage() {
                   <div className="space-y-3">
                     <div className="space-y-2">
                       <p className="text-xs uppercase tracking-wide muted">Watch Source</p>
-                      <div role="radiogroup" aria-label="Watch source" className="grid gap-2 sm:grid-cols-2">
+                      <div role="radiogroup" aria-label="Watch source" className="grid gap-2 sm:grid-cols-3">
                         <label
                           className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
                             reconfigureMode === 'video' ? 'border-[var(--purple)]' : ''
@@ -1302,6 +1340,24 @@ export default function WatchPartyRoomPage() {
                           <p className="text-sm font-medium">YouTube</p>
                           <p className="text-xs muted">Shared search and queue inside the lobby.</p>
                         </label>
+                        <label
+                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                            reconfigureMode === 'web' ? 'border-[var(--purple)]' : ''
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            className="sr-only"
+                            checked={reconfigureMode === 'web'}
+                            onChange={() => {
+                              setReconfigureDirty(true);
+                              setReconfigureWatchSource('web');
+                              setReconfigureMode('web');
+                            }}
+                          />
+                          <p className="text-sm font-medium">Web</p>
+                          <p className="text-xs muted">Shared synchronized browser URL.</p>
+                        </label>
                       </div>
                     </div>
 
@@ -1321,6 +1377,24 @@ export default function WatchPartyRoomPage() {
                           onSelectItem={setReconfigureVideoItem}
                         />
                       )
+                    ) : reconfigureMode === 'web' ? (
+                      <div className="space-y-2">
+                        <label className="block text-xs uppercase tracking-wide muted" htmlFor="reconfigure-web-url">
+                          Shared URL
+                        </label>
+                        <input
+                          id="reconfigure-web-url"
+                          type="text"
+                          value={reconfigureWebUrl}
+                          onChange={(e) => setReconfigureWebUrl(e.target.value)}
+                          className="input px-3 py-2 text-sm"
+                          placeholder="https://www.mozilla.org/"
+                          maxLength={2048}
+                        />
+                        <p className="text-xs muted">
+                          Apply mode to push this URL to all joined members.
+                        </p>
+                      </div>
                     ) : null}
                   </div>
                 ) : (
@@ -1368,7 +1442,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel space-y-4 p-5 sm:p-6">
           <h2 className="text-xl font-semibold">Join Room</h2>
           <p className="text-sm muted">
-            You must join this room before {isAudioRoom ? 'listening' : isYoutubeRoom ? 'watching YouTube together' : 'opening synchronized playback'}.
+            You must join this room before {isAudioRoom ? 'listening' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : 'opening synchronized playback'}.
           </p>
 
           {room.password_required && (
@@ -1429,6 +1503,22 @@ export default function WatchPartyRoomPage() {
         </section>
       )}
 
+      {joinedRole && isWebRoom && (
+        <section className="panel space-y-4 p-5 sm:p-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="chip">Role: {joinedRoleDisplay}</span>
+            <span className="chip">Navigation: {canPlayPause ? 'allowed' : 'admin-only'}</span>
+          </div>
+          <WebPlayer
+            roomId={roomId}
+            webState={webState}
+            canControl={canPlayPause}
+            wsConnected={wsConnected}
+            sendWs={sendWs}
+          />
+        </section>
+      )}
+
       {joinedRole && isYoutubeRoom && (
         <section className="panel space-y-3 p-4 sm:p-5">
           <div className="flex flex-wrap items-center gap-2">
@@ -1456,7 +1546,7 @@ export default function WatchPartyRoomPage() {
         </section>
       )}
 
-      {joinedRole && !isAudioRoom && !isYoutubeRoom && (
+      {joinedRole && !isAudioRoom && !isWebRoom && !isYoutubeRoom && (
         <>
           <section className="panel space-y-4 p-5 sm:p-6">
             <div className="flex flex-wrap items-center gap-2">

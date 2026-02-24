@@ -13,6 +13,7 @@ pub struct WatchPartyRoomRow {
     pub room_mode: String,
     pub audio_library_id: Option<String>,
     pub youtube_video_id: Option<String>,
+    pub web_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +60,7 @@ pub async fn create_room_with_members(
     members: &[NewWatchPartyMember],
     room_mode: Option<&str>,
     audio_library_id: Option<&str>,
+    web_url: Option<&str>,
 ) -> Result<WatchPartyRoomRow, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let room_id = uuid::Uuid::new_v4().to_string();
@@ -68,8 +70,8 @@ pub async fn create_room_with_members(
 
     sqlx::query(
         "INSERT INTO watch_party_room \
-         (id, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id) \
-         VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?)",
+         (id, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, web_url) \
+         VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&room_id)
     .bind(host_user_id)
@@ -80,6 +82,7 @@ pub async fn create_room_with_members(
     .bind(now)
     .bind(mode)
     .bind(audio_library_id)
+    .bind(web_url)
     .execute(&mut *tx)
     .await?;
 
@@ -115,6 +118,7 @@ pub async fn create_room_with_members(
         room_mode: mode.to_string(),
         audio_library_id: audio_library_id.map(str::to_string),
         youtube_video_id: None,
+        web_url: web_url.map(str::to_string),
     })
 }
 
@@ -122,9 +126,9 @@ pub async fn get_room(
     pool: &SqlitePool,
     room_id: &str,
 ) -> Result<Option<WatchPartyRoomRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, String, Option<String>, i64, i64, String, Option<String>, Option<String>)> =
+    let row: Option<(String, String, String, String, String, Option<String>, i64, i64, String, Option<String>, Option<String>, Option<String>)> =
         sqlx::query_as(
-            "SELECT id, host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id \
+            "SELECT id, host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id, web_url \
              FROM watch_party_room WHERE id = ?",
         )
         .bind(room_id)
@@ -144,6 +148,7 @@ pub async fn get_room(
             room_mode,
             audio_library_id,
             youtube_video_id,
+            web_url,
         )| {
             WatchPartyRoomRow {
                 id,
@@ -157,6 +162,7 @@ pub async fn get_room(
                 room_mode,
                 audio_library_id,
                 youtube_video_id,
+                web_url,
             }
         },
     ))
@@ -356,7 +362,7 @@ pub async fn list_invites_for_user(
     user_id: &str,
 ) -> Result<Vec<WatchPartyInviteSummary>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, i64, String, String)> = sqlx::query_as(
-        "SELECT m.room_id, r.item_id, COALESCE(i.title, r.room_mode), r.host_user_id, host.username, r.created_ts, \
+        "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(i.title, r.room_mode), r.host_user_id, host.username, r.created_ts, \
                 CASE WHEN r.join_password_hash IS NULL OR r.join_password_hash = '' THEN 0 ELSE 1 END AS password_required, \
                 m.role, m.status \
          FROM watch_party_member m \
@@ -409,6 +415,7 @@ pub struct PublicRoomRow {
     pub item_title: String,
     pub room_mode: String,
     pub audio_library_name: String,
+    pub web_url: String,
     pub password_required: bool,
     pub member_count: i64,
     pub created_ts: i64,
@@ -416,10 +423,10 @@ pub struct PublicRoomRow {
 
 /// List all non-invite-only rooms that are currently in the lobby.
 pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, String, String, String, i64, i64, i64)> =
+    let rows: Vec<(String, String, String, String, String, String, String, String, i64, i64, i64)> =
         sqlx::query_as(
-            "SELECT r.id, r.host_user_id, host.username, r.item_id, \
-                    COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), \
+            "SELECT r.id, r.host_user_id, host.username, COALESCE(r.item_id, ''), \
+                    COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                     CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
                     COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                     r.created_ts \
@@ -448,6 +455,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
                 item_title,
                 room_mode,
                 audio_library_name,
+                web_url,
                 password_required,
                 member_count,
                 created_ts,
@@ -460,6 +468,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
                     item_title,
                     room_mode,
                     audio_library_name,
+                    web_url,
                     password_required: password_required != 0,
                     member_count,
                     created_ts,
@@ -597,6 +606,19 @@ pub async fn update_youtube_video_id(
     Ok(())
 }
 
+pub async fn update_web_url(
+    pool: &SqlitePool,
+    room_id: &str,
+    web_url: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE watch_party_room SET web_url = ? WHERE id = ?")
+        .bind(web_url)
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn reconfigure_room_mode(
     pool: &SqlitePool,
     room_id: &str,
@@ -604,17 +626,19 @@ pub async fn reconfigure_room_mode(
     item_id: Option<&str>,
     audio_library_id: Option<&str>,
     youtube_video_id: Option<&str>,
+    web_url: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
         "UPDATE watch_party_room \
-         SET room_mode = ?, item_id = ?, audio_library_id = ?, youtube_video_id = ?, updated_ts = ? \
+         SET room_mode = ?, item_id = ?, audio_library_id = ?, youtube_video_id = ?, web_url = ?, updated_ts = ? \
          WHERE id = ?",
     )
     .bind(room_mode)
     .bind(item_id)
     .bind(audio_library_id)
     .bind(youtube_video_id)
+    .bind(web_url)
     .bind(now)
     .bind(room_id)
     .execute(pool)

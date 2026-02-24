@@ -29,6 +29,8 @@ const YOUTUBE_SEARCH_TIMEOUT_SECONDS: u64 = 8;
 const YOUTUBE_LOOKUP_MAX_IDS: usize = 25;
 const YOUTUBE_LOOKUP_TIMEOUT_SECONDS: u64 = 5;
 const INVITE_RESEND_COOLDOWN_SECONDS: i64 = 5;
+const WEB_URL_MAX_LEN: usize = 2048;
+const DEFAULT_WEB_ROOM_URL: &str = "https://www.mozilla.org/";
 const YOUTUBE_SEARCH_URL: &str = "https://www.youtube.com/results";
 const YOUTUBE_SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -89,6 +91,8 @@ pub struct CreateRoomRequest {
     pub audio_library_id: Option<String>,
     /// Explicit room mode override. Use "youtube" for YouTube watch parties.
     pub room_mode: Option<String>,
+    /// For web rooms: initial URL to open for all members.
+    pub web_url: Option<String>,
     #[serde(default)]
     pub invites: Vec<CreateRoomInvite>,
     #[serde(default)]
@@ -125,6 +129,7 @@ pub struct RoomResponse {
     pub room_mode: String,
     pub audio_library_id: Option<String>,
     pub youtube_video_id: Option<String>,
+    pub web_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +153,8 @@ pub struct ReconfigureRoomRequest {
     pub audio_library_id: Option<String>,
     #[serde(default)]
     pub youtube_video_id: Option<String>,
+    #[serde(default)]
+    pub web_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -311,6 +318,40 @@ fn extract_youtube_video_id_from_input(raw: &str) -> Option<String> {
     }
 
     None
+}
+
+pub(crate) fn normalize_web_room_url(raw: &str) -> Result<String, AppError> {
+    let mut candidate = raw.trim().to_string();
+    if candidate.is_empty() {
+        candidate = DEFAULT_WEB_ROOM_URL.to_string();
+    }
+    if candidate.len() > WEB_URL_MAX_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "web_url must be <= {WEB_URL_MAX_LEN} characters"
+        ))
+        .into());
+    }
+
+    // Convenience: allow hostnames/paths without an explicit scheme by defaulting to HTTPS.
+    if !candidate.contains("://") {
+        candidate = format!("https://{candidate}");
+    }
+
+    let parsed = reqwest::Url::parse(&candidate)
+        .map_err(|_| ApiError::BadRequest("web_url must be a valid http(s) URL".into()))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(ApiError::BadRequest("web_url must use http:// or https://".into()).into());
+        }
+    }
+
+    if parsed.host_str().is_none() {
+        return Err(ApiError::BadRequest("web_url must include a host".into()).into());
+    }
+
+    Ok(parsed.to_string())
 }
 
 fn normalize_youtube_search_query(raw_query: &str) -> Result<String, AppError> {
@@ -856,6 +897,19 @@ fn is_password_required(hash: Option<&str>) -> bool {
     hash.is_some_and(|value| !value.trim().is_empty())
 }
 
+fn web_room_title(web_url: &str) -> String {
+    let trimmed = web_url.trim();
+    if trimmed.is_empty() {
+        return "Web Room".to_string();
+    }
+    if let Ok(url) = reqwest::Url::parse(trimmed) {
+        if let Some(host) = url.host_str() {
+            return format!("Web: {host}");
+        }
+    }
+    "Web Room".to_string()
+}
+
 #[derive(Debug, Serialize)]
 pub struct PublicRoomEntry {
     pub room_id: String,
@@ -886,6 +940,8 @@ pub async fn list_public_rooms(
                 }
             } else if r.room_mode == "youtube" {
                 "YouTube Party".to_string()
+            } else if r.room_mode == "web" {
+                web_room_title(&r.web_url)
             } else {
                 r.item_title
             };
@@ -1034,14 +1090,18 @@ pub async fn create_room(
     }
 
     // Determine room mode and item_id
-    let (room_mode, item_id, audio_library_id, track_ids): (
+    let (room_mode, item_id, audio_library_id, track_ids, web_url): (
         String,
         Option<String>,
         Option<String>,
         Option<Vec<String>>,
+        Option<String>,
     ) = if body.room_mode.as_deref() == Some("youtube") {
         // YouTube room — no media item or library required
-        ("youtube".to_string(), None, None, None)
+        ("youtube".to_string(), None, None, None, None)
+    } else if body.room_mode.as_deref() == Some("web") {
+        let normalized_url = normalize_web_room_url(body.web_url.as_deref().unwrap_or(""))?;
+        ("web".to_string(), None, None, None, Some(normalized_url))
     } else if let Some(audio_lib_id) = body
         .audio_library_id
         .as_deref()
@@ -1085,6 +1145,7 @@ pub async fn create_room(
             Some(first_track_id),
             Some(audio_lib_id.to_string()),
             Some(track_ids),
+            None,
         )
     } else {
         // Video room
@@ -1108,7 +1169,7 @@ pub async fn create_room(
 
         ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
 
-        ("video".to_string(), Some(item.id.clone()), None, None)
+        ("video".to_string(), Some(item.id.clone()), None, None, None)
     };
 
     let now = chrono::Utc::now().timestamp();
@@ -1167,6 +1228,7 @@ pub async fn create_room(
         &members,
         Some(&room_mode),
         audio_library_id.as_deref(),
+        web_url.as_deref(),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1231,7 +1293,14 @@ pub async fn reconfigure_room(
     }
 
     let target_mode = body.room_mode.trim().to_ascii_lowercase();
-    let (target_item_id, target_audio_library_id, target_youtube_video_id, target_audio_queue): (
+    let (
+        target_item_id,
+        target_audio_library_id,
+        target_youtube_video_id,
+        target_web_url,
+        target_audio_queue,
+    ): (
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1272,7 +1341,7 @@ pub async fn reconfigure_room(
                 }
             }
 
-            (Some(item.id), None, None, None)
+            (Some(item.id), None, None, None, None)
         }
         "audio" => {
             let library_id = body
@@ -1333,6 +1402,7 @@ pub async fn reconfigure_room(
                 Some(first_track),
                 Some(library_id.to_string()),
                 None,
+                None,
                 Some(track_ids),
             )
         }
@@ -1352,11 +1422,15 @@ pub async fn reconfigure_room(
                 })
                 .transpose()?;
 
-            (None, None, youtube_video_id, None)
+            (None, None, youtube_video_id, None, None)
+        }
+        "web" => {
+            let normalized_url = normalize_web_room_url(body.web_url.as_deref().unwrap_or(""))?;
+            (None, None, None, Some(normalized_url), None)
         }
         _ => {
             return Err(ApiError::BadRequest(
-                "room_mode must be one of: video, audio, youtube".into(),
+                "room_mode must be one of: video, audio, youtube, web".into(),
             )
             .into());
         }
@@ -1369,6 +1443,7 @@ pub async fn reconfigure_room(
         target_item_id.as_deref(),
         target_audio_library_id.as_deref(),
         target_youtube_video_id.as_deref(),
+        target_web_url.as_deref(),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1393,6 +1468,7 @@ pub async fn reconfigure_room(
                 item_id: target_item_id.clone().unwrap_or_default(),
                 audio_library_id: target_audio_library_id.clone(),
                 youtube_video_id: target_youtube_video_id.clone(),
+                web_url: target_web_url.clone(),
             });
     }
     state.watch_party.remove_runtime(&room_id).await;
@@ -1473,6 +1549,21 @@ pub async fn get_room(
         None
     };
 
+    let web_url = if room.room_mode == "web" {
+        if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+            let current = runtime.get_web_url().await;
+            if current.trim().is_empty() {
+                room.web_url
+            } else {
+                Some(current)
+            }
+        } else {
+            room.web_url
+        }
+    } else {
+        None
+    };
+
     let ended_ts = if room.status == "ended" {
         Some(room.updated_ts)
     } else {
@@ -1493,6 +1584,7 @@ pub async fn get_room(
         room_mode: room.room_mode,
         audio_library_id: room.audio_library_id,
         youtube_video_id,
+        web_url,
     }))
 }
 
