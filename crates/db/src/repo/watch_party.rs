@@ -596,3 +596,37 @@ pub async fn update_youtube_video_id(
         .await?;
     Ok(())
 }
+
+pub async fn reconfigure_room_mode(
+    pool: &SqlitePool,
+    room_id: &str,
+    room_mode: &str,
+    item_id: Option<&str>,
+    audio_library_id: Option<&str>,
+    youtube_video_id: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result = sqlx::query(
+        "UPDATE watch_party_room \
+         SET room_mode = ?, item_id = ?, audio_library_id = ?, youtube_video_id = ?, updated_ts = ? \
+         WHERE id = ?",
+    )
+    .bind(room_mode)
+    .bind(item_id)
+    .bind(audio_library_id)
+    .bind(youtube_video_id)
+    .bind(now)
+    .bind(room_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn clear_audio_queue(pool: &SqlitePool, room_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM watch_party_audio_queue WHERE room_id = ?")
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

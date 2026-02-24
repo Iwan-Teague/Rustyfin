@@ -22,6 +22,10 @@ pub fn watch_party_router() -> Router<AppState> {
         .route("/rooms/{room_id}/leave", post(super::handlers::leave_room))
         .route("/rooms/{room_id}/end", post(super::handlers::end_room))
         .route(
+            "/rooms/{room_id}/reconfigure",
+            post(super::handlers::reconfigure_room),
+        )
+        .route(
             "/rooms/{room_id}/invite",
             post(super::handlers::invite_members),
         )

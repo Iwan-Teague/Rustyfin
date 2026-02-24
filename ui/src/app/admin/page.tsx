@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -87,6 +87,35 @@ export default function AdminPage() {
   const [savingTmdb, setSavingTmdb] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'ok' | 'error'>('ok');
+  const librariesRef = useRef<Library[]>([]);
+  const usersRef = useRef<UserAccount[]>([]);
+
+  function sameLibraryIds(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    const setA = new Set(a);
+    if (setA.size !== b.length) return false;
+    return b.every((id) => setA.has(id));
+  }
+
+  function toLibraryEditState(library: Library): LibraryEditState {
+    return {
+      name: library.name,
+      path: library.paths[0]?.path || '',
+      show_images: library.settings?.show_images ?? true,
+      prefer_local_artwork: library.settings?.prefer_local_artwork ?? true,
+      fetch_online_artwork: library.settings?.fetch_online_artwork ?? true,
+    };
+  }
+
+  function sameLibraryEdit(a: LibraryEditState, b: LibraryEditState): boolean {
+    return (
+      a.name === b.name &&
+      a.path === b.path &&
+      a.show_images === b.show_images &&
+      a.prefer_local_artwork === b.prefer_local_artwork &&
+      a.fetch_online_artwork === b.fetch_online_artwork
+    );
+  }
 
   useEffect(() => {
     if (!authLoading && (!me || me.role !== 'admin')) {
@@ -103,28 +132,49 @@ export default function AdminPage() {
         apiJson<TmdbConfig>('/system/tmdb'),
       ]);
       setLibraries(libs);
-      const nextLibEdits: Record<string, LibraryEditState> = {};
-      for (const lib of libs) {
-        nextLibEdits[lib.id] = {
-          name: lib.name,
-          path: lib.paths[0]?.path || '',
-          show_images: lib.settings?.show_images ?? true,
-          prefer_local_artwork: lib.settings?.prefer_local_artwork ?? true,
-          fetch_online_artwork: lib.settings?.fetch_online_artwork ?? true,
-        };
-      }
-      setLibraryEdits(nextLibEdits);
+      setLibraryEdits((prev) => {
+        const currentLibrariesById = new Map(librariesRef.current.map((library) => [library.id, library]));
+        const nextLibEdits: Record<string, LibraryEditState> = {};
+        for (const lib of libs) {
+          const serverEdit = toLibraryEditState(lib);
+          const prevEdit = prev[lib.id];
+          const currentLibrary = currentLibrariesById.get(lib.id);
+          const hasUnsavedChanges =
+            !!prevEdit &&
+            !!currentLibrary &&
+            !sameLibraryEdit(prevEdit, toLibraryEditState(currentLibrary));
+          nextLibEdits[lib.id] = hasUnsavedChanges
+            ? { ...prevEdit }
+            : serverEdit;
+        }
+        return nextLibEdits;
+      });
       setJobs(jobList);
       setUsers(userList);
-
-      const nextEdits: Record<string, UserEditState> = {};
-      for (const user of userList) {
-        nextEdits[user.id] = {
-          role: user.role,
-          library_ids: [...(user.library_ids || [])],
-        };
-      }
-      setUserEdits(nextEdits);
+      setUserEdits((prev) => {
+        const currentUsersById = new Map(usersRef.current.map((user) => [user.id, user]));
+        const nextEdits: Record<string, UserEditState> = {};
+        for (const user of userList) {
+          const serverEdit: UserEditState = {
+            role: user.role,
+            library_ids: [...(user.library_ids || [])],
+          };
+          const prevEdit = prev[user.id];
+          const currentUser = currentUsersById.get(user.id);
+          const hasUnsavedChanges =
+            !!prevEdit &&
+            !!currentUser &&
+            (prevEdit.role !== currentUser.role ||
+              !sameLibraryIds(prevEdit.library_ids, currentUser.library_ids || []));
+          nextEdits[user.id] = hasUnsavedChanges
+            ? {
+                role: prevEdit.role,
+                library_ids: [...prevEdit.library_ids],
+              }
+            : serverEdit;
+        }
+        return nextEdits;
+      });
       setTmdbConfig({
         configured: tmdb.configured,
         key_preview: tmdb.key_preview ?? null,
@@ -141,6 +191,14 @@ export default function AdminPage() {
       void loadData();
     }
   }, [me, loadData]);
+
+  useEffect(() => {
+    librariesRef.current = libraries;
+  }, [libraries]);
+
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
 
   const hasActiveJobs = useMemo(
     () => jobs.some((job) => job.status === 'queued' || job.status === 'running'),
@@ -277,6 +335,29 @@ export default function AdminPage() {
           },
         }),
       });
+      const nextLibraries = libraries.map((library) => {
+        if (library.id !== libraryId) return library;
+        const nextPath = library.paths[0]
+          ? [{ ...library.paths[0], path: edit.path }, ...library.paths.slice(1)]
+          : [{ id: 'primary', path: edit.path, is_read_only: false }];
+        return {
+          ...library,
+          name: edit.name,
+          paths: nextPath,
+          settings: {
+            ...library.settings,
+            show_images: edit.show_images,
+            prefer_local_artwork: edit.prefer_local_artwork,
+            fetch_online_artwork: edit.fetch_online_artwork,
+          },
+        };
+      });
+      librariesRef.current = nextLibraries;
+      setLibraries(nextLibraries);
+      setLibraryEdits((prev) => ({
+        ...prev,
+        [libraryId]: { ...edit },
+      }));
       setOk('Library updated');
       await loadData();
     } catch (err: any) {
@@ -374,6 +455,26 @@ export default function AdminPage() {
           library_ids: edit.role === 'user' ? edit.library_ids : [],
         }),
       });
+      const savedRole = edit.role;
+      const savedLibraryIds = edit.role === 'user' ? [...edit.library_ids] : [];
+      const nextUsers = users.map((user) =>
+        user.id === userId
+          ? {
+              ...user,
+              role: savedRole,
+              library_ids: [...savedLibraryIds],
+            }
+          : user,
+      );
+      usersRef.current = nextUsers;
+      setUsers(nextUsers);
+      setUserEdits((prev) => ({
+        ...prev,
+        [userId]: {
+          role: savedRole,
+          library_ids: [...savedLibraryIds],
+        },
+      }));
       setOk('User permissions updated');
       await loadData();
     } catch (err: any) {

@@ -106,6 +106,13 @@ function mapStateCode(code: number): string {
   return `UNKNOWN(${code})`;
 }
 
+function formatViewCount(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
 export default function YouTubePlayer({
   roomId,
   ytState,
@@ -127,6 +134,7 @@ export default function YouTubePlayer({
   const searchResultsListRef = useRef<HTMLUListElement | null>(null);
   const pendingQueueTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const queueLookupFailedRef = useRef<Set<string>>(new Set());
+  const currentVideoLookupInFlightRef = useRef<string | null>(null);
   const canControlRef = useRef(canControl);
   const sendWsRef = useRef(sendWs);
   const onDebugLogRef = useRef<typeof onDebugLog>(onDebugLog);
@@ -140,6 +148,7 @@ export default function YouTubePlayer({
   const [queueMetaById, setQueueMetaById] = useState<Record<string, YouTubeSearchResult>>({});
   const [pendingQueueById, setPendingQueueById] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
+  const [searchResultsCollapsed, setSearchResultsCollapsed] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [debugEntries, setDebugEntries] = useState<string[]>([]);
   const sharedSearchQuery = ytState?.search_query ?? '';
@@ -632,6 +641,7 @@ export default function YouTubePlayer({
     }, 8000);
     setSearchError('');
     setSearching(true);
+    setSearchResultsCollapsed(false);
     resetSearchViewport();
     logDebug(`youtube search requested query="${query}"`);
   }
@@ -645,8 +655,6 @@ export default function YouTubePlayer({
       setPlayerError('Failed to copy diagnostics to clipboard.');
     }
   }
-  const hasVideo = !!(ytState?.video_id);
-
   const requestQueuePlayNow = useCallback((queueIndex: number) => {
     if (!canControl) {
       setPlayerError('Only room admins can play queued videos now.');
@@ -765,21 +773,59 @@ export default function YouTubePlayer({
     };
   }, [queue, queueMetaById, roomId, logDebug]);
 
+  useEffect(() => {
+    const currentVideoId = ytState?.video_id;
+    if (!currentVideoId || !isValidVideoId(currentVideoId)) return;
+    if (queueMetaById[currentVideoId]) return;
+    if (queueLookupFailedRef.current.has(currentVideoId)) return;
+    if (currentVideoLookupInFlightRef.current === currentVideoId) return;
+
+    let cancelled = false;
+    currentVideoLookupInFlightRef.current = currentVideoId;
+
+    (async () => {
+      try {
+        const resolved = await lookupYouTubeVideos(roomId, [currentVideoId]);
+        if (cancelled) return;
+
+        if (resolved.length > 0) {
+          setQueueMetaById((prev) => ({ ...prev, [resolved[0].video_id]: resolved[0] }));
+          logDebug(`youtube current video metadata resolved video_id=${currentVideoId}`);
+        } else {
+          queueLookupFailedRef.current.add(currentVideoId);
+          logDebug(`youtube current video metadata unavailable video_id=${currentVideoId}`);
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        queueLookupFailedRef.current.add(currentVideoId);
+        logDebug(
+          `youtube current video metadata lookup failed video_id=${currentVideoId} error=${String(err?.message || err)}`,
+        );
+      } finally {
+        if (currentVideoLookupInFlightRef.current === currentVideoId) {
+          currentVideoLookupInFlightRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (currentVideoLookupInFlightRef.current === currentVideoId) {
+        currentVideoLookupInFlightRef.current = null;
+      }
+    };
+  }, [ytState?.video_id, queueMetaById, roomId, logDebug]);
+
+  const currentVideoId = ytState?.video_id ?? '';
+  const currentVideoMeta = currentVideoId ? queueMetaById[currentVideoId] : undefined;
+  const currentVideoTitle = videoTitle || currentVideoMeta?.title || '';
+
   return (
     <section className="space-y-4">
       <div
         className="tile overflow-hidden rounded-2xl border border-white/10 bg-black relative"
         style={{ aspectRatio: '16/9', width: '100%' }}
       >
-        {!hasVideo && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
-            <p className="text-sm muted text-center px-6">
-              {canControl
-                ? 'Search YouTube below or paste a YouTube URL to get started.'
-                : 'Waiting for host to select a video…'}
-            </p>
-          </div>
-        )}
         {!playerReady && (
           <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
             <p className="text-sm muted text-center px-6">Initializing YouTube player…</p>
@@ -788,8 +834,22 @@ export default function YouTubePlayer({
         <div id={playerDivId} className="h-full w-full" />
       </div>
 
-      {videoTitle && (
-        <p className="text-sm font-medium truncate muted">{videoTitle}</p>
+      {(currentVideoTitle || currentVideoId) && (
+        <div className="space-y-0.5">
+          {currentVideoTitle && (
+            <p className="text-sm font-medium truncate muted">{currentVideoTitle}</p>
+          )}
+          {currentVideoMeta ? (
+            <p className="text-xs muted truncate">
+              {currentVideoMeta.channel}
+              {typeof currentVideoMeta.view_count === 'number'
+                ? ` • ${formatViewCount(currentVideoMeta.view_count)} views`
+                : ''}
+            </p>
+          ) : (
+            <p className="text-xs muted truncate">Loading channel and view information…</p>
+          )}
+        </div>
       )}
 
       {(canControl || canQueue) && (
@@ -824,60 +884,75 @@ export default function YouTubePlayer({
           )}
 
           {searchResults.length > 0 && (
-            <ul ref={searchResultsListRef} className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {searchResults.map((result) => {
-                const queued = isQueueBlocked(result.video_id);
-                return (
-                  <li key={result.video_id} className="tile rounded-xl px-2 py-2">
-                    <div className="flex items-start gap-3">
-                      <img
-                        src={result.thumbnail_url}
-                        alt={result.title}
-                        className="h-16 w-28 rounded-md object-cover border border-white/10"
-                        loading="lazy"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium leading-5 line-clamp-2">{result.title}</p>
-                        <p className="text-xs muted mt-1 truncate">{result.channel}</p>
-                        <p className="text-[11px] muted mt-1 font-mono">{result.video_id}</p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {canControl && (
-                          <button
-                            type="button"
-                            className="btn-primary px-3 py-1.5 text-xs"
-                            onClick={() => {
-                              setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
-                              submitVideoId(result.video_id, 'load', 'search_result');
-                            }}
-                          >
-                            Load
-                          </button>
-                        )}
-                        {canQueue && (
-                          <button
-                            type="button"
-                            className="btn-secondary px-3 py-1.5 text-xs"
-                            onClick={() => {
-                              setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
-                              submitVideoId(result.video_id, 'queue', 'search_result');
-                            }}
-                            disabled={queued || !wsConnected}
-                            title={
-                              queued
-                                ? 'Already queued (or currently playing)'
-                                : 'Add this video to play next'
-                            }
-                          >
-                            {queued ? 'Queued' : 'Queue'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="btn-secondary px-3 py-1.5 text-xs"
+                onClick={() => setSearchResultsCollapsed((prev) => !prev)}
+                aria-expanded={!searchResultsCollapsed}
+              >
+                {searchResultsCollapsed
+                  ? `Show results (${searchResults.length})`
+                  : `Hide results (${searchResults.length})`}
+              </button>
+
+              {!searchResultsCollapsed && (
+                <ul ref={searchResultsListRef} className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {searchResults.map((result) => {
+                    const queued = isQueueBlocked(result.video_id);
+                    return (
+                      <li key={result.video_id} className="tile rounded-xl px-2 py-2">
+                        <div className="flex items-start gap-3">
+                          <img
+                            src={result.thumbnail_url}
+                            alt={result.title}
+                            className="h-16 w-28 rounded-md object-cover border border-white/10"
+                            loading="lazy"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium leading-5 line-clamp-2">{result.title}</p>
+                            <p className="text-xs muted mt-1 truncate">{result.channel}</p>
+                            <p className="text-[11px] muted mt-1 font-mono">{result.video_id}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            {canControl && (
+                              <button
+                                type="button"
+                                className="btn-primary px-3 py-1.5 text-xs"
+                                onClick={() => {
+                                  setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
+                                  submitVideoId(result.video_id, 'load', 'search_result');
+                                }}
+                              >
+                                Load
+                              </button>
+                            )}
+                            {canQueue && (
+                              <button
+                                type="button"
+                                className="btn-secondary px-3 py-1.5 text-xs"
+                                onClick={() => {
+                                  setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
+                                  submitVideoId(result.video_id, 'queue', 'search_result');
+                                }}
+                                disabled={queued || !wsConnected}
+                                title={
+                                  queued
+                                    ? 'Already queued (or currently playing)'
+                                    : 'Add this video to play next'
+                                }
+                              >
+                                {queued ? 'Queued' : 'Queue'}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -916,7 +991,7 @@ export default function YouTubePlayer({
                       <span className="font-mono">{idx + 1}. {videoId}</span>
                     </div>
                   )}
-                  <div className="flex shrink-0 items-center gap-1">
+                  <div className="flex shrink-0 self-center items-center gap-1">
                     {canControl && (
                       <button
                         type="button"

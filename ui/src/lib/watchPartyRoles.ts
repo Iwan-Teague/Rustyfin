@@ -5,8 +5,7 @@ export function isAdminRole(role: string): boolean {
 }
 
 export function nonAdminRoleLabel(roomMode: WatchPartyRoomMode): string {
-  if (roomMode === 'audio') return 'Listener';
-  if (roomMode === 'youtube') return 'Participant';
+  void roomMode;
   return 'Member';
 }
 
@@ -14,4 +13,3 @@ export function roleLabel(role: string, roomMode: WatchPartyRoomMode): string {
   if (isAdminRole(role)) return 'Admin';
   return nonAdminRoleLabel(roomMode);
 }
-

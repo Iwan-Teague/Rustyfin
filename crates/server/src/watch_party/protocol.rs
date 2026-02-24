@@ -1,20 +1,46 @@
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClientMessage {
-    Auth { token: String },
-    Play { position_ms: u64 },
-    Pause { position_ms: u64 },
-    Seek { position_ms: u64 },
+    Auth {
+        token: String,
+    },
+    Play {
+        position_ms: u64,
+    },
+    Pause {
+        position_ms: u64,
+    },
+    Seek {
+        position_ms: u64,
+    },
     SkipNext,
     SkipPrev,
-    PlayTrack { track_id: String },
-    ChangeVideo { video_id: String },
-    QueueVideo { video_id: String },
-    AdvanceQueue { expected_video_id: String },
-    PlayQueuedVideo { queue_index: usize },
-    RemoveQueuedVideo { queue_index: usize },
-    MoveQueuedVideo { from_index: usize, to_index: usize },
-    SearchYouTube { query: String },
+    PlayTrack {
+        track_id: String,
+    },
+    ChangeVideo {
+        video_id: String,
+    },
+    QueueVideo {
+        video_id: String,
+    },
+    AdvanceQueue {
+        expected_video_id: String,
+    },
+    PlayQueuedVideo {
+        queue_index: usize,
+    },
+    RemoveQueuedVideo {
+        queue_index: usize,
+    },
+    MoveQueuedVideo {
+        from_index: usize,
+        to_index: usize,
+    },
+    #[serde(rename = "search_youtube", alias = "search_you_tube")]
+    SearchYouTube {
+        query: String,
+    },
     Ping,
     Pong,
 }
@@ -43,6 +69,7 @@ pub struct YouTubeSearchEntry {
     pub title: String,
     pub channel: String,
     pub thumbnail_url: String,
+    pub view_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -94,5 +121,11 @@ pub enum ServerMessage {
         message: String,
     },
     Pong,
+    RoomReconfigured {
+        room_mode: String,
+        item_id: String,
+        audio_library_id: Option<String>,
+        youtube_video_id: Option<String>,
+    },
     RoomEnded,
 }
