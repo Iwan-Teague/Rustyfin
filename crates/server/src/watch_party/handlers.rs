@@ -9,6 +9,7 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -20,9 +21,19 @@ use super::permissions::RoomPolicy;
 const MAX_INVITEES: usize = 100;
 const ROOM_PASSWORD_MIN_LEN: usize = 4;
 const ROOM_PASSWORD_MAX_LEN: usize = 128;
+const YOUTUBE_SEARCH_MIN_QUERY_LEN: usize = 2;
+const YOUTUBE_SEARCH_MAX_QUERY_LEN: usize = 100;
+const YOUTUBE_SEARCH_DEFAULT_LIMIT: usize = 10;
+const YOUTUBE_SEARCH_MAX_LIMIT: usize = 20;
+const YOUTUBE_SEARCH_TIMEOUT_SECONDS: u64 = 8;
+const YOUTUBE_LOOKUP_MAX_IDS: usize = 25;
+const YOUTUBE_LOOKUP_TIMEOUT_SECONDS: u64 = 5;
+const YOUTUBE_SEARCH_URL: &str = "https://www.youtube.com/results";
+const YOUTUBE_SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 static CREATE_ROOM_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static JOIN_ROOM_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+static YOUTUBE_SEARCH_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -156,6 +167,26 @@ pub struct AudioTrackResponse {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct YouTubeSearchQuery {
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct YouTubeSearchResult {
+    pub video_id: String,
+    pub title: String,
+    pub channel: String,
+    pub thumbnail_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct YouTubeLookupRequest {
+    pub video_ids: Vec<String>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -176,6 +207,10 @@ fn join_room_rate_limiter() -> &'static RateLimiter {
     JOIN_ROOM_RATE_LIMITER.get_or_init(|| RateLimiter::new(25, 60))
 }
 
+fn youtube_search_rate_limiter() -> &'static RateLimiter {
+    YOUTUBE_SEARCH_RATE_LIMITER.get_or_init(|| RateLimiter::new(60, 60))
+}
+
 async fn check_rate_limit(limiter: &RateLimiter, key: &str) -> Result<(), AppError> {
     match limiter.check(key).await {
         Ok(_) => Ok(()),
@@ -184,6 +219,241 @@ async fn check_rate_limit(limiter: &RateLimiter, key: &str) -> Result<(), AppErr
         }
         .into()),
     }
+}
+
+fn is_valid_youtube_video_id(value: &str) -> bool {
+    value.len() == 11
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn extract_json_object_after_marker(source: &str, marker: &str) -> Option<String> {
+    let marker_idx = source.find(marker)?;
+    let bytes = source.as_bytes();
+    let mut start = marker_idx + marker.len();
+
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    if start >= bytes.len() || bytes[start] != b'{' {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in source[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+
+        if ch == '{' {
+            depth += 1;
+            continue;
+        }
+
+        if ch == '}' {
+            if depth == 0 {
+                return None;
+            }
+            depth -= 1;
+            if depth == 0 {
+                let end = start + offset + ch.len_utf8();
+                return Some(source[start..end].to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn renderer_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(simple) = value.get("simpleText").and_then(serde_json::Value::as_str) {
+        let simple = simple.trim();
+        if !simple.is_empty() {
+            return Some(simple.to_string());
+        }
+    }
+
+    let runs = value.get("runs").and_then(serde_json::Value::as_array)?;
+    let mut merged = String::new();
+    for run in runs {
+        if let Some(text) = run.get("text").and_then(serde_json::Value::as_str) {
+            merged.push_str(text);
+        }
+    }
+    let merged = merged.trim();
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged.to_string())
+    }
+}
+
+fn parse_youtube_initial_data_results(
+    initial_data: &serde_json::Value,
+    limit: usize,
+) -> Vec<YouTubeSearchResult> {
+    let mut results = Vec::with_capacity(limit.min(YOUTUBE_SEARCH_MAX_LIMIT));
+
+    let Some(sections) = initial_data
+        .pointer(
+            "/contents/twoColumnSearchResultsRenderer/primaryContents/sectionListRenderer/contents",
+        )
+        .and_then(serde_json::Value::as_array)
+    else {
+        return results;
+    };
+
+    'outer: for section in sections {
+        let Some(items) = section
+            .pointer("/itemSectionRenderer/contents")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+
+        for item in items {
+            let Some(video_renderer) = item.get("videoRenderer") else {
+                continue;
+            };
+
+            let Some(video_id) = video_renderer
+                .get("videoId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+            else {
+                continue;
+            };
+
+            if !is_valid_youtube_video_id(video_id) {
+                continue;
+            }
+
+            let title = video_renderer
+                .get("title")
+                .and_then(renderer_text)
+                .unwrap_or_else(|| "Untitled video".to_string());
+
+            let channel = video_renderer
+                .get("ownerText")
+                .and_then(renderer_text)
+                .or_else(|| {
+                    video_renderer
+                        .get("shortBylineText")
+                        .and_then(renderer_text)
+                })
+                .unwrap_or_else(|| "Unknown channel".to_string());
+
+            let thumbnail_url = video_renderer
+                .pointer("/thumbnail/thumbnails")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|thumbs| thumbs.last())
+                .and_then(|thumb| thumb.get("url"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"));
+
+            results.push(YouTubeSearchResult {
+                video_id: video_id.to_string(),
+                title,
+                channel,
+                thumbnail_url,
+            });
+
+            if results.len() >= limit {
+                break 'outer;
+            }
+        }
+    }
+
+    results
+}
+
+fn parse_youtube_search_results(search_html: &str, limit: usize) -> Vec<YouTubeSearchResult> {
+    const MARKERS: [&str; 3] = [
+        "var ytInitialData = ",
+        "window[\"ytInitialData\"] = ",
+        "ytInitialData = ",
+    ];
+
+    for marker in MARKERS {
+        let Some(json_blob) = extract_json_object_after_marker(search_html, marker) else {
+            continue;
+        };
+
+        let Ok(initial_data) = serde_json::from_str::<serde_json::Value>(&json_blob) else {
+            continue;
+        };
+
+        let results = parse_youtube_initial_data_results(&initial_data, limit);
+        if !results.is_empty() {
+            return results;
+        }
+    }
+
+    Vec::new()
+}
+
+#[derive(Debug, Deserialize)]
+struct YouTubeOEmbedResponse {
+    title: String,
+    author_name: String,
+    thumbnail_url: Option<String>,
+}
+
+async fn fetch_youtube_video_metadata(
+    client: &reqwest::Client,
+    video_id: &str,
+) -> Option<YouTubeSearchResult> {
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+    let url = reqwest::Url::parse_with_params(
+        "https://www.youtube.com/oembed",
+        &[("url", watch_url.as_str()), ("format", "json")],
+    )
+    .ok()?;
+
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(YOUTUBE_LOOKUP_TIMEOUT_SECONDS))
+        .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let payload = response.json::<YouTubeOEmbedResponse>().await.ok()?;
+    Some(YouTubeSearchResult {
+        video_id: video_id.to_string(),
+        title: payload.title.trim().to_string(),
+        channel: payload.author_name.trim().to_string(),
+        thumbnail_url: payload
+            .thumbnail_url
+            .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")),
+    })
 }
 
 fn normalize_member_role(role: &str) -> Result<String, AppError> {
@@ -811,6 +1081,7 @@ pub async fn join_room(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
     Ok(Json(JoinRoomResponse { ok: true, role }))
 }
@@ -844,6 +1115,7 @@ pub async fn leave_room(
     if !updated {
         return Err(ApiError::NotFound("room membership not found".into()).into());
     }
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1009,6 +1281,175 @@ pub async fn invite_members(
     }
 
     Ok(Json(serde_json::json!({ "ok": true, "invited": count })))
+}
+
+pub async fn search_youtube(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Query(params): Query<YouTubeSearchQuery>,
+) -> Result<Json<Vec<YouTubeSearchResult>>, AppError> {
+    check_rate_limit(
+        youtube_search_rate_limiter(),
+        &format!("youtube-search:{}:{}", room_id, auth.user_id),
+    )
+    .await?;
+
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.room_mode != "youtube" {
+        return Err(ApiError::BadRequest(
+            "youtube search is only available in YouTube rooms".into(),
+        )
+        .into());
+    }
+
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
+
+    let query = params.q.trim();
+    if query.len() < YOUTUBE_SEARCH_MIN_QUERY_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "search query must be at least {YOUTUBE_SEARCH_MIN_QUERY_LEN} characters"
+        ))
+        .into());
+    }
+    if query.len() > YOUTUBE_SEARCH_MAX_QUERY_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "search query must be <= {YOUTUBE_SEARCH_MAX_QUERY_LEN} characters"
+        ))
+        .into());
+    }
+
+    let limit = params
+        .limit
+        .unwrap_or(YOUTUBE_SEARCH_DEFAULT_LIMIT)
+        .clamp(1, YOUTUBE_SEARCH_MAX_LIMIT);
+
+    let url = reqwest::Url::parse_with_params(
+        YOUTUBE_SEARCH_URL,
+        &[("search_query", query), ("hl", "en"), ("persist_hl", "1")],
+    )
+    .map_err(|e| ApiError::Internal(format!("failed to build youtube search url: {e}")))?;
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .timeout(Duration::from_secs(YOUTUBE_SEARCH_TIMEOUT_SECONDS))
+        .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+        .send()
+        .await
+        .map_err(|e| ApiError::Internal(format!("youtube search request failed: {e}")))?;
+
+    if response.url().as_str().contains("consent.youtube.com") {
+        return Err(ApiError::BadRequest(
+            "youtube search was blocked by a consent/interstitial page on this network".into(),
+        )
+        .into());
+    }
+
+    if !response.status().is_success() {
+        return Err(ApiError::BadRequest(format!(
+            "youtube search failed with status {}",
+            response.status()
+        ))
+        .into());
+    }
+
+    let search_html = response
+        .text()
+        .await
+        .map_err(|e| ApiError::Internal(format!("youtube search response read failed: {e}")))?;
+
+    let results = parse_youtube_search_results(&search_html, limit);
+    if results.is_empty() {
+        return Err(ApiError::BadRequest(
+            "youtube search did not return parseable video results".into(),
+        )
+        .into());
+    }
+    Ok(Json(results))
+}
+
+pub async fn lookup_youtube_videos(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Json(body): Json<YouTubeLookupRequest>,
+) -> Result<Json<Vec<YouTubeSearchResult>>, AppError> {
+    check_rate_limit(
+        youtube_search_rate_limiter(),
+        &format!("youtube-lookup:{}:{}", room_id, auth.user_id),
+    )
+    .await?;
+
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.room_mode != "youtube" {
+        return Err(ApiError::BadRequest(
+            "youtube lookup is only available in YouTube rooms".into(),
+        )
+        .into());
+    }
+
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
+
+    if body.video_ids.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    if body.video_ids.len() > YOUTUBE_LOOKUP_MAX_IDS {
+        return Err(ApiError::BadRequest(format!(
+            "too many video_ids; maximum is {YOUTUBE_LOOKUP_MAX_IDS}"
+        ))
+        .into());
+    }
+
+    let mut deduped = Vec::with_capacity(body.video_ids.len());
+    let mut seen = std::collections::HashSet::new();
+    for raw in body.video_ids {
+        let video_id = raw.trim();
+        if !is_valid_youtube_video_id(video_id) {
+            continue;
+        }
+        if seen.insert(video_id.to_string()) {
+            deduped.push(video_id.to_string());
+        }
+    }
+
+    if deduped.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let client = reqwest::Client::new();
+    let mut resolved = Vec::with_capacity(deduped.len());
+    for video_id in deduped {
+        if let Some(metadata) = fetch_youtube_video_metadata(&client, &video_id).await {
+            resolved.push(metadata);
+        }
+    }
+
+    Ok(Json(resolved))
 }
 
 pub async fn list_audio_tracks(

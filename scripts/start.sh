@@ -355,6 +355,63 @@ detect_primary_lan_ipv4() {
   echo "$ip"
 }
 
+is_ipv4() {
+  local value="$1"
+  [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+ensure_edge_tls_cert() {
+  local host="$1"
+  local cert_dir="$SAFE_TMP_DIR/edge-tls"
+  local cert_path="$cert_dir/tls.crt"
+  local key_path="$cert_dir/tls.key"
+  local meta_path="$cert_dir/meta.host"
+
+  mkdir -p "$cert_dir" || die "Failed to create TLS cert dir: $cert_dir"
+  chmod 700 "$cert_dir" 2>/dev/null || true
+
+  local need_regen=false
+  if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then
+    need_regen=true
+  elif [[ ! -f "$meta_path" || "$(cat "$meta_path" 2>/dev/null || true)" != "$host" ]]; then
+    need_regen=true
+  fi
+
+  if [[ "$need_regen" == "false" ]]; then
+    export RUSTFIN_EDGE_TLS_CERT="$cert_path"
+    export RUSTFIN_EDGE_TLS_KEY="$key_path"
+    return
+  fi
+
+  command -v openssl >/dev/null 2>&1 || die "openssl is required to generate local TLS certificates"
+
+  local san="DNS:localhost,IP:127.0.0.1"
+  if is_ipv4 "$host"; then
+    san="${san},IP:${host}"
+  else
+    san="${san},DNS:${host}"
+  fi
+
+  rm -f "$cert_path" "$key_path"
+  openssl req \
+    -x509 \
+    -newkey rsa:2048 \
+    -sha256 \
+    -days 365 \
+    -nodes \
+    -keyout "$key_path" \
+    -out "$cert_path" \
+    -subj "/CN=${host}" \
+    -addext "subjectAltName=${san}" >/dev/null 2>&1 || die "Failed generating local TLS cert"
+
+  chmod 600 "$key_path" "$cert_path" 2>/dev/null || true
+  printf "%s" "$host" > "$meta_path"
+  chmod 600 "$meta_path" 2>/dev/null || true
+
+  export RUSTFIN_EDGE_TLS_CERT="$cert_path"
+  export RUSTFIN_EDGE_TLS_KEY="$key_path"
+}
+
 project_running=false
 if docker compose -f "$COMPOSE_FILE" ps --status running -q 2>/dev/null | grep -q .; then
   project_running=true
@@ -392,6 +449,8 @@ if [[ -z "$public_host" ]]; then
     public_host="localhost"
   fi
 fi
+export RUSTFIN_PUBLIC_HOST="$public_host"
+ensure_edge_tls_cert "$public_host"
 
 if [[ -n "$user_browser_backend_origin" ]]; then
   export RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
@@ -424,6 +483,8 @@ info "UI port: $RUSTFIN_UI_PORT"
 info "Public host: $public_host"
 info "Browser backend origin: $RUSTYFIN_BROWSER_BACKEND_ORIGIN"
 info "WebSocket allowed origins: $RUSTFIN_WS_ALLOWED_ORIGINS"
+info "UI transport: HTTPS (secure context for microphone/WebRTC on LAN)"
+info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
 if [[ "$BUILD" == "true" ]]; then
   if [[ "$NO_CACHE_BUILD" == "true" ]]; then
     info "Build mode: full rebuild (no Docker cache)"
@@ -492,8 +553,9 @@ fi
 
 success "Rustyfin stack is up."
 echo "  Backend: http://localhost:${RUSTFIN_BACKEND_PORT}"
-echo "  UI:      http://localhost:${RUSTFIN_UI_PORT}"
+echo "  UI:      https://localhost:${RUSTFIN_UI_PORT}"
 if [[ "$public_host" != "localhost" && "$public_host" != "127.0.0.1" ]]; then
   echo "  Backend (LAN): http://${public_host}:${RUSTFIN_BACKEND_PORT}"
-  echo "  UI (LAN):      http://${public_host}:${RUSTFIN_UI_PORT}"
+  echo "  UI (LAN):      https://${public_host}:${RUSTFIN_UI_PORT}"
 fi
+echo "  Note: if your browser warns about a local certificate, accept/trust it to enable microphone access."

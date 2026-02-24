@@ -29,6 +29,14 @@ pub fn watch_party_router() -> Router<AppState> {
             "/rooms/{room_id}/audio/tracks",
             get(super::handlers::list_audio_tracks),
         )
+        .route(
+            "/rooms/{room_id}/youtube/search",
+            get(super::handlers::search_youtube),
+        )
+        .route(
+            "/rooms/{room_id}/youtube/lookup",
+            post(super::handlers::lookup_youtube_videos),
+        )
         .route("/invites", get(super::handlers::list_invites))
         .route(
             "/invites/{room_id}/decline",

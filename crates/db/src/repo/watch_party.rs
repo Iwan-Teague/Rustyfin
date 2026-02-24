@@ -311,6 +311,29 @@ pub async fn set_room_status(
     Ok(result.rows_affected() > 0)
 }
 
+pub async fn touch_room_updated(pool: &SqlitePool, room_id: &str) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result = sqlx::query("UPDATE watch_party_room SET updated_ts = ? WHERE id = ?")
+        .bind(now)
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn list_lobby_room_ids_updated_before(
+    pool: &SqlitePool,
+    max_updated_ts: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT id FROM watch_party_room WHERE status = 'lobby' AND updated_ts <= ?",
+    )
+    .bind(max_updated_ts)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 pub async fn touch_member_last_seen(
     pool: &SqlitePool,
     room_id: &str,

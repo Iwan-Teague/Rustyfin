@@ -145,6 +145,7 @@ export default function WatchPartyRoomPage() {
   const [info, setInfo] = useState('');
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const hlsRef = useRef<any>(null);
@@ -190,11 +191,38 @@ export default function WatchPartyRoomPage() {
     connected: member.status === 'joined',
   })) ?? [];
 
-  const sendWs = useCallback((payload: Record<string, unknown>) => {
+  const appendDebug = useCallback((message: string) => {
+    const line = `${new Date().toISOString()} ${message}`;
+    setDebugLog((prev) => [...prev.slice(-199), line]);
+    if (typeof window !== 'undefined') {
+      console.info(`[watch-party:${roomId}] ${message}`);
+    }
+  }, [roomId]);
+
+  const handleYoutubeDebug = useCallback((message: string) => {
+    appendDebug(`youtube ${message}`);
+  }, [appendDebug]);
+
+  const sendWs = useCallback((payload: Record<string, unknown>): boolean => {
     const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify(payload));
-  }, []);
+    const msgType = typeof payload.type === 'string' ? payload.type : 'unknown';
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setWsConnected(false);
+      setError('Watch-party realtime connection is offline. Reconnect and retry.');
+      appendDebug(`ws send rejected type=${msgType} reason=socket_not_open`);
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(payload));
+      appendDebug(`ws send type=${msgType}`);
+      return true;
+    } catch {
+      setWsConnected(false);
+      setError('Failed to send watch-party command over websocket.');
+      appendDebug(`ws send failed type=${msgType} reason=send_exception`);
+      return false;
+    }
+  }, [appendDebug]);
 
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
@@ -217,6 +245,9 @@ export default function WatchPartyRoomPage() {
     try {
       const data = await getWatchPartyRoom(roomId);
       setRoom(data);
+      appendDebug(
+        `room loaded mode=${data.room_mode} status=${data.status} members=${data.members.length} password_required=${data.password_required}`,
+      );
       if (me) {
         const current = data.members.find((member) => member.user_id === me.id);
         if (current?.status === 'joined') {
@@ -225,10 +256,11 @@ export default function WatchPartyRoomPage() {
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to load watch party room');
+      appendDebug(`room load failed error=${String(err?.message || err)}`);
     } finally {
       setLoadingRoom(false);
     }
-  }, [roomId, me]);
+  }, [roomId, me, appendDebug]);
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -305,22 +337,37 @@ export default function WatchPartyRoomPage() {
     let activeSocket: WebSocket | null = null;
 
     const token = localStorage.getItem('token');
-    if (!token) return;
+    if (!token) {
+      appendDebug('ws connect aborted: missing auth token in localStorage');
+      return;
+    }
 
     const bindOpenSocket = (socket: WebSocket, candidateIndex: number) => {
       activeSocket = socket;
       wsRef.current = socket;
       setWsConnected(true);
+      appendDebug(
+        `ws connected candidate_index=${candidateIndex} url=${socket.url || 'unknown_url'}`,
+      );
 
       if (candidateIndex > 0) {
         setInfo('Connected to watch-party websocket via backend fallback.');
       }
 
-      socket.send(JSON.stringify({ type: 'auth', token }));
+      try {
+        socket.send(JSON.stringify({ type: 'auth', token }));
+        appendDebug('ws auth frame sent');
+      } catch {
+        appendDebug('ws auth frame send failed');
+        setWsConnected(false);
+        setError('Failed to authenticate watch-party websocket connection.');
+        return;
+      }
 
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as WsMessage;
+          appendDebug(`ws recv type=${payload.type}`);
 
           if (payload.type === 'state') {
             setRoomState(payload);
@@ -332,8 +379,14 @@ export default function WatchPartyRoomPage() {
               if (!prev) return prev;
               return { ...prev, members: payload.members };
             });
-          } else if (payload.type === 'youtube_state') {
-            setYoutubeState(payload);
+          } else if (payload.type === 'youtube_state' || payload.type === 'you_tube_state') {
+            appendDebug(
+              `youtube state video_id=${payload.video_id || 'none'} playing=${payload.playing} position_ms=${payload.position_ms}`,
+            );
+            setYoutubeState({
+              ...payload,
+              type: 'youtube_state',
+            });
           } else if (payload.type === 'presence') {
             setRoomState((prev) => {
               if (!prev) return prev;
@@ -370,26 +423,39 @@ export default function WatchPartyRoomPage() {
             });
           } else if (payload.type === 'error') {
             setError(payload.message);
+            appendDebug(`ws server_error message=${payload.message}`);
           } else if (payload.type === 'room_ended') {
+            appendDebug('ws room ended notification received');
             router.push('/watch-party');
           }
-        } catch {
+        } catch (err) {
           setError('Invalid websocket message received');
+          const snippet = String(event.data).slice(0, 180).replace(/\s+/g, ' ');
+          appendDebug(
+            `ws message parse failed error=${String((err as any)?.message || err)} payload="${snippet}"`,
+          );
         }
       };
 
       socket.onerror = () => {
-        // onclose handles fallback/disconnect state.
+        appendDebug('ws error event fired');
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (cancelled) return;
         setWsConnected(false);
+        appendDebug(
+          `ws closed code=${event.code} reason=${event.reason || 'none'} clean=${event.wasClean}`,
+        );
       };
     };
 
     const attemptConnect = async () => {
       const candidates: string[] = [wsUrlForOrigin(window.location.origin, roomId)];
+      const pageIsSecure = window.location.protocol === 'https:';
+      appendDebug(
+        `ws connect start role=${joinedRole} page_origin=${window.location.origin} secure=${window.isSecureContext}`,
+      );
 
       try {
         const runtimeConfig = await fetch('/runtime-config', { cache: 'no-store' });
@@ -397,22 +463,39 @@ export default function WatchPartyRoomPage() {
           const payload = (await runtimeConfig.json()) as RuntimeConfig;
           if (payload.backend_origin) {
             const directBackendWs = wsUrlForOrigin(payload.backend_origin, roomId);
-            if (!candidates.includes(directBackendWs)) {
+            const insecureFromSecurePage =
+              pageIsSecure && directBackendWs.toLowerCase().startsWith('ws://');
+            if (insecureFromSecurePage) {
+              appendDebug(
+                `ws fallback candidate skipped (mixed content blocked on https page): ${directBackendWs}`,
+              );
+            }
+            if (!insecureFromSecurePage && !candidates.includes(directBackendWs)) {
               candidates.push(directBackendWs);
             }
           }
         }
-      } catch {
-        // Best-effort fallback lookup.
+      } catch (err) {
+        appendDebug(
+          `runtime-config lookup failed error=${String((err as any)?.message || err)}`,
+        );
       }
 
       for (let index = 0; index < candidates.length; index += 1) {
         if (cancelled) return;
 
         const candidate = candidates[index];
+        appendDebug(`ws attempting candidate[${index}] ${candidate}`);
         const socket = await new Promise<WebSocket | null>((resolve) => {
           let settled = false;
-          const ws = new WebSocket(candidate);
+          let ws: WebSocket;
+          try {
+            ws = new WebSocket(candidate);
+          } catch {
+            appendDebug(`ws candidate threw during constructor: ${candidate}`);
+            resolve(null);
+            return;
+          }
 
           const finish = (result: WebSocket | null) => {
             if (settled) return;
@@ -421,8 +504,19 @@ export default function WatchPartyRoomPage() {
           };
 
           ws.onopen = () => finish(ws);
-          ws.onerror = () => {};
-          ws.onclose = () => finish(null);
+          ws.onerror = () => {
+            if (!settled) {
+              appendDebug(`ws candidate error before open: ${candidate}`);
+            }
+          };
+          ws.onclose = (event) => {
+            if (!settled) {
+              appendDebug(
+                `ws candidate closed before open code=${event.code} reason=${event.reason || 'none'}`,
+              );
+            }
+            finish(null);
+          };
 
           window.setTimeout(() => {
             if (settled) return;
@@ -431,6 +525,7 @@ export default function WatchPartyRoomPage() {
             } catch {
               // no-op
             }
+            appendDebug(`ws candidate timeout after 4000ms: ${candidate}`);
             finish(null);
           }, 4_000);
         });
@@ -453,6 +548,7 @@ export default function WatchPartyRoomPage() {
         setError(
           'Watch-party websocket connection failed. Restart with ./scripts/start.sh and retry.',
         );
+        appendDebug('ws connection failed for all candidates');
       }
     };
 
@@ -466,7 +562,7 @@ export default function WatchPartyRoomPage() {
       wsRef.current = null;
       setWsConnected(false);
     };
-  }, [roomId, joinedRole, applyRemoteState]);
+  }, [roomId, joinedRole, applyRemoteState, appendDebug]);
 
   useEffect(() => {
     return () => {
@@ -584,15 +680,29 @@ export default function WatchPartyRoomPage() {
     setJoining(true);
     setError('');
     setInfo('');
+    appendDebug('room join requested');
     try {
       const result = await joinWatchPartyRoom(roomId, joinPassword || undefined);
       setJoinedRole(result.role);
       setInfo('Joined watch-party room.');
+      appendDebug(`room join succeeded role=${result.role}`);
       await loadRoom();
     } catch (err: any) {
       setError(err?.message || 'Failed to join room');
+      appendDebug(`room join failed error=${String(err?.message || err)}`);
     } finally {
       setJoining(false);
+    }
+  }
+
+  async function copyDebugLog() {
+    try {
+      await navigator.clipboard.writeText(debugLog.join('\n'));
+      setInfo('Diagnostics copied to clipboard.');
+      appendDebug('diagnostics copied to clipboard');
+    } catch {
+      setError('Failed to copy diagnostics');
+      appendDebug('diagnostics copy failed');
     }
   }
 
@@ -796,8 +906,38 @@ export default function WatchPartyRoomPage() {
             roomId={roomId}
             ytState={youtubeState}
             canControl={canPlayPause}
+            canQueue={!!joinedRole}
+            wsConnected={wsConnected}
             sendWs={sendWs}
+            onDebugLog={handleYoutubeDebug}
           />
+        </section>
+      )}
+
+      {joinedRole && isYoutubeRoom && (
+        <section className="panel space-y-3 p-4 sm:p-5">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-base font-semibold">YouTube Diagnostics</h2>
+            <button
+              type="button"
+              className="btn-secondary px-3 py-1.5 text-xs"
+              onClick={copyDebugLog}
+            >
+              Copy logs
+            </button>
+          </div>
+          <p className="text-xs muted">
+            These logs capture websocket and YouTube player events for this room.
+          </p>
+          <div className="max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] leading-5 text-white/80">
+            {debugLog.length === 0 ? (
+              <p className="muted">No diagnostic events yet.</p>
+            ) : (
+              <pre className="whitespace-pre-wrap break-words font-mono">
+                {debugLog.join('\n')}
+              </pre>
+            )}
+          </div>
         </section>
       )}
 

@@ -99,6 +99,10 @@ always redownloading everything). For a strict no-cache rebuild, use:
 `start.sh` also detects your primary LAN IP and prints `UI (LAN)` / `Backend (LAN)`
 URLs so devices on the same network can connect. To force a specific advertised host,
 set `RUSTFIN_PUBLIC_HOST` before starting.
+The UI is served over HTTPS by default so browser microphone/WebRTC permissions work
+on LAN devices (voice channels/watch parties). If your browser shows a local certificate
+warning, trust/accept it for your Rustyfin host. `start.sh` generates a local
+certificate containing SANs for `localhost`, `127.0.0.1`, and the detected LAN IP.
 
 To enable TMDB metadata/artwork enrichment during scans (posters, backdrops,
 overview/year improvements), set a TMDB API key in **Admin → TMDB Metadata**.
@@ -129,8 +133,8 @@ Default admin credentials on first run:
 - **Username**: `admin`
 - **Password**: `admin` (change immediately!)
 
-By default, the server is available at `http://localhost:8096` and the UI at
-`http://localhost:3000`. If those are occupied, `start.sh` will pick free ports
+By default, the backend is available at `http://localhost:8096` and the UI at
+`https://localhost:3000`. If those are occupied, `start.sh` will pick free ports
 and print them.
 
 ### Building from Source
