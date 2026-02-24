@@ -1418,21 +1418,61 @@ async fn user_management_crud() {
     let new_user_id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["username"], "testuser");
     assert_eq!(body["role"], "user");
+    assert_eq!(body["library_ids"], json!([library_id.clone()]));
 
-    // List again — should have 2 users
+    // Create a simple user without any library access (allowed).
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "username": "nolibuser",
+            "password": "nolibuser_secure",
+            "role": "user",
+            "library_ids": []
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let no_library_user_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["username"], "nolibuser");
+    assert_eq!(body["role"], "user");
+    assert_eq!(body["library_ids"], json!([]));
+
+    // List again — should have 3 users
     let resp = server
         .get("/api/v1/users")
         .add_header(hdr_name.clone(), hdr_val.clone())
         .await;
     let users: Vec<Value> = resp.json();
-    assert_eq!(users.len(), 2);
+    assert_eq!(users.len(), 3);
 
     // New user can login
     let _user_token = login(&server, "testuser", "testpass_secure").await;
+    let _nolib_token = login(&server, "nolibuser", "nolibuser_secure").await;
+
+    // Existing simple user can be updated to no library access.
+    let resp = server
+        .patch(&format!("/api/v1/users/{new_user_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "role": "user",
+            "library_ids": []
+        }))
+        .await;
+    resp.assert_status_ok();
+    let patched: Value = resp.json();
+    assert_eq!(patched["library_ids"], json!([]));
 
     // Delete the new user
     let resp = server
         .delete(&format!("/api/v1/users/{new_user_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status_ok();
+
+    // Delete the no-library user
+    let resp = server
+        .delete(&format!("/api/v1/users/{no_library_user_id}"))
         .add_header(hdr_name.clone(), hdr_val.clone())
         .await;
     resp.assert_status_ok();

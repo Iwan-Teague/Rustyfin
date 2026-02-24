@@ -19,6 +19,7 @@ export default function ChannelsPage() {
     channels,
     voicePresence,
     voiceActiveSince,
+    voiceSpeaking,
     newMessages,
     lastWsEvent,
     voiceSession,
@@ -102,6 +103,7 @@ export default function ChannelsPage() {
           channels={channels}
           voicePresence={voicePresence}
           voiceActiveSince={voiceActiveSince}
+          voiceSpeaking={voiceSpeaking}
           activeChannelId={activeChannelId}
           isAdmin={me.role === 'admin'}
           onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}

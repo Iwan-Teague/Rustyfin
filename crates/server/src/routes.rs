@@ -432,12 +432,6 @@ async fn update_user_route(
                 .await
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         };
-        if final_ids.is_empty() {
-            return Err(ApiError::BadRequest(
-                "user accounts must include at least one library".into(),
-            )
-            .into());
-        }
         rustfin_db::repo::users::set_library_access(&state.db, &user_id, &final_ids)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;

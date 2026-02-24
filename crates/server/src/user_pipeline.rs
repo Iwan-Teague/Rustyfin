@@ -96,13 +96,6 @@ pub async fn create_user_with_access(
 
     let library_ids = normalize_library_ids(library_ids);
 
-    if role == "user" && library_ids.is_empty() {
-        return Err(ApiError::validation(json!({
-            "library_ids": ["user accounts must include at least one library"]
-        }))
-        .into());
-    }
-
     if role == "admin" && !library_ids.is_empty() {
         return Err(ApiError::validation(json!({
             "library_ids": ["admin users cannot be limited to specific libraries"]

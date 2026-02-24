@@ -1,8 +1,14 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import type { ChannelEvent, ChannelInfo, ChannelMessage } from '@/lib/channelsApi';
-import { deleteMessage, getMessages } from '@/lib/channelsApi';
+import type {
+  ChannelEvent,
+  ChannelInfo,
+  ChannelMessage,
+  ChannelMessageAttachment,
+} from '@/lib/channelsApi';
+import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/channelsApi';
+import { apiFetch } from '@/lib/api';
 
 interface Props {
   channel: ChannelInfo;
@@ -33,6 +39,94 @@ function hashColor(userId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isImageAttachment(contentType: string): boolean {
+  return contentType.toLowerCase().startsWith('image/');
+}
+
+function AttachmentPreview({
+  attachment,
+  onDownload,
+}: {
+  attachment: ChannelMessageAttachment;
+  onDownload: (attachment: ChannelMessageAttachment) => void;
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isImageAttachment(attachment.content_type)) return;
+    let active = true;
+    let objectUrl: string | null = null;
+
+    (async () => {
+      try {
+        const res = await apiFetch(attachment.download_path, { method: 'GET' });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const blob = await res.blob();
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setImageUrl(objectUrl);
+      } catch {
+        if (!active) return;
+        setPreviewError('Preview unavailable');
+      }
+    })();
+
+    return () => {
+      active = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [attachment.content_type, attachment.download_path]);
+
+  if (isImageAttachment(attachment.content_type) && imageUrl && !previewError) {
+    return (
+      <div className="space-y-1">
+        <img
+          src={imageUrl}
+          alt={attachment.filename}
+          className="max-h-64 rounded-lg border border-[var(--border)] bg-black/20 object-contain"
+          loading="lazy"
+        />
+        <button
+          type="button"
+          className="btn-ghost px-2 py-1 text-xs"
+          onClick={() => onDownload(attachment)}
+        >
+          Download {attachment.filename}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel-soft rounded-lg px-3 py-2 text-xs flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <p className="truncate font-medium">{attachment.filename}</p>
+        <p className="muted">
+          {attachment.content_type} · {formatBytes(attachment.size_bytes)}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="btn-secondary px-2 py-1 text-xs shrink-0"
+        onClick={() => onDownload(attachment)}
+      >
+        Download
+      </button>
+    </div>
+  );
+}
+
 function Avatar({ userId, username }: { userId: string; username: string }) {
   const color = hashColor(userId);
   const initials = username.slice(0, 2).toUpperCase();
@@ -52,15 +146,21 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [draft, setDraft] = useState('');
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load initial messages
   useEffect(() => {
     setLoading(true);
     setMessages([]);
     setHasMore(true);
+    setPendingFile(null);
+    setUploadError(null);
     getMessages(channel.id).then((msgs) => {
       setMessages(msgs);
       setHasMore(msgs.length >= 50);
@@ -97,6 +197,27 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       setPendingDeleteId(null);
     }
   }, [channel.id]);
+
+  const handleDownloadAttachment = useCallback(async (attachment: ChannelMessageAttachment) => {
+    try {
+      const res = await apiFetch(attachment.download_path, { method: 'GET' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = attachment.filename;
+      anchor.rel = 'noopener noreferrer';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch {
+      setUploadError(`Failed to download ${attachment.filename}`);
+    }
+  }, []);
 
   // Auto-scroll to bottom on new messages — scroll the container, not the page
   useEffect(() => {
@@ -135,10 +256,36 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
     }
   }, [channel.id, loadingMore, hasMore, messages]);
 
+  const handleUploadAttachment = useCallback(async () => {
+    if (!pendingFile || uploading) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const sent = await uploadMessageAttachment(
+        channel.id,
+        pendingFile,
+        draft.trim() ? draft.trim() : undefined,
+      );
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === sent.id)) return prev;
+        return [...prev, sent];
+      });
+      setDraft('');
+      setPendingFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    } catch (error: any) {
+      setUploadError(error?.message || 'Failed to upload file');
+    } finally {
+      setUploading(false);
+    }
+  }, [channel.id, draft, pendingFile, uploading]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (draft.trim()) {
+      if (!uploading && draft.trim()) {
         onSendMessage(draft.trim());
         setDraft('');
       }
@@ -181,6 +328,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
         {grouped.map(({ showHeader, msg }) => {
           const canDelete = isAdmin || msg.user_id === currentUserId;
+          const attachments = msg.attachments || [];
           return (
             <div
               key={msg.id}
@@ -189,17 +337,43 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
               {showHeader ? (
                 <div className="flex items-start gap-3 pr-8">
                   <Avatar userId={msg.user_id} username={msg.username} />
-                  <div className="min-w-0">
+                  <div className="min-w-0 space-y-1">
                     <div className="flex items-baseline gap-2">
                       <span className="font-semibold text-sm">{msg.username}</span>
                       <span className="text-xs muted">{relativeTime(msg.created_ts)}</span>
                     </div>
-                    <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                    {msg.content && (
+                      <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                    )}
+                    {attachments.length > 0 && (
+                      <div className="space-y-2">
+                        {attachments.map((attachment) => (
+                          <AttachmentPreview
+                            key={attachment.id}
+                            attachment={attachment}
+                            onDownload={handleDownloadAttachment}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
-                <div className="pl-11 pr-8 text-sm whitespace-pre-wrap break-words">
-                  {msg.content}
+                <div className="pl-11 pr-8 space-y-1">
+                  {msg.content && (
+                    <div className="text-sm whitespace-pre-wrap break-words">{msg.content}</div>
+                  )}
+                  {attachments.length > 0 && (
+                    <div className="space-y-2">
+                      {attachments.map((attachment) => (
+                        <AttachmentPreview
+                          key={attachment.id}
+                          attachment={attachment}
+                          onDownload={handleDownloadAttachment}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               {canDelete && (
@@ -218,6 +392,54 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
       {/* Input */}
       <div className="px-4 py-3 border-t border-[var(--border)] shrink-0">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              const selected = e.target.files?.[0] ?? null;
+              setPendingFile(selected);
+              setUploadError(null);
+            }}
+          />
+          <button
+            type="button"
+            className="btn-secondary px-3 py-1.5 text-xs"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Attach file
+          </button>
+          {pendingFile && (
+            <div className="panel-soft rounded-md px-2 py-1 text-xs max-w-[22rem] truncate">
+              {pendingFile.name} · {formatBytes(pendingFile.size)}
+            </div>
+          )}
+          {pendingFile && (
+            <button
+              type="button"
+              className="btn-primary px-3 py-1.5 text-xs disabled:opacity-60"
+              onClick={() => void handleUploadAttachment()}
+              disabled={uploading}
+            >
+              {uploading ? 'Uploading…' : 'Upload file'}
+            </button>
+          )}
+          {pendingFile && !uploading && (
+            <button
+              type="button"
+              className="btn-ghost px-2 py-1 text-xs"
+              onClick={() => {
+                setPendingFile(null);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                }
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
         <textarea
           className="panel w-full resize-none rounded-lg px-3 py-2 text-sm"
           rows={2}
@@ -226,8 +448,12 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           maxLength={2000}
+          disabled={uploading}
         />
-        <p className="text-xs muted mt-1">Enter to send · Shift+Enter for newline</p>
+        <p className="text-xs muted mt-1">
+          Enter to send · Shift+Enter for newline · Attach files with the button above
+        </p>
+        {uploadError && <p className="text-xs text-red-400 mt-1">{uploadError}</p>}
       </div>
 
       {/* Delete message confirmation modal */}

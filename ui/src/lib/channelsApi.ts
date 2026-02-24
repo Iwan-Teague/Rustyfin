@@ -1,4 +1,4 @@
-import { apiJson } from './api';
+import { apiFetch, apiJson } from './api';
 
 export type Channel = {
   id: string;
@@ -16,7 +16,16 @@ export type ChannelMessage = {
   user_id: string;
   username: string;
   content: string;
+  attachments: ChannelMessageAttachment[];
   created_ts: number;
+};
+
+export type ChannelMessageAttachment = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  download_path: string;
 };
 
 export type CreateChannelRequest = {
@@ -46,6 +55,7 @@ export type MessageInfo = {
   user_id: string;
   username: string;
   content: string;
+  attachments: ChannelMessageAttachment[];
   created_ts: number;
 };
 
@@ -107,14 +117,42 @@ export async function getMessages(
 ): Promise<ChannelMessage[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) params.set('before', String(before));
-  return apiJson<ChannelMessage[]>(`/channels/${channelId}/messages?${params}`);
+  const messages = await apiJson<ChannelMessage[]>(`/channels/${channelId}/messages?${params}`);
+  return messages.map((message) => ({
+    ...message,
+    attachments: message.attachments || [],
+  }));
 }
 
 export async function postMessage(channelId: string, content: string): Promise<ChannelMessage> {
-  return apiJson<ChannelMessage>(`/channels/${channelId}/messages`, {
+  const message = await apiJson<ChannelMessage>(`/channels/${channelId}/messages`, {
     method: 'POST',
     body: JSON.stringify({ content }),
   });
+  return { ...message, attachments: message.attachments || [] };
+}
+
+export async function uploadMessageAttachment(
+  channelId: string,
+  file: File,
+  content?: string,
+): Promise<ChannelMessage> {
+  const body = new FormData();
+  body.append('file', file);
+  if (content && content.trim()) {
+    body.append('content', content.trim());
+  }
+
+  const res = await apiFetch(`/channels/${channelId}/attachments`, {
+    method: 'POST',
+    body,
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload?.error?.message || 'Failed to upload attachment');
+  }
+  const message = (await res.json()) as ChannelMessage;
+  return { ...message, attachments: message.attachments || [] };
 }
 
 export async function deleteMessage(channelId: string, messageId: string): Promise<void> {

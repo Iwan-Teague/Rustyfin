@@ -114,5 +114,16 @@ pub struct MessageInfo {
     pub user_id: String,
     pub username: String,
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<MessageAttachmentInfo>,
     pub created_ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageAttachmentInfo {
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub download_path: String,
 }
