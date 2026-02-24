@@ -23,6 +23,20 @@ const nextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      {
+        source: '/watch-party',
+        destination: '/rooms',
+        permanent: true,
+      },
+      {
+        source: '/watch-party/rooms/:roomId',
+        destination: '/rooms/:roomId',
+        permanent: true,
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

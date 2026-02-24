@@ -22,9 +22,9 @@ import {
 } from '@/lib/watchPartyApi';
 import { formatElapsedSeconds } from '@/lib/time';
 import { nonAdminRoleLabel, roleLabel } from '@/lib/watchPartyRoles';
-import AudioPlayer from '../../components/AudioPlayer';
-import MediaPicker, { MediaItemNode, MediaLibrary } from '../../components/MediaPicker';
-import YouTubePlayer from '../../components/YouTubePlayer';
+import AudioPlayer from '../components/AudioPlayer';
+import MediaPicker, { MediaItemNode, MediaLibrary } from '../components/MediaPicker';
+import YouTubePlayer from '../components/YouTubePlayer';
 
 type PlaybackDescriptor = {
   item_id: string;
@@ -592,7 +592,7 @@ export default function WatchPartyRoomPage() {
             }
           } else if (payload.type === 'room_ended') {
             appendDebug('ws room ended notification received');
-            router.push('/watch-party');
+            router.push('/rooms');
           }
         } catch (err) {
           setError('Invalid websocket message received');
@@ -994,7 +994,7 @@ export default function WatchPartyRoomPage() {
     setError('');
     try {
       await leaveWatchPartyRoom(roomId);
-      router.push('/watch-party');
+      router.push('/rooms');
     } catch (err: any) {
       setError(err?.message || 'Failed to leave room');
     } finally {
@@ -1007,7 +1007,7 @@ export default function WatchPartyRoomPage() {
     setError('');
     try {
       await endWatchPartyRoom(roomId);
-      router.push('/watch-party');
+      router.push('/rooms');
     } catch (err: any) {
       setError(err?.message || 'Failed to end room');
       setEnding(false);
@@ -1135,7 +1135,7 @@ export default function WatchPartyRoomPage() {
             <button
               type="button"
               className="btn-primary px-4 py-2 text-sm"
-              onClick={() => router.push('/watch-party')}
+              onClick={() => router.push('/rooms')}
             >
               Back to Watch Party
             </button>

@@ -32,7 +32,7 @@ type LibrarySummary = {
   kind: string;
 };
 
-type RoomMode = 'watch' | 'audio';
+type RoomMode = 'watch' | 'audio' | 'play';
 type WatchSource = 'local' | 'youtube';
 type RightPanelTab = 'invites' | 'options';
 
@@ -272,6 +272,11 @@ export default function WatchPartyPage() {
     setMessage('');
 
     try {
+      if (roomMode === 'play') {
+        setError('Play Together rooms are coming soon.');
+        return;
+      }
+
       const invitesPayload = Object.entries(selectedInvites).map(([user_id, config]) => ({
         user_id,
         role: config.role,
@@ -346,7 +351,13 @@ export default function WatchPartyPage() {
   }
 
   const canCreate =
-    roomMode === 'audio' ? !!selectedAudioLibraryId : watchSource === 'youtube' ? true : !!selectedItem;
+    roomMode === 'play'
+      ? false
+      : roomMode === 'audio'
+        ? !!selectedAudioLibraryId
+        : watchSource === 'youtube'
+          ? true
+          : !!selectedItem;
   const fixedColumnHeightStyle = fixedColumnHeightPx
     ? { height: `${fixedColumnHeightPx}px` }
     : { minHeight: '30rem' };
@@ -383,7 +394,7 @@ export default function WatchPartyPage() {
                     )}
                   </div>
                   <Link
-                    href={`/watch-party/rooms/${room.room_id}`}
+                    href={`/rooms/${room.room_id}`}
                     className="btn-primary shrink-0 px-4 py-2 text-sm"
                   >
                     Join
@@ -396,7 +407,7 @@ export default function WatchPartyPage() {
 
         <InvitesPanel
           invites={invites}
-          onJoin={(roomId) => router.push(`/watch-party/rooms/${roomId}`)}
+          onJoin={(roomId) => router.push(`/rooms/${roomId}`)}
           onDecline={handleDeclineInvite}
           decliningRoomId={decliningRoomId}
         />
@@ -422,6 +433,13 @@ export default function WatchPartyPage() {
             onClick={() => setRoomMode('audio')}
           >
             Listen Together
+          </button>
+          <button
+            type="button"
+            className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'play' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setRoomMode('play')}
+          >
+            Play Together
           </button>
         </div>
       </section>
@@ -473,7 +491,7 @@ export default function WatchPartyPage() {
                     </div>
                   </section>
                 )
-              ) : (
+              ) : roomMode === 'audio' ? (
                 <section className="panel space-y-4 p-5 sm:p-6">
                   <div className="space-y-2">
                     <h2 className="text-xl font-semibold">Music Library</h2>
@@ -516,6 +534,18 @@ export default function WatchPartyPage() {
                       )}
                     </div>
                   )}
+                </section>
+              ) : (
+                <section className="panel space-y-4 p-5 sm:p-6">
+                  <div className="space-y-2">
+                    <h2 className="text-xl font-semibold">Play Together</h2>
+                    <p className="text-sm muted">
+                      Multiplayer room mode is being added. You can already use Watch Together and Listen Together.
+                    </p>
+                  </div>
+                  <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                    Play Together creation is not available yet.
+                  </div>
                 </section>
               )}
             </div>

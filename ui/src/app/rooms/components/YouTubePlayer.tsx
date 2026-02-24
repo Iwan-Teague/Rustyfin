@@ -914,11 +914,11 @@ export default function YouTubePlayer({
                             <p className="text-xs muted mt-1 truncate">{result.channel}</p>
                             <p className="text-[11px] muted mt-1 font-mono">{result.video_id}</p>
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 self-center items-center gap-2">
                             {canControl && (
                               <button
                                 type="button"
-                                className="btn-primary px-3 py-1.5 text-xs"
+                                className="btn-primary px-3 py-2 text-xs"
                                 onClick={() => {
                                   setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
                                   submitVideoId(result.video_id, 'load', 'search_result');
@@ -930,7 +930,7 @@ export default function YouTubePlayer({
                             {canQueue && (
                               <button
                                 type="button"
-                                className="btn-secondary px-3 py-1.5 text-xs"
+                                className="btn-secondary px-3 py-2 text-xs"
                                 onClick={() => {
                                   setQueueMetaById((prev) => ({ ...prev, [result.video_id]: result }));
                                   submitVideoId(result.video_id, 'queue', 'search_result');

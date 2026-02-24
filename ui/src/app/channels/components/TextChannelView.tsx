@@ -159,7 +159,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+      <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
         <span className="muted">#</span>
         <span className="font-semibold">{channel.name}</span>
       </div>
@@ -232,8 +232,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
       {/* Delete message confirmation modal */}
       {pendingDeleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
             <h2 className="font-semibold text-lg">Delete Message</h2>
             <p className="text-sm muted">
               This message will be permanently removed for everyone and cannot be undone.
@@ -247,7 +247,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
               </button>
               <button
                 onClick={() => handleDeleteMessage(pendingDeleteId)}
-                className="btn-ghost px-4 py-2 text-sm text-red-400 hover:text-red-300"
+                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
               >
                 Delete
               </button>
