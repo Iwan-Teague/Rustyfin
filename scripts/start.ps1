@@ -359,6 +359,66 @@ function Test-IsIPv4 {
     return $Value -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
 }
 
+function Find-OpenSSL {
+    $cmd = Get-Command openssl -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $candidates = @(
+        "C:\Program Files\Git\usr\bin\openssl.exe",
+        "C:\Program Files (x86)\Git\usr\bin\openssl.exe",
+        "C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+        "C:\Program Files\OpenSSL\bin\openssl.exe",
+        "C:\OpenSSL-Win64\bin\openssl.exe",
+        "C:\OpenSSL\bin\openssl.exe"
+    )
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $gitBinDir  = Split-Path -Parent $gitCmd.Source
+        $gitRoot    = Split-Path -Parent $gitBinDir
+        $candidates += (Join-Path $gitRoot "usr\bin\openssl.exe")
+    }
+    foreach ($path in $candidates) {
+        if (Test-Path $path) { return $path }
+    }
+    return $null
+}
+
+function New-TlsCertViaDotNet {
+    param([string]$HostName, [string]$CertPath, [string]$KeyPath)
+    # Requires .NET 5+ (PowerShell 7+). Returns $false on older runtimes.
+    try {
+        $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+        $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=$HostName", $rsa,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+        )
+        $san = [System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
+        $san.AddDnsName("localhost")
+        $san.AddIpAddress([System.Net.IPAddress]::Parse("127.0.0.1"))
+        if (Test-IsIPv4 $HostName) {
+            $san.AddIpAddress([System.Net.IPAddress]::Parse($HostName))
+        } elseif ($HostName -ne "localhost") {
+            $san.AddDnsName($HostName)
+        }
+        $req.CertificateExtensions.Add($san.Build())
+        $now  = [System.DateTimeOffset]::UtcNow
+        $cert = $req.CreateSelfSigned($now, $now.AddDays(365))
+
+        $certBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+        $certB64   = [System.Convert]::ToBase64String($certBytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+        [System.IO.File]::WriteAllText($CertPath, "-----BEGIN CERTIFICATE-----`n$certB64`n-----END CERTIFICATE-----`n")
+
+        $keyBytes = $rsa.ExportRSAPrivateKey()
+        $keyB64   = [System.Convert]::ToBase64String($keyBytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+        [System.IO.File]::WriteAllText($KeyPath, "-----BEGIN RSA PRIVATE KEY-----`n$keyB64`n-----END RSA PRIVATE KEY-----`n")
+
+        $rsa.Dispose()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Ensure-EdgeTlsCert {
     param([string]$HostName)
     $certDir  = Join-Path $SafeTmpDir "edge-tls"
@@ -381,32 +441,34 @@ function Ensure-EdgeTlsCert {
         return
     }
 
-    if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
-        Write-Die "openssl is required to generate local TLS certificates"
-    }
-
-    $san = "DNS:localhost,IP:127.0.0.1"
-    if (Test-IsIPv4 $HostName) {
-        $san += ",IP:$HostName"
-    } else {
-        $san += ",DNS:$HostName"
-    }
-
     if (Test-Path $certPath) { Remove-Item $certPath -Force }
     if (Test-Path $keyPath)  { Remove-Item $keyPath  -Force }
 
-    & openssl req `
-        -x509 `
-        -newkey rsa:2048 `
-        -sha256 `
-        -days 365 `
-        -nodes `
-        -keyout $keyPath `
-        -out $certPath `
-        -subj "/CN=$HostName" `
-        -addext "subjectAltName=$san" 2>&1 | Out-Null
-
-    if ($LASTEXITCODE -ne 0) { Write-Die "Failed generating local TLS cert" }
+    $opensslBin = Find-OpenSSL
+    if ($opensslBin) {
+        $san = "DNS:localhost,IP:127.0.0.1"
+        if (Test-IsIPv4 $HostName) { $san += ",IP:$HostName" } else { $san += ",DNS:$HostName" }
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & $opensslBin req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes `
+            -keyout $keyPath -out $certPath -subj "/CN=$HostName" `
+            -addext "subjectAltName=$san" 2>$null
+        $opensslExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($opensslExit -ne 0) { Write-Die "Failed generating local TLS cert via openssl" }
+    } elseif (New-TlsCertViaDotNet $HostName $certPath $keyPath) {
+        Write-Info "Generated local TLS cert via .NET (openssl not found in PATH)"
+    } else {
+        Write-Die @"
+openssl is required to generate local TLS certificates but was not found.
+Install it via one of:
+  winget install ShiningLight.OpenSSL
+  choco install openssl
+  scoop install openssl
+If Git for Windows is installed, openssl may already exist at:
+  C:\Program Files\Git\usr\bin\openssl.exe
+"@
+    }
 
     Set-Content -Path $metaPath -Value $HostName -NoNewline
     $env:RUSTFIN_EDGE_TLS_CERT = $certPath
