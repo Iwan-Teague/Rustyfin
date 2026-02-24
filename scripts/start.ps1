@@ -81,6 +81,18 @@ if (-not [System.IO.Path]::IsPathRooted($ComposeFile)) {
 Set-Location $RepoRoot
 
 if (-not (Test-Path $ComposeFile))                          { Write-Die "docker-compose.yml not found at $ComposeFile" }
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Warn "git is not installed or not in PATH."
+    Write-Warn "git is required for repository management and locating bundled tools."
+    $yn = Read-Host "Install git now via winget? [y/N]"
+    if ($yn -match '^[Yy]') {
+        winget install Microsoft.Git
+        Write-Info "git installation complete. Please restart this script."
+    } else {
+        Write-Info "Skipping git install. Some features may not work correctly."
+    }
+    exit 1
+}
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { Write-Die "docker is not installed or not in PATH" }
 docker compose version 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Write-Die "docker compose is not available" }
@@ -319,7 +331,11 @@ Start-DirectoryPickerHelper
 $env:RUSTFIN_PICKER_HELPER_PORT          = $PickerHelperPort
 $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL = if ($env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL) { $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL } else { "http://host.docker.internal:${PickerHelperPort}/pick" }
 $env:RUSTFIN_MEDIA_HOST_PATH             = if ($env:RUSTFIN_MEDIA_HOST_PATH)             { $env:RUSTFIN_MEDIA_HOST_PATH }             else { $env:RUSTFIN_MEDIA_PATH }
-$env:RUSTFIN_MEDIA_CONTAINER_ROOT        = if ($env:RUSTFIN_MEDIA_CONTAINER_ROOT)        { $env:RUSTFIN_MEDIA_CONTAINER_ROOT }        else { $env:RUSTFIN_MEDIA_PATH }
+# Container root must be a Linux path — never a Windows host path — so default to /media.
+# Also override if it was previously set to a Windows path (e.g. from a prior run in the same session).
+if (-not $env:RUSTFIN_MEDIA_CONTAINER_ROOT -or $env:RUSTFIN_MEDIA_CONTAINER_ROOT -match '^[A-Za-z]:') {
+    $env:RUSTFIN_MEDIA_CONTAINER_ROOT = "/media"
+}
 
 function Test-PortInUse {
     param([int]$Port)
