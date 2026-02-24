@@ -331,6 +331,7 @@ Start-DirectoryPickerHelper
 $env:RUSTFIN_PICKER_HELPER_PORT          = $PickerHelperPort
 $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL = if ($env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL) { $env:RUSTFIN_DIRECTORY_PICKER_HELPER_URL } else { "http://host.docker.internal:${PickerHelperPort}/pick" }
 $env:RUSTFIN_MEDIA_HOST_PATH             = if ($env:RUSTFIN_MEDIA_HOST_PATH)             { $env:RUSTFIN_MEDIA_HOST_PATH }             else { $env:RUSTFIN_MEDIA_PATH }
+$env:RUSTFIN_HOST_OS                     = "windows"
 # Container root must be a Linux path — never a Windows host path — so default to /media.
 # Also override if it was previously set to a Windows path (e.g. from a prior run in the same session).
 if (-not $env:RUSTFIN_MEDIA_CONTAINER_ROOT -or $env:RUSTFIN_MEDIA_CONTAINER_ROOT -match '^[A-Za-z]:') {
