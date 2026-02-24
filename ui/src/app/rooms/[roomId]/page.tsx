@@ -1211,7 +1211,6 @@ export default function WatchPartyRoomPage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <span className="chip text-xs">Duration: {formatElapsedSeconds(roomDurationSeconds)}</span>
-            <span className="chip text-xs">WS: {wsConnected ? 'connected' : 'disconnected'}</span>
             <button
               type="button"
               className="btn-secondary px-3 py-1.5 text-xs"
