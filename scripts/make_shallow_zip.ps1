@@ -21,6 +21,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: git is not installed or not in PATH." -ForegroundColor Red
+    Write-Host "git is required to create a shallow zip archive." -ForegroundColor Yellow
+    $yn = Read-Host "Install git now via winget? [y/N]"
+    if ($yn -match '^[Yy]') {
+        winget install Microsoft.Git
+        Write-Host "git installation complete. Please restart this script." -ForegroundColor Cyan
+    }
+    exit 1
+}
+
 # Resolve repo root via git
 $root = git rev-parse --show-toplevel 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $root) {
