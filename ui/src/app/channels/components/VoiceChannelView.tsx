@@ -67,7 +67,8 @@ function ParticipantCard({
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
       <div className="w-full space-y-1">
-        <div className="flex items-center justify-end text-[11px] muted">
+        <div className="flex items-center justify-between text-[11px] muted">
+          <span>{isSelf ? 'Input' : 'Output'}</span>
           <span>{volumePercent}%</span>
         </div>
         <input

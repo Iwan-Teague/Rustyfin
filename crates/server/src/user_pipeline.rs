@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use crate::error::AppError;
 use crate::state::AppState;
 
-pub const MIN_PASSWORD_LEN: usize = 12;
+pub const MIN_PASSWORD_LEN: usize = 6;
 
 static USERNAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9._-]{3,32}$").unwrap());

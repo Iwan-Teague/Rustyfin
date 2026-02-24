@@ -19,7 +19,7 @@ use crate::state::AppState;
 use super::permissions::RoomPolicy;
 
 const MAX_INVITEES: usize = 100;
-const ROOM_PASSWORD_MIN_LEN: usize = 4;
+const ROOM_PASSWORD_MIN_LEN: usize = 6;
 const ROOM_PASSWORD_MAX_LEN: usize = 128;
 const YOUTUBE_SEARCH_MIN_QUERY_LEN: usize = 2;
 const YOUTUBE_SEARCH_MAX_QUERY_LEN: usize = 100;
@@ -30,6 +30,7 @@ const YOUTUBE_LOOKUP_MAX_IDS: usize = 25;
 const YOUTUBE_LOOKUP_TIMEOUT_SECONDS: u64 = 5;
 const INVITE_RESEND_COOLDOWN_SECONDS: i64 = 5;
 const WEB_URL_MAX_LEN: usize = 2048;
+const ROOM_NAME_MAX_LEN: usize = 120;
 const DEFAULT_WEB_ROOM_URL: &str = "https://www.mozilla.org/";
 const YOUTUBE_SEARCH_URL: &str = "https://www.youtube.com/results";
 const YOUTUBE_SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -85,6 +86,8 @@ pub struct CreateRoomInvite {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRoomRequest {
+    /// Optional custom display name for the room.
+    pub room_name: Option<String>,
     /// For video rooms: the item to watch.
     pub item_id: Option<String>,
     /// For audio rooms: the music library to use.
@@ -118,6 +121,7 @@ pub struct RoomMemberResponse {
 #[derive(Debug, Serialize)]
 pub struct RoomResponse {
     pub room_id: String,
+    pub room_name: String,
     pub item_id: String,
     pub host_user_id: String,
     pub status: String,
@@ -848,6 +852,25 @@ fn normalize_password(password: Option<String>) -> Result<Option<String>, AppErr
     }
 }
 
+fn normalize_room_name(room_name: Option<String>) -> Result<Option<String>, AppError> {
+    match room_name {
+        Some(value) => {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if trimmed.len() > ROOM_NAME_MAX_LEN {
+                return Err(ApiError::BadRequest(format!(
+                    "room_name must be <= {ROOM_NAME_MAX_LEN} characters"
+                ))
+                .into());
+            }
+            Ok(Some(trimmed))
+        }
+        None => Ok(None),
+    }
+}
+
 fn hash_room_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
@@ -932,7 +955,9 @@ pub async fn list_public_rooms(
     let entries = rooms
         .into_iter()
         .map(|r| {
-            let title = if r.room_mode == "audio" {
+            let title = if !r.room_name.trim().is_empty() {
+                r.room_name.clone()
+            } else if r.room_mode == "audio" {
                 if r.audio_library_name.is_empty() {
                     "Music Party".to_string()
                 } else {
@@ -1058,6 +1083,7 @@ pub async fn create_room(
 
     let policy = parse_policy(body.policy)?;
     let password = normalize_password(body.password)?;
+    let room_name = normalize_room_name(body.room_name)?;
     let password_hash = match password {
         Some(value) => Some(hash_room_password(&value)?),
         None => None,
@@ -1222,6 +1248,7 @@ pub async fn create_room(
     let created = rustfin_db::repo::watch_party::create_room_with_members(
         &state.db,
         &auth.user_id,
+        room_name.as_deref(),
         item_id.as_deref(),
         &policy_json,
         password_hash.as_deref(),
@@ -1572,6 +1599,7 @@ pub async fn get_room(
 
     Ok(Json(RoomResponse {
         room_id: room.id,
+        room_name: room.room_name,
         item_id: room.item_id,
         host_user_id: room.host_user_id,
         status: room.status,

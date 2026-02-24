@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone)]
 pub struct WatchPartyRoomRow {
     pub id: String,
+    pub room_name: String,
     pub host_user_id: String,
     pub item_id: String,
     pub status: String,
@@ -54,6 +55,7 @@ pub struct NewWatchPartyMember {
 pub async fn create_room_with_members(
     pool: &SqlitePool,
     host_user_id: &str,
+    room_name: Option<&str>,
     item_id: Option<&str>,
     policy_json: &str,
     join_password_hash: Option<&str>,
@@ -65,15 +67,17 @@ pub async fn create_room_with_members(
     let now = chrono::Utc::now().timestamp();
     let room_id = uuid::Uuid::new_v4().to_string();
     let mode = room_mode.unwrap_or("video");
+    let name = room_name.unwrap_or("").trim();
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO watch_party_room \
-         (id, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, web_url) \
-         VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?)",
+         (id, room_name, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, web_url) \
+         VALUES (?, ?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&room_id)
+    .bind(name)
     .bind(host_user_id)
     .bind(item_id)
     .bind(policy_json)
@@ -108,6 +112,7 @@ pub async fn create_room_with_members(
 
     Ok(WatchPartyRoomRow {
         id: room_id,
+        room_name: name.to_string(),
         host_user_id: host_user_id.to_string(),
         item_id: item_id.unwrap_or_default().to_string(),
         status: "lobby".to_string(),
@@ -126,9 +131,23 @@ pub async fn get_room(
     pool: &SqlitePool,
     room_id: &str,
 ) -> Result<Option<WatchPartyRoomRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, String, Option<String>, i64, i64, String, Option<String>, Option<String>, Option<String>)> =
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> =
         sqlx::query_as(
-            "SELECT id, host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id, web_url \
+            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id, web_url \
              FROM watch_party_room WHERE id = ?",
         )
         .bind(room_id)
@@ -138,6 +157,7 @@ pub async fn get_room(
     Ok(row.map(
         |(
             id,
+            room_name,
             host_user_id,
             item_id,
             status,
@@ -152,6 +172,7 @@ pub async fn get_room(
         )| {
             WatchPartyRoomRow {
                 id,
+                room_name,
                 host_user_id,
                 item_id,
                 status,
@@ -362,7 +383,7 @@ pub async fn list_invites_for_user(
     user_id: &str,
 ) -> Result<Vec<WatchPartyInviteSummary>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, i64, String, String)> = sqlx::query_as(
-        "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(i.title, r.room_mode), r.host_user_id, host.username, r.created_ts, \
+        "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(NULLIF(r.room_name, ''), COALESCE(i.title, r.room_mode)), r.host_user_id, host.username, r.created_ts, \
                 CASE WHEN r.join_password_hash IS NULL OR r.join_password_hash = '' THEN 0 ELSE 1 END AS password_required, \
                 m.role, m.status \
          FROM watch_party_member m \
@@ -409,6 +430,7 @@ pub async fn list_invites_for_user(
 #[derive(Debug, Clone)]
 pub struct PublicRoomRow {
     pub id: String,
+    pub room_name: String,
     pub host_user_id: String,
     pub host_username: String,
     pub item_id: String,
@@ -423,9 +445,22 @@ pub struct PublicRoomRow {
 
 /// List all non-invite-only rooms that are currently in the lobby.
 pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, String, String, String, String, i64, i64, i64)> =
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+    )> =
         sqlx::query_as(
-            "SELECT r.id, r.host_user_id, host.username, COALESCE(r.item_id, ''), \
+            "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                     COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                     CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
                     COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
@@ -449,6 +484,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
         .map(
             |(
                 id,
+                room_name,
                 host_user_id,
                 host_username,
                 item_id,
@@ -462,6 +498,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
             )| {
                 PublicRoomRow {
                     id,
+                    room_name,
                     host_user_id,
                     host_username,
                     item_id,

@@ -23,6 +23,7 @@ export type WatchPartyInviteInput = {
 
 export type CreateWatchPartyRoomRequest =
   | {
+      room_name?: string;
       item_id: string;
       audio_library_id?: never;
       room_mode?: never;
@@ -31,6 +32,7 @@ export type CreateWatchPartyRoomRequest =
       policy: WatchPartyPolicy;
     }
   | {
+      room_name?: string;
       audio_library_id: string;
       item_id?: never;
       room_mode?: never;
@@ -39,6 +41,7 @@ export type CreateWatchPartyRoomRequest =
       policy: WatchPartyPolicy;
     }
   | {
+      room_name?: string;
       room_mode: 'youtube';
       item_id?: never;
       audio_library_id?: never;
@@ -48,6 +51,7 @@ export type CreateWatchPartyRoomRequest =
       policy: WatchPartyPolicy;
     }
   | {
+      room_name?: string;
       room_mode: 'web';
       web_url?: string;
       item_id?: never;
@@ -71,6 +75,7 @@ export type WatchPartyRoomMember = {
 
 export type WatchPartyRoomResponse = {
   room_id: string;
+  room_name: string;
   item_id: string;
   host_user_id: string;
   status: 'lobby' | 'ended' | string;

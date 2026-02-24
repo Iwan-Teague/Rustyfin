@@ -282,13 +282,22 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
     }
   }, [channel.id, draft, pendingFile, uploading]);
 
+  const handleSend = useCallback(async () => {
+    if (uploading) return;
+    if (pendingFile) {
+      await handleUploadAttachment();
+      return;
+    }
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    onSendMessage(trimmed);
+    setDraft('');
+  }, [draft, handleUploadAttachment, onSendMessage, pendingFile, uploading]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!uploading && draft.trim()) {
-        onSendMessage(draft.trim());
-        setDraft('');
-      }
+      void handleSend();
     }
   };
 
@@ -392,7 +401,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
       {/* Input */}
       <div className="px-4 py-3 border-t border-[var(--border)] shrink-0">
-        <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="flex items-end gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -405,53 +414,56 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           />
           <button
             type="button"
-            className="btn-secondary px-3 py-1.5 text-xs"
+            className="btn-primary h-10 w-10 shrink-0 text-xl leading-none"
             onClick={() => fileInputRef.current?.click()}
+            aria-label="Attach file"
+            title="Attach file"
+            disabled={uploading}
           >
-            Attach file
+            +
           </button>
-          {pendingFile && (
+          <textarea
+            className="panel flex-1 resize-none rounded-lg px-3 py-2 text-sm"
+            rows={2}
+            placeholder={`Message #${channel.name}`}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            maxLength={2000}
+            disabled={uploading}
+          />
+          <button
+            type="button"
+            className="btn-primary h-10 px-4 text-sm shrink-0 disabled:opacity-60"
+            onClick={() => void handleSend()}
+            disabled={uploading || (!draft.trim() && !pendingFile)}
+          >
+            {uploading ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+        {pendingFile && (
+          <div className="mt-2 flex items-center gap-2">
             <div className="panel-soft rounded-md px-2 py-1 text-xs max-w-[22rem] truncate">
               {pendingFile.name} · {formatBytes(pendingFile.size)}
             </div>
-          )}
-          {pendingFile && (
-            <button
-              type="button"
-              className="btn-primary px-3 py-1.5 text-xs disabled:opacity-60"
-              onClick={() => void handleUploadAttachment()}
-              disabled={uploading}
-            >
-              {uploading ? 'Uploading…' : 'Upload file'}
-            </button>
-          )}
-          {pendingFile && !uploading && (
-            <button
-              type="button"
-              className="btn-ghost px-2 py-1 text-xs"
-              onClick={() => {
-                setPendingFile(null);
-                if (fileInputRef.current) {
-                  fileInputRef.current.value = '';
-                }
-              }}
-            >
-              Clear
-            </button>
-          )}
-        </div>
-        <textarea
-          className="panel w-full resize-none rounded-lg px-3 py-2 text-sm"
-          rows={2}
-          placeholder={`Message #${channel.name}`}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKeyDown}
-          maxLength={2000}
-          disabled={uploading}
-        />
+            {!uploading && (
+              <button
+                type="button"
+                className="btn-ghost px-2 py-1 text-xs"
+                onClick={() => {
+                  setPendingFile(null);
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
         <p className="text-xs muted mt-1">
-          Enter to send · Shift+Enter for newline · Attach files with the button above
+          Enter to send · Shift+Enter for newline
         </p>
         {uploadError && <p className="text-xs text-red-400 mt-1">{uploadError}</p>}
       </div>
