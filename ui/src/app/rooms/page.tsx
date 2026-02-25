@@ -32,8 +32,10 @@ type LibrarySummary = {
   kind: string;
 };
 
-type RoomMode = 'watch' | 'audio' | 'play';
+type RoomMode = 'watch' | 'audio' | 'play' | 'create';
 type WatchSource = 'local' | 'youtube' | 'web';
+type AudioSource = 'local' | 'online';
+type CreateTool = 'text' | 'canvas';
 type RightPanelTab = 'invites' | 'options';
 
 const DEFAULT_POLICY: WatchPartyPolicy = {
@@ -54,6 +56,8 @@ export default function WatchPartyPage() {
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
   const [watchSource, setWatchSource] = useState<WatchSource>('local');
+  const [audioSource, setAudioSource] = useState<AudioSource>('local');
+  const [createTool, setCreateTool] = useState<CreateTool>('text');
   const [webStartUrl, setWebStartUrl] = useState('');
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('invites');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
@@ -78,6 +82,8 @@ export default function WatchPartyPage() {
   const selectedInviteIds = useMemo(() => Object.keys(selectedInvites), [selectedInvites]);
   const effectivePolicyRoomMode = roomMode === 'audio'
     ? 'audio'
+    : roomMode === 'create'
+      ? 'create'
     : watchSource === 'youtube'
       ? 'youtube'
       : watchSource === 'web'
@@ -287,19 +293,44 @@ export default function WatchPartyPage() {
       }));
       const normalizedRoomName = roomName.trim();
 
-      if (roomMode === 'audio') {
-        if (!selectedAudioLibraryId) {
-          setError('Select a music library first.');
-          return;
-        }
-
+      if (roomMode === 'create') {
         const payload = {
           room_name: normalizedRoomName || undefined,
-          audio_library_id: selectedAudioLibraryId,
+          room_mode: 'create' as const,
+          create_tool: createTool,
+          create_document_name: normalizedRoomName || undefined,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
           policy,
         };
+        const created = await createWatchPartyRoom(payload);
+        setMessage(`Room created: ${created.room_id}`);
+        router.push(created.join_path);
+      } else if (roomMode === 'audio') {
+        const payload =
+          audioSource === 'online'
+            ? {
+                room_name: normalizedRoomName || undefined,
+                room_mode: 'audio' as const,
+                audio_source: 'online' as const,
+                invites: invitesPayload,
+                password: password.trim() ? password.trim() : undefined,
+                policy,
+              }
+            : (() => {
+                if (!selectedAudioLibraryId) {
+                  throw new Error('Select a music library first.');
+                }
+                return {
+                  room_name: normalizedRoomName || undefined,
+                  room_mode: 'audio' as const,
+                  audio_source: 'library' as const,
+                  audio_library_id: selectedAudioLibraryId,
+                  invites: invitesPayload,
+                  password: password.trim() ? password.trim() : undefined,
+                  policy,
+                };
+              })();
 
         const created = await createWatchPartyRoom(payload);
         setMessage(`Room created: ${created.room_id}`);
@@ -374,8 +405,10 @@ export default function WatchPartyPage() {
   const canCreate =
     roomMode === 'play'
       ? false
+      : roomMode === 'create'
+        ? true
       : roomMode === 'audio'
-        ? !!selectedAudioLibraryId
+        ? (audioSource === 'online' ? true : !!selectedAudioLibraryId)
         : watchSource === 'youtube' || watchSource === 'web'
           ? true
           : !!selectedItem;
@@ -406,7 +439,7 @@ export default function WatchPartyPage() {
                     <p className="font-semibold truncate">{room.title}</p>
                     <p className="text-xs muted">
                       Hosted by {room.host_username}
-                      {room.member_count > 0 && ` · ${room.member_count} watching`}
+                      {room.member_count > 0 && ` · ${room.member_count} joined`}
                       {' · '}
                       {formatElapsedSeconds(elapsedSinceSeconds(room.created_ts, nowMs))}
                     </p>
@@ -474,6 +507,13 @@ export default function WatchPartyPage() {
               onClick={() => setRoomMode('play')}
             >
               Play Together
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm rounded-lg ${roomMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setRoomMode('create')}
+            >
+              Create Together
             </button>
           </div>
         </div>
@@ -551,14 +591,39 @@ export default function WatchPartyPage() {
                 )
               ) : roomMode === 'audio' ? (
                 <section className="panel space-y-4 p-5 sm:p-6">
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-semibold">Music Library</h2>
-                    <p className="text-sm muted">
-                      Pick a music library. All tracks will be shuffled into a shared queue.
-                    </p>
+                  <div className="space-y-3">
+                    <h2 className="text-xl font-semibold">Listen Together</h2>
+                    <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+                      {([
+                        ['local', 'Local'],
+                        ['online', 'Online'],
+                      ] as const).map(([source, label]) => (
+                        <button
+                          key={source}
+                          type="button"
+                          onClick={() => setAudioSource(source)}
+                          className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                            audioSource === source
+                              ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                              : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  {musicLibraries.length === 0 ? (
+                  {audioSource === 'online' ? (
+                    <div className="space-y-3">
+                      <p className="text-sm muted">
+                        Online mode lets room members search YouTube tracks in-lobby. Tracks are downloaded to room-scoped MP3 files and removed when the room is deleted.
+                      </p>
+                      <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                        Create the room, then search and queue tracks from inside the lobby.
+                      </div>
+                    </div>
+                  ) : musicLibraries.length === 0 ? (
                     <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
                       No music libraries available. Create a music library and scan it first.
                     </div>
@@ -592,6 +657,57 @@ export default function WatchPartyPage() {
                       )}
                     </div>
                   )}
+                </section>
+              ) : roomMode === 'create' ? (
+                <section className="panel space-y-4 p-5 sm:p-6">
+                  <div className="space-y-2">
+                    <h2 className="text-xl font-semibold">Create Together</h2>
+                    <p className="text-sm muted">
+                      Work collaboratively on shared text/PDF documents or a paint-style shared canvas.
+                    </p>
+                  </div>
+
+                  <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+                    {([
+                      ['text', 'Shared Document'],
+                      ['canvas', 'Shared Canvas'],
+                    ] as const).map(([tool, label]) => (
+                      <button
+                        key={tool}
+                        type="button"
+                        onClick={() => setCreateTool(tool)}
+                        className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                          createTool === tool
+                            ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                            : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="space-y-3">
+                    {createTool === 'text' ? (
+                      <>
+                        <p className="text-sm muted">
+                          Shared document mode supports live text editing, Markdown, PDF import (text extraction), and export to TXT/MD/PDF from inside the room.
+                        </p>
+                        <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                          Members with edit access can collaboratively update one shared document in real time.
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm muted">
+                          Shared canvas mode provides an MS Paint style drawing board with color/brush controls and PNG download.
+                        </p>
+                        <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                          Canvas edits sync to everyone in the room using realtime websocket updates.
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </section>
               ) : (
                 <section className="panel space-y-4 p-5 sm:p-6">
@@ -699,7 +815,7 @@ export default function WatchPartyPage() {
         </button>
       </section>
 
-      {roomMode === 'audio' && musicLibraries.length === 0 && (
+      {roomMode === 'audio' && audioSource === 'local' && musicLibraries.length === 0 && (
         <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
           No shared music libraries are available for the current invite selection.
         </div>

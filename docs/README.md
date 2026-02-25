@@ -1,9 +1,23 @@
-# Docs Index
+# Rustyfin Docs Index
 
-This repository keeps long-form documents and planning artifacts under `docs/`:
+`/docs` holds long-form planning, reports, and reference artifacts used during implementation.
 
-- `docs/project/` - project tracking and implementation status
-- `docs/reports/` - fix reports and audit-style writeups
-- `docs/prompts/` - reusable prompt/instruction files
-- `docs/reference/` - large reference bundles and source material
-- `docs/setup-wizard/` - setup-wizard specs, package files, and OpenAPI docs
+## Directory Map
+
+- `docs/plans/`
+  - Implementation plans and staged execution outlines.
+- `docs/project/`
+  - Project trackers and high-level status documents.
+- `docs/prompts/`
+  - Prompt/instruction templates used for agent-driven work.
+- `docs/reference/`
+  - Large external or bundled reference material.
+- `docs/reports/`
+  - Audits, postmortems, implementation notes, and fix reports.
+- `docs/setup-wizard/`
+  - Setup flow package artifacts and related specifications.
+
+## Notes
+
+- Source code is the operational source of truth; docs capture design intent and implementation history.
+- When documentation and code diverge, prefer code and update the docs accordingly.

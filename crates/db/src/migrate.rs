@@ -54,6 +54,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "013_calendar",
         include_str!("../migrations/013_calendar.sql"),
     ),
+    (
+        "014_watch_party_online_audio",
+        include_str!("../migrations/014_watch_party_online_audio.sql"),
+    ),
+    (
+        "015_watch_party_create_together",
+        include_str!("../migrations/015_watch_party_create_together.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

@@ -1,282 +1,178 @@
 # Rustyfin
 
-A **local-first** Jellyfin-class media server built entirely in Rust, designed for simplicity, performance, and self-hosting.
+Rustyfin is a local-first home server platform for media playback, live rooms, channels, and calendar planning.
 
-## Overview
+It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first runtime that works on one device or across your LAN.
 
-Rustyfin is a lightweight, single-binary media server that provides a complete media management and streaming solution. Built with modern technologies and best practices, it offers powerful features while maintaining ease of deployment and operation.
+## Current Product Surface
 
-### Key Features
+- Libraries
+  - Movie, TV, and music libraries with deep directory scanning.
+  - Per-library access control per user.
+  - TMDB metadata enrichment (configurable in Admin).
+- Playback
+  - Direct Play (HTTP range) and HLS transcode modes.
+  - Playback progress tracking.
+  - Secure stream token handling for scoped streaming URLs.
+- Rooms (formerly watch-party)
+  - Watch Together: local media, YouTube embed, and shared web room.
+  - Listen Together:
+    - Local mode (music library based).
+    - Online mode: YouTube search, room-scoped audio download to MP3, shared queue and playback.
+  - Create Together:
+    - Shared collaborative document editor (plain text / markdown / PDF-text workflow).
+    - Shared paint-style canvas with synchronized strokes.
+    - Import `.txt`, `.md`, `.pdf` (text extraction) and export `.txt`, `.md`, `.pdf`, `.png`.
+  - Room permissions, invites, password-protected rooms, and reconfiguration.
+  - Empty room auto-cleanup after 5 minutes.
+- Channels
+  - Text channels with live updates and file/image attachments.
+  - Voice channels with speaking indicators, mute, deafen, per-peer output volume, and local mic gain.
+- Calendar
+  - Separate Rust calendar service with admin-global and user-personal events.
+  - Recurring birthdays and multiple calendar views in UI.
+- Admin Console
+  - Tabbed management for users, libraries, channels, rooms, logs, and TMDB key configuration.
 
-- 🎬 **Complete Media Library Management**
-  - Movies and TV series support with automatic metadata enrichment
-  - Hierarchical organization (Series → Seasons → Episodes)
-  - Multi-library support with configurable media paths
+## Runtime Architecture
 
-- 🔐 **Multi-User Authentication**
-  - Secure user management with role-based access (admin/user)
-  - Argon2 password hashing with JWT-based authentication
-  - Per-user preferences and playback state tracking
+Rustyfin runs as a multi-service stack in Docker Compose:
 
-- 📡 **Flexible Streaming**
-  - Direct Play via HTTP Range requests (RFC 7233 compliant)
-  - Adaptive HLS transcoding for broad device compatibility
-  - Hardware-accelerated transcoding (NVENC, VAAPI, QSV, VideoToolbox)
+- `rustfin` (Rust backend API)
+  - Axum REST/WebSocket server.
+  - SQLite-backed core application logic.
+- `rustfin-calendar` (Rust calendar API)
+  - Dedicated calendar microservice.
+  - Shares the same SQLite database volume.
+- `rustfin-ui` (Next.js App Router frontend)
+  - Browser client for all product areas.
+- `rustfin-edge` (Caddy TLS edge)
+  - HTTPS termination for LAN/browser secure-context needs (microphone/WebRTC).
 
-- 🎨 **Rich Metadata & Artwork**
-  - Integration with TMDB for movies and TV shows
-  - Automatic artwork download and caching with resizing
-  - User-configurable metadata overrides with field locks
+Supporting host process:
 
-- 📝 **Subtitle Support**
-  - Sidecar subtitle discovery (SRT, VTT, ASS, SUB, SSA, etc.)
-  - Embedded subtitle track enumeration
-  - Language, forced, and SDH/HI markers
+- Native directory picker helper (started by `scripts/start.sh`)
+  - Opens host OS folder picker for library path selection.
 
-- 📊 **Real-Time Updates**
-  - Server-Sent Events (SSE) for live progress updates
-  - Scan progress, metadata refresh, and job status notifications
+## Monorepo Layout
 
-- 📅 **Integrated Calendar**
-  - Dedicated Rust calendar service running as a separate Docker container
-  - Global admin events plus per-user personal events
-  - Recurring yearly birthdays with derived age display
+- `crates/core` - shared domain types and base error models.
+- `crates/db` - schema migrations and repository layer.
+- `crates/scanner` - media discovery and filename/path parsing.
+- `crates/metadata` - metadata provider integration and merge logic.
+- `crates/transcoder` - ffmpeg/ffprobe orchestration and HLS session logic.
+- `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
+- `crates/calendar` - standalone calendar service API.
+- `ui` - Next.js frontend.
+- `scripts` - operational scripts (`start.sh`, `stop.sh`, `clean_install.sh`, packaging helpers).
+- `tests` - test harness and E2E suites.
+- `docs` - reports, plans, references, and setup wizard artifacts.
 
-- 🐳 **Docker-Ready**
-  - Multi-stage Docker builds for minimal image size
-  - Pre-configured compose files for CPU and GPU acceleration
-  - Persistent volumes for configuration, cache, and media
+## Quick Start (Docker)
 
-## Architecture
-
-Rustyfin is built as a **modular monolith** - a single server process with clear internal boundaries:
-
-- **`crates/server`** - Axum web server with REST API endpoints
-- **`crates/db`** - SQLite database layer with migrations and repositories
-- **`crates/core`** - Shared domain types and business logic
-- **`crates/scanner`** - Media file discovery and parsing
-- **`crates/metadata`** - External metadata provider integration (TMDB)
-- **`crates/transcoder`** - FFmpeg orchestration for transcoding
-- **`crates/calendar`** - Standalone calendar API service (Rust + Axum)
-- **`ui`** - Next.js web application for user interface
-
-## Tech Stack
-
-- **Backend**: Rust 2024 Edition
-- **Web Framework**: Axum with Tower middleware
-- **Database**: SQLite with WAL mode
-- **Media Processing**: FFmpeg & ffprobe
-- **Authentication**: Argon2 + JWT
-- **Frontend**: Next.js (TypeScript/React)
-- **Streaming**: HLS with hls.js for adaptive playback
-
-## Getting Started
-
-### Prerequisites
-
-- **Rust 1.83+** (for building from source)
-- **FFmpeg** with ffprobe (required for media processing)
-- **Node.js 18+** (for building the UI)
-
-### Quick Start with Docker
-
-The easiest way to run Rustyfin is with the repo scripts:
+From repo root:
 
 ```bash
-# Start full stack (first run or repeat run)
 ./scripts/start.sh
+```
 
-# Stop full stack
+Stop stack:
+
+```bash
 ./scripts/stop.sh
+```
 
-# Full wipe to blank slate (setup wizard required on next start)
+Reset to blank-slate install (wipes user/runtime data):
+
+```bash
 ./scripts/clean_install.sh
 ```
 
-`start.sh` handles temp-directory permission issues, creates a default media path,
-and starts everything with Docker Compose.
-By default it rebuilds images each run (cache-enabled, so code changes apply without
-always redownloading everything). For a strict no-cache rebuild, use:
+After `clean_install.sh`, next `start.sh` requires full setup wizard again.
+
+### `start.sh` options
 
 ```bash
-./scripts/start.sh --full-rebuild
+./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [-f docker-compose.yml]
 ```
 
-`start.sh` also detects your primary LAN IP and prints `UI (LAN)` / `Backend (LAN)`
-URLs so devices on the same network can connect. To force a specific advertised host,
-set `RUSTFIN_PUBLIC_HOST` before starting.
-The UI is served over HTTPS by default so browser microphone/WebRTC permissions work
-on LAN devices (voice channels/watch parties). If your browser shows a local certificate
-warning, trust/accept it for your Rustyfin host. `start.sh` generates a local
-certificate containing SANs for `localhost`, `127.0.0.1`, and the detected LAN IP.
+- Default behavior rebuilds images with cache.
+- `--full-rebuild` forces no-cache rebuild.
+- `--no-build` skips rebuild.
 
-To enable TMDB metadata/artwork enrichment during scans (posters, backdrops,
-overview/year improvements), set a TMDB API key in **Admin → TMDB Metadata**.
-You can also provide it via environment before startup:
+## Access URLs and LAN Behavior
 
-```bash
-export RUSTFIN_TMDB_KEY="your_tmdb_api_key"
-./scripts/start.sh
-```
+- Backend default host port: `8096` (HTTP)
+- UI default host port: `3000` (HTTPS via edge)
 
-When using the Admin `Browse` button in Docker mode, Rustyfin starts a local
-host-side picker helper so the native OS directory dialog can open. By default,
-`start.sh` mounts your media root (`RUSTFIN_MEDIA_PATH`, default: your home
-directory) to the same absolute path inside the container, so library paths stay
-as real host-style paths (for example, `/Users/iwanteague/Desktop`).
+`start.sh` auto-detects LAN IP, prints LAN URLs, and writes runtime values to `.rustyfin.runtime.env`.
+If default ports are occupied, it picks free ports.
 
-If `Browse` does not open a native dialog, restart via `./scripts/start.sh`
-(not plain `docker compose up`) so helper env/permissions are applied.
+## Setup and Authentication
 
-Use a different compose file when needed:
+- First run requires setup wizard (`/setup`).
+- Setup creates the first admin account and marks setup complete.
+- Password minimum length is 6 characters.
+- If setup is complete, setup pages are no longer the normal entry path.
 
-```bash
-./scripts/start.sh -f docker-compose.gpu.yml
-./scripts/start.sh -f docker-compose.vaapi.yml
-```
+## Media and Playback Notes
 
-Default admin credentials on first run:
-- **Username**: `admin`
-- **Password**: `admin` (change immediately!)
+- ffmpeg/ffprobe are required for transcode and media probing.
+- Room online-audio mode also depends on ffmpeg for conversion.
+- Some YouTube videos cannot be embedded or downloaded due to provider restrictions.
 
-By default, the backend is available at `http://localhost:8096` and the UI at
-`https://localhost:3000`. If those are occupied, `start.sh` will pick free ports
-and print them.
+## Key Environment Variables
 
-### Building from Source
+Common runtime variables:
 
-```bash
-# Clone the repository
-git clone https://github.com/Iwan-Teague/Rustyfin.git
-cd Rustyfin
+- `RUSTFIN_BACKEND_PORT`
+- `RUSTFIN_UI_PORT`
+- `RUSTFIN_PUBLIC_HOST`
+- `RUSTFIN_MEDIA_PATH`
+- `RUSTFIN_TMDB_KEY`
+- `RUSTFIN_WS_ALLOWED_ORIGINS`
+- `RUSTFIN_FFMPEG_PATH`
+- `RUSTFIN_FFPROBE_PATH`
+- `RUSTFIN_MAX_TRANSCODES`
+- `RUSTFIN_CACHE_DIR`
+- `RUSTFIN_TRANSCODE_DIR`
 
-# Build the backend
-cargo build --release
+## Build and Test
 
-# Build the UI
-cd ui
-npm install
-npm run build
-cd ..
-
-# Run the server
-./target/release/rustfin-server
-```
-
-The server will create a default SQLite database in `./config/rustfin.db` on first run.
-
-### Configuration
-
-Rustyfin follows a **database-first** configuration approach. All settings are stored in SQLite and can be managed through the web UI:
-
-1. Log in with admin credentials
-2. Navigate to the admin dashboard
-3. Create libraries and configure media paths
-4. Trigger library scans to populate your media collection
-
-### Docker Volumes
-
-The Docker setup uses the following persistent volumes:
-
-- `/config` - Database and application configuration
-- `/cache` - Metadata cache and artwork storage
-- `/transcode` - Temporary transcoding files
-- `/media` - Your media files (mount your media directories here)
-
-## Features in Detail
-
-### Metadata & Providers
-
-Rustyfin automatically enriches your media with metadata from TMDB:
-
-- Title, overview, release dates, and ratings
-- Cast and crew information
-- Episode listings for TV series
-- Posters, backdrops, and artwork
-
-Provider IDs can be embedded in folder names using the format `[tmdb=12345]` or managed through the UI.
-
-### Playback Sessions
-
-The server intelligently decides the best playback method:
-
-- **Direct Play**: Stream the file as-is when the client supports it
-- **Remux**: Change container format without re-encoding
-- **Transcode**: Re-encode video/audio for compatibility
-
-Progress tracking automatically syncs across devices for a seamless experience.
-
-### Missing Episodes
-
-For TV series, Rustyfin can display placeholder entries for missing episodes based on metadata from providers, helping you track what's missing from your collection.
-
-### Hardware Acceleration
-
-When available, Rustyfin can leverage GPU acceleration for transcoding:
-
-- **NVIDIA**: NVENC (H.264/HEVC encoding)
-- **Intel**: Quick Sync Video (QSV)
-- **AMD/Intel**: VAAPI
-- **Apple**: VideoToolbox
-
-Detection is automatic, and the best available accelerator is selected.
-
-## Development
-
-### Running Tests
+Rust workspace:
 
 ```bash
-# Run all tests
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test
-
-# Run specific test suites
-cargo test --package rustfin-scanner
-cargo test --package rustfin-server --test integration
 ```
 
-### Code Quality
-
-The project uses:
-- `rustfmt` for code formatting
-- `clippy` for linting
+UI:
 
 ```bash
-# Format code
-cargo fmt
-
-# Run linter
-cargo clippy -- -D warnings
+npm --prefix ui run lint
+npm --prefix ui run build
 ```
 
-## Project Status
+E2E harness:
 
-Rustyfin is in active development. Core features are implemented and tested:
+```bash
+./tests/test-all.sh
+# or
+./tests/run-suite.sh 00_smoke
+```
 
-- ✅ User authentication and management
-- ✅ Library scanning and media discovery
-- ✅ Metadata enrichment with TMDB
-- ✅ Direct Play and HLS streaming
-- ✅ Hardware-accelerated transcoding
-- ✅ Subtitle support
-- ✅ Docker deployment
-- ✅ Web UI with video player
+## Known Limitations
 
-See the [implementation tracker](docs/project/RUSTFIN_AI_PROJECT_TRACKER.md) for detailed status.
+- `Play Together` room creation UI is present, but room creation is currently marked as coming soon.
+- Third-party website behavior in web rooms depends on iframe/embed policies.
+- YouTube availability is subject to regional/content restrictions and provider-side policy.
+- PDF import in Create Together is text-extraction based; scanned/image-only PDFs may not extract usable text.
 
-## Contributing
+## Documentation
 
-Contributions are welcome! Please ensure:
-
-1. Code follows the existing style (run `cargo fmt` and `cargo clippy`)
-2. New features include tests
-3. Commits are descriptive
+See `/Users/iwanteague/Desktop/Rustyfin/docs/README.md` for the documentation index.
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-- Inspired by [Jellyfin](https://jellyfin.org/)
-- Built with [Axum](https://github.com/tokio-rs/axum)
-- Metadata provided by [The Movie Database (TMDB)](https://www.themoviedb.org/)
+MIT.

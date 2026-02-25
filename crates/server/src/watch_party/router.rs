@@ -47,6 +47,18 @@ pub fn watch_party_router() -> Router<AppState> {
             get(super::handlers::list_audio_tracks),
         )
         .route(
+            "/rooms/{room_id}/audio/online/search",
+            get(super::handlers::search_online_audio),
+        )
+        .route(
+            "/rooms/{room_id}/audio/online/queue",
+            post(super::handlers::queue_online_audio),
+        )
+        .route(
+            "/rooms/{room_id}/audio/online/tracks/{track_id}/stream",
+            get(super::handlers::stream_online_audio_track),
+        )
+        .route(
             "/rooms/{room_id}/youtube/search",
             get(super::handlers::search_youtube),
         )

@@ -4,19 +4,23 @@ use argon2::{
 };
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::auth::{AdminUser, AuthUser};
+use crate::auth::{AdminUser, AuthUser, validate_stream_token};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
+use crate::streaming::parse_range_header;
 
-use super::permissions::RoomPolicy;
+use super::permissions::{RoomPolicy, can_play_pause};
 
 const MAX_INVITEES: usize = 100;
 const ROOM_PASSWORD_MIN_LEN: usize = 6;
@@ -31,7 +35,11 @@ const YOUTUBE_LOOKUP_TIMEOUT_SECONDS: u64 = 5;
 const INVITE_RESEND_COOLDOWN_SECONDS: i64 = 5;
 const WEB_URL_MAX_LEN: usize = 2048;
 const ROOM_NAME_MAX_LEN: usize = 120;
+const ONLINE_AUDIO_SEARCH_MAX_LIMIT: usize = 20;
+const ONLINE_AUDIO_SEARCH_DEFAULT_LIMIT: usize = 12;
 const DEFAULT_WEB_ROOM_URL: &str = "https://www.mozilla.org/";
+const DEFAULT_CREATE_DOCUMENT_NAME: &str = "Untitled Document";
+const CREATE_DOCUMENT_NAME_MAX_LEN: usize = 120;
 const YOUTUBE_SEARCH_URL: &str = "https://www.youtube.com/results";
 const YOUTUBE_SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -92,8 +100,14 @@ pub struct CreateRoomRequest {
     pub item_id: Option<String>,
     /// For audio rooms: the music library to use.
     pub audio_library_id: Option<String>,
+    /// For audio rooms: source backend ("library" or "online").
+    pub audio_source: Option<String>,
     /// Explicit room mode override. Use "youtube" for YouTube watch parties.
     pub room_mode: Option<String>,
+    /// For create rooms: active tool ("text" or "canvas").
+    pub create_tool: Option<String>,
+    /// For create rooms: collaborative document display name.
+    pub create_document_name: Option<String>,
     /// For web rooms: initial URL to open for all members.
     pub web_url: Option<String>,
     #[serde(default)]
@@ -131,9 +145,12 @@ pub struct RoomResponse {
     pub policy: serde_json::Value,
     pub members: Vec<RoomMemberResponse>,
     pub room_mode: String,
+    pub audio_source: String,
     pub audio_library_id: Option<String>,
     pub youtube_video_id: Option<String>,
     pub web_url: Option<String>,
+    pub create_tool: Option<String>,
+    pub create_document_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,15 +173,22 @@ pub struct ReconfigureRoomRequest {
     #[serde(default)]
     pub audio_library_id: Option<String>,
     #[serde(default)]
+    pub audio_source: Option<String>,
+    #[serde(default)]
     pub youtube_video_id: Option<String>,
     #[serde(default)]
     pub web_url: Option<String>,
+    #[serde(default)]
+    pub create_tool: Option<String>,
+    #[serde(default)]
+    pub create_document_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ReconfigureRoomResponse {
     pub ok: bool,
     pub room_mode: String,
+    pub audio_source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,6 +208,33 @@ pub struct InviteResponse {
 pub struct AudioTracksQuery {
     #[serde(default)]
     pub q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OnlineAudioSearchQuery {
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct QueueOnlineAudioRequest {
+    pub video_id: String,
+    #[serde(default)]
+    pub play_now: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueueOnlineAudioResponse {
+    pub ok: bool,
+    pub track_id: String,
+    pub already_downloaded: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct OnlineAudioStreamQuery {
+    #[serde(default)]
+    pub st: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -871,6 +922,228 @@ fn normalize_room_name(room_name: Option<String>) -> Result<Option<String>, AppE
     }
 }
 
+fn normalize_create_tool(raw: Option<&str>) -> Result<String, AppError> {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("text")
+        .to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "text" | "canvas" => Ok(normalized),
+        _ => {
+            Err(ApiError::BadRequest("create_tool must be either 'text' or 'canvas'".into()).into())
+        }
+    }
+}
+
+fn normalize_create_document_name(
+    raw: Option<&str>,
+    fallback: Option<&str>,
+) -> Result<String, AppError> {
+    let candidate = raw.unwrap_or_default().trim();
+    let mut value = if candidate.is_empty() {
+        fallback
+            .unwrap_or(DEFAULT_CREATE_DOCUMENT_NAME)
+            .trim()
+            .to_string()
+    } else {
+        candidate.to_string()
+    };
+
+    if value.is_empty() {
+        value = DEFAULT_CREATE_DOCUMENT_NAME.to_string();
+    }
+
+    if value.len() > CREATE_DOCUMENT_NAME_MAX_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "create_document_name must be <= {CREATE_DOCUMENT_NAME_MAX_LEN} characters"
+        ))
+        .into());
+    }
+
+    Ok(value)
+}
+
+fn normalize_audio_source(raw: Option<&str>) -> Result<String, AppError> {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("library")
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "library" | "online" => Ok(normalized),
+        _ => Err(
+            ApiError::BadRequest("audio_source must be either 'library' or 'online'".into()).into(),
+        ),
+    }
+}
+
+fn room_audio_dir(state: &AppState, room_id: &str) -> PathBuf {
+    state.watch_party_audio_dir.join(room_id)
+}
+
+async fn ensure_room_audio_dir(state: &AppState, room_id: &str) -> Result<PathBuf, AppError> {
+    let dir = room_audio_dir(state, room_id);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create room audio dir: {e}")))?;
+    Ok(dir)
+}
+
+async fn remove_room_audio_files(state: &AppState, room_id: &str) -> Result<(), AppError> {
+    let dir = room_audio_dir(state, room_id);
+    match tokio::fs::metadata(&dir).await {
+        Ok(meta) => {
+            if meta.is_dir() {
+                tokio::fs::remove_dir_all(&dir).await.map_err(|e| {
+                    ApiError::Internal(format!("failed to remove room audio dir: {e}"))
+                })?;
+            } else {
+                tokio::fs::remove_file(&dir).await.map_err(|e| {
+                    ApiError::Internal(format!("failed to remove room audio file: {e}"))
+                })?;
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(ApiError::Internal(format!(
+            "failed to inspect room audio dir for cleanup: {err}"
+        ))
+        .into()),
+    }
+}
+
+async fn probe_audio_duration_ms(
+    ffprobe_path: &StdPath,
+    path: &StdPath,
+) -> Result<Option<u64>, AppError> {
+    let output = tokio::process::Command::new(ffprobe_path)
+        .arg("-v")
+        .arg("error")
+        .arg("-show_entries")
+        .arg("format=duration")
+        .arg("-of")
+        .arg("default=noprint_wrappers=1:nokey=1")
+        .arg(path)
+        .output()
+        .await
+        .map_err(|e| ApiError::Internal(format!("ffprobe execution failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ApiError::Internal(format!(
+            "ffprobe failed while probing downloaded audio: {}",
+            stderr.trim()
+        ))
+        .into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let seconds = stdout.trim().parse::<f64>().ok();
+    Ok(seconds.and_then(|s| {
+        if !s.is_finite() || s < 0.0 {
+            None
+        } else {
+            Some((s * 1000.0).round() as u64)
+        }
+    }))
+}
+
+async fn convert_to_mp3(
+    ffmpeg_path: &StdPath,
+    input_path: &StdPath,
+    output_path: &StdPath,
+) -> Result<(), AppError> {
+    let output = tokio::process::Command::new(ffmpeg_path)
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-vn")
+        .arg("-acodec")
+        .arg("libmp3lame")
+        .arg("-b:a")
+        .arg("192k")
+        .arg(output_path)
+        .output()
+        .await
+        .map_err(|e| ApiError::Internal(format!("ffmpeg execution failed: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ApiError::Internal(format!(
+            "ffmpeg failed while converting downloaded audio to mp3: {}",
+            stderr.trim()
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct DownloadedOnlineAudio {
+    file_path: PathBuf,
+    duration_ms: Option<u64>,
+}
+
+async fn download_youtube_audio_mp3_for_room(
+    state: &AppState,
+    room_id: &str,
+    video_id: &str,
+) -> Result<DownloadedOnlineAudio, AppError> {
+    let room_dir = ensure_room_audio_dir(state, room_id).await?;
+    let temp_file_name = format!("{}.source", uuid::Uuid::new_v4());
+    let output_file_name = format!("{}.mp3", uuid::Uuid::new_v4());
+    let temp_path = room_dir.join(temp_file_name);
+    let output_path = room_dir.join(output_file_name);
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+
+    let options = rusty_ytdl::VideoOptions {
+        quality: rusty_ytdl::VideoQuality::HighestAudio,
+        filter: rusty_ytdl::VideoSearchOptions::Audio,
+        ..Default::default()
+    };
+
+    let video = rusty_ytdl::Video::new_with_options(&watch_url, options).map_err(|e| {
+        ApiError::BadRequest(format!("failed to initialize YouTube audio download: {e}"))
+    })?;
+
+    let stream = video.stream().await.map_err(|e| {
+        ApiError::BadRequest(format!(
+            "failed to open YouTube audio stream for this video: {e}"
+        ))
+    })?;
+
+    let mut file = tokio::fs::File::create(&temp_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create temp download file: {e}")))?;
+
+    while let Some(chunk) = stream.chunk().await.map_err(|e| {
+        ApiError::BadRequest(format!(
+            "failed while downloading YouTube audio stream: {e}"
+        ))
+    })? {
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| ApiError::Internal(format!("failed to write temp download chunk: {e}")))?;
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to flush temp audio file: {e}")))?;
+    drop(file);
+
+    convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path).await?;
+    let duration_ms = probe_audio_duration_ms(&state.ffprobe_path, &output_path).await?;
+
+    let _ = tokio::fs::remove_file(&temp_path).await;
+
+    Ok(DownloadedOnlineAudio {
+        file_path: output_path,
+        duration_ms,
+    })
+}
+
 fn hash_room_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
@@ -936,6 +1209,7 @@ fn web_room_title(web_url: &str) -> String {
 fn room_title_for_listing(
     room_name: &str,
     room_mode: &str,
+    audio_source: &str,
     item_title: &str,
     audio_library_name: &str,
     web_url: &str,
@@ -944,6 +1218,9 @@ fn room_title_for_listing(
         return room_name.trim().to_string();
     }
     if room_mode == "audio" {
+        if audio_source == "online" {
+            return "Online Music Party".to_string();
+        }
         if audio_library_name.is_empty() {
             return "Music Party".to_string();
         }
@@ -954,6 +1231,9 @@ fn room_title_for_listing(
     }
     if room_mode == "web" {
         return web_room_title(web_url);
+    }
+    if room_mode == "create" {
+        return "Create Together".to_string();
     }
     item_title.to_string()
 }
@@ -1011,6 +1291,7 @@ pub async fn list_public_rooms(
             let title = room_title_for_listing(
                 &r.room_name,
                 &r.room_mode,
+                &r.audio_source,
                 &r.item_title,
                 &r.audio_library_name,
                 &r.web_url,
@@ -1069,6 +1350,7 @@ pub async fn admin_list_rooms(
                 let title = room_title_for_listing(
                     &r.room_name,
                     &r.room_mode,
+                    &r.audio_source,
                     &r.item_title,
                     &r.audio_library_name,
                     &r.web_url,
@@ -1183,6 +1465,7 @@ pub async fn admin_delete_room(
     if !deleted {
         return Err(ApiError::NotFound("watch party room not found".into()).into());
     }
+    let _ = remove_room_audio_files(&state, &room_id).await;
 
     log_admin_room_action(
         &state,
@@ -1285,6 +1568,7 @@ pub async fn eligible_libraries(
     Ok(Json(EligibleLibrariesResponse { library_ids }))
 }
 
+#[allow(clippy::type_complexity)]
 pub async fn create_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1330,19 +1614,92 @@ pub async fn create_room(
         );
     }
 
-    // Determine room mode and item_id
-    let (room_mode, item_id, audio_library_id, track_ids, web_url): (
+    let requested_mode = body
+        .room_mode
+        .as_deref()
+        .map(|mode| mode.trim().to_ascii_lowercase());
+    if let Some(mode) = requested_mode.as_deref() {
+        if !matches!(mode, "audio" | "youtube" | "web" | "create" | "video") {
+            return Err(ApiError::BadRequest(
+                "room_mode must be one of: video, audio, youtube, web, create".into(),
+            )
+            .into());
+        }
+    }
+
+    // Determine room mode and payload fields.
+    let (
+        room_mode,
+        audio_source,
+        item_id,
+        audio_library_id,
+        track_ids,
+        web_url,
+        create_tool,
+        create_document_name,
+    ): (
+        String,
         String,
         Option<String>,
         Option<String>,
         Option<Vec<String>>,
         Option<String>,
-    ) = if body.room_mode.as_deref() == Some("youtube") {
+        Option<String>,
+        Option<String>,
+    ) = if requested_mode.as_deref() == Some("create") {
+        let create_tool = normalize_create_tool(body.create_tool.as_deref())?;
+        let create_document_name = normalize_create_document_name(
+            body.create_document_name.as_deref(),
+            room_name.as_deref(),
+        )?;
+
+        (
+            "create".to_string(),
+            "library".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some(create_tool),
+            Some(create_document_name),
+        )
+    } else if requested_mode.as_deref() == Some("youtube") {
         // YouTube room — no media item or library required
-        ("youtube".to_string(), None, None, None, None)
-    } else if body.room_mode.as_deref() == Some("web") {
+        (
+            "youtube".to_string(),
+            "library".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    } else if requested_mode.as_deref() == Some("web") {
         let normalized_url = normalize_web_room_url(body.web_url.as_deref().unwrap_or(""))?;
-        ("web".to_string(), None, None, None, Some(normalized_url))
+        (
+            "web".to_string(),
+            "library".to_string(),
+            None,
+            None,
+            None,
+            Some(normalized_url),
+            None,
+            None,
+        )
+    } else if requested_mode.as_deref() == Some("audio")
+        && normalize_audio_source(body.audio_source.as_deref())? == "online"
+    {
+        (
+            "audio".to_string(),
+            "online".to_string(),
+            None,
+            None,
+            Some(Vec::new()),
+            None,
+            None,
+            None,
+        )
     } else if let Some(audio_lib_id) = body
         .audio_library_id
         .as_deref()
@@ -1383,11 +1740,19 @@ pub async fn create_room(
         let first_track_id = track_ids[0].clone();
         (
             "audio".to_string(),
+            "library".to_string(),
             Some(first_track_id),
             Some(audio_lib_id.to_string()),
             Some(track_ids),
             None,
+            None,
+            None,
         )
+    } else if requested_mode.as_deref() == Some("audio") {
+        return Err(ApiError::BadRequest(
+            "audio_library_id is required for local listen-together rooms".into(),
+        )
+        .into());
     } else {
         // Video room
         let item_id = body
@@ -1410,7 +1775,16 @@ pub async fn create_room(
 
         ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
 
-        ("video".to_string(), Some(item.id.clone()), None, None, None)
+        (
+            "video".to_string(),
+            "library".to_string(),
+            Some(item.id.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     };
 
     let now = chrono::Utc::now().timestamp();
@@ -1443,7 +1817,10 @@ pub async fn create_room(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
             ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
-        } else if let Some(ref lib_id) = audio_library_id {
+        } else if room_mode == "audio" && audio_source == "library" {
+            let lib_id = audio_library_id
+                .as_ref()
+                .ok_or_else(|| ApiError::BadRequest("audio library is required".into()))?;
             ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
         }
 
@@ -1469,8 +1846,11 @@ pub async fn create_room(
         password_hash.as_deref(),
         &members,
         Some(&room_mode),
+        Some(&audio_source),
         audio_library_id.as_deref(),
         web_url.as_deref(),
+        create_tool.as_deref(),
+        create_document_name.as_deref(),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1489,6 +1869,25 @@ pub async fn create_room(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     }
 
+    if room_mode == "create" {
+        let tool = create_tool.as_deref().unwrap_or("text");
+        let document_name = create_document_name
+            .as_deref()
+            .unwrap_or(DEFAULT_CREATE_DOCUMENT_NAME);
+        rustfin_db::repo::watch_party::upsert_create_state(
+            &state.db,
+            &created.id,
+            tool,
+            document_name,
+            "plain",
+            "",
+            "[]",
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(CreateRoomResponse {
@@ -1498,6 +1897,7 @@ pub async fn create_room(
     ))
 }
 
+#[allow(clippy::type_complexity)]
 pub async fn reconfigure_room(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -1536,17 +1936,25 @@ pub async fn reconfigure_room(
 
     let target_mode = body.room_mode.trim().to_ascii_lowercase();
     let (
+        target_audio_source,
         target_item_id,
         target_audio_library_id,
         target_youtube_video_id,
         target_web_url,
+        target_create_tool,
+        target_create_document_name,
         target_audio_queue,
+        target_queue_index,
     ): (
+        String,
+        Option<String>,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
         Option<Vec<String>>,
+        usize,
     ) = match target_mode.as_str() {
         "video" => {
             let item_id = body
@@ -1583,70 +1991,109 @@ pub async fn reconfigure_room(
                 }
             }
 
-            (Some(item.id), None, None, None, None)
+            (
+                "library".to_string(),
+                Some(item.id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+            )
         }
         "audio" => {
-            let library_id = body
-                .audio_library_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    ApiError::BadRequest(
-                        "audio_library_id is required when switching to audio mode".into(),
-                    )
-                })?;
+            let source = normalize_audio_source(body.audio_source.as_deref())?;
+            if source == "online" {
+                let (existing_queue, existing_index) =
+                    if room.room_mode == "audio" && room.audio_source == "online" {
+                        rustfin_db::repo::watch_party::get_audio_queue(&state.db, &room_id)
+                            .await
+                            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                            .unwrap_or((Vec::new(), 0))
+                    } else {
+                        (Vec::new(), 0)
+                    };
 
-            let library = rustfin_db::repo::libraries::get_library(&state.db, library_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .ok_or_else(|| ApiError::NotFound("audio library not found".into()))?;
-
-            if library.kind != "music" {
-                return Err(ApiError::BadRequest(
-                    "audio_library_id must refer to a music library".into(),
+                (
+                    "online".to_string(),
+                    existing_queue.get(existing_index).cloned(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(existing_queue),
+                    existing_index,
                 )
-                .into());
-            }
+            } else {
+                let library_id = body
+                    .audio_library_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(
+                            "audio_library_id is required for local listen-together rooms".into(),
+                        )
+                    })?;
 
-            for user in &active_users {
-                if ensure_library_access_for_user(&state, &user.id, &user.role, library_id)
+                let library = rustfin_db::repo::libraries::get_library(&state.db, library_id)
                     .await
-                    .is_err()
-                {
-                    return Err(ApiError::BadRequest(format!(
-                        "user '{}' does not have access to the selected music library",
-                        user.username
-                    ))
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| ApiError::NotFound("audio library not found".into()))?;
+
+                if library.kind != "music" {
+                    return Err(ApiError::BadRequest(
+                        "audio_library_id must refer to a music library".into(),
+                    )
                     .into());
                 }
-            }
 
-            let tracks =
-                rustfin_db::repo::watch_party::get_library_tracks(&state.db, library_id, None)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+                for user in &active_users {
+                    if ensure_library_access_for_user(&state, &user.id, &user.role, library_id)
+                        .await
+                        .is_err()
+                    {
+                        return Err(ApiError::BadRequest(format!(
+                            "user '{}' does not have access to the selected music library",
+                            user.username
+                        ))
+                        .into());
+                    }
+                }
 
-            if tracks.is_empty() {
-                return Err(ApiError::BadRequest(
-                    "the music library has no tracks; scan it first".into(),
+                let tracks =
+                    rustfin_db::repo::watch_party::get_library_tracks(&state.db, library_id, None)
+                        .await
+                        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+                if tracks.is_empty() {
+                    return Err(ApiError::BadRequest(
+                        "the music library has no tracks; scan it first".into(),
+                    )
+                    .into());
+                }
+
+                let mut track_ids: Vec<String> = tracks.into_iter().map(|t| t.id).collect();
+                shuffle_track_ids(&mut track_ids);
+                let first_track = track_ids.first().cloned().ok_or_else(|| {
+                    ApiError::BadRequest("the music library has no tracks; scan it first".into())
+                })?;
+
+                (
+                    "library".to_string(),
+                    Some(first_track),
+                    Some(library_id.to_string()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(track_ids),
+                    0,
                 )
-                .into());
             }
-
-            let mut track_ids: Vec<String> = tracks.into_iter().map(|t| t.id).collect();
-            shuffle_track_ids(&mut track_ids);
-            let first_track = track_ids.first().cloned().ok_or_else(|| {
-                ApiError::BadRequest("the music library has no tracks; scan it first".into())
-            })?;
-
-            (
-                Some(first_track),
-                Some(library_id.to_string()),
-                None,
-                None,
-                Some(track_ids),
-            )
         }
         "youtube" => {
             let youtube_video_id = body
@@ -1664,15 +2111,54 @@ pub async fn reconfigure_room(
                 })
                 .transpose()?;
 
-            (None, None, youtube_video_id, None, None)
+            (
+                "library".to_string(),
+                None,
+                None,
+                youtube_video_id,
+                None,
+                None,
+                None,
+                None,
+                0,
+            )
         }
         "web" => {
             let normalized_url = normalize_web_room_url(body.web_url.as_deref().unwrap_or(""))?;
-            (None, None, None, Some(normalized_url), None)
+            (
+                "library".to_string(),
+                None,
+                None,
+                None,
+                Some(normalized_url),
+                None,
+                None,
+                None,
+                0,
+            )
+        }
+        "create" => {
+            let create_tool = normalize_create_tool(body.create_tool.as_deref())?;
+            let create_document_name = normalize_create_document_name(
+                body.create_document_name.as_deref(),
+                Some(&room.create_document_name),
+            )?;
+
+            (
+                "library".to_string(),
+                None,
+                None,
+                None,
+                None,
+                Some(create_tool),
+                Some(create_document_name),
+                None,
+                0,
+            )
         }
         _ => {
             return Err(ApiError::BadRequest(
-                "room_mode must be one of: video, audio, youtube, web".into(),
+                "room_mode must be one of: video, audio, youtube, web, create".into(),
             )
             .into());
         }
@@ -1682,10 +2168,13 @@ pub async fn reconfigure_room(
         &state.db,
         &room_id,
         &target_mode,
+        &target_audio_source,
         target_item_id.as_deref(),
         target_audio_library_id.as_deref(),
         target_youtube_video_id.as_deref(),
         target_web_url.as_deref(),
+        target_create_tool.as_deref(),
+        target_create_document_name.as_deref(),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1693,13 +2182,64 @@ pub async fn reconfigure_room(
     if let Some(track_ids) = target_audio_queue {
         let track_ids_json = serde_json::to_string(&track_ids)
             .map_err(|e| ApiError::Internal(format!("queue serialization error: {e}")))?;
-        rustfin_db::repo::watch_party::upsert_audio_queue(&state.db, &room_id, &track_ids_json, 0)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        rustfin_db::repo::watch_party::upsert_audio_queue(
+            &state.db,
+            &room_id,
+            &track_ids_json,
+            target_queue_index,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     } else {
         rustfin_db::repo::watch_party::clear_audio_queue(&state.db, &room_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
+    let target_is_online_audio = target_mode == "audio" && target_audio_source == "online";
+    if !target_is_online_audio {
+        rustfin_db::repo::watch_party::clear_online_audio_tracks(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let _ = remove_room_audio_files(&state, &room_id).await;
+    }
+
+    if target_mode == "create" {
+        let existing = rustfin_db::repo::watch_party::get_create_state(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        let text_format = existing
+            .as_ref()
+            .map(|row| row.text_format.clone())
+            .unwrap_or_else(|| "plain".to_string());
+        let text_content = existing
+            .as_ref()
+            .map(|row| row.text_content.clone())
+            .unwrap_or_default();
+        let canvas_strokes_json = existing
+            .as_ref()
+            .map(|row| row.canvas_strokes_json.clone())
+            .unwrap_or_else(|| "[]".to_string());
+        let active_tool = target_create_tool
+            .as_deref()
+            .unwrap_or(room.create_tool.as_str());
+        let document_name = target_create_document_name
+            .as_deref()
+            .unwrap_or(room.create_document_name.as_str());
+
+        rustfin_db::repo::watch_party::upsert_create_state(
+            &state.db,
+            &room_id,
+            active_tool,
+            document_name,
+            &text_format,
+            &text_content,
+            &canvas_strokes_json,
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     }
 
     if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
@@ -1708,9 +2248,12 @@ pub async fn reconfigure_room(
             .send(super::protocol::ServerMessage::RoomReconfigured {
                 room_mode: target_mode.clone(),
                 item_id: target_item_id.clone().unwrap_or_default(),
+                audio_source: Some(target_audio_source.clone()),
                 audio_library_id: target_audio_library_id.clone(),
                 youtube_video_id: target_youtube_video_id.clone(),
                 web_url: target_web_url.clone(),
+                create_tool: target_create_tool.clone(),
+                create_document_name: target_create_document_name.clone(),
             });
     }
     state.watch_party.remove_runtime(&room_id).await;
@@ -1718,6 +2261,7 @@ pub async fn reconfigure_room(
     Ok(Json(ReconfigureRoomResponse {
         ok: true,
         room_mode: target_mode,
+        audio_source: Some(target_audio_source),
     }))
 }
 
@@ -1806,6 +2350,23 @@ pub async fn get_room(
         None
     };
 
+    let (create_tool, create_document_name) = if room.room_mode == "create" {
+        let persisted = rustfin_db::repo::watch_party::get_create_state(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        if let Some(state_row) = persisted {
+            (Some(state_row.active_tool), Some(state_row.document_name))
+        } else {
+            (
+                Some(room.create_tool.clone()),
+                Some(room.create_document_name.clone()),
+            )
+        }
+    } else {
+        (None, None)
+    };
+
     let ended_ts = if room.status == "ended" {
         Some(room.updated_ts)
     } else {
@@ -1825,9 +2386,12 @@ pub async fn get_room(
             .map_err(|e| ApiError::Internal(format!("policy serialization error: {e}")))?,
         members,
         room_mode: room.room_mode,
+        audio_source: room.audio_source,
         audio_library_id: room.audio_library_id,
         youtube_video_id,
         web_url,
+        create_tool,
+        create_document_name,
     }))
 }
 
@@ -2118,7 +2682,10 @@ pub async fn invite_members(
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
                 .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
             ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
-        } else if let Some(ref lib_id) = room.audio_library_id {
+        } else if room.room_mode == "audio" && room.audio_source == "library" {
+            let Some(ref lib_id) = room.audio_library_id else {
+                return Err(ApiError::BadRequest("audio room missing library id".into()).into());
+            };
             ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
         }
 
@@ -2268,10 +2835,43 @@ pub async fn list_audio_tracks(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    let audio_lib_id = room
-        .audio_library_id
-        .as_deref()
-        .ok_or_else(|| ApiError::BadRequest("this room is not an audio room".into()))?;
+    if room.room_mode != "audio" {
+        return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
+    }
+
+    if room.audio_source == "online" {
+        let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+        if member.status != "joined" {
+            return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+        }
+
+        let tracks = rustfin_db::repo::watch_party::list_online_audio_tracks(
+            &state.db,
+            &room_id,
+            params.q.as_deref(),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let responses = tracks
+            .into_iter()
+            .map(|track| AudioTrackResponse {
+                id: track.id,
+                title: track.title,
+                artist: track.channel,
+                album: "YouTube".to_string(),
+                album_art_url: track.thumbnail_url,
+                duration_ms: track.duration_ms,
+            })
+            .collect();
+        return Ok(Json(responses));
+    }
+
+    let audio_lib_id = room.audio_library_id.as_deref().ok_or_else(|| {
+        ApiError::BadRequest("audio room is missing a local music library".into())
+    })?;
 
     ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
 
@@ -2309,4 +2909,340 @@ pub async fn list_audio_tracks(
         .collect();
 
     Ok(Json(responses))
+}
+
+pub async fn search_online_audio(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Query(params): Query<OnlineAudioSearchQuery>,
+) -> Result<Json<Vec<YouTubeSearchResult>>, AppError> {
+    check_rate_limit(
+        youtube_search_rate_limiter(),
+        &format!("online-audio-search:{}:{}", room_id, auth.user_id),
+    )
+    .await?;
+
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.room_mode != "audio" || room.audio_source != "online" {
+        return Err(ApiError::BadRequest(
+            "online audio search is only available in online listen-together rooms".into(),
+        )
+        .into());
+    }
+
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
+
+    let limit = params
+        .limit
+        .unwrap_or(ONLINE_AUDIO_SEARCH_DEFAULT_LIMIT)
+        .clamp(1, ONLINE_AUDIO_SEARCH_MAX_LIMIT);
+    let (_, results) = perform_youtube_search(&params.q, Some(limit)).await?;
+    Ok(Json(results))
+}
+
+pub async fn queue_online_audio(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Json(body): Json<QueueOnlineAudioRequest>,
+) -> Result<Json<QueueOnlineAudioResponse>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.status != "lobby" {
+        return Err(ApiError::Conflict("room is not active".into()).into());
+    }
+    if room.room_mode != "audio" || room.audio_source != "online" {
+        return Err(ApiError::BadRequest(
+            "this endpoint is only available in online listen-together rooms".into(),
+        )
+        .into());
+    }
+
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
+
+    if body.play_now {
+        let policy: RoomPolicy = serde_json::from_str(&room.policy_json)
+            .map_err(|e| ApiError::Internal(format!("invalid room policy JSON: {e}")))?;
+        if !can_play_pause(&member.role, &policy) {
+            return Err(ApiError::Forbidden(
+                "play now is not allowed for this user in this room".into(),
+            )
+            .into());
+        }
+    }
+
+    let raw_video = body.video_id.trim();
+    let video_id = extract_youtube_video_id_from_input(raw_video).ok_or_else(|| {
+        ApiError::BadRequest("video_id must be a valid YouTube URL or 11-character ID".into())
+    })?;
+
+    let mut already_downloaded = false;
+    let track_row = if let Some(existing) =
+        rustfin_db::repo::watch_party::get_online_audio_track_by_video_id(
+            &state.db, &room_id, &video_id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    {
+        let path = StdPath::new(&existing.file_path);
+        if tokio::fs::metadata(path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            already_downloaded = true;
+            existing
+        } else {
+            let metadata = fetch_youtube_video_metadata(&reqwest::Client::new(), &video_id)
+                .await
+                .unwrap_or(YouTubeSearchResult {
+                    video_id: video_id.clone(),
+                    title: format!("YouTube {video_id}"),
+                    channel: "YouTube".to_string(),
+                    thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+                    view_count: None,
+                });
+
+            let downloaded =
+                download_youtube_audio_mp3_for_room(&state, &room_id, &video_id).await?;
+            rustfin_db::repo::watch_party::upsert_online_audio_track(
+                &state.db,
+                &room_id,
+                &uuid::Uuid::new_v4().to_string(),
+                &video_id,
+                &metadata.title,
+                &metadata.channel,
+                Some(metadata.thumbnail_url.as_str()),
+                downloaded.file_path.to_string_lossy().as_ref(),
+                downloaded.duration_ms,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        }
+    } else {
+        let metadata = fetch_youtube_video_metadata(&reqwest::Client::new(), &video_id)
+            .await
+            .unwrap_or(YouTubeSearchResult {
+                video_id: video_id.clone(),
+                title: format!("YouTube {video_id}"),
+                channel: "YouTube".to_string(),
+                thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+                view_count: None,
+            });
+
+        let downloaded = download_youtube_audio_mp3_for_room(&state, &room_id, &video_id).await?;
+        rustfin_db::repo::watch_party::upsert_online_audio_track(
+            &state.db,
+            &room_id,
+            &uuid::Uuid::new_v4().to_string(),
+            &video_id,
+            &metadata.title,
+            &metadata.channel,
+            Some(metadata.thumbnail_url.as_str()),
+            downloaded.file_path.to_string_lossy().as_ref(),
+            downloaded.duration_ms,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    };
+
+    let (mut queue_ids, mut current_index) =
+        rustfin_db::repo::watch_party::get_audio_queue(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .unwrap_or((Vec::new(), 0));
+
+    if let Some(existing_index) = queue_ids.iter().position(|id| id == &track_row.id) {
+        if body.play_now {
+            current_index = existing_index;
+        }
+    } else {
+        queue_ids.push(track_row.id.clone());
+        if body.play_now || queue_ids.len() == 1 {
+            current_index = queue_ids.len().saturating_sub(1);
+        }
+    }
+
+    let queue_json = serde_json::to_string(&queue_ids)
+        .map_err(|e| ApiError::Internal(format!("queue serialization error: {e}")))?;
+    rustfin_db::repo::watch_party::upsert_audio_queue(
+        &state.db,
+        &room_id,
+        &queue_json,
+        current_index,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
+
+    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+        let (position_ms, playing) = if body.play_now {
+            (0_u64, true)
+        } else {
+            runtime
+                .snapshot_audio_queue()
+                .await
+                .map(|q| (q.position_ms, q.playing))
+                .unwrap_or((0_u64, false))
+        };
+        runtime
+            .set_audio_queue(queue_ids.clone(), current_index, position_ms, playing)
+            .await;
+        super::ws::broadcast_current_state(&state, &runtime, &room_id).await?;
+    }
+
+    Ok(Json(QueueOnlineAudioResponse {
+        ok: true,
+        track_id: track_row.id,
+        already_downloaded,
+    }))
+}
+
+fn online_audio_content_type(path: &StdPath) -> &'static str {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("ogg") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        _ => "application/octet-stream",
+    }
+}
+
+pub async fn stream_online_audio_track(
+    State(state): State<AppState>,
+    Path((room_id, track_id)): Path<(String, String)>,
+    Query(query): Query<OnlineAudioStreamQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let token = query
+        .st
+        .as_deref()
+        .ok_or_else(|| ApiError::Unauthorized("missing room track stream token".into()))?;
+    let claims = validate_stream_token(token, &state.jwt_secret)?;
+    if claims.room_id.as_deref() != Some(room_id.as_str()) {
+        return Err(ApiError::Forbidden("stream token is not scoped to this room".into()).into());
+    }
+    if claims.track_id.as_deref() != Some(track_id.as_str()) {
+        return Err(ApiError::Forbidden("stream token is not scoped to this track".into()).into());
+    }
+
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+    if room.room_mode != "audio" || room.audio_source != "online" {
+        return Err(ApiError::BadRequest("room is not using online audio mode".into()).into());
+    }
+
+    let track =
+        rustfin_db::repo::watch_party::get_online_audio_track(&state.db, &room_id, &track_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("online audio track not found".into()))?;
+
+    let file_path = PathBuf::from(&track.file_path);
+    if !file_path.exists() || !file_path.is_file() {
+        return Err(ApiError::NotFound("audio file not found on disk".into()).into());
+    }
+
+    let canonical_file = file_path
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("failed to canonicalize audio path: {e}")))?;
+    let canonical_room_root = room_audio_dir(&state, &room_id)
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("failed to canonicalize room audio root: {e}")))?;
+    if !canonical_file.starts_with(&canonical_room_root) {
+        return Err(
+            ApiError::Forbidden("online audio file path is outside room scope".into()).into(),
+        );
+    }
+
+    let file_size = tokio::fs::metadata(&file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to stat audio file: {e}")))?
+        .len();
+    let content_type = online_audio_content_type(&file_path);
+
+    if let Some(range_header) = headers.get("range").and_then(|value| value.to_str().ok()) {
+        let range = match parse_range_header(range_header, file_size) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("Content-Range", format!("bytes */{file_size}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap());
+            }
+        };
+
+        let content_length = range.end_inclusive.saturating_sub(range.start) + 1;
+        let mut file = tokio::fs::File::open(&file_path)
+            .await
+            .map_err(|e| ApiError::Internal(format!("audio open error: {e}")))?;
+        file.seek(std::io::SeekFrom::Start(range.start))
+            .await
+            .map_err(|e| ApiError::Internal(format!("audio seek error: {e}")))?;
+
+        let stream = tokio_util::io::ReaderStream::new(file.take(content_length));
+        return Ok(Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header("Content-Type", content_type)
+            .header("Content-Length", content_length.to_string())
+            .header(
+                "Content-Range",
+                format!(
+                    "bytes {}-{}/{}",
+                    range.start, range.end_inclusive, file_size
+                ),
+            )
+            .header("Accept-Ranges", "bytes")
+            .header("Cache-Control", "no-store")
+            .header("Referrer-Policy", "no-referrer")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(axum::body::Body::from_stream(stream))
+            .unwrap());
+    }
+
+    let file = tokio::fs::File::open(&file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("audio open error: {e}")))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", file_size.to_string())
+        .header("Accept-Ranges", "bytes")
+        .header("Cache-Control", "no-store")
+        .header("Referrer-Policy", "no-referrer")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap())
 }
