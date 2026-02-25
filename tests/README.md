@@ -1,21 +1,13 @@
-# Rustyfin Test Suite (macOS-oriented)
+# Rustyfin Test Harness
 
-This `tests/` directory adds a practical, **user-style** end-to-end (E2E) test suite for Rustyfin, plus smoke/API checks,
-Rust/unit checks, and a top-level runner.
+This directory contains the practical test harness for Rustyfin:
 
-It is designed for **macOS (Darwin)** and assumes you run Rustyfin locally from source:
-- Backend: `cargo run -p rustfin-server` (listens on `localhost:8096`)
-- UI: `npm --prefix ui run dev` (listens on `localhost:3000`)
+- Rust unit/integration tests
+- UI build checks
+- E2E suites (Playwright)
+- API contract checks
 
-The test harness itself uses isolated ports by default so it does not collide with your local dev server:
-- Test backend: `127.0.0.1:18096`
-- Test UI: `127.0.0.1:13000`
-
-You can override these with:
-- `RUSTFIN_TEST_BACKEND_PORT`
-- `RUSTFIN_TEST_UI_PORT`
-
-## Quick Start
+## Run
 
 From repo root:
 
@@ -24,30 +16,38 @@ From repo root:
 ./tests/test-all.sh
 ```
 
-Or run a single suite:
+Run a single suite:
 
 ```bash
-./tests/run-suite.sh 02_auth
+./tests/run-suite.sh 00_smoke
+./tests/run-suite.sh 06_accessibility
 ```
 
-## Where results go
+## Ports Used By Test Harness
 
-Each run creates a timestamped folder in:
+The harness uses isolated defaults to avoid colliding with local dev instances:
+
+- Backend: `127.0.0.1:18096`
+- UI: `127.0.0.1:13000`
+
+Override with:
+
+- `RUSTFIN_TEST_BACKEND_PORT`
+- `RUSTFIN_TEST_UI_PORT`
+
+## Output
+
+Each run writes to:
 
 - `tests/_runs/<timestamp>/`
-  - `logs/` (backend + ui logs)
-  - `playwright/` (HTML report, JSON, JUnit)
+  - `logs/`
+  - `playwright/`
   - `summary.txt`
 
-## Why the directory-picker tests won't pop UI dialogs
+## Directory Picker Behavior During E2E
 
-Rustyfin's server supports a non-interactive override:
-`RUSTFIN_DIRECTORY_PICKER_PATH=/absolute/path`.
+E2E suites set `RUSTFIN_DIRECTORY_PICKER_PATH` to `tests/fixtures/media` so tests can exercise browse/create flows without interactive OS dialogs.
 
-All E2E suites set this to `tests/fixtures/media` so Playwright can click "Browse" without macOS dialogs.
+## Scope Reminder
 
-## Notes
-
-- Some tests assert the *desired* behavior described in `docs/reports/Rustyfin_Fixes_Report.md`.
-  If the fixes are not implemented yet, you'll see failures — that's the point.
-- If the configured test port is already in use, suites fail fast with a clear message.
+These suites verify real behavior across setup, auth, libraries/scanning, playback, channels/rooms, accessibility, and API contract surfaces.

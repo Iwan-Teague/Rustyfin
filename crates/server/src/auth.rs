@@ -24,6 +24,8 @@ pub struct StreamClaims {
     pub aud: String, // "stream"
     pub file_id: Option<String>,
     pub session_id: Option<String>,
+    pub room_id: Option<String>,
+    pub track_id: Option<String>,
     pub exp: usize,
 }
 
@@ -86,6 +88,39 @@ pub fn issue_stream_token(
         aud: "stream".to_string(),
         file_id: file_id.map(str::to_string),
         session_id: session_id.map(str::to_string),
+        room_id: None,
+        track_id: None,
+        exp,
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|e| ApiError::Internal(format!("stream token encoding failed: {e}")).into())
+}
+
+/// Issue a short-lived token scoped to an online-audio room track stream.
+pub fn issue_room_track_stream_token(
+    room_id: &str,
+    track_id: &str,
+    ttl_seconds: i64,
+    secret: &str,
+) -> Result<String, AppError> {
+    let exp = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::seconds(ttl_seconds))
+        .ok_or_else(|| ApiError::Internal("time overflow".into()))?
+        .timestamp() as usize;
+
+    let claims = StreamClaims {
+        sub: room_id.to_string(),
+        role: "room".to_string(),
+        aud: "stream".to_string(),
+        file_id: None,
+        session_id: None,
+        room_id: Some(room_id.to_string()),
+        track_id: Some(track_id.to_string()),
         exp,
     };
 

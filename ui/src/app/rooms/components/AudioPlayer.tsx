@@ -2,10 +2,19 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiJson } from '@/lib/api';
-import { AudioTrack, QueueEntry, WsAudioStateMessage, listAudioTracks } from '@/lib/watchPartyApi';
+import {
+  AudioTrack,
+  QueueEntry,
+  WsAudioStateMessage,
+  YouTubeSearchResult,
+  listAudioTracks,
+  queueOnlineAudio,
+  searchOnlineAudio,
+} from '@/lib/watchPartyApi';
 
 type Props = {
   audioState: WsAudioStateMessage;
+  audioSource: 'library' | 'online';
   canControl: boolean;
   canSeek: boolean;
   roomId: string;
@@ -32,10 +41,19 @@ function projectPosition(state: WsAudioStateMessage): number {
   return state.position_ms + Math.max(0, elapsed);
 }
 
-export default function AudioPlayer({ audioState, canControl, canSeek, roomId, sendWs }: Props) {
+export default function AudioPlayer({
+  audioState,
+  audioSource,
+  canControl,
+  canSeek,
+  roomId,
+  sendWs,
+}: Props) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<AudioTrack[] | null>(null);
+  const [librarySearchResults, setLibrarySearchResults] = useState<AudioTrack[] | null>(null);
+  const [onlineSearchResults, setOnlineSearchResults] = useState<YouTubeSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [queueingVideoId, setQueueingVideoId] = useState<string | null>(null);
   const [projectedPosition, setProjectedPosition] = useState(audioState.position_ms);
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [streamError, setStreamError] = useState('');
@@ -46,7 +64,7 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queueRef = useRef<HTMLUListElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const loadedTrackIdRef = useRef<string | null>(null);
+  const loadedTrackKeyRef = useRef<string | null>(null);
 
   // Project position forward in real time
   useEffect(() => {
@@ -68,7 +86,7 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
     if (!audioState.track_id) {
       setDescriptor(null);
       setStreamError('');
-      loadedTrackIdRef.current = null;
+      loadedTrackKeyRef.current = null;
       const audio = audioRef.current;
       if (audio) {
         audio.pause();
@@ -80,6 +98,15 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
 
     setStreamError('');
     setAutoplayBlocked(false);
+
+    if (audioSource === 'online') {
+      setDescriptor(null);
+      if (!audioState.stream_url) {
+        setStreamError('Online track stream URL is not ready yet.');
+      }
+      return;
+    }
+
     setDescriptor(null);
     apiJson<PlaybackDescriptor>(`/items/${audioState.track_id}/playback`)
       .then((data) => {
@@ -97,7 +124,7 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
     return () => {
       cancelled = true;
     };
-  }, [audioState.track_id]);
+  }, [audioState.track_id, audioState.stream_url, audioSource]);
 
   useEffect(() => {
     return () => {
@@ -110,12 +137,21 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
   }, []);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !descriptor || !audioState.track_id) return;
+    setSearchQuery('');
+    setLibrarySearchResults(null);
+    setOnlineSearchResults(null);
+  }, [audioSource]);
 
-    if (loadedTrackIdRef.current !== audioState.track_id) {
-      loadedTrackIdRef.current = audioState.track_id;
-      audio.src = descriptor.direct_url;
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !audioState.track_id) return;
+    const sourceUrl = audioSource === 'online' ? audioState.stream_url || '' : descriptor?.direct_url || '';
+    if (!sourceUrl) return;
+
+    const sourceKey = `${audioSource}:${audioState.track_id}:${sourceUrl}`;
+    if (loadedTrackKeyRef.current !== sourceKey) {
+      loadedTrackKeyRef.current = sourceKey;
+      audio.src = sourceUrl;
       audio.load();
     }
 
@@ -137,7 +173,15 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
       if (!audio.paused) audio.pause();
       setAutoplayBlocked(false);
     }
-  }, [descriptor, audioState.track_id, audioState.playing, projectedPosition, isScrubbing]);
+  }, [
+    descriptor,
+    audioState.track_id,
+    audioState.playing,
+    audioState.stream_url,
+    projectedPosition,
+    isScrubbing,
+    audioSource,
+  ]);
 
   // Auto-scroll queue to current track
   useEffect(() => {
@@ -158,23 +202,33 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
       }
 
       if (!query.trim()) {
-        setSearchResults(null);
+        setLibrarySearchResults(null);
+        setOnlineSearchResults(null);
         return;
       }
 
       searchTimeoutRef.current = setTimeout(async () => {
         setSearching(true);
         try {
-          const results = await listAudioTracks(roomId, query);
-          setSearchResults(results);
+          if (audioSource === 'online') {
+            const results = await searchOnlineAudio(roomId, query, 12);
+            setOnlineSearchResults(results);
+          } else {
+            const results = await listAudioTracks(roomId, query);
+            setLibrarySearchResults(results);
+          }
         } catch {
-          setSearchResults([]);
+          if (audioSource === 'online') {
+            setOnlineSearchResults([]);
+          } else {
+            setLibrarySearchResults([]);
+          }
         } finally {
           setSearching(false);
         }
       }, 300);
     },
-    [roomId],
+    [roomId, audioSource],
   );
 
   const handleSkipPrev = () => sendWs({ type: 'skip_prev' });
@@ -187,6 +241,20 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
     }
   };
   const handlePlayTrack = (trackId: string) => sendWs({ type: 'play_track', track_id: trackId });
+  const handleQueueOnlineTrack = useCallback(
+    async (videoId: string, playNow: boolean) => {
+      setQueueingVideoId(`${videoId}:${playNow ? 'play' : 'queue'}`);
+      setStreamError('');
+      try {
+        await queueOnlineAudio(roomId, videoId, playNow);
+      } catch (err: any) {
+        setStreamError(err?.message || 'Failed to queue online audio track');
+      } finally {
+        setQueueingVideoId(null);
+      }
+    },
+    [roomId],
+  );
   const duration = audioState.duration_ms ?? 0;
   const effectivePosition = isScrubbing ? scrubPosition : projectedPosition;
 
@@ -232,8 +300,8 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
   const progressPct = duration > 0 ? Math.min(100, (effectivePosition / duration) * 100) : 0;
 
   const displayList: Array<QueueEntry & { isSearchResult?: boolean }> =
-    searchResults !== null
-      ? searchResults.map((t) => ({ ...t, track_id: t.id, isSearchResult: true }))
+    librarySearchResults !== null
+      ? librarySearchResults.map((t) => ({ ...t, track_id: t.id, isSearchResult: true }))
       : audioState.queue;
 
   return (
@@ -368,15 +436,13 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
       {/* Queue & Search */}
       <section className="panel space-y-3 p-5 sm:p-6">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">
-            {searchResults !== null ? 'Search Results' : 'Queue'}
-          </h2>
+          <h2 className="text-lg font-semibold">{audioSource === 'online' ? 'Online Search' : (librarySearchResults !== null ? 'Search Results' : 'Queue')}</h2>
           <input
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
             className="input px-3 py-1.5 text-sm"
-            placeholder="Search tracks…"
-            aria-label="Search tracks"
+            placeholder={audioSource === 'online' ? 'Search YouTube tracks…' : 'Search tracks…'}
+            aria-label={audioSource === 'online' ? 'Search online tracks' : 'Search tracks'}
           />
         </div>
 
@@ -384,12 +450,63 @@ export default function AudioPlayer({ audioState, canControl, canSeek, roomId, s
           <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
         )}
 
-        {!searching && searchResults !== null && searchResults.length === 0 && (
+        {audioSource === 'online' && !searching && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
+          <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
+        )}
+
+        {audioSource === 'online' && !searching && onlineSearchResults !== null && onlineSearchResults.length > 0 && (
+          <ul className="max-h-64 space-y-2 overflow-y-auto">
+            {onlineSearchResults.map((result) => {
+              const queueKey = `${result.video_id}:queue`;
+              const playKey = `${result.video_id}:play`;
+              const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
+              return (
+                <li key={result.video_id} className="tile rounded-xl px-3 py-2">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={result.thumbnail_url}
+                      alt={result.title}
+                      className="h-12 w-20 rounded-md object-cover"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{result.title}</p>
+                      <p className="truncate text-xs muted">{result.channel}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                        disabled={busy}
+                        onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
+                      >
+                        Queue
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                        disabled={busy || !canControl}
+                        onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
+                      >
+                        Play now
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {audioSource !== 'online' && !searching && librarySearchResults !== null && librarySearchResults.length === 0 && (
           <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No tracks found.</div>
         )}
 
+        {audioSource === 'online' && (
+          <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
+        )}
+
         {!searching && displayList.length > 0 && (
-          <ul ref={queueRef} className="max-h-80 space-y-1 overflow-y-auto">
+          <ul ref={queueRef} className={`space-y-1 overflow-y-auto ${audioSource === 'online' ? 'max-h-72' : 'max-h-80'}`}>
             {displayList.map((entry, idx) => {
               const isActive =
                 !entry.isSearchResult && idx === audioState.queue_index;

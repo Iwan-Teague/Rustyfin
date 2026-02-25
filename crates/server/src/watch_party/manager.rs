@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
 
-use super::protocol::{ServerMessage, YouTubeSearchEntry};
+use super::protocol::{CreateCanvasStroke, ServerMessage, YouTubeSearchEntry};
 
 const MAX_ACTIVE_ROOMS: usize = 512;
 const EMPTY_ROOM_TTL_SECONDS: i64 = 5 * 60;
@@ -61,10 +62,34 @@ pub enum AudioAction {
     SetPlayingState { position_ms: u64, playing: bool },
 }
 
+#[derive(Debug, Clone)]
+pub struct CreateState {
+    pub active_tool: String,
+    pub document_name: String,
+    pub text_format: String,
+    pub text_content: String,
+    pub canvas_strokes: Vec<CreateCanvasStroke>,
+    pub updated_ts_ms: i64,
+}
+
+impl Default for CreateState {
+    fn default() -> Self {
+        Self {
+            active_tool: "text".to_string(),
+            document_name: "Untitled Document".to_string(),
+            text_format: "plain".to_string(),
+            text_content: String::new(),
+            canvas_strokes: Vec::new(),
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
 pub struct RoomRuntime {
     pub room_id: String,
     pub item_id: String,
     pub room_mode: String,
+    pub audio_source: Option<String>,
     pub audio_library_id: Option<String>,
     pub state: RwLock<PlaybackState>,
     pub audio_queue: Option<RwLock<AudioQueueState>>,
@@ -74,6 +99,7 @@ pub struct RoomRuntime {
     pub youtube_search_results: RwLock<Vec<YouTubeSearchEntry>>,
     pub web_url: RwLock<String>,
     pub web_updated_ts_ms: RwLock<i64>,
+    pub create_state: Option<RwLock<CreateState>>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -90,6 +116,7 @@ impl RoomRuntime {
             room_id,
             item_id,
             room_mode: "video".to_string(),
+            audio_source: None,
             audio_library_id: None,
             state: RwLock::new(PlaybackState::default()),
             audio_queue: None,
@@ -99,6 +126,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            create_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -108,7 +136,8 @@ impl RoomRuntime {
     pub fn new_audio(
         room_id: String,
         item_id: String,
-        audio_library_id: String,
+        audio_source: String,
+        audio_library_id: Option<String>,
         track_ids: Vec<String>,
     ) -> Self {
         let (tx, _) = broadcast::channel(256);
@@ -116,7 +145,8 @@ impl RoomRuntime {
             room_id,
             item_id,
             room_mode: "audio".to_string(),
-            audio_library_id: Some(audio_library_id),
+            audio_source: Some(audio_source),
+            audio_library_id,
             state: RwLock::new(PlaybackState::default()),
             audio_queue: Some(RwLock::new(AudioQueueState {
                 track_ids,
@@ -128,6 +158,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            create_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -140,6 +171,7 @@ impl RoomRuntime {
             room_id,
             item_id: String::new(),
             room_mode: "youtube".to_string(),
+            audio_source: None,
             audio_library_id: None,
             state: RwLock::new(PlaybackState::default()),
             audio_queue: None,
@@ -149,6 +181,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            create_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -162,6 +195,7 @@ impl RoomRuntime {
             room_id,
             item_id: String::new(),
             room_mode: "web".to_string(),
+            audio_source: None,
             audio_library_id: None,
             state: RwLock::new(PlaybackState::default()),
             audio_queue: None,
@@ -171,6 +205,31 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(initial_url),
             web_updated_ts_ms: RwLock::new(now_ms),
+            create_state: None,
+            connected_user_ids: RwLock::new(HashSet::new()),
+            tx,
+            last_activity_ts_ms: RwLock::new(now_ms),
+        }
+    }
+
+    pub fn new_create(room_id: String, initial_state: CreateState) -> Self {
+        let (tx, _) = broadcast::channel(256);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self {
+            room_id,
+            item_id: String::new(),
+            room_mode: "create".to_string(),
+            audio_source: None,
+            audio_library_id: None,
+            state: RwLock::new(PlaybackState::default()),
+            audio_queue: None,
+            youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(now_ms),
+            create_state: Some(RwLock::new(initial_state)),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -226,6 +285,65 @@ impl RoomRuntime {
         let url = self.web_url.read().await.clone();
         let updated_ts_ms = *self.web_updated_ts_ms.read().await;
         (url, updated_ts_ms)
+    }
+
+    pub async fn snapshot_create_state(&self) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        Some(state.read().await.clone())
+    }
+
+    pub async fn set_create_tool(&self, tool: String) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        guard.active_tool = tool;
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn set_create_document_name(&self, document_name: String) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        guard.document_name = document_name;
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn set_create_text(
+        &self,
+        text_content: String,
+        text_format: Option<String>,
+    ) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        guard.text_content = text_content;
+        if let Some(format) = text_format {
+            guard.text_format = format;
+        }
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn set_create_canvas(
+        &self,
+        canvas_strokes: Vec<CreateCanvasStroke>,
+    ) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        guard.canvas_strokes = canvas_strokes;
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
     }
 
     pub async fn set_youtube_search_state(
@@ -360,6 +478,54 @@ impl RoomRuntime {
         Some(queue.read().await.clone())
     }
 
+    /// Append a track to the audio queue. Optionally start playback from it.
+    pub async fn enqueue_audio_track(
+        &self,
+        track_id: String,
+        play_now: bool,
+    ) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+
+        queue.track_ids.push(track_id);
+        if play_now {
+            queue.current_index = queue.track_ids.len().saturating_sub(1);
+            queue.position_ms = 0;
+            queue.playing = true;
+        } else if queue.track_ids.len() == 1 {
+            queue.current_index = 0;
+            queue.position_ms = 0;
+            queue.playing = false;
+        }
+
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+
+        Some(queue.clone())
+    }
+
+    pub async fn set_audio_queue(
+        &self,
+        track_ids: Vec<String>,
+        current_index: usize,
+        position_ms: u64,
+        playing: bool,
+    ) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+        queue.track_ids = track_ids;
+        queue.current_index = current_index.min(queue.track_ids.len().saturating_sub(1));
+        queue.position_ms = position_ms;
+        queue.playing = playing;
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+
+        Some(queue.clone())
+    }
+
     pub async fn apply_action(&self, action: PlaybackAction) -> PlaybackState {
         let mut state = self.state.write().await;
         match action {
@@ -450,15 +616,18 @@ impl WatchPartyManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_or_create_runtime(
         &self,
         room_id: &str,
         item_id: &str,
         room_mode: &str,
+        audio_source: Option<&str>,
         audio_library_id: Option<&str>,
         audio_track_ids: Option<Vec<String>>,
         youtube_video_id: Option<String>,
         web_url: Option<String>,
+        create_state: Option<CreateState>,
     ) -> Arc<RoomRuntime> {
         {
             let rooms = self.rooms.read().await;
@@ -488,7 +657,8 @@ impl WatchPartyManager {
                     RoomRuntime::new_audio(
                         room_id.to_string(),
                         item_id.to_string(),
-                        audio_library_id.unwrap_or_default().to_string(),
+                        audio_source.unwrap_or("library").to_string(),
+                        audio_library_id.map(str::to_string),
                         audio_track_ids.unwrap_or_default(),
                     )
                 } else if room_mode == "youtube" {
@@ -498,6 +668,8 @@ impl WatchPartyManager {
                         room_id.to_string(),
                         web_url.unwrap_or_else(|| "https://www.mozilla.org/".to_string()),
                     )
+                } else if room_mode == "create" {
+                    RoomRuntime::new_create(room_id.to_string(), create_state.unwrap_or_default())
                 } else {
                     RoomRuntime::new_video(room_id.to_string(), item_id.to_string())
                 };
@@ -516,7 +688,7 @@ impl WatchPartyManager {
         rooms.remove(room_id);
     }
 
-    pub async fn cleanup_empty_lobbies(&self, db: &sqlx::SqlitePool) {
+    pub async fn cleanup_empty_lobbies(&self, db: &sqlx::SqlitePool, room_audio_root: &Path) {
         let cutoff_ts = chrono::Utc::now().timestamp() - EMPTY_ROOM_TTL_SECONDS;
         let candidate_room_ids =
             match rustfin_db::repo::watch_party::list_purgeable_room_ids_updated_before(
@@ -546,6 +718,13 @@ impl WatchPartyManager {
                         let _ = runtime.tx.send(ServerMessage::RoomEnded);
                     }
                     self.remove_runtime(&room_id).await;
+                    if let Err(err) = remove_room_audio_files(room_audio_root, &room_id).await {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            error = %err,
+                            "failed to purge watch-party room audio files"
+                        );
+                    }
                 }
                 Ok(false) => {}
                 Err(err) => {
@@ -557,5 +736,21 @@ impl WatchPartyManager {
                 }
             }
         }
+    }
+}
+
+async fn remove_room_audio_files(room_audio_root: &Path, room_id: &str) -> std::io::Result<()> {
+    let room_dir = room_audio_root.join(room_id);
+    match tokio::fs::metadata(&room_dir).await {
+        Ok(meta) => {
+            if meta.is_dir() {
+                tokio::fs::remove_dir_all(room_dir).await?;
+            } else {
+                tokio::fs::remove_file(room_dir).await?;
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
     }
 }

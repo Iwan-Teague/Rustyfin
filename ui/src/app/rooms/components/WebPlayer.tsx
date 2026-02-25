@@ -160,12 +160,12 @@ export default function WebPlayer({ roomId, webState, canControl, wsConnected, s
             key={`${roomId}:${activeUrl}`}
             src={activeUrl}
             title="Shared web view"
-            className="h-[70vh] w-full"
+            className="h-[82vh] min-h-[640px] w-full"
             allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
             referrerPolicy="strict-origin-when-cross-origin"
           />
         ) : (
-          <div className="h-[70vh] flex items-center justify-center px-6 text-center">
+          <div className="h-[82vh] min-h-[640px] flex items-center justify-center px-6 text-center">
             <p className="text-sm muted">
               No shared page loaded yet. An admin can enter a URL above to start.
             </p>

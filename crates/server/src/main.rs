@@ -123,6 +123,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "/tmp/rustfin_cache".to_string())
         .into();
     std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
+    let watch_party_audio_dir = cache_dir.join("watch_party_audio");
+    std::fs::create_dir_all(&watch_party_audio_dir)
+        .context("failed to create watch-party audio dir")?;
 
     // Event broadcast channel
     let (events_tx, _) = tokio::sync::broadcast::channel::<rustfin_server::state::ServerEvent>(256);
@@ -144,7 +147,10 @@ async fn main() -> anyhow::Result<()> {
         db: pool,
         jwt_secret,
         transcoder: session_mgr,
+        ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
+        ffprobe_path: std::path::PathBuf::from(&ffprobe_path),
         cache_dir,
+        watch_party_audio_dir: watch_party_audio_dir.clone(),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
@@ -158,10 +164,13 @@ async fn main() -> anyhow::Result<()> {
     {
         let watch_party = app_state.watch_party.clone();
         let db = app_state.db.clone();
+        let watch_party_audio_dir = watch_party_audio_dir.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                watch_party.cleanup_empty_lobbies(&db).await;
+                watch_party
+                    .cleanup_empty_lobbies(&db, &watch_party_audio_dir)
+                    .await;
             }
         });
     }

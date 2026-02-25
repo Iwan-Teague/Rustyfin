@@ -12,9 +12,12 @@ pub struct WatchPartyRoomRow {
     pub created_ts: i64,
     pub updated_ts: i64,
     pub room_mode: String,
+    pub audio_source: String,
     pub audio_library_id: Option<String>,
     pub youtube_video_id: Option<String>,
     pub web_url: Option<String>,
+    pub create_tool: String,
+    pub create_document_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +30,17 @@ pub struct WatchPartyMemberRow {
     pub invited_ts: Option<i64>,
     pub joined_ts: Option<i64>,
     pub last_seen_ts: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WatchPartyCreateStateRow {
+    pub room_id: String,
+    pub active_tool: String,
+    pub document_name: String,
+    pub text_format: String,
+    pub text_content: String,
+    pub canvas_strokes_json: String,
+    pub updated_ts: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +66,7 @@ pub struct NewWatchPartyMember {
     pub joined_ts: Option<i64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_room_with_members(
     pool: &SqlitePool,
     host_user_id: &str,
@@ -61,20 +76,26 @@ pub async fn create_room_with_members(
     join_password_hash: Option<&str>,
     members: &[NewWatchPartyMember],
     room_mode: Option<&str>,
+    audio_source: Option<&str>,
     audio_library_id: Option<&str>,
     web_url: Option<&str>,
+    create_tool: Option<&str>,
+    create_document_name: Option<&str>,
 ) -> Result<WatchPartyRoomRow, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let room_id = uuid::Uuid::new_v4().to_string();
     let mode = room_mode.unwrap_or("video");
+    let source = audio_source.unwrap_or("library");
     let name = room_name.unwrap_or("").trim();
+    let tool = create_tool.unwrap_or("text");
+    let document_name = create_document_name.unwrap_or("Untitled Document").trim();
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO watch_party_room \
-         (id, room_name, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, web_url) \
-         VALUES (?, ?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?)",
+         (id, room_name, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_source, audio_library_id, web_url, create_tool, create_document_name) \
+         VALUES (?, ?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&room_id)
     .bind(name)
@@ -85,8 +106,11 @@ pub async fn create_room_with_members(
     .bind(now)
     .bind(now)
     .bind(mode)
+    .bind(source)
     .bind(audio_library_id)
     .bind(web_url)
+    .bind(tool)
+    .bind(document_name)
     .execute(&mut *tx)
     .await?;
 
@@ -121,9 +145,12 @@ pub async fn create_room_with_members(
         created_ts: now,
         updated_ts: now,
         room_mode: mode.to_string(),
+        audio_source: source.to_string(),
         audio_library_id: audio_library_id.map(str::to_string),
         youtube_video_id: None,
         web_url: web_url.map(str::to_string),
+        create_tool: tool.to_string(),
+        create_document_name: document_name.to_string(),
     })
 }
 
@@ -142,12 +169,15 @@ pub async fn get_room(
         i64,
         i64,
         String,
+        String,
         Option<String>,
         Option<String>,
         Option<String>,
+        String,
+        String,
     )> =
         sqlx::query_as(
-            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_library_id, youtube_video_id, web_url \
+            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, COALESCE(audio_source, 'library'), audio_library_id, youtube_video_id, web_url, COALESCE(create_tool, 'text'), COALESCE(create_document_name, 'Untitled Document') \
              FROM watch_party_room WHERE id = ?",
         )
         .bind(room_id)
@@ -166,9 +196,12 @@ pub async fn get_room(
             created_ts,
             updated_ts,
             room_mode,
+            audio_source,
             audio_library_id,
             youtube_video_id,
             web_url,
+            create_tool,
+            create_document_name,
         )| {
             WatchPartyRoomRow {
                 id,
@@ -181,9 +214,12 @@ pub async fn get_room(
                 created_ts,
                 updated_ts,
                 room_mode,
+                audio_source,
                 audio_library_id,
                 youtube_video_id,
                 web_url,
+                create_tool,
+                create_document_name,
             }
         },
     ))
@@ -439,6 +475,7 @@ pub struct PublicRoomRow {
     pub item_id: String,
     pub item_title: String,
     pub room_mode: String,
+    pub audio_source: String,
     pub audio_library_name: String,
     pub web_url: String,
     pub password_required: bool,
@@ -455,6 +492,7 @@ pub struct AdminRoomRow {
     pub item_id: String,
     pub item_title: String,
     pub room_mode: String,
+    pub audio_source: String,
     pub audio_library_name: String,
     pub web_url: String,
     pub password_required: bool,
@@ -477,13 +515,14 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
         String,
         String,
         String,
+        String,
         i64,
         i64,
         i64,
     )> =
         sqlx::query_as(
             "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
-                    COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
+                    COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                     CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
                     COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                     r.created_ts \
@@ -512,6 +551,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
                 item_id,
                 item_title,
                 room_mode,
+                audio_source,
                 audio_library_name,
                 web_url,
                 password_required,
@@ -526,6 +566,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
                     item_id,
                     item_title,
                     room_mode,
+                    audio_source,
                     audio_library_name,
                     web_url,
                     password_required: password_required != 0,
@@ -548,6 +589,7 @@ pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sq
         String,
         String,
         String,
+        String,
         i64,
         i64,
         i64,
@@ -556,7 +598,7 @@ pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sq
         i64,
     )> = sqlx::query_as(
         "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
-                COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
+                COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                 CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
                 CASE WHEN json_extract(r.policy_json, '$.invite_only') = 1 THEN 1 ELSE 0 END, \
                 COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
@@ -583,6 +625,7 @@ pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sq
                 item_id,
                 item_title,
                 room_mode,
+                audio_source,
                 audio_library_name,
                 web_url,
                 password_required,
@@ -599,6 +642,7 @@ pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sq
                 item_id,
                 item_title,
                 room_mode,
+                audio_source,
                 audio_library_name,
                 web_url,
                 password_required: password_required != 0,
@@ -750,6 +794,249 @@ pub struct AudioTrackRow {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct OnlineAudioTrackRow {
+    pub id: String,
+    pub room_id: String,
+    pub video_id: String,
+    pub title: String,
+    pub channel: String,
+    pub thumbnail_url: Option<String>,
+    pub file_path: String,
+    pub duration_ms: Option<u64>,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_online_audio_track(
+    pool: &SqlitePool,
+    room_id: &str,
+    track_id: &str,
+    video_id: &str,
+    title: &str,
+    channel: &str,
+    thumbnail_url: Option<&str>,
+    file_path: &str,
+    duration_ms: Option<u64>,
+) -> Result<OnlineAudioTrackRow, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO watch_party_online_audio_track \
+         (id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(room_id, video_id) DO UPDATE SET \
+            title = excluded.title, \
+            channel = excluded.channel, \
+            thumbnail_url = excluded.thumbnail_url, \
+            file_path = excluded.file_path, \
+            duration_ms = excluded.duration_ms, \
+            updated_ts = excluded.updated_ts",
+    )
+    .bind(track_id)
+    .bind(room_id)
+    .bind(video_id)
+    .bind(title)
+    .bind(channel)
+    .bind(thumbnail_url)
+    .bind(file_path)
+    .bind(duration_ms.map(|v| v as i64))
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    get_online_audio_track_by_video_id(pool, room_id, video_id)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
+}
+
+pub async fn get_online_audio_track_by_video_id(
+    pool: &SqlitePool,
+    room_id: &str,
+    video_id: &str,
+) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<i64>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+         FROM watch_party_online_audio_track \
+         WHERE room_id = ? AND video_id = ?",
+    )
+    .bind(room_id)
+    .bind(video_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(
+            id,
+            room_id,
+            video_id,
+            title,
+            channel,
+            thumbnail_url,
+            file_path,
+            duration_ms,
+            created_ts,
+            updated_ts,
+        )| OnlineAudioTrackRow {
+            id,
+            room_id,
+            video_id,
+            title,
+            channel,
+            thumbnail_url,
+            file_path,
+            duration_ms: duration_ms.map(|v| v as u64),
+            created_ts,
+            updated_ts,
+        },
+    ))
+}
+
+pub async fn get_online_audio_track(
+    pool: &SqlitePool,
+    room_id: &str,
+    track_id: &str,
+) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<i64>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+         FROM watch_party_online_audio_track \
+         WHERE room_id = ? AND id = ?",
+    )
+    .bind(room_id)
+    .bind(track_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(
+            id,
+            room_id,
+            video_id,
+            title,
+            channel,
+            thumbnail_url,
+            file_path,
+            duration_ms,
+            created_ts,
+            updated_ts,
+        )| OnlineAudioTrackRow {
+            id,
+            room_id,
+            video_id,
+            title,
+            channel,
+            thumbnail_url,
+            file_path,
+            duration_ms: duration_ms.map(|v| v as u64),
+            created_ts,
+            updated_ts,
+        },
+    ))
+}
+
+pub async fn list_online_audio_tracks(
+    pool: &SqlitePool,
+    room_id: &str,
+    query: Option<&str>,
+) -> Result<Vec<OnlineAudioTrackRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<i64>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+         FROM watch_party_online_audio_track \
+         WHERE room_id = ? \
+         ORDER BY created_ts DESC, updated_ts DESC",
+    )
+    .bind(room_id)
+    .fetch_all(pool)
+    .await?;
+
+    let tracks: Vec<OnlineAudioTrackRow> = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                room_id,
+                video_id,
+                title,
+                channel,
+                thumbnail_url,
+                file_path,
+                duration_ms,
+                created_ts,
+                updated_ts,
+            )| OnlineAudioTrackRow {
+                id,
+                room_id,
+                video_id,
+                title,
+                channel,
+                thumbnail_url,
+                file_path,
+                duration_ms: duration_ms.map(|v| v as u64),
+                created_ts,
+                updated_ts,
+            },
+        )
+        .collect();
+
+    if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
+        let lower = q.to_ascii_lowercase();
+        Ok(tracks
+            .into_iter()
+            .filter(|track| {
+                track.title.to_ascii_lowercase().contains(&lower)
+                    || track.channel.to_ascii_lowercase().contains(&lower)
+            })
+            .collect())
+    } else {
+        Ok(tracks)
+    }
+}
+
+pub async fn clear_online_audio_tracks(
+    pool: &SqlitePool,
+    room_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM watch_party_online_audio_track WHERE room_id = ?")
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Persist the current YouTube video ID for a room.
 pub async fn update_youtube_video_id(
     pool: &SqlitePool,
@@ -777,26 +1064,101 @@ pub async fn update_web_url(
     Ok(())
 }
 
+pub async fn get_create_state(
+    pool: &SqlitePool,
+    room_id: &str,
+) -> Result<Option<WatchPartyCreateStateRow>, sqlx::Error> {
+    let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT room_id, active_tool, document_name, text_format, text_content, canvas_strokes_json, updated_ts \
+         FROM watch_party_create_state WHERE room_id = ?",
+    )
+    .bind(room_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(
+        |(
+            room_id,
+            active_tool,
+            document_name,
+            text_format,
+            text_content,
+            canvas_strokes_json,
+            updated_ts,
+        )| WatchPartyCreateStateRow {
+            room_id,
+            active_tool,
+            document_name,
+            text_format,
+            text_content,
+            canvas_strokes_json,
+            updated_ts,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_create_state(
+    pool: &SqlitePool,
+    room_id: &str,
+    active_tool: &str,
+    document_name: &str,
+    text_format: &str,
+    text_content: &str,
+    canvas_strokes_json: &str,
+    updated_ts: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO watch_party_create_state \
+         (room_id, active_tool, document_name, text_format, text_content, canvas_strokes_json, updated_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(room_id) DO UPDATE SET \
+           active_tool = excluded.active_tool, \
+           document_name = excluded.document_name, \
+           text_format = excluded.text_format, \
+           text_content = excluded.text_content, \
+           canvas_strokes_json = excluded.canvas_strokes_json, \
+           updated_ts = excluded.updated_ts",
+    )
+    .bind(room_id)
+    .bind(active_tool)
+    .bind(document_name)
+    .bind(text_format)
+    .bind(text_content)
+    .bind(canvas_strokes_json)
+    .bind(updated_ts)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn reconfigure_room_mode(
     pool: &SqlitePool,
     room_id: &str,
     room_mode: &str,
+    audio_source: &str,
     item_id: Option<&str>,
     audio_library_id: Option<&str>,
     youtube_video_id: Option<&str>,
     web_url: Option<&str>,
+    create_tool: Option<&str>,
+    create_document_name: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
         "UPDATE watch_party_room \
-         SET room_mode = ?, item_id = ?, audio_library_id = ?, youtube_video_id = ?, web_url = ?, updated_ts = ? \
+         SET room_mode = ?, audio_source = ?, item_id = ?, audio_library_id = ?, youtube_video_id = ?, web_url = ?, create_tool = COALESCE(?, create_tool), create_document_name = COALESCE(?, create_document_name), updated_ts = ? \
          WHERE id = ?",
     )
     .bind(room_mode)
+    .bind(audio_source)
     .bind(item_id)
     .bind(audio_library_id)
     .bind(youtube_video_id)
     .bind(web_url)
+    .bind(create_tool)
+    .bind(create_document_name)
     .bind(now)
     .bind(room_id)
     .execute(pool)

@@ -197,8 +197,8 @@ fn find_series_dir(rel: &Path) -> Option<String> {
 
 fn is_season_dir(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
-    if lower.starts_with("season ") {
-        return lower["season ".len()..].trim().parse::<u32>().is_ok();
+    if let Some(stripped) = lower.strip_prefix("season ") {
+        return stripped.trim().parse::<u32>().is_ok();
     }
     if lower.len() >= 2 && lower.starts_with('s') {
         return lower[1..].parse::<u32>().is_ok();
@@ -212,8 +212,8 @@ fn is_disc_dir(name: &str) -> bool {
         let tail = lower.split_once(' ').map(|(_, t)| t.trim()).unwrap_or("");
         return !tail.is_empty() && tail.parse::<u32>().is_ok();
     }
-    if lower.starts_with("cd ") {
-        let tail = lower["cd ".len()..].trim();
+    if let Some(stripped) = lower.strip_prefix("cd ") {
+        let tail = stripped.trim();
         return !tail.is_empty() && tail.parse::<u32>().is_ok();
     }
     false

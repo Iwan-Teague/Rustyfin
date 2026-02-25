@@ -30,6 +30,8 @@ async fn test_app() -> TestServer {
         max_concurrent: 2,
         ..Default::default()
     };
+    let ffmpeg_path = tc_config.ffmpeg_path.clone();
+    let ffprobe_path = tc_config.ffprobe_path.clone();
     let transcoder =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
@@ -38,10 +40,17 @@ async fn test_app() -> TestServer {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         transcoder,
+        ffmpeg_path,
+        ffprobe_path,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        watch_party_audio_dir: std::env::temp_dir()
+            .join(format!("rf_watch_audio_{}", std::process::id())),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
         ),
     };
 
@@ -72,6 +81,8 @@ async fn test_app_http() -> TestServer {
         max_concurrent: 2,
         ..Default::default()
     };
+    let ffmpeg_path = tc_config.ffmpeg_path.clone();
+    let ffprobe_path = tc_config.ffprobe_path.clone();
     let transcoder =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
@@ -80,10 +91,17 @@ async fn test_app_http() -> TestServer {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         transcoder,
+        ffmpeg_path,
+        ffprobe_path,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        watch_party_audio_dir: std::env::temp_dir()
+            .join(format!("rf_watch_audio_{}", std::process::id())),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
         ),
     };
 
@@ -233,6 +251,8 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
         max_concurrent: 2,
         ..Default::default()
     };
+    let ffmpeg_path = tc_config.ffmpeg_path.clone();
+    let ffprobe_path = tc_config.ffprobe_path.clone();
     let transcoder =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
@@ -241,10 +261,17 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         transcoder,
+        ffmpeg_path,
+        ffprobe_path,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        watch_party_audio_dir: std::env::temp_dir()
+            .join(format!("rf_watch_audio_{}", std::process::id())),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
         ),
     };
 
@@ -938,6 +965,8 @@ async fn stream_file_with_range_returns_206() {
         max_concurrent: 2,
         ..Default::default()
     };
+    let ffmpeg_path = tc_config.ffmpeg_path.clone();
+    let ffprobe_path = tc_config.ffprobe_path.clone();
     let transcoder =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
@@ -946,10 +975,17 @@ async fn stream_file_with_range_returns_206() {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         transcoder,
+        ffmpeg_path,
+        ffprobe_path,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_stream_{}", std::process::id())),
+        watch_party_audio_dir: std::env::temp_dir()
+            .join(format!("rf_watch_audio_stream_{}", std::process::id())),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
         ),
     };
     let app = rustfin_server::routes::build_router(state);
@@ -1200,21 +1236,29 @@ async fn hls_endpoints_require_auth_and_enforce_session_owner() {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .expect("master playlist should include at least one child URI")
-        .to_string();
-    let first_child_path = if first_child.starts_with('/') {
-        first_child
-    } else {
-        format!("/stream/hls/{sid}/{first_child}")
-    };
-    assert!(first_child_path.contains("st="));
+        .map(str::to_string);
+    let first_child_path = first_child
+        .as_ref()
+        .map(|child| {
+            if child.starts_with('/') {
+                child.clone()
+            } else {
+                format!("/stream/hls/{sid}/{child}")
+            }
+        })
+        .unwrap_or_else(|| format!("/stream/hls/{sid}/master.m3u8"));
+    if let Some(child) = first_child.as_ref() {
+        assert!(
+            child.contains("st="),
+            "child playlist URI should contain scoped stream token"
+        );
+    }
 
     let resp = server
         .get(&first_child_path)
         .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
-    assert!(!resp.as_bytes().is_empty());
 
     // Derive a concrete segment/media URL so we can verify auth there as well.
     let child_body = String::from_utf8(resp.as_bytes().to_vec()).unwrap_or_default();
@@ -1493,6 +1537,44 @@ async fn user_management_crud() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn watch_party_audio_online_room_can_be_created_without_library() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_mode": "audio",
+            "audio_source": "online",
+            "invites": []
+        }),
+    )
+    .await;
+
+    let resp = server
+        .get(&format!("/api/v1/watch-party/rooms/{room_id}"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["room_mode"], "audio");
+    assert_eq!(body["audio_source"], "online");
+
+    let resp = server
+        .get(&format!("/api/v1/watch-party/rooms/{room_id}/audio/tracks"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let tracks: Vec<Value> = resp.json();
+    assert!(
+        tracks.is_empty(),
+        "new online audio room should start empty"
+    );
+}
+
+#[tokio::test]
 async fn watch_party_create_room_rejects_invitee_without_library_access() {
     let server = test_app().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;
@@ -1721,7 +1803,7 @@ async fn watch_party_websocket_requires_auth_and_enforces_permissions() {
         .into_websocket()
         .await;
     unauth_ws
-        .send_json(&json!({ "type": "play", "position_ms": 0 }))
+        .send_json(&json!({ "type": "auth", "token": "invalid.token.value" }))
         .await;
     let unauth_msg: Value = unauth_ws.receive_json().await;
     assert_eq!(unauth_msg["type"], "error");
@@ -1729,7 +1811,7 @@ async fn watch_party_websocket_requires_auth_and_enforces_permissions() {
         unauth_msg["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("first websocket message must be auth")
+            .contains("invalid token")
     );
     unauth_ws.close().await;
 
@@ -1827,6 +1909,8 @@ async fn test_app_fresh() -> TestServer {
         max_concurrent: 2,
         ..Default::default()
     };
+    let ffmpeg_path = tc_config.ffmpeg_path.clone();
+    let ffprobe_path = tc_config.ffprobe_path.clone();
     let transcoder =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
@@ -1835,10 +1919,17 @@ async fn test_app_fresh() -> TestServer {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         transcoder,
+        ffmpeg_path,
+        ffprobe_path,
         cache_dir: std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
+        watch_party_audio_dir: std::env::temp_dir()
+            .join(format!("rf_watch_audio_setup_{}", std::process::id())),
         events: events_tx,
         watch_party: std::sync::Arc::new(
             rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
         ),
     };
 

@@ -10,20 +10,21 @@ use futures::SinkExt;
 use rustfin_core::error::ApiError;
 use tracing::{info, warn};
 
-use crate::auth::validate_token;
+use crate::auth::{issue_room_track_stream_token, validate_token};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
 use super::handlers::{normalize_web_room_url, perform_youtube_search};
-use super::manager::{AudioAction, PlaybackAction, RoomRuntime};
+use super::manager::{AudioAction, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
-    ClientMessage, PresenceMember, QueueEntry, ServerMessage, YouTubeSearchEntry,
+    ClientMessage, CreateCanvasStroke, PresenceMember, QueueEntry, ServerMessage,
+    YouTubeSearchEntry,
 };
 
-const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
-const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
+const MAX_WS_FRAME_BYTES: usize = 256 * 1024;
+const MAX_WS_TEXT_BYTES: usize = 128 * 1024;
 const AUTH_DEADLINE_SECONDS: u64 = 3;
 const IDLE_TIMEOUT_SECONDS: u64 = 120;
 const PING_INTERVAL_SECONDS: u64 = 20;
@@ -32,6 +33,11 @@ const MAX_MESSAGES_PER_WINDOW: usize = 80;
 const YOUTUBE_VALIDATION_TIMEOUT_SECONDS: u64 = 6;
 const YOUTUBE_WATCH_URL: &str = "https://www.youtube.com/watch";
 const YOUTUBE_VALIDATION_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const MAX_CREATE_TEXT_LEN: usize = 100_000;
+const MAX_CREATE_DOCUMENT_NAME_LEN: usize = 120;
+const MAX_CANVAS_STROKES: usize = 512;
+const MAX_CANVAS_POINTS_PER_STROKE: usize = 1024;
+const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
@@ -42,6 +48,7 @@ struct ConnectionContext {
     item_id: String,
     user_id: String,
     room_mode: String,
+    audio_source: Option<String>,
     audio_library_id: Option<String>,
     web_url: Option<String>,
 }
@@ -237,16 +244,27 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         context.web_url.clone()
     };
 
+    let create_state = if context.room_mode == "create" {
+        load_create_state_from_db(&state, &context.room_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
     let runtime = state
         .watch_party
         .get_or_create_runtime(
             &context.room_id,
             &context.item_id,
             &context.room_mode,
+            context.audio_source.as_deref(),
             context.audio_library_id.as_deref(),
             audio_track_ids,
             youtube_video_id,
             web_url,
+            create_state,
         )
         .await;
 
@@ -619,9 +637,166 @@ async fn authorize_ws_connection(
         item_id: room.item_id,
         user_id: claims.sub.clone(),
         room_mode: room.room_mode,
+        audio_source: Some(room.audio_source),
         audio_library_id: room.audio_library_id,
         web_url: room.web_url,
     })
+}
+
+async fn load_create_state_from_db(
+    state: &AppState,
+    room_id: &str,
+) -> Result<Option<CreateState>, AppError> {
+    let row = rustfin_db::repo::watch_party::get_create_state(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let canvas_strokes = serde_json::from_str::<Vec<CreateCanvasStroke>>(&row.canvas_strokes_json)
+        .unwrap_or_default();
+
+    Ok(Some(CreateState {
+        active_tool: row.active_tool,
+        document_name: row.document_name,
+        text_format: row.text_format,
+        text_content: row.text_content,
+        canvas_strokes,
+        updated_ts_ms: row.updated_ts,
+    }))
+}
+
+async fn persist_create_state(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<(), AppError> {
+    let snapshot = runtime
+        .snapshot_create_state()
+        .await
+        .ok_or_else(|| ApiError::Internal("create state not initialized".into()))?;
+    let canvas_strokes_json = serde_json::to_string(&snapshot.canvas_strokes)
+        .map_err(|e| ApiError::Internal(format!("failed to serialize canvas state: {e}")))?;
+
+    rustfin_db::repo::watch_party::upsert_create_state(
+        &state.db,
+        room_id,
+        &snapshot.active_tool,
+        &snapshot.document_name,
+        &snapshot.text_format,
+        &snapshot.text_content,
+        &canvas_strokes_json,
+        snapshot.updated_ts_ms,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, room_id).await;
+    Ok(())
+}
+
+fn normalize_create_tool(raw: &str) -> Result<String, AppError> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "text" | "canvas" => Ok(normalized),
+        _ => Err(ApiError::BadRequest("tool must be either 'text' or 'canvas'".into()).into()),
+    }
+}
+
+fn normalize_create_document_name(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("document_name cannot be empty".into()).into());
+    }
+    if trimmed.len() > MAX_CREATE_DOCUMENT_NAME_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "document_name must be <= {MAX_CREATE_DOCUMENT_NAME_LEN} characters"
+        ))
+        .into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_create_text_format(raw: &str) -> Result<&'static str, AppError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "plain" => Ok("plain"),
+        "markdown" => Ok("markdown"),
+        "pdf_text" => Ok("pdf_text"),
+        _ => Err(
+            ApiError::BadRequest("text_format must be plain, markdown, or pdf_text".into()).into(),
+        ),
+    }
+}
+
+fn normalize_create_text_content(value: String) -> Result<String, AppError> {
+    if value.len() > MAX_CREATE_TEXT_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "text_content must be <= {MAX_CREATE_TEXT_LEN} bytes"
+        ))
+        .into());
+    }
+    Ok(value)
+}
+
+fn is_valid_hex_color(color: &str) -> bool {
+    let bytes = color.as_bytes();
+    if bytes.len() != 7 || bytes[0] != b'#' {
+        return false;
+    }
+    bytes[1..].iter().all(|b| (*b as char).is_ascii_hexdigit())
+}
+
+fn normalize_canvas_strokes(
+    strokes: Vec<CreateCanvasStroke>,
+) -> Result<Vec<CreateCanvasStroke>, AppError> {
+    if strokes.len() > MAX_CANVAS_STROKES {
+        return Err(ApiError::BadRequest(format!(
+            "too many canvas strokes; max is {MAX_CANVAS_STROKES}"
+        ))
+        .into());
+    }
+
+    let mut normalized = Vec::with_capacity(strokes.len());
+    for mut stroke in strokes {
+        if stroke.id.trim().is_empty() || stroke.id.len() > MAX_CANVAS_STROKE_ID_LEN {
+            return Err(ApiError::BadRequest("invalid canvas stroke id".into()).into());
+        }
+        if !is_valid_hex_color(&stroke.color) {
+            return Err(ApiError::BadRequest(
+                "canvas stroke color must be a hex color like #ff00aa".into(),
+            )
+            .into());
+        }
+        if !(0.5..=64.0).contains(&stroke.size) {
+            return Err(ApiError::BadRequest(
+                "canvas stroke size must be between 0.5 and 64".into(),
+            )
+            .into());
+        }
+        if stroke.points.len() > MAX_CANVAS_POINTS_PER_STROKE {
+            return Err(ApiError::BadRequest(format!(
+                "canvas stroke has too many points; max is {MAX_CANVAS_POINTS_PER_STROKE}"
+            ))
+            .into());
+        }
+        if stroke
+            .points
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite())
+        {
+            return Err(
+                ApiError::BadRequest("canvas stroke contains invalid coordinates".into()).into(),
+            );
+        }
+
+        stroke.id = stroke.id.trim().to_string();
+        stroke.color = stroke.color.to_ascii_lowercase();
+        normalized.push(stroke);
+    }
+
+    Ok(normalized)
 }
 
 async fn handle_client_message(
@@ -659,8 +834,8 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" {
-                send_error(socket, "play is not valid in web rooms").await?;
+            if context.room_mode == "web" || context.room_mode == "create" {
+                send_error(socket, "play is not valid in this room mode").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
@@ -714,8 +889,8 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" {
-                send_error(socket, "pause is not valid in web rooms").await?;
+            if context.room_mode == "web" || context.room_mode == "create" {
+                send_error(socket, "pause is not valid in this room mode").await?;
                 return Ok(());
             }
             if !can_play_pause(&role, &policy) {
@@ -769,8 +944,8 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" {
-                send_error(socket, "seek is not valid in web rooms").await?;
+            if context.room_mode == "web" || context.room_mode == "create" {
+                send_error(socket, "seek is not valid in this room mode").await?;
                 return Ok(());
             }
             if !can_seek(&role, &policy) {
@@ -1249,6 +1424,129 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::CreateSetTool { tool } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_set_tool is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_tool = normalize_create_tool(&tool)?;
+            let _ = runtime.set_create_tool(normalized_tool).await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateSetDocumentName { document_name } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_set_document_name is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_name = normalize_create_document_name(&document_name)?;
+            let _ = runtime.set_create_document_name(normalized_name).await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateSetText {
+            text_content,
+            text_format,
+        } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_set_text is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_text = normalize_create_text_content(text_content)?;
+            let normalized_format = text_format
+                .as_deref()
+                .map(normalize_create_text_format)
+                .transpose()?
+                .map(str::to_string);
+
+            let _ = runtime
+                .set_create_text(normalized_text, normalized_format)
+                .await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateSetCanvas { canvas_strokes } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_set_canvas is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_canvas = normalize_canvas_strokes(canvas_strokes)?;
+            let _ = runtime.set_create_canvas(normalized_canvas).await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
         ClientMessage::SearchYouTube { query } => {
             if context.room_mode != "youtube" {
                 send_error(socket, "search_youtube is only valid in YouTube rooms").await?;
@@ -1325,7 +1623,7 @@ async fn refresh_membership_and_policy(
     Ok((room.status, policy, member.role))
 }
 
-async fn broadcast_current_state(
+pub(crate) async fn broadcast_current_state(
     state: &AppState,
     runtime: &RoomRuntime,
     room_id: &str,
@@ -1358,6 +1656,9 @@ async fn build_state_message(
     }
     if runtime.room_mode == "web" {
         return build_web_state_message(state, runtime, room_id).await;
+    }
+    if runtime.room_mode == "create" {
+        return build_create_state_message(state, runtime, room_id).await;
     }
 
     let snapshot = runtime.snapshot_state().await;
@@ -1452,11 +1753,70 @@ async fn build_web_state_message(
     })
 }
 
+async fn build_create_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let create_state = runtime
+        .snapshot_create_state()
+        .await
+        .ok_or_else(|| ApiError::Internal("create state not initialized".into()))?;
+    let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .into_iter()
+        .map(|u| (u.id, u.username))
+        .collect();
+
+    let member_summaries = members
+        .into_iter()
+        .filter(|m| m.status != "declined" && m.status != "left")
+        .map(|member| PresenceMember {
+            user_id: member.user_id.clone(),
+            username: usernames
+                .get(&member.user_id)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string()),
+            role: member.role,
+            connected: connected.contains(&member.user_id) && member.status == "joined",
+        })
+        .collect();
+
+    Ok(ServerMessage::CreateState {
+        room_id: room_id.to_string(),
+        active_tool: create_state.active_tool,
+        document_name: create_state.document_name,
+        text_format: create_state.text_format,
+        text_content: create_state.text_content,
+        canvas_strokes: create_state.canvas_strokes,
+        updated_ts_ms: create_state.updated_ts_ms,
+        server_ts_ms: now_ms,
+        members: member_summaries,
+    })
+}
+
 async fn build_audio_state_message(
     state: &AppState,
     runtime: &RoomRuntime,
     room_id: &str,
 ) -> Result<ServerMessage, AppError> {
+    type AudioTrackMetadata = (
+        String,         // title
+        String,         // album
+        String,         // artist/channel
+        Option<String>, // album art / thumbnail
+        Option<u64>,    // duration_ms
+        Option<String>, // video_id (online mode only)
+    );
+
     let queue_snapshot = match runtime.snapshot_audio_queue().await {
         Some(q) => q,
         None => {
@@ -1483,56 +1843,102 @@ async fn build_audio_state_message(
         .get(queue_snapshot.current_index)
         .cloned()
         .unwrap_or_default();
+    let audio_source = runtime
+        .audio_source
+        .as_deref()
+        .unwrap_or("library")
+        .to_string();
+    let online_mode = audio_source == "online";
 
-    // Fetch metadata for all tracks in one query via the library
-    let audio_library_id = match runtime.audio_library_id.as_deref() {
-        Some(id) => id,
-        None => return Err(ApiError::Internal("audio room missing library id".into()).into()),
-    };
-
-    let all_db_tracks =
-        rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
+    // Fetch metadata for all tracks in one query via the backing source.
+    let track_metadata: HashMap<String, AudioTrackMetadata> = if online_mode {
+        rustfin_db::repo::watch_party::list_online_audio_tracks(&state.db, room_id, None)
             .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let track_metadata: HashMap<String, (String, String, String, Option<String>, Option<u64>)> =
-        all_db_tracks
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .into_iter()
             .map(|t| {
                 (
                     t.id.clone(),
-                    (t.title, t.album, t.artist, t.album_art_url, t.duration_ms),
+                    (
+                        t.title,
+                        String::new(),
+                        t.channel,
+                        t.thumbnail_url,
+                        t.duration_ms,
+                        Some(t.video_id),
+                    ),
                 )
             })
-            .collect();
+            .collect()
+    } else {
+        let audio_library_id = match runtime.audio_library_id.as_deref() {
+            Some(id) => id,
+            None => return Err(ApiError::Internal("audio room missing library id".into()).into()),
+        };
 
-    let (current_title, current_album, current_artist, current_art, current_dur) = track_metadata
-        .get(&current_track_id)
-        .cloned()
-        .unwrap_or_else(|| {
-            (
-                "Unknown".to_string(),
-                String::new(),
-                String::new(),
-                None,
-                None,
-            )
-        });
+        rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .into_iter()
+            .map(|t| {
+                (
+                    t.id.clone(),
+                    (
+                        t.title,
+                        t.album,
+                        t.artist,
+                        t.album_art_url,
+                        t.duration_ms,
+                        None,
+                    ),
+                )
+            })
+            .collect()
+    };
+
+    let (current_title, current_album, current_artist, current_art, current_dur, _current_video_id) =
+        track_metadata
+            .get(&current_track_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                (
+                    "Unknown".to_string(),
+                    String::new(),
+                    String::new(),
+                    None,
+                    None,
+                    None,
+                )
+            });
+
+    let stream_url = if online_mode && !current_track_id.is_empty() {
+        let token =
+            issue_room_track_stream_token(room_id, &current_track_id, 60 * 60, &state.jwt_secret)
+                .map_err(|_| {
+                ApiError::Internal("failed to issue room-track stream token".to_string())
+            })?;
+        Some(format!(
+            "/api/v1/watch-party/rooms/{room_id}/audio/online/tracks/{current_track_id}/stream?st={token}"
+        ))
+    } else {
+        None
+    };
 
     let queue: Vec<QueueEntry> = queue_snapshot
         .track_ids
         .iter()
         .map(|tid| {
-            let (title, album, artist, art, dur) = track_metadata
+            let (title, album, artist, art, dur, video_id) = track_metadata
                 .get(tid)
                 .cloned()
-                .unwrap_or_else(|| (tid.clone(), String::new(), String::new(), None, None));
+                .unwrap_or_else(|| (tid.clone(), String::new(), String::new(), None, None, None));
             QueueEntry {
                 track_id: tid.clone(),
                 title,
                 artist,
                 album,
                 album_art_url: art,
+                video_id,
                 duration_ms: dur,
             }
         })
@@ -1567,11 +1973,13 @@ async fn build_audio_state_message(
 
     Ok(ServerMessage::AudioState {
         room_id: room_id.to_string(),
+        audio_source,
         track_id: current_track_id,
         title: current_title,
         artist: current_artist,
         album: current_album,
         album_art_url: current_art,
+        stream_url,
         duration_ms: current_dur,
         position_ms,
         playing: queue_snapshot.playing,
