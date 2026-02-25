@@ -17,7 +17,7 @@ import {
   type UpdateCalendarEventRequest,
 } from '@/lib/calendarApi';
 
-type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30';
+type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30' | 'events_30';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -101,6 +101,9 @@ function formatHeader(view: CalendarView, from: Date, to: Date): string {
   if (view === 'month') {
     return from.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }
+  if (view === 'events_30') {
+    return 'Events in the Next 30 Days';
+  }
   const fromLabel = from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   const toLabel = to.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   return `${fromLabel} — ${toLabel}`;
@@ -110,7 +113,7 @@ function nextAnchor(view: CalendarView, anchor: Date, direction: -1 | 1): Date {
   if (view === 'month') {
     return addMonths(anchor, direction);
   }
-  if (view === 'agenda_30') {
+  if (view === 'agenda_30' || view === 'events_30') {
     return addDays(anchor, direction * 30);
   }
   return addDays(anchor, direction * 7);
@@ -118,6 +121,14 @@ function nextAnchor(view: CalendarView, anchor: Date, direction: -1 | 1): Date {
 
 function dayCellLabel(date: Date): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function sameCalendarDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 function eventBadgeClass(event: CalendarEvent): string {
@@ -141,6 +152,7 @@ export default function CalendarPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [eventPanelOpen, setEventPanelOpen] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -155,6 +167,20 @@ export default function CalendarPage() {
   const fromYmd = useMemo(() => formatYmd(from), [from]);
   const toYmd = useMemo(() => formatYmd(to), [to]);
   const isAdmin = me?.role === 'admin';
+  const today = useMemo(() => withNoon(new Date()), []);
+  const todayWeekdayIndex = useMemo(() => (today.getDay() + 6) % 7, [today]);
+  const weekdayHeaders = useMemo(() => {
+    if (view === 'next_7_days') {
+      return days.slice(0, 7).map((day) => ({
+        label: day.toLocaleDateString(undefined, { weekday: 'short' }),
+        isToday: sameCalendarDay(day, today),
+      }));
+    }
+    return WEEKDAY_LABELS.map((label, index) => ({
+      label,
+      isToday: index === todayWeekdayIndex,
+    }));
+  }, [view, days, today, todayWeekdayIndex]);
 
   const eventsByDate = useMemo(() => {
     const byDate = new Map<string, CalendarEvent[]>();
@@ -275,6 +301,7 @@ export default function CalendarPage() {
 
   const onEdit = (event: CalendarEvent) => {
     if (!event.can_edit) return;
+    setEventPanelOpen(true);
     setEditingEventId(event.id);
     setTitle(event.title);
     setDescription(event.description ?? '');
@@ -284,7 +311,6 @@ export default function CalendarPage() {
     setRecurrence(event.recurrence);
     setBirthdayYear(event.birthday_year ? String(event.birthday_year) : '');
     setOwnerUserId(event.owner_user_id ?? me?.id ?? '');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   return (
@@ -294,10 +320,19 @@ export default function CalendarPage() {
         <p className="text-sm muted sm:text-base">
           Shared scheduling for your server. Admins can publish global events, and each user can keep private personal events.
         </p>
+        <div>
+          <button
+            type="button"
+            className="btn-secondary px-3 py-1.5 text-sm"
+            onClick={() => setEventPanelOpen((prev) => !prev)}
+          >
+            {eventPanelOpen ? 'Hide Event Panel ▴' : 'Show Event Panel ▾'}
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
-        <section className="panel rounded-2xl p-4 sm:p-5 space-y-4">
+      <div className={`grid grid-cols-1 gap-4 min-h-[34rem] lg:h-[calc(100dvh-14.5rem)] ${eventPanelOpen ? 'xl:grid-cols-[2fr_1fr]' : ''}`}>
+        <section className="panel rounded-2xl p-4 sm:p-5 space-y-4 flex flex-col lg:h-full lg:min-h-0">
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex items-center gap-2">
               <button
@@ -332,6 +367,7 @@ export default function CalendarPage() {
               <option value="next_week">Upcoming Week</option>
               <option value="next_7_days">Next 7 Days</option>
               <option value="agenda_30">Agenda (30 Days)</option>
+              <option value="events_30">Events Only (30 Days)</option>
             </select>
           </div>
 
@@ -342,121 +378,152 @@ export default function CalendarPage() {
             </span>
           </div>
 
-          {loading ? (
-            <div className="panel-soft rounded-xl px-4 py-10 text-sm muted text-center">
-              Loading calendar…
-            </div>
-          ) : view === 'agenda_30' ? (
-            <div className="space-y-2 max-h-[36rem] overflow-y-auto pr-1">
-              {days.map((day) => {
-                const key = formatYmd(day);
-                const dayEvents = eventsByDate.get(key) ?? [];
-                return (
-                  <div key={key} className="panel-soft rounded-xl px-3 py-2 space-y-2">
-                    <p className="text-sm font-semibold">{day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</p>
-                    {dayEvents.length === 0 ? (
-                      <p className="text-xs muted">No events</p>
-                    ) : (
-                      <div className="space-y-1">
-                        {dayEvents.map((event) => (
-                          <div key={event.occurrence_id} className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}>
-                            <p className="font-medium">{event.title}</p>
-                            {event.display_description && <p className="muted">{event.display_description}</p>}
-                            {event.owner_username && event.scope === 'personal' && (
-                              <p className="muted">Owner: {event.owner_username}</p>
-                            )}
-                            {(event.can_edit || event.can_delete) && (
-                              <div className="mt-1 flex gap-2">
-                                {event.can_edit && (
-                                  <button type="button" className="btn-ghost px-2 py-0.5 text-xs" onClick={() => onEdit(event)}>
-                                    Edit
-                                  </button>
-                                )}
-                                {event.can_delete && (
-                                  <button type="button" className="btn-ghost px-2 py-0.5 text-xs text-red-300" onClick={() => void onDelete(event.id)}>
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="grid grid-cols-7 gap-2">
-                {WEEKDAY_LABELS.map((label) => (
-                  <div key={label} className="rounded-lg border border-[var(--border)] bg-white/5 px-2 py-1 text-center text-xs font-semibold muted">
-                    {label}
-                  </div>
-                ))}
+          <div className="flex-1 min-h-0">
+            {loading ? (
+              <div className="panel-soft rounded-xl h-full px-4 py-10 text-sm muted text-center flex items-center justify-center">
+                Loading calendar…
               </div>
-              <div className={`grid grid-cols-7 gap-2 ${view === 'month' ? 'auto-rows-[minmax(9rem,1fr)]' : 'auto-rows-[minmax(14rem,1fr)]'}`}>
-                {days.map((day) => {
-                  const key = formatYmd(day);
-                  const dayEvents = eventsByDate.get(key) ?? [];
-                  const outsideMonth = view === 'month' && day.getMonth() !== anchorDate.getMonth();
-                  return (
-                    <div
-                      key={key}
-                      className={`rounded-xl border px-2 py-2 overflow-hidden flex flex-col gap-2 ${outsideMonth ? 'border-[var(--border)]/60 opacity-70' : 'border-[var(--border)] bg-white/5'}`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
-                        <span className="text-[11px] muted">{dayEvents.length}</span>
+            ) : view === 'agenda_30' || view === 'events_30' ? (
+              <div className="h-full space-y-2 overflow-y-auto pr-1">
+                {(() => {
+                  const dayRows = days
+                    .map((day) => {
+                      const key = formatYmd(day);
+                      const dayEvents = eventsByDate.get(key) ?? [];
+                      return { day, key, dayEvents };
+                    })
+                    .filter((row) => view !== 'events_30' || row.dayEvents.length > 0);
+
+                  if (dayRows.length === 0) {
+                    return (
+                      <div className="panel-soft rounded-xl px-4 py-4 text-sm muted">
+                        No events in this 30-day window.
                       </div>
-                      <div className="space-y-1 overflow-y-auto pr-1">
-                        {dayEvents.map((event) => (
-                          <div
-                            key={event.occurrence_id}
-                            className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
-                          >
-                            <p className="font-semibold leading-tight">{event.title}</p>
-                            {event.display_description && (
-                              <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
-                            )}
-                            {event.owner_username && event.scope === 'personal' && (
-                              <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
-                            )}
-                            {(event.can_edit || event.can_delete) && (
-                              <div className="mt-1 flex gap-1">
-                                {event.can_edit && (
-                                  <button
-                                    type="button"
-                                    className="btn-ghost px-1.5 py-0.5 text-[10px]"
-                                    onClick={() => onEdit(event)}
-                                  >
-                                    Edit
-                                  </button>
-                                )}
-                                {event.can_delete && (
-                                  <button
-                                    type="button"
-                                    className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
-                                    onClick={() => void onDelete(event.id)}
-                                  >
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
+                    );
+                  }
+
+                  return dayRows.map(({ day, key, dayEvents }) => (
+                    <div key={key} className="panel-soft rounded-xl px-3 py-2 space-y-2">
+                      <p className="text-sm font-semibold">{day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</p>
+                      {dayEvents.length === 0 ? (
+                        <p className="text-xs muted">No events</p>
+                      ) : (
+                        <div className="space-y-1">
+                          {dayEvents.map((event) => (
+                            <div key={event.occurrence_id} className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}>
+                              <p className="font-medium">{event.title}</p>
+                              {event.display_description && <p className="muted">{event.display_description}</p>}
+                              {event.owner_username && event.scope === 'personal' && (
+                                <p className="muted">Owner: {event.owner_username}</p>
+                              )}
+                              {(event.can_edit || event.can_delete) && (
+                                <div className="mt-1 flex gap-2">
+                                  {event.can_edit && (
+                                    <button type="button" className="btn-ghost px-2 py-0.5 text-xs" onClick={() => onEdit(event)}>
+                                      Edit
+                                    </button>
+                                  )}
+                                  {event.can_delete && (
+                                    <button type="button" className="btn-ghost px-2 py-0.5 text-xs text-red-300" onClick={() => void onDelete(event.id)}>
+                                      Delete
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  );
-                })}
+                  ));
+                })()}
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="space-y-2 h-full flex flex-col min-h-0">
+                <div className="grid grid-cols-7 gap-2">
+                  {weekdayHeaders.map(({ label, isToday }) => (
+                    <div
+                      key={label}
+                      className={`rounded-lg border px-2 py-1 text-center text-xs font-semibold ${
+                        isToday
+                          ? 'border-white/30 bg-gradient-to-r from-[var(--orange)] via-[var(--danger)] to-[var(--purple-strong)] text-white'
+                          : 'border-[var(--border)] bg-white/5 muted'
+                      }`}
+                    >
+                      {label}
+                    </div>
+                  ))}
+                </div>
+                <div className={`grid grid-cols-7 gap-2 flex-1 min-h-0 ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}>
+                  {days.map((day) => {
+                    const key = formatYmd(day);
+                    const dayEvents = eventsByDate.get(key) ?? [];
+                    const outsideMonth = view === 'month' && day.getMonth() !== anchorDate.getMonth();
+                    const isToday = sameCalendarDay(day, today);
+                    return (
+                      <div
+                        key={key}
+                        className={`rounded-xl border px-2 py-2 overflow-hidden flex flex-col ${view === 'month' ? 'min-h-[10rem]' : 'min-h-0'} gap-2 ${
+                          isToday
+                            ? 'border-[var(--purple)] bg-white/[0.08]'
+                            : outsideMonth
+                              ? 'border-[var(--border)]/60 opacity-70'
+                              : 'border-[var(--border)] bg-white/5'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
+                          <span className="text-[11px] muted">{dayEvents.length}</span>
+                        </div>
+                        <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
+                          {dayEvents.map((event) => (
+                            <div
+                              key={event.occurrence_id}
+                              className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
+                            >
+                              <p className="font-semibold leading-tight">{event.title}</p>
+                              {event.display_description && (
+                                <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
+                              )}
+                              {event.owner_username && event.scope === 'personal' && (
+                                <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
+                              )}
+                              {(event.can_edit || event.can_delete) && (
+                                <div className="mt-1 flex gap-1">
+                                  {event.can_edit && (
+                                    <button
+                                      type="button"
+                                      className="btn-ghost px-1.5 py-0.5 text-[10px]"
+                                      onClick={() => onEdit(event)}
+                                    >
+                                      Edit
+                                    </button>
+                                  )}
+                                  {event.can_delete && (
+                                    <button
+                                      type="button"
+                                      className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
+                                      onClick={() => void onDelete(event.id)}
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </section>
 
-        <aside className="panel rounded-2xl p-4 sm:p-5 space-y-4">
+        {eventPanelOpen && (
+        <aside className="panel rounded-2xl p-4 sm:p-5 space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-lg font-semibold">{editingEventId ? 'Edit Event' : 'Create Event'}</h2>
             {editingEventId && (
@@ -601,6 +668,7 @@ export default function CalendarPage() {
             </div>
           )}
         </aside>
+        )}
       </div>
     </div>
   );

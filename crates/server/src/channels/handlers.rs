@@ -75,6 +75,8 @@ pub struct SendMessageRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateChannelRequest {
     pub name: String,
+    #[serde(default)]
+    pub is_private: Option<bool>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -241,6 +243,34 @@ fn sanitize_content_disposition_filename(raw: &str) -> String {
     }
 }
 
+async fn log_admin_channel_action(
+    state: &AppState,
+    admin_user_id: &str,
+    action: &str,
+    channel_id: &str,
+    payload: serde_json::Value,
+) {
+    let payload = serde_json::json!({
+        "scope": "channels",
+        "action": action,
+        "admin_user_id": admin_user_id,
+        "channel_id": channel_id,
+        "data": payload,
+    });
+    let payload_json = serde_json::to_string(&payload).ok();
+    let Ok(job) = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        &format!("admin.channels.{action}"),
+        payload_json.as_deref(),
+    )
+    .await
+    else {
+        return;
+    };
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job.id, "completed", 1.0, None).await;
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// GET /channels
@@ -297,12 +327,25 @@ pub async fn create_channel(
             channel: channel_to_info(&row),
         });
 
+    log_admin_channel_action(
+        &state,
+        &admin.user_id,
+        "create",
+        &row.id,
+        serde_json::json!({
+            "name": row.name,
+            "kind": row.kind,
+            "is_private": row.is_private,
+        }),
+    )
+    .await;
+
     Ok((StatusCode::CREATED, Json(channel_to_response(&row))))
 }
 
 /// PATCH /channels/:id  (admin only)
 pub async fn update_channel(
-    _admin: AdminUser,
+    admin: AdminUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<UpdateChannelRequest>,
@@ -317,7 +360,9 @@ pub async fn update_channel(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
 
-    rustfin_db::repo::channels::rename_channel(&state.db, &id, &name)
+    let next_private = body.is_private.unwrap_or(existing.is_private);
+
+    rustfin_db::repo::channels::update_channel(&state.db, &id, &name, next_private)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
@@ -332,13 +377,26 @@ pub async fn update_channel(
             channel: channel_to_info(&updated),
         });
 
-    let _ = existing;
+    log_admin_channel_action(
+        &state,
+        &admin.user_id,
+        "update",
+        &updated.id,
+        serde_json::json!({
+            "previous_name": existing.name,
+            "next_name": updated.name,
+            "previous_private": existing.is_private,
+            "next_private": updated.is_private,
+        }),
+    )
+    .await;
+
     Ok(Json(channel_to_response(&updated)))
 }
 
 /// DELETE /channels/:id  (admin only)
 pub async fn delete_channel(
-    _admin: AdminUser,
+    admin: AdminUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
@@ -346,12 +404,14 @@ pub async fn delete_channel(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("channel not found".into()))?;
+    let deleted_channel_id = existing.id.clone();
 
-    let attachments = rustfin_db::repo::channels::list_channel_attachments(&state.db, &existing.id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let attachments =
+        rustfin_db::repo::channels::list_channel_attachments(&state.db, &deleted_channel_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    rustfin_db::repo::channels::delete_channel(&state.db, &existing.id)
+    rustfin_db::repo::channels::delete_channel(&state.db, &deleted_channel_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
@@ -371,8 +431,21 @@ pub async fn delete_channel(
     state
         .channel_manager
         .broadcast(ChannelEvent::ChannelDeleted {
-            channel_id: existing.id,
+            channel_id: deleted_channel_id.clone(),
         });
+
+    log_admin_channel_action(
+        &state,
+        &admin.user_id,
+        "delete",
+        &deleted_channel_id,
+        serde_json::json!({
+            "name": existing.name,
+            "kind": existing.kind,
+            "is_private": existing.is_private,
+        }),
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

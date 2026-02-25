@@ -1374,6 +1374,8 @@ export default function WatchPartyRoomPage() {
                           selectedLibraryId={reconfigureVideoLibraryId}
                           selectedItem={reconfigureVideoItem}
                           layout="stacked"
+                          surfaceClassName="panel-soft"
+                          noShadow
                           onLibraryChange={setReconfigureVideoLibraryId}
                           onSelectItem={setReconfigureVideoItem}
                         />

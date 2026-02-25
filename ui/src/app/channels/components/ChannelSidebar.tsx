@@ -11,6 +11,7 @@ interface Props {
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
   activeChannelId: string | null;
+  connectedVoiceChannelId: string | null;
   isAdmin: boolean;
   onSelect: (id: string) => void;
   onQuickJoinVoice: (id: string, name: string) => void;
@@ -157,6 +158,7 @@ interface ChannelRowProps {
   nowMs: number;
   isAdmin: boolean;
   activeChannelId: string | null;
+  connectedVoiceChannelId: string | null;
   menuOpen: MenuState | null;
   setMenuOpen: (state: MenuState | null) => void;
   onSelect: (id: string) => void;
@@ -173,6 +175,7 @@ function ChannelRow({
   nowMs,
   isAdmin,
   activeChannelId,
+  connectedVoiceChannelId,
   menuOpen,
   setMenuOpen,
   onSelect,
@@ -200,12 +203,14 @@ function ChannelRow({
         onClick={() => onSelect(ch.id)}
         onDoubleClick={() => {
           if (ch.kind !== 'voice') return;
+          if (connectedVoiceChannelId === ch.id) return;
           onQuickJoinVoice(ch.id, ch.name);
         }}
         onTouchEnd={() => {
           if (ch.kind !== 'voice') return;
           const now = Date.now();
           if (now - lastTapAtRef.current < 320) {
+            if (connectedVoiceChannelId === ch.id) return;
             onQuickJoinVoice(ch.id, ch.name);
           }
           lastTapAtRef.current = now;
@@ -286,6 +291,7 @@ export default function ChannelSidebar({
   voiceActiveSince,
   voiceSpeaking,
   activeChannelId,
+  connectedVoiceChannelId,
   isAdmin,
   onSelect,
   onQuickJoinVoice,
@@ -343,6 +349,7 @@ export default function ChannelSidebar({
               nowMs={nowMs}
               isAdmin={isAdmin}
               activeChannelId={activeChannelId}
+              connectedVoiceChannelId={connectedVoiceChannelId}
               menuOpen={menuOpen}
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
@@ -384,6 +391,7 @@ export default function ChannelSidebar({
               nowMs={nowMs}
               isAdmin={isAdmin}
               activeChannelId={activeChannelId}
+              connectedVoiceChannelId={connectedVoiceChannelId}
               menuOpen={menuOpen}
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
