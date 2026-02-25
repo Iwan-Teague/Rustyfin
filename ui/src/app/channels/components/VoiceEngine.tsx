@@ -29,8 +29,9 @@ const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
 const TRANSCRIPTION_SAMPLE_RATE = 16_000;
-const TRANSCRIPTION_CHUNK_SECONDS = 2;
+const TRANSCRIPTION_CHUNK_SECONDS = 1;
 const TRANSCRIPTION_CHUNK_SAMPLES = TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
+const DEFAULT_TRANSCRIPTION_LANGUAGE = 'en';
 
 type SpeakingMonitor = {
   source: MediaStreamAudioSourceNode;
@@ -147,7 +148,7 @@ export default function VoiceEngine({
   function teardownTranscriptionCapture() {
     transcriptionProcessorRef.current?.disconnect();
     transcriptionSourceRef.current?.disconnect();
-    if (transcriptionContextRef.current) {
+    if (transcriptionContextRef.current && transcriptionContextRef.current !== audioContextRef.current) {
       void transcriptionContextRef.current.close().catch(() => {});
     }
     transcriptionProcessorRef.current = null;
@@ -174,6 +175,7 @@ export default function VoiceEngine({
       started_ts_ms: now - durationMs,
       ended_ts_ms: now,
       pcm_s16le_base64: pcmInt16ToBase64(Int16Array.from(chunk)),
+      language: DEFAULT_TRANSCRIPTION_LANGUAGE,
     };
 
     void onTranscriptionChunk(channelId, payload);
@@ -510,15 +512,12 @@ export default function VoiceEngine({
     }
     teardownTranscriptionCapture();
 
-    const audioContextCtor =
-      window.AudioContext ||
-      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!audioContextCtor) {
+    const context = getAudioContext();
+    if (!context) {
       return;
     }
 
     try {
-      const context = new audioContextCtor();
       const source = context.createMediaStreamSource(localStream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = (event) => {
@@ -581,6 +580,9 @@ export default function VoiceEngine({
       const audioContext = getAudioContext();
       if (audioContext && audioContext.state !== 'running') {
         void audioContext.resume().catch(() => {});
+      }
+      if (transcriptionContextRef.current && transcriptionContextRef.current.state !== 'running') {
+        void transcriptionContextRef.current.resume().catch(() => {});
       }
       audioElementsRef.current.forEach((audio) => {
         if (audio.muted) return;

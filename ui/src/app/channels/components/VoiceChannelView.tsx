@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import {
   cancelVoiceTranscription,
   getVoiceTranscriptionStatus,
+  listVoiceTranscriptionSessions,
   startVoiceTranscription,
   stopVoiceTranscription,
 } from '@/lib/channelsApi';
@@ -13,6 +14,7 @@ import type {
   ChannelEvent,
   ChannelInfo,
   UserInfo,
+  VoiceTranscriptionSessionSummary,
   VoiceTranscriptionState,
   VoiceTranscriptionStatus,
 } from '@/lib/channelsApi';
@@ -44,6 +46,12 @@ function ParticipantCard({
   sliderLabel,
   sliderDisabled,
   volume,
+  muted,
+  deafened,
+  showSelfControls,
+  canToggleMute,
+  onToggleMute,
+  onToggleDeafen,
   onVolumeChange,
 }: {
   userInfo: UserInfo;
@@ -52,6 +60,12 @@ function ParticipantCard({
   sliderLabel: string;
   sliderDisabled: boolean;
   volume: number;
+  muted: boolean;
+  deafened: boolean;
+  showSelfControls: boolean;
+  canToggleMute: boolean;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
   onVolumeChange: (nextVolume: number) => void;
 }) {
   const color = hashColor(userInfo.user_id);
@@ -59,24 +73,81 @@ function ParticipantCard({
   const volumePercent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
   return (
     <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
-      <div
-        className="rounded-full p-[3px] transition-all duration-150"
-        style={
-          isSpeaking
-            ? {
-                background:
-                  'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
-                boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
-              }
-            : undefined
-        }
-      >
+      <div className="relative pb-2">
         <div
-          className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
-          style={{ backgroundColor: color }}
+          className="rounded-full p-[3px] transition-all duration-150"
+          style={
+            isSpeaking
+              ? {
+                  background:
+                    'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
+                  boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
+                }
+              : undefined
+          }
         >
-          {initials}
+          <div
+            className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
+            style={{ backgroundColor: color }}
+          >
+            {initials}
+          </div>
         </div>
+        {showSelfControls && (
+          <div className="absolute -bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1">
+            <button
+              type="button"
+              onClick={onToggleMute}
+              disabled={!canToggleMute}
+              className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                muted
+                  ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                  : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
+              }`}
+              aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+              title={muted ? 'Unmute microphone' : 'Mute microphone'}
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                <rect
+                  x="9"
+                  y="3.5"
+                  width="6"
+                  height="10"
+                  rx="3"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                />
+                <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                {muted && (
+                  <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                )}
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={onToggleDeafen}
+              className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                deafened
+                  ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                  : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
+              }`}
+              aria-label={deafened ? 'Undeafen' : 'Deafen'}
+              title={deafened ? 'Undeafen' : 'Deafen'}
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                {deafened && (
+                  <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                )}
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
       <div className="w-full space-y-1">
@@ -125,6 +196,8 @@ export default function VoiceChannelView({
   const [transcriptionBusy, setTranscriptionBusy] = useState(false);
   const [transcriptionStarting, setTranscriptionStarting] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcriptSessions, setTranscriptSessions] = useState<VoiceTranscriptionSessionSummary[]>([]);
+  const [loadingTranscriptSessions, setLoadingTranscriptSessions] = useState(false);
 
   const members = voicePresence[channel.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
@@ -155,23 +228,55 @@ export default function VoiceChannelView({
     };
   }
 
+  const loadTranscriptSessions = useCallback(
+    async (showError = false) => {
+      setLoadingTranscriptSessions(true);
+      try {
+        const response = await listVoiceTranscriptionSessions(channel.id);
+        setTranscriptSessions(response.sessions);
+      } catch (err) {
+        if (showError) {
+          setTranscriptionError(
+            err instanceof Error ? err.message : 'Unable to load transcript history',
+          );
+        }
+      } finally {
+        setLoadingTranscriptSessions(false);
+      }
+    },
+    [channel.id],
+  );
+
   useEffect(() => {
     let cancelled = false;
-    void getVoiceTranscriptionStatus(channel.id)
-      .then((status) => {
+    setLoadingTranscriptSessions(true);
+    void Promise.all([
+      getVoiceTranscriptionStatus(channel.id),
+      listVoiceTranscriptionSessions(channel.id),
+    ])
+      .then(([status, sessions]) => {
         if (cancelled) return;
         setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+        setTranscriptSessions(sessions.sessions);
       })
       .catch(() => {
-        if (!cancelled) {
-          setTranscriptionError('Unable to load transcription state for this channel.');
-        }
+        if (cancelled) return;
+        setTranscriptionError('Unable to load transcription state for this channel.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTranscriptSessions(false);
       });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id]);
+
+  useEffect(() => {
+    if (wsEvents?.type !== 'voice_transcription_state') return;
+    if (wsEvents.channel_id !== channel.id) return;
+    void loadTranscriptSessions(false);
+  }, [wsEvents, channel.id, loadTranscriptSessions]);
 
   useEffect(() => {
     if (transcriptionState?.status === 'running') {
@@ -186,6 +291,7 @@ export default function VoiceChannelView({
     try {
       const status = await startVoiceTranscription(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      await loadTranscriptSessions(false);
       if (status.status !== 'running') {
         setTranscriptionStarting(false);
       }
@@ -203,6 +309,7 @@ export default function VoiceChannelView({
     try {
       const status = await stopVoiceTranscription(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      await loadTranscriptSessions(false);
     } catch (err) {
       setTranscriptionError(err instanceof Error ? err.message : 'Failed to stop transcription');
     } finally {
@@ -216,6 +323,7 @@ export default function VoiceChannelView({
     try {
       const status = await cancelVoiceTranscription(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      await loadTranscriptSessions(false);
     } catch (err) {
       setTranscriptionError(err instanceof Error ? err.message : 'Failed to cancel transcription');
     } finally {
@@ -223,14 +331,14 @@ export default function VoiceChannelView({
     }
   }
 
-  async function handleDownloadTranscription() {
-    if (!transcriptionState?.session_id || !transcriptionState.output_available) {
+  async function handleDownloadTranscription(sessionId: string) {
+    if (!sessionId) {
       return;
     }
     setTranscriptionBusy(true);
     setTranscriptionError(null);
     try {
-      const path = `/channels/${channel.id}/transcription/sessions/${transcriptionState.session_id}/download`;
+      const path = `/channels/${channel.id}/transcription/sessions/${sessionId}/download`;
       const response = await apiFetch(path, { method: 'GET' });
       if (!response.ok) {
         throw new Error('failed to download transcript');
@@ -239,7 +347,7 @@ export default function VoiceChannelView({
       const downloadUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = `voice-transcript-${transcriptionState.session_id}.md`;
+      link.download = `voice-transcript-${sessionId}.md`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -250,27 +358,6 @@ export default function VoiceChannelView({
       setTranscriptionBusy(false);
     }
   }
-
-  const transcriptionStatusLabel = (() => {
-    if (transcriptionStarting) {
-      return 'Starting';
-    }
-    const status = transcriptionState?.status ?? 'idle';
-    switch (status) {
-      case 'running':
-        return 'Running';
-      case 'finalizing':
-        return 'Finalizing';
-      case 'completed':
-        return 'Completed';
-      case 'cancelled':
-        return 'Cancelled';
-      case 'failed':
-        return 'Failed';
-      default:
-        return 'Idle';
-    }
-  })();
 
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
@@ -293,22 +380,9 @@ export default function VoiceChannelView({
             </button>
           ) : (
             <>
-              {voiceSession?.localStream ? (
-                <button
-                  onClick={toggleMute}
-                  className={`btn-secondary px-3 py-1.5 text-sm ${muted ? 'opacity-60' : ''}`}
-                >
-                  {muted ? 'Unmute' : 'Mute'}
-                </button>
-              ) : (
+              {!voiceSession?.localStream && (
                 <span className="text-xs muted px-2">Listening</span>
               )}
-              <button
-                onClick={toggleDeafen}
-                className={`btn-secondary px-3 py-1.5 text-sm ${deafened ? 'text-[var(--orange-soft)]' : ''}`}
-              >
-                {deafened ? 'Undeafen' : 'Deafen'}
-              </button>
               <button onClick={handleDisconnect} className="btn-secondary px-3 py-1.5 text-sm text-red-400">
                 Disconnect
               </button>
@@ -316,9 +390,6 @@ export default function VoiceChannelView({
           )}
           {isConnected && (
             <>
-              <span className="chip text-xs" title="Channel transcript status">
-                Transcript: {transcriptionStatusLabel}
-              </span>
               {transcriptionState?.status === 'running' ? (
                 <>
                   <button
@@ -353,15 +424,6 @@ export default function VoiceChannelView({
                   )}
                 </button>
               )}
-              {transcriptionState?.output_available && transcriptionState?.session_id && (
-                <button
-                  onClick={handleDownloadTranscription}
-                  disabled={transcriptionBusy}
-                  className="btn-secondary px-3 py-1.5 text-sm"
-                >
-                  Download
-                </button>
-              )}
             </>
           )}
         </div>
@@ -377,36 +439,93 @@ export default function VoiceChannelView({
         </div>
       )}
 
-      {/* Participant grid */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {members.length === 0 ? (
-          <p className="text-sm muted text-center mt-12">No one is here yet. Join to start!</p>
-        ) : (
-          <div className="flex flex-wrap gap-3">
-            {members.map((u) => (
-              <ParticipantCard
-                key={u.user_id}
-                userInfo={u}
-                isSpeaking={speakingIds.has(u.user_id)}
-                isSelf={u.user_id === currentUserId}
-                sliderLabel={
-                  u.user_id === currentUserId
-                    ? `Adjust your microphone volume`
-                    : `Adjust ${u.username} volume`
-                }
-                sliderDisabled={u.user_id === currentUserId && !Boolean(voiceSession?.localStream)}
-                volume={u.user_id === currentUserId ? localMicGain : (remoteVolumes[u.user_id] ?? 1)}
-                onVolumeChange={(nextVolume) => {
-                  if (u.user_id === currentUserId) {
-                    setLocalMicGain(nextVolume);
-                    return;
-                  }
-                  setRemoteVolume(u.user_id, nextVolume);
-                }}
-              />
-            ))}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Participant grid */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {members.length === 0 ? (
+            <p className="text-sm muted text-center mt-12">No one is here yet. Join to start!</p>
+          ) : (
+            <div className="flex flex-wrap gap-3">
+              {members.map((u) => {
+                const isSelf = u.user_id === currentUserId;
+                return (
+                  <ParticipantCard
+                    key={u.user_id}
+                    userInfo={u}
+                    isSpeaking={speakingIds.has(u.user_id)}
+                    isSelf={isSelf}
+                    sliderLabel={
+                      isSelf
+                        ? 'Adjust your microphone volume'
+                        : `Adjust ${u.username} volume`
+                    }
+                    sliderDisabled={isSelf && !Boolean(voiceSession?.localStream)}
+                    volume={isSelf ? localMicGain : (remoteVolumes[u.user_id] ?? 1)}
+                    muted={muted}
+                    deafened={deafened}
+                    showSelfControls={isSelf && isConnected}
+                    canToggleMute={Boolean(voiceSession?.localStream)}
+                    onToggleMute={toggleMute}
+                    onToggleDeafen={toggleDeafen}
+                    onVolumeChange={(nextVolume) => {
+                      if (isSelf) {
+                        setLocalMicGain(nextVolume);
+                        return;
+                      }
+                      setRemoteVolume(u.user_id, nextVolume);
+                    }}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Transcript history */}
+        <aside className="w-60 min-w-[200px] border-l border-[var(--border)] bg-[var(--surface)]/30 p-3 overflow-y-auto">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold">Transcripts</h3>
+            <span className="chip text-[11px]">{transcriptSessions.length}</span>
           </div>
-        )}
+          {loadingTranscriptSessions ? (
+            <p className="text-xs muted">Loading transcripts…</p>
+          ) : transcriptSessions.length === 0 ? (
+            <p className="text-xs muted">No transcripts saved for this voice channel yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {transcriptSessions.map((session) => (
+                <li key={session.session_id} className="tile rounded-xl p-2.5 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium">
+                        {new Date(session.started_ts * 1000).toLocaleString()}
+                      </p>
+                      <p className="truncate text-[11px] muted">
+                        by {session.started_by_username}
+                      </p>
+                    </div>
+                    <span className="chip text-[10px]">{session.status}</span>
+                  </div>
+                  <p className="text-[11px] muted">
+                    {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
+                  </p>
+                  {session.output_available ? (
+                    <button
+                      type="button"
+                      className="btn-secondary w-full px-2 py-1 text-xs"
+                      onClick={() => void handleDownloadTranscription(session.session_id)}
+                      disabled={transcriptionBusy}
+                    >
+                      Download
+                    </button>
+                  ) : (
+                    <p className="text-[11px] muted">No downloadable output yet</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
       </div>
     </div>
   );

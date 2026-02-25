@@ -832,6 +832,25 @@ pub struct VoiceTranscriptionStatusResponse {
     pub entry_count: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct VoiceTranscriptionSessionSummary {
+    pub session_id: String,
+    pub status: String,
+    pub started_by_username: String,
+    pub started_ts: i64,
+    pub ended_ts: Option<i64>,
+    pub output_available: bool,
+    pub output_download_path: Option<String>,
+    pub message: Option<String>,
+    pub entry_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceTranscriptionSessionsResponse {
+    pub channel_id: String,
+    pub sessions: Vec<VoiceTranscriptionSessionSummary>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TranscribeChunkRequest {
     pub session_id: String,
@@ -1005,6 +1024,62 @@ pub async fn get_transcription_status(
         }),
         message: session.as_ref().and_then(|s| s.failure_reason.clone()),
         entry_count,
+    }))
+}
+
+pub async fn list_transcription_sessions(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<VoiceTranscriptionSessionsResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+
+    let sessions = rustfin_db::repo::channel_transcripts::list_sessions_for_channel(
+        &state.db,
+        &channel_id,
+        100,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let mut out = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let entry_count = rustfin_db::repo::channel_transcripts::count_entries_for_session(
+            &state.db,
+            &session.id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let output_download_path = if session.output_path.is_some() {
+            Some(format!(
+                "/api/v1/channels/{}/transcription/sessions/{}/download",
+                channel.id, session.id
+            ))
+        } else {
+            None
+        };
+        out.push(VoiceTranscriptionSessionSummary {
+            session_id: session.id,
+            status: session.status,
+            started_by_username: session.started_by_username,
+            started_ts: session.started_ts,
+            ended_ts: session.ended_ts,
+            output_available: output_download_path.is_some(),
+            output_download_path,
+            message: session.failure_reason,
+            entry_count,
+        });
+    }
+
+    Ok(Json(VoiceTranscriptionSessionsResponse {
+        channel_id,
+        sessions: out,
     }))
 }
 

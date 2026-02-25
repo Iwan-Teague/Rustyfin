@@ -34,6 +34,10 @@ pub fn channels_router() -> Router<AppState> {
             get(super::handlers::get_transcription_status),
         )
         .route(
+            "/{id}/transcription/sessions",
+            get(super::handlers::list_transcription_sessions),
+        )
+        .route(
             "/{id}/transcription/start",
             post(super::handlers::start_transcription),
         )
