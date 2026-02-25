@@ -176,13 +176,34 @@ export default function MediaPicker({
             </span>
           </div>
 
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input px-3 py-2 text-sm"
-            placeholder="Search titles"
-            aria-label="Search media titles"
-          />
+          <div className="relative">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input w-full px-3 py-2 pr-10 text-sm"
+              placeholder="Search titles"
+              aria-label="Search media titles"
+            />
+            {search.trim().length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                aria-label="Clear search"
+                title="Clear search"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                  <path
+                    d="M9 9l6 6M15 9l-6 6"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
 
           {loading ? (
             <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">Loading media…</div>

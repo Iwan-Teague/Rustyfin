@@ -257,6 +257,18 @@ export default function AudioPlayer({
     [roomId, audioSource],
   );
 
+  const clearSearch = useCallback(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    setSearchQuery('');
+    setSearching(false);
+    setLibrarySearchResults(null);
+    setOnlineSearchResults(null);
+    setShowOnlineSearchResults(true);
+  }, []);
+
   const handleSkipPrev = () => sendWs({ type: 'skip_prev' });
   const handleSkipNext = () => sendWs({ type: 'skip_next' });
   const handlePlayPause = () => {
@@ -336,8 +348,26 @@ export default function AudioPlayer({
       () => setAutoplayBlocked(true),
     );
   };
+  const handleTrackEnded = useCallback(() => {
+    if (!canControl) return;
+    const nextTrack = audioState.queue[audioState.queue_index + 1];
+    if (nextTrack) {
+      sendWs({ type: 'play_track', track_id: nextTrack.track_id });
+      return;
+    }
+    sendWs({
+      type: 'pause',
+      position_ms: duration > 0 ? duration : Math.max(0, Math.floor(effectivePosition)),
+    });
+  }, [
+    canControl,
+    audioState.queue,
+    audioState.queue_index,
+    sendWs,
+    duration,
+    effectivePosition,
+  ]);
 
-  const progressPct = duration > 0 ? Math.min(100, (effectivePosition / duration) * 100) : 0;
   const recentOnlineStatusEvents = useMemo(() => {
     if (onlineStatusEvents.length === 0) return [];
     const latestPerStage: WsOnlineAudioStatusMessage[] = [];
@@ -365,6 +395,7 @@ export default function AudioPlayer({
       <audio
         ref={audioRef}
         preload="auto"
+        onEnded={handleTrackEnded}
         onError={() => {
           setStreamError(
             'Unable to play this track in the browser via direct stream. Use supported audio codecs for direct playback.',
@@ -399,14 +430,8 @@ export default function AudioPlayer({
               </p>
             </div>
 
-            {/* Progress bar */}
+            {/* Timeline */}
             <div className="space-y-1">
-              <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="absolute left-0 top-0 h-full rounded-full bg-[var(--orange-soft)]"
-                  style={{ width: `${progressPct}%` }}
-                />
-              </div>
               <input
                 type="range"
                 min={0}
@@ -535,13 +560,34 @@ export default function AudioPlayer({
         {audioSource === 'online' ? (
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold shrink-0">Online Search</h2>
-            <input
-              value={searchQuery}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="input flex-1 px-3 py-1.5 text-sm"
-              placeholder="Search YouTube tracks…"
-              aria-label="Search online tracks"
-            />
+            <div className="relative flex-1">
+              <input
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                className="input w-full px-3 py-1.5 pr-10 text-sm"
+                placeholder="Search YouTube tracks…"
+                aria-label="Search online tracks"
+              />
+              {searchQuery.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearSearch}
+                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                    <path
+                      d="M9 9l6 6M15 9l-6 6"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
             <button
               type="button"
               className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
@@ -555,13 +601,34 @@ export default function AudioPlayer({
             <h2 className="text-lg font-semibold">
               {librarySearchResults !== null ? 'Search Results' : 'Queue'}
             </h2>
-            <input
-              value={searchQuery}
-              onChange={(e) => handleSearch(e.target.value)}
-              className="input px-3 py-1.5 text-sm"
-              placeholder="Search tracks…"
-              aria-label="Search tracks"
-            />
+            <div className="relative w-full max-w-sm">
+              <input
+                value={searchQuery}
+                onChange={(e) => handleSearch(e.target.value)}
+                className="input w-full px-3 py-1.5 pr-10 text-sm"
+                placeholder="Search tracks…"
+                aria-label="Search tracks"
+              />
+              {searchQuery.trim().length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearSearch}
+                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                    <path
+                      d="M9 9l6 6M15 9l-6 6"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
         )}
 

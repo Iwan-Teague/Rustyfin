@@ -1560,6 +1560,20 @@ async fn handle_client_message(
                 return Ok(());
             }
 
+            let trimmed_query = query.trim();
+            if trimmed_query.is_empty() {
+                runtime
+                    .set_youtube_search_state(String::new(), Vec::new())
+                    .await;
+                info!(
+                    room_id = %context.room_id,
+                    user_id = %context.user_id,
+                    "cleared youtube shared search state"
+                );
+                broadcast_current_state(state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
             let (search_query, search_results) =
                 match perform_youtube_search(&query, Some(12)).await {
                     Ok((search_query, search_results)) => (search_query, search_results),
