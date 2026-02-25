@@ -563,6 +563,15 @@ export default function WatchPartyRoomPage() {
               `online audio status stage=${payload.stage} status=${payload.status} message=${payload.message}`,
             );
             setOnlineAudioStatusEvents((prev) => {
+              const keyFor = (event: WsOnlineAudioStatusMessage) =>
+                `${event.video_id ?? 'none'}:${event.track_id ?? 'none'}:${event.stage}`;
+              const key = keyFor(payload);
+              const existingIndex = prev.findIndex((event) => keyFor(event) === key);
+              if (existingIndex >= 0) {
+                const next = [...prev];
+                next[existingIndex] = payload;
+                return next;
+              }
               const next = [...prev, payload];
               if (next.length > 40) {
                 return next.slice(next.length - 40);

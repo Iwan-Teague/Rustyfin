@@ -1159,6 +1159,15 @@ async fn download_youtube_audio_mp3_for_room_with_status(
         "pending",
         "Requesting YouTube download and MP3 conversion…",
     );
+    emit_online_audio_status(
+        runtime,
+        room_id,
+        Some(video_id),
+        None,
+        "download_start",
+        "success",
+        "Downloader accepted request and started processing.",
+    );
 
     let start = tokio::time::Instant::now();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
@@ -3085,6 +3094,15 @@ pub async fn queue_online_audio(
             "Preparing online track request (queue)…"
         },
     );
+    emit_online_audio_status(
+        runtime.as_ref(),
+        &room_id,
+        Some(&video_id),
+        None,
+        "request_received",
+        "success",
+        "Online track request accepted.",
+    );
 
     let metadata_client = reqwest::Client::new();
     let mut already_downloaded = false;
@@ -3116,7 +3134,7 @@ pub async fn queue_online_audio(
                 &room_id,
                 Some(&video_id),
                 Some(&existing.id),
-                "cache_hit",
+                "track_lookup",
                 "success",
                 "Track already downloaded and staged in this room cache.",
             );
@@ -3127,8 +3145,8 @@ pub async fn queue_online_audio(
                 &room_id,
                 Some(&video_id),
                 Some(&existing.id),
-                "cache_miss",
-                "pending",
+                "track_lookup",
+                "success",
                 "Track existed in room history, but cached file was missing. Re-downloading.",
             );
             emit_online_audio_status(
@@ -3147,7 +3165,7 @@ pub async fn queue_online_audio(
                         &room_id,
                         Some(&video_id),
                         None,
-                        "metadata_resolved",
+                        "metadata_lookup",
                         "success",
                         format!(
                             "Metadata resolved: {} — {}.",
@@ -3162,8 +3180,8 @@ pub async fn queue_online_audio(
                         &room_id,
                         Some(&video_id),
                         None,
-                        "metadata_fallback",
-                        "pending",
+                        "metadata_lookup",
+                        "success",
                         "Metadata lookup failed. Using fallback metadata while continuing download.",
                     );
                     YouTubeSearchResult {
@@ -3231,6 +3249,15 @@ pub async fn queue_online_audio(
             &room_id,
             Some(&video_id),
             None,
+            "track_lookup",
+            "success",
+            "No cached room track found. Starting new download pipeline.",
+        );
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            None,
             "metadata_lookup",
             "pending",
             "Resolving YouTube metadata…",
@@ -3242,7 +3269,7 @@ pub async fn queue_online_audio(
                     &room_id,
                     Some(&video_id),
                     None,
-                    "metadata_resolved",
+                    "metadata_lookup",
                     "success",
                     format!(
                         "Metadata resolved: {} — {}.",
@@ -3257,8 +3284,8 @@ pub async fn queue_online_audio(
                     &room_id,
                     Some(&video_id),
                     None,
-                    "metadata_fallback",
-                    "pending",
+                    "metadata_lookup",
+                    "success",
                     "Metadata lookup failed. Using fallback metadata while continuing download.",
                 );
                 YouTubeSearchResult {
@@ -3359,7 +3386,7 @@ pub async fn queue_online_audio(
         &room_id,
         Some(&video_id),
         Some(&track_row.id),
-        "queue_updated",
+        "queue_update",
         "success",
         if body.play_now {
             "Queue updated. Starting playback…".to_string()

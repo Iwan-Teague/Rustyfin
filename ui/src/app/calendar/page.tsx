@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import {
   createCalendarEvent,
@@ -140,12 +140,6 @@ function eventBadgeClass(event: CalendarEvent): string {
   }
   return 'border-[var(--border)] bg-white/5';
 }
-
-const TODAY_BORDER_STYLE: CSSProperties = {
-  borderImageSlice: 1,
-  borderImageSource:
-    'linear-gradient(90deg, var(--orange), var(--danger), var(--purple-strong))',
-};
 
 export default function CalendarPage() {
   const { me } = useAuth();
@@ -414,9 +408,10 @@ export default function CalendarPage() {
                     <div
                       key={key}
                       className={`panel-soft rounded-xl px-3 py-2 space-y-2 border ${
-                        isToday ? 'border-transparent' : 'border-[var(--border)]'
+                        isToday
+                          ? 'calendar-today-outline border-transparent'
+                          : 'border-[var(--border)]'
                       }`}
-                      style={isToday ? TODAY_BORDER_STYLE : undefined}
                     >
                       <p className="text-sm font-semibold">{day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</p>
                       {dayEvents.length === 0 ? (
@@ -479,12 +474,11 @@ export default function CalendarPage() {
                         key={key}
                         className={`rounded-xl border px-2 ${view === 'month' ? 'py-3' : 'py-2'} overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
                           isToday
-                            ? 'border-transparent bg-white/[0.08]'
+                            ? 'calendar-today-outline border-transparent bg-white/[0.08]'
                             : outsideMonth
                               ? 'border-[var(--border)]/60 opacity-70'
                               : 'border-[var(--border)] bg-white/5'
                         }`}
-                        style={isToday ? TODAY_BORDER_STYLE : undefined}
                       >
                         <div className="flex items-center justify-between">
                           <p className="text-xs font-semibold">{dayCellLabel(day)}</p>

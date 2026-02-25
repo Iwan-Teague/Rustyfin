@@ -294,6 +294,30 @@ input[type="checkbox"]:disabled {
   color: #ffdce2;
 }
 
+.calendar-today-outline {
+  position: relative;
+}
+
+.calendar-today-outline::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--orange),
+    var(--danger),
+    var(--purple-strong)
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
 .animate-rise {
   animation: rise-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
