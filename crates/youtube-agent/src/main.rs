@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use regex::Regex;
+use reqwest::header::HeaderValue;
 use rustfin_core::error::{ApiError, ErrorEnvelope};
 use serde::{Deserialize, Serialize};
 use std::path::{Path as StdPath, PathBuf};
@@ -18,6 +19,10 @@ const YOUTUBE_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7
 const YOUTUBE_CONSENT_COOKIE: &str = "CONSENT=YES+cb.20210328-17-p0.en+FX+471";
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MIN_SOURCE_BYTES: u64 = 32 * 1024;
+const DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS: u64 = 20;
+const DOWNLOAD_TOTAL_TIMEOUT_SECONDS: u64 = 90;
+const MAX_YOUTUBEI_DIRECT_CANDIDATES: usize = 8;
+const CONVERT_TO_MP3_TIMEOUT_SECONDS: u64 = 180;
 
 #[derive(Clone)]
 struct AppState {
@@ -275,6 +280,13 @@ fn youtube_video_options(
     filter: rusty_ytdl::VideoSearchOptions,
     cookie_header: Option<String>,
 ) -> rusty_ytdl::VideoOptions {
+    let client = build_ytdl_request_client(cookie_header.as_deref());
+    let fallback_cookie = if client.is_none() {
+        cookie_header
+    } else {
+        None
+    };
+
     rusty_ytdl::VideoOptions {
         quality,
         filter,
@@ -282,11 +294,45 @@ fn youtube_video_options(
             dl_chunk_size: Some(10 * 1024 * 1024),
         },
         request_options: rusty_ytdl::RequestOptions {
-            cookies: cookie_header,
+            client,
+            cookies: fallback_cookie,
             max_retries: Some(8),
             ..Default::default()
         },
     }
+}
+
+fn build_ytdl_request_client(cookie_header: Option<&str>) -> Option<reqwest::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        HeaderValue::from_static(YOUTUBE_USER_AGENT),
+    );
+    headers.insert(reqwest::header::ACCEPT, HeaderValue::from_static("*/*"));
+    headers.insert(
+        reqwest::header::ACCEPT_LANGUAGE,
+        HeaderValue::from_static("en-US,en;q=0.9"),
+    );
+    headers.insert(
+        reqwest::header::REFERER,
+        HeaderValue::from_static("https://www.youtube.com/"),
+    );
+    headers.insert(
+        reqwest::header::ORIGIN,
+        HeaderValue::from_static("https://www.youtube.com"),
+    );
+
+    if let Some(cookie) = cookie_header {
+        let parsed = HeaderValue::from_str(cookie).ok()?;
+        headers.insert(reqwest::header::COOKIE, parsed);
+    }
+
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(45))
+        .build()
+        .ok()
 }
 
 fn compact_source_url_for_error(source_url: &str) -> String {
@@ -307,6 +353,18 @@ fn sanitize_youtube_download_error(raw: &str) -> String {
         compact_source_url_for_error(&captures[0])
     })
     .to_string()
+}
+
+fn remaining_download_timeout(started_at: std::time::Instant) -> Option<std::time::Duration> {
+    let total = std::time::Duration::from_secs(DOWNLOAD_TOTAL_TIMEOUT_SECONDS);
+    let elapsed = started_at.elapsed();
+    if elapsed >= total {
+        return None;
+    }
+
+    let remaining_total = total.saturating_sub(elapsed);
+    let per_attempt = std::time::Duration::from_secs(DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS);
+    Some(std::cmp::min(remaining_total, per_attempt))
 }
 
 fn extract_url_from_signature_cipher(cipher: &str) -> Option<String> {
@@ -351,69 +409,126 @@ fn extract_innertube_api_key(html: &str) -> Option<String> {
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
-async fn youtubei_audio_candidate_urls(
-    video_id: &str,
-    cookie_header: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("youtubei client build failed: {e}"))?;
+#[derive(Default, Clone)]
+struct YouTubeIContextHints {
+    signature_timestamp: Option<u64>,
+    visitor_data: Option<String>,
+    hl: Option<String>,
+    gl: Option<String>,
+}
 
-    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut watch_req = client
-        .get(&watch_url)
-        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
-        .header(reqwest::header::REFERER, "https://www.youtube.com/")
-        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
-    if let Some(cookie) = cookie_header {
-        watch_req = watch_req.header(reqwest::header::COOKIE, cookie);
-    }
+fn extract_ytcfg_json(html: &str) -> Option<serde_json::Value> {
+    let marker = "ytcfg.set(";
+    let marker_idx = html.find(marker)?;
+    let after_marker = &html[marker_idx + marker.len()..];
+    let brace_start = after_marker.find('{')?;
+    let json_slice = &after_marker[brace_start..];
 
-    let watch_html = watch_req
-        .send()
-        .await
-        .map_err(|e| format!("watch page request failed: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("watch page body read failed: {e}"))?;
-    let api_key = extract_innertube_api_key(&watch_html)
-        .ok_or_else(|| "missing INNERTUBE_API_KEY in watch page".to_string())?;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in json_slice.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
 
-    let youtubei_url = format!("https://www.youtube.com/youtubei/v1/player?key={api_key}");
-    let mut player_req = client
-        .post(youtubei_url)
-        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
-        .header(reqwest::header::REFERER, "https://www.youtube.com/")
-        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .json(&serde_json::json!({
-            "videoId": video_id,
-            "context": {
-                "client": {
-                    "clientName": "ANDROID",
-                    "clientVersion": "19.08.35",
-                    "hl": "en",
-                    "gl": "US"
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let json = &json_slice[..=idx];
+                    return serde_json::from_str::<serde_json::Value>(json).ok();
                 }
-            },
-            "contentCheckOk": true,
-            "racyCheckOk": true
-        }));
-    if let Some(cookie) = cookie_header {
-        player_req = player_req.header(reqwest::header::COOKIE, cookie);
+            }
+            _ => {}
+        }
     }
+    None
+}
 
-    let payload: serde_json::Value = player_req
-        .send()
-        .await
-        .map_err(|e| format!("youtubei player request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("youtubei player response parse failed: {e}"))?;
+fn extract_youtubei_context_hints(html: &str) -> YouTubeIContextHints {
+    let cfg = extract_ytcfg_json(html);
+    let signature_timestamp = cfg.as_ref().and_then(|v| v.get("STS")).and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+    });
 
+    let visitor_data = cfg
+        .as_ref()
+        .and_then(|v| v.pointer("/INNERTUBE_CONTEXT/client/visitorData"))
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    let hl = cfg
+        .as_ref()
+        .and_then(|v| v.pointer("/INNERTUBE_CONTEXT/client/hl"))
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    let gl = cfg
+        .as_ref()
+        .and_then(|v| v.pointer("/INNERTUBE_CONTEXT/client/gl"))
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    YouTubeIContextHints {
+        signature_timestamp,
+        visitor_data,
+        hl,
+        gl,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct YouTubeIClientProfile {
+    client_name: &'static str,
+    client_version: &'static str,
+    x_youtube_client_name: Option<&'static str>,
+    x_youtube_client_version: Option<&'static str>,
+    include_third_party_embed: bool,
+}
+
+const YOUTUBEI_CLIENT_PROFILES: [YouTubeIClientProfile; 4] = [
+    YouTubeIClientProfile {
+        client_name: "ANDROID",
+        client_version: "19.08.35",
+        x_youtube_client_name: Some("3"),
+        x_youtube_client_version: Some("19.08.35"),
+        include_third_party_embed: false,
+    },
+    YouTubeIClientProfile {
+        client_name: "IOS",
+        client_version: "19.09.3",
+        x_youtube_client_name: Some("5"),
+        x_youtube_client_version: Some("19.09.3"),
+        include_third_party_embed: false,
+    },
+    YouTubeIClientProfile {
+        client_name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+        client_version: "2.0",
+        x_youtube_client_name: Some("85"),
+        x_youtube_client_version: Some("2.0"),
+        include_third_party_embed: true,
+    },
+    YouTubeIClientProfile {
+        client_name: "WEB",
+        client_version: "2.20250220.00.00",
+        x_youtube_client_name: Some("1"),
+        x_youtube_client_version: Some("2.20250220.00.00"),
+        include_third_party_embed: false,
+    },
+];
+
+fn extract_candidate_urls_from_youtubei_payload(payload: &serde_json::Value) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for path in ["/streamingData/adaptiveFormats", "/streamingData/formats"] {
         let Some(formats) = payload.pointer(path).and_then(|v| v.as_array()) else {
@@ -445,13 +560,147 @@ async fn youtubei_audio_candidate_urls(
             }
         }
     }
-
     out.retain(|v| !v.trim().is_empty());
     out.dedup();
-    if out.is_empty() {
-        return Err("youtubei returned no direct audio candidate URLs".to_string());
+    out
+}
+
+fn youtubei_playability_reason(payload: &serde_json::Value) -> Option<String> {
+    let status = payload
+        .pointer("/playabilityStatus/status")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let reason = payload
+        .pointer("/playabilityStatus/reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if status.is_empty() && reason.is_empty() {
+        return None;
     }
-    Ok(out)
+    Some(format!("{status} {reason}").trim().to_string())
+}
+
+async fn youtubei_audio_candidate_urls(
+    video_id: &str,
+    cookie_header: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("youtubei client build failed: {e}"))?;
+
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+    let mut watch_req = client
+        .get(&watch_url)
+        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(cookie) = cookie_header {
+        watch_req = watch_req.header(reqwest::header::COOKIE, cookie);
+    }
+
+    let watch_html = watch_req
+        .send()
+        .await
+        .map_err(|e| format!("watch page request failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("watch page body read failed: {e}"))?;
+    let api_key = extract_innertube_api_key(&watch_html)
+        .ok_or_else(|| "missing INNERTUBE_API_KEY in watch page".to_string())?;
+    let hints = extract_youtubei_context_hints(&watch_html);
+
+    let youtubei_url =
+        format!("https://www.youtube.com/youtubei/v1/player?key={api_key}&prettyPrint=false");
+    let mut errors: Vec<String> = Vec::new();
+
+    for profile in YOUTUBEI_CLIENT_PROFILES {
+        let mut context = serde_json::json!({
+            "client": {
+                "clientName": profile.client_name,
+                "clientVersion": profile.client_version,
+                "hl": hints.hl.clone().unwrap_or_else(|| "en".to_string()),
+                "gl": hints.gl.clone().unwrap_or_else(|| "US".to_string()),
+            }
+        });
+        if let Some(visitor_data) = hints.visitor_data.as_deref() {
+            context["client"]["visitorData"] = serde_json::json!(visitor_data);
+        }
+        if profile.include_third_party_embed {
+            context["thirdParty"] = serde_json::json!({
+                "embedUrl": "https://www.youtube.com/"
+            });
+        }
+
+        let mut payload = serde_json::json!({
+            "videoId": video_id,
+            "context": context,
+            "contentCheckOk": true,
+            "racyCheckOk": true
+        });
+        if let Some(sts) = hints.signature_timestamp {
+            payload["playbackContext"] = serde_json::json!({
+                "contentPlaybackContext": {
+                    "signatureTimestamp": sts,
+                    "html5Preference": "HTML5_PREF_WANTS"
+                }
+            });
+        }
+
+        let mut player_req = client
+            .post(&youtubei_url)
+            .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
+            .header(reqwest::header::REFERER, "https://www.youtube.com/")
+            .header(reqwest::header::ORIGIN, "https://www.youtube.com")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+            .json(&payload);
+        if let Some(cookie) = cookie_header {
+            player_req = player_req.header(reqwest::header::COOKIE, cookie);
+        }
+        if let Some(name) = profile.x_youtube_client_name {
+            player_req = player_req.header("x-youtube-client-name", name);
+        }
+        if let Some(version) = profile.x_youtube_client_version {
+            player_req = player_req.header("x-youtube-client-version", version);
+        }
+
+        let response = player_req
+            .send()
+            .await
+            .map_err(|e| format!("youtubei player request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            errors.push(format!(
+                "{}: http {}",
+                profile.client_name,
+                response.status()
+            ));
+            continue;
+        }
+
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("youtubei player response parse failed: {e}"))?;
+        let out = extract_candidate_urls_from_youtubei_payload(&payload);
+        if !out.is_empty() {
+            return Ok(out);
+        }
+
+        if let Some(reason) = youtubei_playability_reason(&payload) {
+            errors.push(format!("{}: {}", profile.client_name, reason));
+        } else {
+            errors.push(format!("{}: no audio URLs in payload", profile.client_name));
+        }
+    }
+
+    Err(format!(
+        "youtubei returned no usable audio candidate URLs ({})",
+        errors.join(" | ")
+    ))
 }
 
 fn format_matches_filter(
@@ -518,8 +767,14 @@ async fn download_url_to_temp_with_headers(
     source_url: &str,
     temp_path: &StdPath,
     cookie: Option<&str>,
+    watch_referer: Option<&str>,
 ) -> Result<u64, String> {
     let compact_source_url = compact_source_url_for_error(source_url);
+    if !source_url.starts_with("https://") {
+        return Err(format!(
+            "non-https source URL is not allowed ({compact_source_url})"
+        ));
+    }
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -527,58 +782,146 @@ async fn download_url_to_temp_with_headers(
         .build()
         .map_err(|e| format!("http client build failed: {e}"))?;
 
-    let mut request = client
-        .get(source_url)
-        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
-        .header(reqwest::header::REFERER, "https://www.youtube.com/")
-        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
-        .header(reqwest::header::ACCEPT, "*/*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-        .header(reqwest::header::RANGE, "bytes=0-");
+    let desktop_ua = YOUTUBE_USER_AGENT;
+    let android_ua = "com.google.android.youtube/19.08.35 (Linux; U; Android 14; en_US; Pixel 8 Pro Build/UQ1A.240205.002; Cronet/119.0.6045.194)";
+    let ios_ua = "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)";
 
-    if let Some(cookie_value) = cookie {
-        request = request.header(reqwest::header::COOKIE, cookie_value);
+    let profiles: [(&str, bool, Option<&str>, Option<&str>, &str); 7] = [
+        (
+            "desktop+range+watch-referer",
+            true,
+            watch_referer,
+            Some("https://www.youtube.com"),
+            desktop_ua,
+        ),
+        (
+            "desktop+no-range+watch-referer",
+            false,
+            watch_referer,
+            Some("https://www.youtube.com"),
+            desktop_ua,
+        ),
+        (
+            "desktop+no-range+youtube-referer",
+            false,
+            Some("https://www.youtube.com/"),
+            Some("https://www.youtube.com"),
+            desktop_ua,
+        ),
+        ("desktop+no-range+minimal", false, None, None, desktop_ua),
+        (
+            "android+no-range+watch-referer",
+            false,
+            watch_referer,
+            Some("https://www.youtube.com"),
+            android_ua,
+        ),
+        (
+            "ios+no-range+watch-referer",
+            false,
+            watch_referer,
+            Some("https://www.youtube.com"),
+            ios_ua,
+        ),
+        ("android+no-range+minimal", false, None, None, android_ua),
+    ];
+
+    let mut profile_errors: Vec<String> = Vec::new();
+    for (label, include_range, referer, origin, user_agent) in profiles {
+        let mut request = client
+            .get(source_url)
+            .header(reqwest::header::USER_AGENT, user_agent)
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+
+        if include_range {
+            request = request.header(reqwest::header::RANGE, "bytes=0-");
+        }
+        if let Some(referer_value) = referer {
+            request = request.header(reqwest::header::REFERER, referer_value);
+        }
+        if let Some(origin_value) = origin {
+            request = request.header(reqwest::header::ORIGIN, origin_value);
+        }
+        if let Some(cookie_value) = cookie {
+            request = request.header(reqwest::header::COOKIE, cookie_value);
+        }
+
+        let mut response = match request.send().await {
+            Ok(res) => res,
+            Err(err) => {
+                profile_errors.push(format!("{label}: http request failed: {err}"));
+                let _ = tokio::fs::remove_file(temp_path).await;
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            profile_errors.push(format!(
+                "{label}: http status {} for source ({compact_source_url})",
+                response.status()
+            ));
+            let _ = tokio::fs::remove_file(temp_path).await;
+            continue;
+        }
+
+        let mut file = match tokio::fs::File::create(temp_path).await {
+            Ok(file) => file,
+            Err(err) => {
+                profile_errors.push(format!("{label}: temp file create failed: {err}"));
+                continue;
+            }
+        };
+
+        let mut downloaded_bytes: u64 = 0;
+        let mut read_failed = false;
+        loop {
+            let maybe_chunk = match response.chunk().await {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    profile_errors.push(format!("{label}: http response read failed: {err}"));
+                    read_failed = true;
+                    break;
+                }
+            };
+            let Some(chunk) = maybe_chunk else {
+                break;
+            };
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            if let Err(err) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+                profile_errors.push(format!("{label}: temp file write failed: {err}"));
+                read_failed = true;
+                break;
+            }
+        }
+
+        if !read_failed {
+            if let Err(err) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+                profile_errors.push(format!("{label}: temp file flush failed: {err}"));
+                read_failed = true;
+            }
+        }
+
+        if read_failed {
+            let _ = tokio::fs::remove_file(temp_path).await;
+            continue;
+        }
+
+        if downloaded_bytes < MIN_SOURCE_BYTES {
+            profile_errors.push(format!(
+                "{label}: downloaded too few bytes ({downloaded_bytes}), likely blocked source"
+            ));
+            let _ = tokio::fs::remove_file(temp_path).await;
+            continue;
+        }
+
+        return Ok(downloaded_bytes);
     }
 
-    let mut response = request
-        .send()
-        .await
-        .map_err(|e| format!("http request failed: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "http status {} for source ({compact_source_url})",
-            response.status(),
-        ));
-    }
-
-    let mut file = tokio::fs::File::create(temp_path)
-        .await
-        .map_err(|e| format!("temp file create failed: {e}"))?;
-
-    let mut downloaded_bytes: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("http response read failed: {e}"))?
-    {
-        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-            .await
-            .map_err(|e| format!("temp file write failed: {e}"))?;
-    }
-
-    tokio::io::AsyncWriteExt::flush(&mut file)
-        .await
-        .map_err(|e| format!("temp file flush failed: {e}"))?;
-
-    if downloaded_bytes < MIN_SOURCE_BYTES {
-        return Err(format!(
-            "downloaded too few bytes ({downloaded_bytes}), likely blocked source"
-        ));
-    }
-
-    Ok(downloaded_bytes)
+    Err(format!(
+        "all request profiles failed. {}",
+        profile_errors.join(" | ")
+    ))
 }
 
 async fn download_youtube_source_to_temp_with_stream(
@@ -641,7 +984,14 @@ async fn download_youtube_source_to_temp(
 
     let mut errors: Vec<String> = Vec::new();
     for (idx, source_url) in candidate_urls.iter().enumerate() {
-        match download_url_to_temp_with_headers(source_url, temp_path, cookie_header).await {
+        match download_url_to_temp_with_headers(
+            source_url,
+            temp_path,
+            cookie_header,
+            Some(watch_url),
+        )
+        .await
+        {
             Ok(bytes) => return Ok(bytes),
             Err(reason) => {
                 errors.push(format!("candidate #{}: {}", idx + 1, reason));
@@ -654,6 +1004,93 @@ async fn download_youtube_source_to_temp(
         "all candidate format URLs failed. {}",
         errors.join(" | ")
     ))
+}
+
+async fn try_youtubei_direct_download(
+    video_id: &str,
+    temp_path: &StdPath,
+    cookie_header: Option<&str>,
+    started_at: std::time::Instant,
+    last_errors: &mut Vec<String>,
+) -> bool {
+    let Some(resolve_timeout) = remaining_download_timeout(started_at) else {
+        last_errors.push(format!(
+            "youtubei-direct budget exceeded after {}s before resolution",
+            DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+        ));
+        return false;
+    };
+
+    let resolved = tokio::time::timeout(
+        resolve_timeout,
+        youtubei_audio_candidate_urls(video_id, cookie_header),
+    )
+    .await;
+
+    let youtube_watch_referer = format!("https://www.youtube.com/watch?v={video_id}");
+    let candidate_urls = match resolved {
+        Ok(Ok(candidate_urls)) => candidate_urls,
+        Ok(Err(reason)) => {
+            last_errors.push(format!(
+                "youtubei-direct resolution failed: {}",
+                sanitize_youtube_download_error(&reason)
+            ));
+            return false;
+        }
+        Err(_) => {
+            last_errors.push(format!(
+                "youtubei-direct resolution timed out after {}s",
+                DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
+            ));
+            return false;
+        }
+    };
+
+    for (idx, source_url) in candidate_urls
+        .iter()
+        .take(MAX_YOUTUBEI_DIRECT_CANDIDATES)
+        .enumerate()
+    {
+        let Some(timeout) = remaining_download_timeout(started_at) else {
+            last_errors.push(format!(
+                "youtubei-direct budget exceeded after {}s",
+                DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+            ));
+            return false;
+        };
+
+        match tokio::time::timeout(
+            timeout,
+            download_url_to_temp_with_headers(
+                source_url,
+                temp_path,
+                cookie_header,
+                Some(&youtube_watch_referer),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(_bytes)) => return true,
+            Ok(Err(reason)) => {
+                last_errors.push(format!(
+                    "youtubei-direct candidate #{}: {}",
+                    idx + 1,
+                    sanitize_youtube_download_error(&reason)
+                ));
+                let _ = tokio::fs::remove_file(temp_path).await;
+            }
+            Err(_) => {
+                last_errors.push(format!(
+                    "youtubei-direct candidate #{}: attempt timed out after {}s",
+                    idx + 1,
+                    DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
+                ));
+                let _ = tokio::fs::remove_file(temp_path).await;
+            }
+        }
+    }
+
+    false
 }
 
 async fn download_youtube_audio_mp3_for_room(
@@ -675,23 +1112,36 @@ async fn download_youtube_audio_mp3_for_room(
     ];
 
     let mut last_errors: Vec<String> = Vec::new();
-    let mut source_downloaded = false;
+    let started_at = std::time::Instant::now();
+
+    let mut source_downloaded = try_youtubei_direct_download(
+        video_id,
+        &temp_path,
+        cookie_header.as_deref(),
+        started_at,
+        &mut last_errors,
+    )
+    .await;
 
     for watch_url in watch_urls {
-        let attempts: [(&str, rusty_ytdl::VideoOptions); 4] = [
+        if source_downloaded {
+            break;
+        }
+        if remaining_download_timeout(started_at).is_none() {
+            last_errors.push(format!(
+                "download budget exceeded after {}s before trying watch URL {}",
+                DOWNLOAD_TOTAL_TIMEOUT_SECONDS,
+                compact_source_url_for_error(&watch_url)
+            ));
+            break;
+        }
+
+        let attempts: [(&str, rusty_ytdl::VideoOptions); 3] = [
             (
                 "highest-audio-only",
                 youtube_video_options(
                     rusty_ytdl::VideoQuality::HighestAudio,
                     rusty_ytdl::VideoSearchOptions::Audio,
-                    cookie_header.clone(),
-                ),
-            ),
-            (
-                "highest-muxed",
-                youtube_video_options(
-                    rusty_ytdl::VideoQuality::Highest,
-                    rusty_ytdl::VideoSearchOptions::VideoAudio,
                     cookie_header.clone(),
                 ),
             ),
@@ -704,9 +1154,9 @@ async fn download_youtube_audio_mp3_for_room(
                 ),
             ),
             (
-                "lowest-muxed",
+                "highest-muxed",
                 youtube_video_options(
-                    rusty_ytdl::VideoQuality::Lowest,
+                    rusty_ytdl::VideoQuality::Highest,
                     rusty_ytdl::VideoSearchOptions::VideoAudio,
                     cookie_header.clone(),
                 ),
@@ -714,38 +1164,119 @@ async fn download_youtube_audio_mp3_for_room(
         ];
 
         for (label, options) in attempts {
-            match download_youtube_source_to_temp_with_stream(
-                &watch_url,
-                options.clone(),
-                &temp_path,
+            let Some(stream_timeout) = remaining_download_timeout(started_at) else {
+                last_errors.push(format!(
+                    "{label} @ {}: stream/direct budget exceeded after {}s",
+                    compact_source_url_for_error(&watch_url),
+                    DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+                ));
+                break;
+            };
+            let stream_attempt = tokio::time::timeout(
+                stream_timeout,
+                download_youtube_source_to_temp_with_stream(
+                    &watch_url,
+                    options.clone(),
+                    &temp_path,
+                ),
             )
-            .await
-            {
-                Ok(_bytes) => {
+            .await;
+
+            match stream_attempt {
+                Ok(Ok(_bytes)) => {
                     source_downloaded = true;
                     break;
                 }
-                Err(stream_reason) => {
+                Ok(Err(stream_reason)) => {
                     let _ = tokio::fs::remove_file(&temp_path).await;
-                    match download_youtube_source_to_temp(
-                        &watch_url,
-                        options,
-                        &temp_path,
-                        cookie_header.as_deref(),
+                    let Some(direct_timeout) = remaining_download_timeout(started_at) else {
+                        last_errors.push(format!(
+                            "{label} @ {}: stream={} | direct=budget exceeded after {}s",
+                            compact_source_url_for_error(&watch_url),
+                            sanitize_youtube_download_error(&stream_reason),
+                            DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+                        ));
+                        break;
+                    };
+                    let direct_attempt = tokio::time::timeout(
+                        direct_timeout,
+                        download_youtube_source_to_temp(
+                            &watch_url,
+                            options,
+                            &temp_path,
+                            cookie_header.as_deref(),
+                        ),
                     )
-                    .await
-                    {
-                        Ok(_bytes) => {
+                    .await;
+
+                    match direct_attempt {
+                        Ok(Ok(_bytes)) => {
                             source_downloaded = true;
                             break;
                         }
-                        Err(candidate_reason) => {
+                        Ok(Err(candidate_reason)) => {
                             let stream_reason = sanitize_youtube_download_error(&stream_reason);
                             let candidate_reason =
                                 sanitize_youtube_download_error(&candidate_reason);
                             last_errors.push(format!(
                                 "{label} @ {}: stream={stream_reason} | direct={candidate_reason}",
                                 compact_source_url_for_error(&watch_url)
+                            ));
+                            let _ = tokio::fs::remove_file(&temp_path).await;
+                        }
+                        Err(_) => {
+                            let stream_reason = sanitize_youtube_download_error(&stream_reason);
+                            last_errors.push(format!(
+                                "{label} @ {}: stream={stream_reason} | direct=attempt timed out after {}s",
+                                compact_source_url_for_error(&watch_url),
+                                DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
+                            ));
+                            let _ = tokio::fs::remove_file(&temp_path).await;
+                        }
+                    }
+                }
+                Err(_) => {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    let Some(direct_timeout) = remaining_download_timeout(started_at) else {
+                        last_errors.push(format!(
+                            "{label} @ {}: stream=attempt timed out | direct=budget exceeded after {}s",
+                            compact_source_url_for_error(&watch_url),
+                            DOWNLOAD_TOTAL_TIMEOUT_SECONDS
+                        ));
+                        break;
+                    };
+                    let direct_attempt = tokio::time::timeout(
+                        direct_timeout,
+                        download_youtube_source_to_temp(
+                            &watch_url,
+                            options,
+                            &temp_path,
+                            cookie_header.as_deref(),
+                        ),
+                    )
+                    .await;
+
+                    match direct_attempt {
+                        Ok(Ok(_bytes)) => {
+                            source_downloaded = true;
+                            break;
+                        }
+                        Ok(Err(candidate_reason)) => {
+                            let candidate_reason =
+                                sanitize_youtube_download_error(&candidate_reason);
+                            last_errors.push(format!(
+                                "{label} @ {}: stream=attempt timed out after {}s | direct={candidate_reason}",
+                                compact_source_url_for_error(&watch_url),
+                                DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
+                            ));
+                            let _ = tokio::fs::remove_file(&temp_path).await;
+                        }
+                        Err(_) => {
+                            last_errors.push(format!(
+                                "{label} @ {}: stream=attempt timed out after {}s | direct=attempt timed out after {}s",
+                                compact_source_url_for_error(&watch_url),
+                                DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS,
+                                DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS
                             ));
                             let _ = tokio::fs::remove_file(&temp_path).await;
                         }
@@ -760,38 +1291,14 @@ async fn download_youtube_audio_mp3_for_room(
     }
 
     if !source_downloaded {
-        match youtubei_audio_candidate_urls(video_id, cookie_header.as_deref()).await {
-            Ok(candidate_urls) => {
-                for (idx, source_url) in candidate_urls.iter().enumerate() {
-                    match download_url_to_temp_with_headers(
-                        source_url,
-                        &temp_path,
-                        cookie_header.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(_bytes) => {
-                            source_downloaded = true;
-                            break;
-                        }
-                        Err(reason) => {
-                            last_errors.push(format!(
-                                "youtubei-direct candidate #{}: {}",
-                                idx + 1,
-                                sanitize_youtube_download_error(&reason)
-                            ));
-                            let _ = tokio::fs::remove_file(&temp_path).await;
-                        }
-                    }
-                }
-            }
-            Err(reason) => {
-                last_errors.push(format!(
-                    "youtubei-direct resolution failed: {}",
-                    sanitize_youtube_download_error(&reason)
-                ));
-            }
-        }
+        source_downloaded = try_youtubei_direct_download(
+            video_id,
+            &temp_path,
+            cookie_header.as_deref(),
+            started_at,
+            &mut last_errors,
+        )
+        .await;
     }
 
     if !source_downloaded {
@@ -808,7 +1315,17 @@ async fn download_youtube_audio_mp3_for_room(
         .into());
     }
 
-    convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path).await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(CONVERT_TO_MP3_TIMEOUT_SECONDS),
+        convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::Internal(format!(
+            "ffmpeg conversion timed out after {}s",
+            CONVERT_TO_MP3_TIMEOUT_SECONDS
+        ))
+    })??;
     let duration_ms = probe_audio_duration_ms(&state.ffprobe_path, &output_path).await?;
     let _ = tokio::fs::remove_file(&temp_path).await;
 

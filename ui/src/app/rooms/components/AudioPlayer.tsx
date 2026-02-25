@@ -340,7 +340,19 @@ export default function AudioPlayer({
   const progressPct = duration > 0 ? Math.min(100, (effectivePosition / duration) * 100) : 0;
   const recentOnlineStatusEvents = useMemo(() => {
     if (onlineStatusEvents.length === 0) return [];
-    return [...onlineStatusEvents].reverse().slice(0, 8);
+    const latestPerStage: WsOnlineAudioStatusMessage[] = [];
+    const seen = new Set<string>();
+
+    for (let i = onlineStatusEvents.length - 1; i >= 0; i -= 1) {
+      const event = onlineStatusEvents[i];
+      const key = `${event.video_id ?? 'none'}:${event.track_id ?? 'none'}:${event.stage}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      latestPerStage.push(event);
+      if (latestPerStage.length >= 8) break;
+    }
+
+    return latestPerStage;
   }, [onlineStatusEvents]);
 
   const displayList: Array<QueueEntry & { isSearchResult?: boolean }> =
