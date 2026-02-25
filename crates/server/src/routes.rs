@@ -101,6 +101,7 @@ fn api_router() -> Router<AppState> {
                 .delete(delete_library),
         )
         .route("/libraries/{id}/scan", post(scan_library))
+        .route("/libraries/{id}/tmdb-sync", post(sync_library_tmdb))
         .route("/libraries/{id}/items", get(list_library_items))
         // Items
         .route("/items/{id}", get(get_item))
@@ -866,6 +867,21 @@ async fn scan_library(
         .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
 
     let job = crate::library_scan::enqueue_library_scan(&state, &lib.id, &lib.kind).await?;
+
+    Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
+}
+
+async fn sync_library_tmdb(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(axum::http::StatusCode, Json<JobResponse>), AppError> {
+    let lib = rustfin_db::repo::libraries::get_library(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
+
+    let job = crate::tmdb_sync::enqueue_library_tmdb_sync(&state, &lib.id).await?;
 
     Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
 }

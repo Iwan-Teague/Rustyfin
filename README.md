@@ -10,6 +10,7 @@ It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first run
   - Movie, TV, and music libraries with deep directory scanning.
   - Per-library access control per user.
   - TMDB metadata enrichment (configurable in Admin).
+  - Optional dedicated TMDB sync agent (separate Rust container) for on-demand poster download.
 - Playback
   - Direct Play (HTTP range) and HLS transcode modes.
   - Playback progress tracking.
@@ -44,6 +45,9 @@ Rustyfin runs as a multi-service stack in Docker Compose:
 - `rustfin-calendar` (Rust calendar API)
   - Dedicated calendar microservice.
   - Shares the same SQLite database volume.
+- `rustfin-tmdb-agent` (Rust TMDB sync API)
+  - Dedicated metadata/poster sync microservice.
+  - Scans indexed items in a library, resolves TMDB matches, downloads posters to shared cache, updates DB artwork paths.
 - `rustfin-ui` (Next.js App Router frontend)
   - Browser client for all product areas.
 - `rustfin-edge` (Caddy TLS edge)
@@ -130,6 +134,8 @@ Common runtime variables:
 - `RUSTFIN_PUBLIC_HOST`
 - `RUSTFIN_MEDIA_PATH`
 - `RUSTFIN_TMDB_KEY`
+- `RUSTFIN_TMDB_AGENT_URL`
+- `RUSTFIN_TMDB_AGENT_TOKEN`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`
 - `RUSTFIN_FFMPEG_PATH`
 - `RUSTFIN_FFPROBE_PATH`

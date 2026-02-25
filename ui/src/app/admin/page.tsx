@@ -403,6 +403,16 @@ export default function AdminPage() {
     }
   }
 
+  async function syncLibraryTmdb(libId: string) {
+    try {
+      await apiJson(`/libraries/${libId}/tmdb-sync`, { method: 'POST' });
+      setOk('TMDB sync started');
+      await loadData();
+    } catch (err: any) {
+      setErr(err.message || 'Failed to start TMDB sync');
+    }
+  }
+
   async function browseLibraryPath() {
     setPickingPath(true);
     try {
@@ -1231,6 +1241,13 @@ export default function AdminPage() {
                           className="btn-secondary flex-1 px-3 py-1.5 text-sm"
                         >
                           Scan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => syncLibraryTmdb(lib.id)}
+                          className="btn-secondary flex-1 px-3 py-1.5 text-sm"
+                        >
+                          TMDB Sync
                         </button>
                         <button type="submit" className="btn-primary flex-1 px-3 py-1.5 text-sm">
                           Save
