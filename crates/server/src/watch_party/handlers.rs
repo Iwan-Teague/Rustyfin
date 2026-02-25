@@ -1086,6 +1086,185 @@ struct DownloadedOnlineAudio {
     duration_ms: Option<u64>,
 }
 
+fn youtube_cookie_from_env() -> Option<String> {
+    std::env::var("RUSTFIN_YOUTUBE_COOKIE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn youtube_video_options(
+    quality: rusty_ytdl::VideoQuality,
+    filter: rusty_ytdl::VideoSearchOptions,
+) -> rusty_ytdl::VideoOptions {
+    rusty_ytdl::VideoOptions {
+        quality,
+        filter,
+        request_options: rusty_ytdl::RequestOptions {
+            cookies: youtube_cookie_from_env(),
+            max_retries: Some(5),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn format_matches_filter(
+    format: &rusty_ytdl::VideoFormat,
+    filter: &rusty_ytdl::VideoSearchOptions,
+) -> bool {
+    match filter {
+        rusty_ytdl::VideoSearchOptions::Audio => {
+            (!format.has_video && format.has_audio) || format.is_live
+        }
+        rusty_ytdl::VideoSearchOptions::Video => {
+            (format.has_video && !format.has_audio) || format.is_live
+        }
+        rusty_ytdl::VideoSearchOptions::VideoAudio => {
+            (format.has_video && format.has_audio) || format.is_live
+        }
+        rusty_ytdl::VideoSearchOptions::Custom(func) => func(format) || format.is_live,
+    }
+}
+
+fn candidate_format_urls(
+    info: &rusty_ytdl::VideoInfo,
+    options: &rusty_ytdl::VideoOptions,
+) -> Vec<String> {
+    let mut formats: Vec<&rusty_ytdl::VideoFormat> = info
+        .formats
+        .iter()
+        .filter(|format| {
+            !format.url.trim().is_empty()
+                && !format.is_hls
+                && !format.is_dash_mpd
+                && format_matches_filter(format, &options.filter)
+        })
+        .collect();
+
+    if formats.is_empty() {
+        // Fallback: any non-live format that at least has audio, even if muxed.
+        formats = info
+            .formats
+            .iter()
+            .filter(|format| {
+                !format.url.trim().is_empty()
+                    && !format.is_hls
+                    && !format.is_dash_mpd
+                    && format.has_audio
+            })
+            .collect();
+    }
+
+    match options.quality {
+        rusty_ytdl::VideoQuality::Lowest
+        | rusty_ytdl::VideoQuality::LowestAudio
+        | rusty_ytdl::VideoQuality::LowestVideo => formats.reverse(),
+        _ => {}
+    }
+
+    formats
+        .into_iter()
+        .take(8)
+        .map(|format| format.url.trim().to_string())
+        .collect()
+}
+
+async fn download_url_to_temp_with_headers(
+    source_url: &str,
+    temp_path: &StdPath,
+    cookie: Option<&str>,
+) -> Result<u64, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("http client build failed: {e}"))?;
+
+    let mut request = client
+        .get(source_url)
+        .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
+        .header(reqwest::header::ACCEPT, "*/*")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+
+    if let Some(cookie_value) = cookie {
+        request = request.header(reqwest::header::COOKIE, cookie_value);
+    }
+
+    let mut response = request
+        .send()
+        .await
+        .map_err(|e| format!("http request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "http status {} for url ({source_url})",
+            response.status()
+        ));
+    }
+
+    let mut file = tokio::fs::File::create(temp_path)
+        .await
+        .map_err(|e| format!("temp file create failed: {e}"))?;
+
+    let mut downloaded_bytes: u64 = 0;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("http response read failed: {e}"))?
+    {
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("temp file write failed: {e}"))?;
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("temp file flush failed: {e}"))?;
+
+    if downloaded_bytes == 0 {
+        return Err("downloaded zero bytes".to_string());
+    }
+
+    Ok(downloaded_bytes)
+}
+
+async fn download_youtube_source_to_temp(
+    watch_url: &str,
+    options: rusty_ytdl::VideoOptions,
+    temp_path: &StdPath,
+) -> Result<u64, String> {
+    let video = rusty_ytdl::Video::new_with_options(watch_url, options.clone())
+        .map_err(|e| format!("download init failed: {e}"))?;
+    let info = video
+        .get_info()
+        .await
+        .map_err(|e| format!("format resolution failed: {e}"))?;
+    let candidate_urls = candidate_format_urls(&info, &options);
+    if candidate_urls.is_empty() {
+        return Err("no candidate formats with downloadable URL".to_string());
+    }
+
+    let cookie = youtube_cookie_from_env();
+    let mut errors: Vec<String> = Vec::new();
+    for (idx, source_url) in candidate_urls.iter().enumerate() {
+        match download_url_to_temp_with_headers(source_url, temp_path, cookie.as_deref()).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(reason) => {
+                errors.push(format!("candidate #{}: {}", idx + 1, reason));
+                let _ = tokio::fs::remove_file(temp_path).await;
+            }
+        }
+    }
+
+    Err(format!(
+        "all candidate format URLs failed. {}",
+        errors.join(" | ")
+    ))
+}
+
 async fn download_youtube_audio_mp3_for_room(
     state: &AppState,
     room_id: &str,
@@ -1098,40 +1277,68 @@ async fn download_youtube_audio_mp3_for_room(
     let output_path = room_dir.join(output_file_name);
     let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
 
-    let options = rusty_ytdl::VideoOptions {
-        quality: rusty_ytdl::VideoQuality::HighestAudio,
-        filter: rusty_ytdl::VideoSearchOptions::Audio,
-        ..Default::default()
-    };
+    // Some YouTube videos expose only muxed streams to this extractor.
+    // Retry with progressively looser selectors, then strip video during ffmpeg conversion.
+    let attempts: [(&str, rusty_ytdl::VideoOptions); 4] = [
+        (
+            "highest-audio-only",
+            youtube_video_options(
+                rusty_ytdl::VideoQuality::HighestAudio,
+                rusty_ytdl::VideoSearchOptions::Audio,
+            ),
+        ),
+        (
+            "highest-muxed",
+            youtube_video_options(
+                rusty_ytdl::VideoQuality::Highest,
+                rusty_ytdl::VideoSearchOptions::VideoAudio,
+            ),
+        ),
+        (
+            "lowest-audio-only",
+            youtube_video_options(
+                rusty_ytdl::VideoQuality::LowestAudio,
+                rusty_ytdl::VideoSearchOptions::Audio,
+            ),
+        ),
+        (
+            "lowest-muxed",
+            youtube_video_options(
+                rusty_ytdl::VideoQuality::Lowest,
+                rusty_ytdl::VideoSearchOptions::VideoAudio,
+            ),
+        ),
+    ];
 
-    let video = rusty_ytdl::Video::new_with_options(&watch_url, options).map_err(|e| {
-        ApiError::BadRequest(format!("failed to initialize YouTube audio download: {e}"))
-    })?;
+    let mut last_errors: Vec<String> = Vec::new();
+    let mut stream_downloaded = false;
 
-    let stream = video.stream().await.map_err(|e| {
-        ApiError::BadRequest(format!(
-            "failed to open YouTube audio stream for this video: {e}"
-        ))
-    })?;
-
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed to create temp download file: {e}")))?;
-
-    while let Some(chunk) = stream.chunk().await.map_err(|e| {
-        ApiError::BadRequest(format!(
-            "failed while downloading YouTube audio stream: {e}"
-        ))
-    })? {
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| ApiError::Internal(format!("failed to write temp download chunk: {e}")))?;
+    for (label, options) in attempts {
+        match download_youtube_source_to_temp(&watch_url, options, &temp_path).await {
+            Ok(_bytes) => {
+                stream_downloaded = true;
+                break;
+            }
+            Err(reason) => {
+                last_errors.push(format!("{label}: {reason}"));
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
+        }
     }
 
-    file.flush()
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed to flush temp audio file: {e}")))?;
-    drop(file);
+    if !stream_downloaded {
+        let cookie_hint = if youtube_cookie_from_env().is_none() {
+            " Configure RUSTFIN_YOUTUBE_COOKIE with a valid YouTube session cookie and retry."
+        } else {
+            ""
+        };
+        return Err(ApiError::BadRequest(format!(
+            "failed to open YouTube audio stream for this video. {}{}",
+            last_errors.join(" | "),
+            cookie_hint
+        ))
+        .into());
+    }
 
     convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path).await?;
     let duration_ms = probe_audio_duration_ms(&state.ffprobe_path, &output_path).await?;

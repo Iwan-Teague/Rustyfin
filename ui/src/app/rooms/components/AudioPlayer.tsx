@@ -52,6 +52,7 @@ export default function AudioPlayer({
   const [searchQuery, setSearchQuery] = useState('');
   const [librarySearchResults, setLibrarySearchResults] = useState<AudioTrack[] | null>(null);
   const [onlineSearchResults, setOnlineSearchResults] = useState<YouTubeSearchResult[] | null>(null);
+  const [showOnlineSearchResults, setShowOnlineSearchResults] = useState(true);
   const [searching, setSearching] = useState(false);
   const [queueingVideoId, setQueueingVideoId] = useState<string | null>(null);
   const [projectedPosition, setProjectedPosition] = useState(audioState.position_ms);
@@ -140,6 +141,7 @@ export default function AudioPlayer({
     setSearchQuery('');
     setLibrarySearchResults(null);
     setOnlineSearchResults(null);
+    setShowOnlineSearchResults(true);
   }, [audioSource]);
 
   useEffect(() => {
@@ -435,16 +437,38 @@ export default function AudioPlayer({
 
       {/* Queue & Search */}
       <section className="panel space-y-3 p-5 sm:p-6">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">{audioSource === 'online' ? 'Online Search' : (librarySearchResults !== null ? 'Search Results' : 'Queue')}</h2>
-          <input
-            value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            className="input px-3 py-1.5 text-sm"
-            placeholder={audioSource === 'online' ? 'Search YouTube tracks…' : 'Search tracks…'}
-            aria-label={audioSource === 'online' ? 'Search online tracks' : 'Search tracks'}
-          />
-        </div>
+        {audioSource === 'online' ? (
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold shrink-0">Online Search</h2>
+            <input
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              className="input flex-1 px-3 py-1.5 text-sm"
+              placeholder="Search YouTube tracks…"
+              aria-label="Search online tracks"
+            />
+            <button
+              type="button"
+              className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
+              onClick={() => setShowOnlineSearchResults((prev) => !prev)}
+            >
+              {showOnlineSearchResults ? 'Hide Results ▴' : 'Show Results ▾'}
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold">
+              {librarySearchResults !== null ? 'Search Results' : 'Queue'}
+            </h2>
+            <input
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              className="input px-3 py-1.5 text-sm"
+              placeholder="Search tracks…"
+              aria-label="Search tracks"
+            />
+          </div>
+        )}
 
         {searching && (
           <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
@@ -454,7 +478,11 @@ export default function AudioPlayer({
           <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
         )}
 
-        {audioSource === 'online' && !searching && onlineSearchResults !== null && onlineSearchResults.length > 0 && (
+        {audioSource === 'online' &&
+          !searching &&
+          showOnlineSearchResults &&
+          onlineSearchResults !== null &&
+          onlineSearchResults.length > 0 && (
           <ul className="max-h-64 space-y-2 overflow-y-auto">
             {onlineSearchResults.map((result) => {
               const queueKey = `${result.video_id}:queue`;
@@ -496,6 +524,16 @@ export default function AudioPlayer({
             })}
           </ul>
         )}
+
+        {audioSource === 'online' &&
+          !searching &&
+          !showOnlineSearchResults &&
+          onlineSearchResults !== null &&
+          onlineSearchResults.length > 0 && (
+            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+              Search results hidden.
+            </div>
+          )}
 
         {audioSource !== 'online' && !searching && librarySearchResults !== null && librarySearchResults.length === 0 && (
           <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No tracks found.</div>

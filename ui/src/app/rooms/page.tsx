@@ -539,6 +539,27 @@ export default function WatchPartyPage() {
               ))}
             </div>
           )}
+          {roomMode === 'audio' && (
+            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+              {([
+                ['local', 'Local'],
+                ['online', 'Online'],
+              ] as const).map(([source, label]) => (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => setAudioSource(source)}
+                  className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                    audioSource === source
+                      ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                      : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="overflow-hidden" style={fixedColumnHeightStyle}>
             <div className="h-full overflow-y-auto pr-1">
@@ -590,30 +611,7 @@ export default function WatchPartyPage() {
                   </section>
                 )
               ) : roomMode === 'audio' ? (
-                <section className="panel space-y-4 p-5 sm:p-6">
-                  <div className="space-y-3">
-                    <h2 className="text-xl font-semibold">Listen Together</h2>
-                    <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-                      {([
-                        ['local', 'Local'],
-                        ['online', 'Online'],
-                      ] as const).map(([source, label]) => (
-                        <button
-                          key={source}
-                          type="button"
-                          onClick={() => setAudioSource(source)}
-                          className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                            audioSource === source
-                              ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                              : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
+                <div className="space-y-3">
                   {audioSource === 'online' ? (
                     <div className="space-y-3">
                       <p className="text-sm muted">
@@ -657,7 +655,7 @@ export default function WatchPartyPage() {
                       )}
                     </div>
                   )}
-                </section>
+                </div>
               ) : roomMode === 'create' ? (
                 <section className="panel space-y-4 p-5 sm:p-6">
                   <div className="space-y-2">

@@ -331,7 +331,7 @@ export default function CalendarPage() {
         </div>
       </header>
 
-      <div className={`grid grid-cols-1 gap-4 min-h-[34rem] lg:h-[calc(100dvh-14.5rem)] ${eventPanelOpen ? 'xl:grid-cols-[2fr_1fr]' : ''}`}>
+      <div className={`grid grid-cols-1 gap-4 min-h-[40rem] lg:h-[calc(100dvh-11.5rem)] ${eventPanelOpen ? 'xl:grid-cols-[2fr_1fr]' : ''}`}>
         <section className="panel rounded-2xl p-4 sm:p-5 space-y-4 flex flex-col lg:h-full lg:min-h-0">
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex items-center gap-2">
@@ -463,7 +463,7 @@ export default function CalendarPage() {
                     return (
                       <div
                         key={key}
-                        className={`rounded-xl border px-2 py-2 overflow-hidden flex flex-col ${view === 'month' ? 'min-h-[10rem]' : 'min-h-0'} gap-2 ${
+                        className={`rounded-xl border px-2 ${view === 'month' ? 'py-3' : 'py-2'} overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
                           isToday
                             ? 'border-[var(--purple)] bg-white/[0.08]'
                             : outsideMonth
