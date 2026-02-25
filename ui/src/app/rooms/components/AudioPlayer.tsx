@@ -4,18 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '@/lib/api';
 import {
   AudioTrack,
-  QueueEntry,
   WsAudioStateMessage,
   WsOnlineAudioStatusMessage,
   YouTubeSearchResult,
   listAudioTracks,
+  queueLocalAudio,
   queueOnlineAudio,
   searchOnlineAudio,
 } from '@/lib/watchPartyApi';
 
 type Props = {
   audioState: WsAudioStateMessage;
-  audioSource: 'library' | 'online';
   onlineStatusEvents: WsOnlineAudioStatusMessage[];
   canControl: boolean;
   canSeek: boolean;
@@ -66,21 +65,34 @@ function normalizeRepeatMode(value: WsAudioStateMessage['repeat_mode']): RepeatM
   return 'none';
 }
 
+function parseQueueTrackRef(trackId: string): { source: 'local' | 'online'; id: string } {
+  if (trackId.startsWith('local:')) {
+    return { source: 'local', id: trackId.slice('local:'.length) };
+  }
+  if (trackId.startsWith('online:')) {
+    return { source: 'online', id: trackId.slice('online:'.length) };
+  }
+  // Legacy queue entries without prefix are treated as local item IDs.
+  return { source: 'local', id: trackId };
+}
+
 export default function AudioPlayer({
   audioState,
-  audioSource,
   onlineStatusEvents,
   canControl,
   canSeek,
   roomId,
   sendWs,
 }: Props) {
-  const [searchQuery, setSearchQuery] = useState('');
+  const [onlineSearchQuery, setOnlineSearchQuery] = useState('');
+  const [localSearchQuery, setLocalSearchQuery] = useState('');
   const [librarySearchResults, setLibrarySearchResults] = useState<AudioTrack[] | null>(null);
   const [onlineSearchResults, setOnlineSearchResults] = useState<YouTubeSearchResult[] | null>(null);
   const [showOnlineSearchResults, setShowOnlineSearchResults] = useState(true);
-  const [searching, setSearching] = useState(false);
+  const [searchingOnline, setSearchingOnline] = useState(false);
+  const [searchingLocal, setSearchingLocal] = useState(false);
   const [queueingVideoId, setQueueingVideoId] = useState<string | null>(null);
+  const [queueingLocalTrackId, setQueueingLocalTrackId] = useState<string | null>(null);
   const [projectedPosition, setProjectedPosition] = useState(audioState.position_ms);
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [streamError, setStreamError] = useState('');
@@ -90,7 +102,8 @@ export default function AudioPlayer({
   const [scrubPosition, setScrubPosition] = useState(0);
   const [draggedQueueIndex, setDraggedQueueIndex] = useState<number | null>(null);
 
-  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onlineSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const actionInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queueRef = useRef<HTMLUListElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -129,7 +142,12 @@ export default function AudioPlayer({
     setStreamError('');
     setAutoplayBlocked(false);
 
-    if (audioSource === 'online') {
+    const parsedTrack = parseQueueTrackRef(audioState.track_id);
+    const activeTrack =
+      parsedTrack.source === 'local' && audioState.stream_url
+        ? { source: 'online' as const, id: parsedTrack.id }
+        : parsedTrack;
+    if (activeTrack.source === 'online') {
       setDescriptor(null);
       if (!audioState.stream_url) {
         setStreamError('Online track stream URL is not ready yet.');
@@ -138,7 +156,7 @@ export default function AudioPlayer({
     }
 
     setDescriptor(null);
-    apiJson<PlaybackDescriptor>(`/items/${audioState.track_id}/playback`)
+    apiJson<PlaybackDescriptor>(`/items/${activeTrack.id}/playback`)
       .then((data) => {
         if (cancelled) return;
         setDescriptor(data);
@@ -154,10 +172,16 @@ export default function AudioPlayer({
     return () => {
       cancelled = true;
     };
-  }, [audioState.track_id, audioState.stream_url, audioSource]);
+  }, [audioState.track_id, audioState.stream_url]);
 
   useEffect(() => {
     return () => {
+      if (onlineSearchTimeoutRef.current) {
+        clearTimeout(onlineSearchTimeoutRef.current);
+      }
+      if (localSearchTimeoutRef.current) {
+        clearTimeout(localSearchTimeoutRef.current);
+      }
       if (actionInfoTimeoutRef.current) {
         clearTimeout(actionInfoTimeoutRef.current);
       }
@@ -170,19 +194,18 @@ export default function AudioPlayer({
   }, []);
 
   useEffect(() => {
-    setSearchQuery('');
-    setLibrarySearchResults(null);
-    setOnlineSearchResults(null);
-    setShowOnlineSearchResults(true);
-  }, [audioSource]);
-
-  useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !audioState.track_id) return;
-    const sourceUrl = audioSource === 'online' ? audioState.stream_url || '' : descriptor?.direct_url || '';
+    const parsedTrack = parseQueueTrackRef(audioState.track_id);
+    const activeTrack =
+      parsedTrack.source === 'local' && audioState.stream_url
+        ? { source: 'online' as const, id: parsedTrack.id }
+        : parsedTrack;
+    const sourceUrl =
+      activeTrack.source === 'online' ? audioState.stream_url || '' : descriptor?.direct_url || '';
     if (!sourceUrl) return;
 
-    const sourceKey = `${audioSource}:${audioState.track_id}:${sourceUrl}`;
+    const sourceKey = `${activeTrack.source}:${audioState.track_id}:${sourceUrl}`;
     if (loadedTrackKeyRef.current !== sourceKey) {
       loadedTrackKeyRef.current = sourceKey;
       audio.src = sourceUrl;
@@ -214,7 +237,6 @@ export default function AudioPlayer({
     audioState.stream_url,
     projectedPosition,
     isScrubbing,
-    audioSource,
   ]);
 
   // Auto-scroll queue to current track
@@ -227,54 +249,81 @@ export default function AudioPlayer({
     }
   }, [audioState.queue_index]);
 
-  const handleSearch = useCallback(
+  const handleOnlineSearch = useCallback(
     (query: string) => {
-      setSearchQuery(query);
+      setOnlineSearchQuery(query);
 
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+      if (onlineSearchTimeoutRef.current) {
+        clearTimeout(onlineSearchTimeoutRef.current);
       }
 
       if (!query.trim()) {
-        setLibrarySearchResults(null);
         setOnlineSearchResults(null);
         return;
       }
 
-      searchTimeoutRef.current = setTimeout(async () => {
-        setSearching(true);
+      onlineSearchTimeoutRef.current = setTimeout(async () => {
+        setSearchingOnline(true);
         try {
-          if (audioSource === 'online') {
-            const results = await searchOnlineAudio(roomId, query, 12);
-            setOnlineSearchResults(results);
-          } else {
-            const results = await listAudioTracks(roomId, query);
-            setLibrarySearchResults(results);
-          }
+          const results = await searchOnlineAudio(roomId, query, 12);
+          setOnlineSearchResults(results);
         } catch {
-          if (audioSource === 'online') {
-            setOnlineSearchResults([]);
-          } else {
-            setLibrarySearchResults([]);
-          }
+          setOnlineSearchResults([]);
         } finally {
-          setSearching(false);
+          setSearchingOnline(false);
         }
       }, 300);
     },
-    [roomId, audioSource],
+    [roomId],
   );
 
-  const clearSearch = useCallback(() => {
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
+  const handleLocalSearch = useCallback(
+    (query: string) => {
+      setLocalSearchQuery(query);
+
+      if (localSearchTimeoutRef.current) {
+        clearTimeout(localSearchTimeoutRef.current);
+      }
+
+      if (!query.trim()) {
+        setLibrarySearchResults(null);
+        return;
+      }
+
+      localSearchTimeoutRef.current = setTimeout(async () => {
+        setSearchingLocal(true);
+        try {
+          const results = await listAudioTracks(roomId, query, 'local');
+          setLibrarySearchResults(results);
+        } catch {
+          setLibrarySearchResults([]);
+        } finally {
+          setSearchingLocal(false);
+        }
+      }, 300);
+    },
+    [roomId],
+  );
+
+  const clearOnlineSearch = useCallback(() => {
+    if (onlineSearchTimeoutRef.current) {
+      clearTimeout(onlineSearchTimeoutRef.current);
+      onlineSearchTimeoutRef.current = null;
     }
-    setSearchQuery('');
-    setSearching(false);
-    setLibrarySearchResults(null);
+    setOnlineSearchQuery('');
+    setSearchingOnline(false);
     setOnlineSearchResults(null);
     setShowOnlineSearchResults(true);
+  }, []);
+
+  const clearLocalSearch = useCallback(() => {
+    if (localSearchTimeoutRef.current) {
+      clearTimeout(localSearchTimeoutRef.current);
+      localSearchTimeoutRef.current = null;
+    }
+    setLocalSearchQuery('');
+    setSearchingLocal(false);
+    setLibrarySearchResults(null);
   }, []);
 
   const handleSkipPrev = () => sendWs({ type: 'skip_prev' });
@@ -311,6 +360,34 @@ export default function AudioPlayer({
         setStreamError(err?.message || 'Failed to queue online audio track');
       } finally {
         setQueueingVideoId(null);
+      }
+    },
+    [roomId],
+  );
+  const handleQueueLocalTrack = useCallback(
+    async (trackId: string, playNow: boolean) => {
+      setQueueingLocalTrackId(`${trackId}:${playNow ? 'play' : 'queue'}`);
+      setStreamError('');
+      setActionInfo('');
+      try {
+        const response = await queueLocalAudio(roomId, trackId, playNow);
+        if (response.already_queued) {
+          const infoText = playNow
+            ? 'Track already existed in queue. Jumped playback to this track.'
+            : 'Track already exists in the room queue.';
+          setActionInfo(infoText);
+          if (actionInfoTimeoutRef.current) {
+            clearTimeout(actionInfoTimeoutRef.current);
+          }
+          actionInfoTimeoutRef.current = setTimeout(() => {
+            setActionInfo((current) => (current === infoText ? '' : current));
+            actionInfoTimeoutRef.current = null;
+          }, 5000);
+        }
+      } catch (err: any) {
+        setStreamError(err?.message || 'Failed to queue local track');
+      } finally {
+        setQueueingLocalTrackId(null);
       }
     },
     [roomId],
@@ -432,27 +509,10 @@ export default function AudioPlayer({
     setDraggedQueueIndex(null);
   }, []);
 
-  const recentOnlineStatusEvents = useMemo(() => {
-    if (onlineStatusEvents.length === 0) return [];
-    const latestPerStage: WsOnlineAudioStatusMessage[] = [];
-    const seen = new Set<string>();
-
-    for (let i = onlineStatusEvents.length - 1; i >= 0; i -= 1) {
-      const event = onlineStatusEvents[i];
-      const key = `${event.video_id ?? 'none'}:${event.track_id ?? 'none'}:${event.stage}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      latestPerStage.push(event);
-      if (latestPerStage.length >= 8) break;
-    }
-
-    return latestPerStage;
+  const latestOnlineStatusEvent = useMemo<WsOnlineAudioStatusMessage | null>(() => {
+    if (onlineStatusEvents.length === 0) return null;
+    return onlineStatusEvents[onlineStatusEvents.length - 1] ?? null;
   }, [onlineStatusEvents]);
-
-  const displayList: Array<QueueEntry & { isSearchResult?: boolean }> =
-    librarySearchResults !== null
-      ? librarySearchResults.map((t) => ({ ...t, track_id: t.id, isSearchResult: true }))
-      : audioState.queue;
 
   return (
     <div className="space-y-4">
@@ -526,92 +586,148 @@ export default function AudioPlayer({
             </div>
 
             {/* Playback controls */}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleSkipPrev}
-                disabled={!canControl}
-                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                title="Previous"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-4 w-4"
-                  fill="currentColor"
-                  aria-hidden="true"
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSkipPrev}
+                  disabled={!canControl}
+                  className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                  title="Previous"
                 >
-                  <path d="M11.8 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
-                  <path d="M18.2 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={handlePlayPause}
-                disabled={!canControl}
-                className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                title={audioState.playing ? 'Pause' : 'Play'}
-              >
-                {audioState.playing ? (
                   <svg
                     viewBox="0 0 24 24"
                     className="h-4 w-4"
                     fill="currentColor"
                     aria-hidden="true"
                   >
-                    <rect x="6.5" y="5.5" width="4" height="13" rx="1" />
-                    <rect x="13.5" y="5.5" width="4" height="13" rx="1" />
+                    <path d="M11.8 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
+                    <path d="M18.2 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
                   </svg>
-                ) : (
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePlayPause}
+                  disabled={!canControl}
+                  className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                  title={audioState.playing ? 'Pause' : 'Play'}
+                >
+                  {audioState.playing ? (
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-4 w-4"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <rect x="6.5" y="5.5" width="4" height="13" rx="1" />
+                      <rect x="13.5" y="5.5" width="4" height="13" rx="1" />
+                    </svg>
+                  ) : (
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="h-4 w-4"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M8 5.8c0-.9 1-1.5 1.8-1l8.6 5.3c.8.5.8 1.6 0 2.1l-8.6 5.3c-.8.5-1.8-.1-1.8-1V5.8z" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSkipNext}
+                  disabled={!canControl}
+                  className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                  title="Next"
+                >
                   <svg
                     viewBox="0 0 24 24"
                     className="h-4 w-4"
                     fill="currentColor"
                     aria-hidden="true"
                   >
-                    <path d="M8 5.8c0-.9 1-1.5 1.8-1l8.6 5.3c.8.5.8 1.6 0 2.1l-8.6 5.3c-.8.5-1.8-.1-1.8-1V5.8z" />
+                    <path d="M12.2 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
+                    <path d="M5.8 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
                   </svg>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={handleSkipNext}
-                disabled={!canControl}
-                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                title="Next"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  className="h-4 w-4"
-                  fill="currentColor"
-                  aria-hidden="true"
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleToggleShuffle}
+                  disabled={!canControl}
+                  className={`inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
+                  title={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
+                  aria-label={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
                 >
-                  <path d="M12.2 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
-                  <path d="M5.8 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
-                </svg>
-              </button>
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                    <path
+                      d="M4 7h3c2.8 0 4.4.9 6.3 3.5l1.2 1.7C16.1 14.6 17.5 15 20 15h0.9"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M4 17h3.2c2.2 0 3.5-.5 4.9-2.2l3.7-4.6C16.8 8.9 17.9 8 20 8h0.9"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path d="M18 5l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M18 12l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    {!shuffleEnabled && (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    )}
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCycleRepeat}
+                  disabled={!canControl}
+                  className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
+                  title={`Repeat mode: ${repeatLabel}. Click to cycle (Off → Song → Queue)`}
+                  aria-label={`Repeat mode: ${repeatLabel}`}
+                >
+                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                    <path
+                      d="M8 7h8a3 3 0 0 1 3 3v1"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M16 17H8a3 3 0 0 1-3-3v-1"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path d="M15 4l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M9 14l-3 3 3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    {repeatMode === 'none' && (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    )}
+                  </svg>
+                  {repeatMode === 'track' && (
+                    <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75 px-1 text-[10px] font-semibold leading-none">
+                      1
+                    </span>
+                  )}
+                  {repeatMode === 'queue' && (
+                    <span className="absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75">
+                      <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" aria-hidden="true">
+                        <path d="M2 3h8M2 6h8M2 9h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                      </svg>
+                    </span>
+                  )}
+                </button>
+              </div>
               {!canControl && (
-                <span className="text-xs muted">Controls are host-only in this room.</span>
+                <span className="text-center text-xs muted">Controls are host-only in this room.</span>
               )}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleToggleShuffle}
-                disabled={!canControl}
-                className={`px-3 py-1 text-xs disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
-                title="Shuffle queued songs"
-              >
-                Shuffle: {shuffleEnabled ? 'On' : 'Off'}
-              </button>
-              <button
-                type="button"
-                onClick={handleCycleRepeat}
-                disabled={!canControl}
-                className={`px-3 py-1 text-xs disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
-                title="Cycle repeat mode (Off → Song → Queue)"
-              >
-                Repeat: {repeatLabel}
-              </button>
             </div>
 
             {autoplayBlocked && (
@@ -638,61 +754,53 @@ export default function AudioPlayer({
 
       {/* Queue & Search */}
       <section className="panel space-y-3 p-5 sm:p-6">
-        {audioSource === 'online' && (
-          <div className="panel-soft space-y-2 rounded-xl px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs uppercase tracking-wide muted">Online Pipeline Status</p>
-              <p className="text-[11px] muted">Latest {Math.min(recentOnlineStatusEvents.length, 8)} updates</p>
-            </div>
-            {recentOnlineStatusEvents.length === 0 ? (
-              <p className="text-xs muted">
-                No pipeline updates yet. Search and queue a track to start the online download flow.
-              </p>
-            ) : (
-              <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
-                {recentOnlineStatusEvents.map((event, idx) => (
-                  <li
-                    key={`${event.updated_ts_ms}-${event.stage}-${idx}`}
-                    className="tile flex items-start gap-2 rounded-lg px-2 py-1.5"
-                  >
-                    <span className="mt-0.5 text-[11px] muted">
-                      {formatStatusTimestamp(event.updated_ts_ms)}
-                    </span>
-                    <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${statusBadgeClass(
-                        event.status,
-                      )}`}
-                    >
-                      {event.status}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11px] uppercase tracking-wide muted">{event.stage.replaceAll('_', ' ')}</p>
-                      <p className="text-xs leading-snug">{event.message}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+        <div className="panel-soft space-y-2 rounded-xl px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs uppercase tracking-wide muted">Online Pipeline Status</p>
           </div>
-        )}
+          {!latestOnlineStatusEvent ? (
+            <p className="text-xs muted">
+              No pipeline updates yet. Search and queue a track to start the online download flow.
+            </p>
+          ) : (
+            <div className="tile flex items-start gap-2 rounded-lg px-2 py-1.5">
+              <span className="mt-0.5 text-[11px] muted">
+                {formatStatusTimestamp(latestOnlineStatusEvent.updated_ts_ms)}
+              </span>
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${statusBadgeClass(
+                  latestOnlineStatusEvent.status,
+                )}`}
+              >
+                {latestOnlineStatusEvent.status}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] uppercase tracking-wide muted">
+                  {latestOnlineStatusEvent.stage.replaceAll('_', ' ')}
+                </p>
+                <p className="text-xs leading-snug">{latestOnlineStatusEvent.message}</p>
+              </div>
+            </div>
+          )}
+        </div>
 
-        {audioSource === 'online' ? (
-          <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+          <div className="space-y-4">
             <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide muted">Online Search</p>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold shrink-0">Online Search</h2>
                 <div className="relative flex-1">
                   <input
-                    value={searchQuery}
-                    onChange={(e) => handleSearch(e.target.value)}
+                    value={onlineSearchQuery}
+                    onChange={(e) => handleOnlineSearch(e.target.value)}
                     className="input w-full px-3 py-1.5 pr-10 text-sm"
                     placeholder="Search YouTube tracks…"
                     aria-label="Search online tracks"
                   />
-                  {searchQuery.trim().length > 0 && (
+                  {onlineSearchQuery.trim().length > 0 && (
                     <button
                       type="button"
-                      onClick={clearSearch}
+                      onClick={clearOnlineSearch}
                       className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
                       aria-label="Clear search"
                       title="Clear search"
@@ -718,139 +826,75 @@ export default function AudioPlayer({
                 </button>
               </div>
 
-              {searching && (
+              {searchingOnline && (
                 <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
               )}
 
-              {!searching && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
+              {!searchingOnline && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
                 <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
               )}
 
-              {!searching &&
+              {!searchingOnline &&
                 showOnlineSearchResults &&
                 onlineSearchResults !== null &&
                 onlineSearchResults.length > 0 && (
-                <ul className="max-h-64 space-y-2 overflow-y-auto">
-                  {onlineSearchResults.map((result) => {
-                    const queueKey = `${result.video_id}:queue`;
-                    const playKey = `${result.video_id}:play`;
-                    const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
-                    return (
-                      <li key={result.video_id} className="tile rounded-xl px-3 py-2">
-                        <div className="flex items-center gap-3">
-                          <img
-                            src={result.thumbnail_url}
-                            alt={result.title}
-                            className="h-12 w-20 rounded-md object-cover"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">{result.title}</p>
-                            <p className="truncate text-xs muted">{result.channel}</p>
+                  <ul className="max-h-56 space-y-2 overflow-y-auto">
+                    {onlineSearchResults.map((result) => {
+                      const queueKey = `${result.video_id}:queue`;
+                      const playKey = `${result.video_id}:play`;
+                      const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
+                      return (
+                        <li key={result.video_id} className="tile rounded-xl px-3 py-2">
+                          <div className="flex items-center gap-3">
+                            <img
+                              src={result.thumbnail_url}
+                              alt={result.title}
+                              className="h-12 w-20 rounded-md object-cover"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">{result.title}</p>
+                              <p className="truncate text-xs muted">{result.channel}</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                                disabled={busy}
+                                onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
+                              >
+                                Queue
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                                disabled={busy || !canControl}
+                                onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
+                              >
+                                Play now
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
-                              disabled={busy}
-                              onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
-                            >
-                              Queue
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
-                              disabled={busy || !canControl}
-                              onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
-                            >
-                              Play now
-                            </button>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {!searching &&
-                !showOnlineSearchResults &&
-                onlineSearchResults !== null &&
-                onlineSearchResults.length > 0 && (
-                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
-                    Search results hidden.
-                  </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
             </div>
 
             <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
-              {audioState.queue.length > 0 ? (
-                <ul ref={queueRef} className="max-h-[34rem] space-y-1 overflow-y-auto">
-                  {audioState.queue.map((entry, idx) => {
-                    const isActive = idx === audioState.queue_index;
-                    return (
-                      <li
-                        key={entry.track_id}
-                        data-active={isActive ? 'true' : 'false'}
-                        className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''} ${canControl ? 'cursor-move' : ''} ${draggedQueueIndex === idx ? 'border-dashed border-[var(--purple-strong)] opacity-70' : ''}`}
-                        style={{ boxShadow: 'none' }}
-                        draggable={canControl}
-                        onDragStart={(event) => handleQueueDragStart(idx, event)}
-                        onDragOver={(event) => handleQueueDragOver(idx, event)}
-                        onDrop={(event) => handleQueueDrop(idx, event)}
-                        onDragEnd={handleQueueDragEnd}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="w-5 flex-shrink-0 text-center text-xs muted">
-                            {isActive ? '►' : idx + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium">{entry.title}</p>
-                            <p className="truncate text-xs muted">
-                              {entry.artist}
-                              {entry.album ? ` • ${entry.album}` : ''}
-                              {entry.duration_ms ? ` • ${formatMs(entry.duration_ms)}` : ''}
-                            </p>
-                          </div>
-                          {canControl && (
-                            <button
-                              type="button"
-                              onClick={() => handlePlayTrack(entry.track_id)}
-                              className={`px-3 py-1 text-xs ${isActive ? 'btn-primary' : 'btn-secondary'}`}
-                            >
-                              {isActive ? 'Playing' : 'Play'}
-                            </button>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
-                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
-                  Room queue is empty.
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">
-                {librarySearchResults !== null ? 'Search Results' : 'Queue'}
-              </h2>
-              <div className="relative w-full max-w-sm">
+              <p className="text-xs uppercase tracking-wide muted">Offline Search</p>
+              <div className="relative">
                 <input
-                  value={searchQuery}
-                  onChange={(e) => handleSearch(e.target.value)}
+                  value={localSearchQuery}
+                  onChange={(e) => handleLocalSearch(e.target.value)}
                   className="input w-full px-3 py-1.5 pr-10 text-sm"
-                  placeholder="Search tracks…"
-                  aria-label="Search tracks"
+                  placeholder="Search local tracks…"
+                  aria-label="Search local tracks"
                 />
-                {searchQuery.trim().length > 0 && (
+                {localSearchQuery.trim().length > 0 && (
                   <button
                     type="button"
-                    onClick={clearSearch}
+                    onClick={clearLocalSearch}
                     className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
                     aria-label="Clear search"
                     title="Clear search"
@@ -867,42 +911,79 @@ export default function AudioPlayer({
                   </button>
                 )}
               </div>
+
+              {searchingLocal && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
+              )}
+
+              {!searchingLocal && librarySearchResults !== null && librarySearchResults.length === 0 && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+                  No local tracks found (or no local library configured for this room).
+                </div>
+              )}
+
+              {!searchingLocal && librarySearchResults !== null && librarySearchResults.length > 0 && (
+                <ul className="max-h-56 space-y-2 overflow-y-auto">
+                  {librarySearchResults.map((track) => {
+                    const queueKey = `${track.id}:queue`;
+                    const playKey = `${track.id}:play`;
+                    const busy =
+                      queueingLocalTrackId === queueKey || queueingLocalTrackId === playKey;
+                    return (
+                      <li key={track.id} className="tile rounded-xl px-3 py-2">
+                        <div className="flex items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{track.title}</p>
+                            <p className="truncate text-xs muted">
+                              {track.artist}
+                              {track.album ? ` • ${track.album}` : ''}
+                              {track.duration_ms ? ` • ${formatMs(track.duration_ms)}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                              disabled={busy}
+                              onClick={() => void handleQueueLocalTrack(track.id, false)}
+                            >
+                              Queue
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                              disabled={busy || !canControl}
+                              onClick={() => void handleQueueLocalTrack(track.id, true)}
+                            >
+                              Play now
+                            </button>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
+          </div>
 
-            {searching && (
-              <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
-            )}
-
-            {!searching && librarySearchResults !== null && librarySearchResults.length === 0 && (
-              <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No tracks found.</div>
-            )}
-
-            {!searching && displayList.length > 0 && (
-              <ul ref={queueRef} className="max-h-80 space-y-1 overflow-y-auto">
-                {displayList.map((entry, idx) => {
-                  const isActive = !entry.isSearchResult && idx === audioState.queue_index;
-                  const queueDragEnabled = canControl && !entry.isSearchResult;
+          <div className="space-y-3">
+            <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
+            {audioState.queue.length > 0 ? (
+              <ul ref={queueRef} className="max-h-[34rem] space-y-1 overflow-y-auto">
+                {audioState.queue.map((entry, idx) => {
+                  const isActive = idx === audioState.queue_index;
                   return (
                     <li
                       key={entry.track_id}
                       data-active={isActive ? 'true' : 'false'}
-                      className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''} ${queueDragEnabled ? 'cursor-move' : ''} ${queueDragEnabled && draggedQueueIndex === idx ? 'border-dashed border-[var(--purple-strong)] opacity-70' : ''}`}
+                      className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''} ${canControl ? 'cursor-move' : ''} ${draggedQueueIndex === idx ? 'border-dashed border-[var(--purple-strong)] opacity-70' : ''}`}
                       style={{ boxShadow: 'none' }}
-                      draggable={queueDragEnabled}
-                      onDragStart={
-                        queueDragEnabled
-                          ? (event) => handleQueueDragStart(idx, event)
-                          : undefined
-                      }
-                      onDragOver={
-                        queueDragEnabled
-                          ? (event) => handleQueueDragOver(idx, event)
-                          : undefined
-                      }
-                      onDrop={
-                        queueDragEnabled ? (event) => handleQueueDrop(idx, event) : undefined
-                      }
-                      onDragEnd={queueDragEnabled ? handleQueueDragEnd : undefined}
+                      draggable={canControl}
+                      onDragStart={(event) => handleQueueDragStart(idx, event)}
+                      onDragOver={(event) => handleQueueDragOver(idx, event)}
+                      onDrop={(event) => handleQueueDrop(idx, event)}
+                      onDragEnd={handleQueueDragEnd}
                     >
                       <div className="flex items-center gap-3">
                         <span className="w-5 flex-shrink-0 text-center text-xs muted">
@@ -930,9 +1011,13 @@ export default function AudioPlayer({
                   );
                 })}
               </ul>
+            ) : (
+              <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+                Room queue is empty.
+              </div>
             )}
-          </>
-        )}
+          </div>
+        </div>
       </section>
     </div>
   );

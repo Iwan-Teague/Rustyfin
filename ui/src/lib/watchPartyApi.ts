@@ -34,18 +34,8 @@ export type CreateWatchPartyRoomRequest =
   | {
       room_name?: string;
       room_mode: 'audio';
-      audio_source?: 'library';
-      audio_library_id: string;
-      item_id?: never;
-      invites: WatchPartyInviteInput[];
-      password?: string;
-      policy: WatchPartyPolicy;
-    }
-  | {
-      room_name?: string;
-      room_mode: 'audio';
-      audio_source: 'online';
-      audio_library_id?: never;
+      audio_source?: 'library' | 'online';
+      audio_library_id?: string;
       item_id?: never;
       invites: WatchPartyInviteInput[];
       password?: string;
@@ -130,16 +120,8 @@ export type ReconfigureWatchPartyRoomRequest =
     }
   | {
       room_mode: 'audio';
-      audio_source?: 'library';
-      audio_library_id: string;
-      item_id?: never;
-      youtube_video_id?: never;
-      web_url?: never;
-    }
-  | {
-      room_mode: 'audio';
-      audio_source: 'online';
-      audio_library_id?: never;
+      audio_source?: 'library' | 'online';
+      audio_library_id?: string;
       item_id?: never;
       youtube_video_id?: never;
       web_url?: never;
@@ -214,6 +196,12 @@ export type QueueOnlineAudioResponse = {
   ok: boolean;
   track_id: string;
   already_downloaded: boolean;
+};
+
+export type QueueLocalAudioResponse = {
+  ok: boolean;
+  track_id: string;
+  already_queued: boolean;
 };
 
 export type WsPresenceMember = {
@@ -410,8 +398,17 @@ export async function inviteToRoom(
   });
 }
 
-export async function listAudioTracks(roomId: string, q?: string): Promise<AudioTrack[]> {
-  const query = q ? `?q=${encodeURIComponent(q)}` : '';
+export async function listAudioTracks(
+  roomId: string,
+  q?: string,
+  source: 'local' | 'online' = 'local',
+): Promise<AudioTrack[]> {
+  const params = new URLSearchParams();
+  if (q && q.trim()) {
+    params.set('q', q.trim());
+  }
+  params.set('source', source);
+  const query = params.toString() ? `?${params.toString()}` : '';
   return apiJson<AudioTrack[]>(`/watch-party/rooms/${roomId}/audio/tracks${query}`);
 }
 
@@ -437,6 +434,20 @@ export async function queueOnlineAudio(
     method: 'POST',
     body: JSON.stringify({
       video_id: videoId,
+      play_now: playNow,
+    }),
+  });
+}
+
+export async function queueLocalAudio(
+  roomId: string,
+  trackId: string,
+  playNow = false,
+): Promise<QueueLocalAudioResponse> {
+  return apiJson<QueueLocalAudioResponse>(`/watch-party/rooms/${roomId}/audio/local/queue`, {
+    method: 'POST',
+    body: JSON.stringify({
+      track_id: trackId,
       play_now: playNow,
     }),
   });

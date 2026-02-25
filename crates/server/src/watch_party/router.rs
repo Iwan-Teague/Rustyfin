@@ -55,6 +55,10 @@ pub fn watch_party_router() -> Router<AppState> {
             post(super::handlers::queue_online_audio),
         )
         .route(
+            "/rooms/{room_id}/audio/local/queue",
+            post(super::handlers::queue_local_audio),
+        )
+        .route(
             "/rooms/{room_id}/audio/online/tracks/{track_id}/stream",
             get(super::handlers::stream_online_audio_track),
         )

@@ -68,7 +68,6 @@ type Props = {
   canQueue: boolean;
   wsConnected: boolean;
   sendWs: (payload: Record<string, unknown>) => boolean;
-  onDebugLog?: (message: string) => void;
 };
 
 const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
@@ -120,7 +119,6 @@ export default function YouTubePlayer({
   canQueue,
   wsConnected,
   sendWs,
-  onDebugLog,
 }: Props) {
   const playerRef = useRef<YT.Player | null>(null);
   const playerDivId = `yt-player-${roomId}`;
@@ -137,7 +135,6 @@ export default function YouTubePlayer({
   const currentVideoLookupInFlightRef = useRef<string | null>(null);
   const canControlRef = useRef(canControl);
   const sendWsRef = useRef(sendWs);
-  const onDebugLogRef = useRef<typeof onDebugLog>(onDebugLog);
   // Always mirrors the latest ytState so event callbacks can read it without stale closure values
   const ytStateRef = useRef<WsYouTubeStateMessage | null>(ytState);
 
@@ -150,17 +147,13 @@ export default function YouTubePlayer({
   const [searching, setSearching] = useState(false);
   const [searchResultsCollapsed, setSearchResultsCollapsed] = useState(false);
   const [searchError, setSearchError] = useState('');
-  const [debugEntries, setDebugEntries] = useState<string[]>([]);
   const sharedSearchQuery = ytState?.search_query ?? '';
   const searchResults = ytState?.search_results ?? [];
 
   const logDebug = useCallback((message: string) => {
-    const line = `${new Date().toISOString()} ${message}`;
-    setDebugEntries((prev) => [...prev.slice(-119), line]);
     if (typeof window !== 'undefined') {
       console.info(`[watch-party:youtube:${roomId}] ${message}`);
     }
-    onDebugLogRef.current?.(message);
   }, [roomId]);
 
   const clearPendingVideoAck = useCallback(() => {
@@ -204,7 +197,6 @@ export default function YouTubePlayer({
   // Keep refs in sync so event callbacks always see fresh values
   useEffect(() => { canControlRef.current = canControl; }, [canControl]);
   useEffect(() => { sendWsRef.current = sendWs; }, [sendWs]);
-  useEffect(() => { onDebugLogRef.current = onDebugLog; }, [onDebugLog]);
   useEffect(() => { ytStateRef.current = ytState; }, [ytState]);
 
   useEffect(() => {
@@ -662,15 +654,6 @@ export default function YouTubePlayer({
     }
   }, [canControl, canQueue, clearPendingSearchAck, logDebug, sendWs, wsConnected]);
 
-  async function copyDiagnostics() {
-    try {
-      await navigator.clipboard.writeText(debugEntries.join('\n'));
-      logDebug('copied local youtube diagnostics to clipboard');
-    } catch {
-      logDebug('failed to copy local youtube diagnostics');
-      setPlayerError('Failed to copy diagnostics to clipboard.');
-    }
-  }
   const requestQueuePlayNow = useCallback((queueIndex: number) => {
     if (!canControl) {
       setPlayerError('Only room admins can play queued videos now.');
@@ -1094,29 +1077,6 @@ export default function YouTubePlayer({
           You are not an admin — only admins can play/pause/seek or load the current video.
         </p>
       )}
-
-      <details className="panel-soft rounded-xl px-3 py-2 text-xs" open>
-        <summary className="cursor-pointer select-none font-medium">YouTube debug trace</summary>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="btn-secondary px-3 py-1 text-xs"
-            onClick={copyDiagnostics}
-          >
-            Copy local trace
-          </button>
-          <span className="text-[11px] muted">Entries: {debugEntries.length}</span>
-        </div>
-        <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-white/10 bg-black/40 px-2 py-2 text-[11px] leading-5 text-white/80">
-          {debugEntries.length === 0 ? (
-            <p className="muted">No player events yet.</p>
-          ) : (
-            <pre className="whitespace-pre-wrap break-words font-mono">
-              {debugEntries.join('\n')}
-            </pre>
-          )}
-        </div>
-      </details>
     </section>
   );
 }

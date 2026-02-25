@@ -73,7 +73,7 @@ function ParticipantCard({
   const volumePercent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
   return (
     <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
-      <div className="relative pb-2">
+      <div>
         <div
           className="rounded-full p-[3px] transition-all duration-150"
           style={
@@ -93,61 +93,6 @@ function ParticipantCard({
             {initials}
           </div>
         </div>
-        {showSelfControls && (
-          <div className="absolute -bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1">
-            <button
-              type="button"
-              onClick={onToggleMute}
-              disabled={!canToggleMute}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition disabled:opacity-40 disabled:cursor-not-allowed ${
-                muted
-                  ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                  : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
-              }`}
-              aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-              title={muted ? 'Unmute microphone' : 'Mute microphone'}
-            >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                <rect
-                  x="9"
-                  y="3.5"
-                  width="6"
-                  height="10"
-                  rx="3"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                />
-                <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                {muted && (
-                  <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                )}
-              </svg>
-            </button>
-            <button
-              type="button"
-              onClick={onToggleDeafen}
-              className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
-                deafened
-                  ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                  : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
-              }`}
-              aria-label={deafened ? 'Undeafen' : 'Deafen'}
-              title={deafened ? 'Undeafen' : 'Deafen'}
-            >
-              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                {deafened && (
-                  <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                )}
-              </svg>
-            </button>
-          </div>
-        )}
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
       <div className="w-full space-y-1">
@@ -166,7 +111,66 @@ function ParticipantCard({
           aria-label={sliderLabel}
         />
       </div>
-      {isSelf && <span className="text-[11px] muted">You</span>}
+      {isSelf && (
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] muted">You</span>
+          {showSelfControls && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={onToggleMute}
+                disabled={!canToggleMute}
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition disabled:opacity-40 disabled:cursor-not-allowed ${
+                  muted
+                    ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                    : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
+                }`}
+                aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+                title={muted ? 'Unmute microphone' : 'Mute microphone'}
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                  <rect
+                    x="9"
+                    y="3.5"
+                    width="6"
+                    height="10"
+                    rx="3"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                  />
+                  <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  {muted && (
+                    <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  )}
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={onToggleDeafen}
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                  deafened
+                    ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                    : 'border-[var(--border)] bg-black/45 text-white/80 hover:text-white'
+                }`}
+                aria-label={deafened ? 'Undeafen' : 'Deafen'}
+                title={deafened ? 'Undeafen' : 'Deafen'}
+              >
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                  <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                  <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                  <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  {deafened && (
+                    <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  )}
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

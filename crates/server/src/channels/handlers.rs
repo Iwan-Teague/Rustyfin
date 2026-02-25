@@ -1248,6 +1248,17 @@ pub async fn transcribe_chunk(
         },
     )
     .await?;
+    if segments.is_empty() {
+        warn!(
+            channel_id = %channel_id,
+            session_id = %running.id,
+            user_id = %auth.user_id,
+            sample_rate_hz = body.sample_rate_hz,
+            started_ts_ms = body.started_ts_ms,
+            ended_ts_ms = body.ended_ts_ms,
+            "transcription agent returned no segments for uploaded audio chunk"
+        );
+    }
 
     let mut persisted_segments = 0_i64;
     for segment in segments {
@@ -1270,6 +1281,17 @@ pub async fn transcribe_chunk(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
         persisted_segments += 1;
+    }
+    if persisted_segments == 0 {
+        warn!(
+            channel_id = %channel_id,
+            session_id = %running.id,
+            user_id = %auth.user_id,
+            sample_rate_hz = body.sample_rate_hz,
+            started_ts_ms = body.started_ts_ms,
+            ended_ts_ms = body.ended_ts_ms,
+            "transcription chunk produced zero persisted transcript lines"
+        );
     }
 
     Ok(Json(TranscribeChunkResponse {

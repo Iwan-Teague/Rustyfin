@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  ChangeEvent,
+  PointerEvent as ReactPointerEvent,
+  WheelEvent as ReactWheelEvent,
+} from 'react';
 import type { WsCreateCanvasStroke, WsCreateStateMessage } from '@/lib/watchPartyApi';
 
 type Props = {
@@ -11,6 +15,7 @@ type Props = {
 };
 
 type Point = { x: number; y: number };
+type CanvasViewport = { scale: number; offsetX: number; offsetY: number };
 
 type ActiveTool = 'text' | 'canvas';
 type TextFormat = 'plain' | 'markdown' | 'pdf_text';
@@ -31,6 +36,12 @@ type RichDocument = {
 const MAX_DOC_NAME = 120;
 const MAX_DOC_PAGES = 80;
 const EMPTY_PAGE_HTML = '<p><br></p>';
+const CANVAS_WIDTH = 1000;
+const CANVAS_HEIGHT = 560;
+const CANVAS_MIN_ZOOM = 0.4;
+const CANVAS_MAX_ZOOM = 6;
+const CANVAS_MAX_BYTES = 30 * 1024 * 1024;
+const CANVAS_WHEEL_ZOOM_SENSITIVITY = 0.0022;
 
 const PAGE_SIZES: Record<PageSize, { label: string; widthPx: number; heightPx: number }> = {
   a4: { label: 'A4', widthPx: 794, heightPx: 1123 },
@@ -400,7 +411,21 @@ function extractPdfText(buffer: ArrayBuffer): string {
 }
 
 function commandButtonClass(active = false): string {
-  return `rounded-md px-3 py-1.5 text-xs ${active ? 'btn-primary' : 'btn-secondary'}`;
+  return `inline-flex h-8 w-8 items-center justify-center rounded-md ${active ? 'btn-primary' : 'btn-secondary'}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+function estimateCanvasBytes(strokes: WsCreateCanvasStroke[]): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(strokes)).length;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
 }
 
 export default function CreateTogetherEditor({ createState, canEdit, sendWs }: Props) {
@@ -410,22 +435,40 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   const [pageSize, setPageSize] = useState<PageSize>('a4');
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [canvasStrokes, setCanvasStrokes] = useState<WsCreateCanvasStroke[]>([]);
+  const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>({
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
   const [brushColor, setBrushColor] = useState('#b95cff');
   const [brushSize, setBrushSize] = useState(4);
   const [localMessage, setLocalMessage] = useState('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const pagesRef = useRef<RichDocPage[]>([makeEmptyPage()]);
   const pendingStrokeRef = useRef<WsCreateCanvasStroke | null>(null);
+  const activeCanvasPointerIdRef = useRef<number | null>(null);
+  const canvasViewportRef = useRef<CanvasViewport>({
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
   const textDebounceRef = useRef<number | null>(null);
   const nameDebounceRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const latestUpdateRef = useRef<number>(0);
 
   useEffect(() => {
+    pagesRef.current = pages;
+  }, [pages]);
+
+  useEffect(() => {
     return () => {
       if (textDebounceRef.current) window.clearTimeout(textDebounceRef.current);
       if (nameDebounceRef.current) window.clearTimeout(nameDebounceRef.current);
+      activeCanvasPointerIdRef.current = null;
+      pendingStrokeRef.current = null;
     };
   }, []);
 
@@ -499,6 +542,7 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   const commitDocument = useCallback(
     (nextPages: RichDocPage[], nextPageSize: PageSize, immediate = false) => {
       const normalized = normalizePages(nextPages);
+      pagesRef.current = normalized;
       setPages(normalized);
       setPageSize(nextPageSize);
       scheduleDocumentSync(normalized, nextPageSize, immediate);
@@ -516,13 +560,22 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
     const decoded = decodeRichDocument(createState.text_content || '');
     setPageSize(decoded.pageSize);
+    pagesRef.current = decoded.pages;
     setPages(decoded.pages);
     setActivePageId((prev) => {
       if (prev && decoded.pages.some((page) => page.id === prev)) return prev;
       return decoded.pages[0]?.id ?? null;
     });
 
-    setCanvasStrokes(createState.canvas_strokes || []);
+    const incomingStrokes = createState.canvas_strokes || [];
+    if (estimateCanvasBytes(incomingStrokes) > CANVAS_MAX_BYTES) {
+      setLocalMessage(
+        'Incoming canvas data exceeded the 30MB canvas limit and was ignored locally.',
+      );
+      return;
+    }
+
+    setCanvasStrokes(incomingStrokes);
   }, [createState]);
 
   useEffect(() => {
@@ -535,21 +588,84 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   }, [pages]);
 
   const canvasMessage = useMemo(() => {
-    if (!canEdit) return 'Read-only mode. A room admin must enable non-host editing.';
-    return 'Draw with mouse or touch. Changes sync for all joined members.';
-  }, [canEdit]);
+    const zoomPercent = Math.round(canvasViewport.scale * 100);
+    if (!canEdit) {
+      return `Read-only mode. A room admin must enable non-host editing. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom.`;
+    }
+    return `Draw with mouse or touch. Changes sync for all joined members. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom · 30MB canvas limit.`;
+  }, [canEdit, canvasViewport.scale]);
+
+  const clampCanvasViewport = useCallback((next: CanvasViewport): CanvasViewport => {
+    const canvas = canvasRef.current;
+    const viewportWidth = canvas?.width ?? CANVAS_WIDTH;
+    const viewportHeight = canvas?.height ?? CANVAS_HEIGHT;
+    const scale = clamp(next.scale, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
+
+    const contentWidth = CANVAS_WIDTH * scale;
+    const contentHeight = CANVAS_HEIGHT * scale;
+
+    let minOffsetX = viewportWidth - contentWidth;
+    let maxOffsetX = 0;
+    if (contentWidth <= viewportWidth) {
+      const centeredX = (viewportWidth - contentWidth) / 2;
+      minOffsetX = centeredX;
+      maxOffsetX = centeredX;
+    }
+
+    let minOffsetY = viewportHeight - contentHeight;
+    let maxOffsetY = 0;
+    if (contentHeight <= viewportHeight) {
+      const centeredY = (viewportHeight - contentHeight) / 2;
+      minOffsetY = centeredY;
+      maxOffsetY = centeredY;
+    }
+
+    return {
+      scale,
+      offsetX: clamp(next.offsetX, minOffsetX, maxOffsetX),
+      offsetY: clamp(next.offsetY, minOffsetY, maxOffsetY),
+    };
+  }, []);
+
+  const applyCanvasViewport = useCallback(
+    (next: CanvasViewport) => {
+      const clampedViewport = clampCanvasViewport(next);
+      canvasViewportRef.current = clampedViewport;
+      setCanvasViewport(clampedViewport);
+    },
+    [clampCanvasViewport],
+  );
 
   const drawStrokes = useCallback(
-    (strokes: WsCreateCanvasStroke[], pending?: WsCreateCanvasStroke | null) => {
+    (
+      strokes: WsCreateCanvasStroke[],
+      pending?: WsCreateCanvasStroke | null,
+      viewport: CanvasViewport = canvasViewportRef.current,
+    ) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#0a0f1f';
+      ctx.fillStyle = '#050914';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.setTransform(
+        viewport.scale,
+        0,
+        0,
+        viewport.scale,
+        viewport.offsetX,
+        viewport.offsetY,
+      );
+      ctx.fillStyle = '#0a0f1f';
+      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1 / viewport.scale;
+      ctx.strokeRect(0.5 / viewport.scale, 0.5 / viewport.scale, CANVAS_WIDTH, CANVAS_HEIGHT);
 
       const drawStroke = (stroke: WsCreateCanvasStroke) => {
         if (!stroke.points || stroke.points.length === 0) return;
@@ -567,34 +683,50 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
       for (const stroke of strokes) drawStroke(stroke);
       if (pending) drawStroke(pending);
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
     },
     [],
   );
 
   useEffect(() => {
-    drawStrokes(canvasStrokes, pendingStrokeRef.current);
-  }, [canvasStrokes, drawStrokes]);
+    drawStrokes(canvasStrokes, pendingStrokeRef.current, canvasViewport);
+  }, [canvasStrokes, drawStrokes, canvasViewport]);
 
   const syncPageFromDom = useCallback(
     (pageId: string, immediate = false) => {
       const node = pageRefs.current[pageId];
       if (!node) return;
       const sanitized = sanitizePageHtml(node.innerHTML);
-      setPages((prev) => {
-        const next = prev.map((page) =>
-          page.id === pageId
-            ? {
-                ...page,
-                html: sanitized,
-              }
-            : page,
-        );
-        scheduleDocumentSync(next, pageSize, immediate);
-        return next;
-      });
+      const base = pagesRef.current.length > 0 ? pagesRef.current : pages;
+      const next = base.map((page) =>
+        page.id === pageId
+          ? {
+              ...page,
+              html: sanitized,
+            }
+          : page,
+      );
+      pagesRef.current = next;
+      setPages(next);
+      scheduleDocumentSync(next, pageSize, immediate);
     },
-    [pageSize, scheduleDocumentSync],
+    [pageSize, pages, scheduleDocumentSync],
   );
+
+  const snapshotPagesFromDom = useCallback((): RichDocPage[] => {
+    const base = pagesRef.current.length > 0 ? pagesRef.current : pages;
+    const next = base.map((page) => {
+      const node = pageRefs.current[page.id];
+      if (!node) return page;
+      return {
+        ...page,
+        html: sanitizePageHtml(node.innerHTML),
+      };
+    });
+    pagesRef.current = next;
+    return next;
+  }, [pages]);
 
   const applyCommandToSelection = useCallback(
     (command: 'bold' | 'italic' | 'justifyLeft' | 'justifyCenter' | 'justifyRight' | 'insertUnorderedList' | 'insertOrderedList') => {
@@ -644,23 +776,33 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
   const handlePageSizeChange = (nextPageSize: PageSize) => {
     setPageSize(nextPageSize);
-    scheduleDocumentSync(pages, nextPageSize, true);
+    scheduleDocumentSync(pagesRef.current, nextPageSize, true);
   };
 
-  const getCanvasPoint = (event: ReactPointerEvent<HTMLCanvasElement>): Point => {
+  const getCanvasPixelPoint = useCallback((clientX: number, clientY: number): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     return {
-      x: (event.clientX - rect.left) * scaleX,
-      y: (event.clientY - rect.top) * scaleY,
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  }, []);
+
+  const getCanvasPoint = (event: ReactPointerEvent<HTMLCanvasElement>): Point => {
+    const pixel = getCanvasPixelPoint(event.clientX, event.clientY);
+    const viewport = canvasViewportRef.current;
+    return {
+      x: clamp((pixel.x - viewport.offsetX) / viewport.scale, 0, CANVAS_WIDTH),
+      y: clamp((pixel.y - viewport.offsetY) / viewport.scale, 0, CANVAS_HEIGHT),
     };
   };
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (!canEdit) return;
+    if (event.button !== 0 || !canEdit) return;
+    activeCanvasPointerIdRef.current = event.pointerId;
     const point = getCanvasPoint(event);
     const stroke: WsCreateCanvasStroke = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -674,6 +816,7 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   };
 
   const onCanvasPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (activeCanvasPointerIdRef.current !== event.pointerId) return;
     const pending = pendingStrokeRef.current;
     if (!pending || !canEdit) return;
     const point = getCanvasPoint(event);
@@ -682,13 +825,18 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   };
 
   const finishStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (activeCanvasPointerIdRef.current !== event.pointerId) return;
     const pending = pendingStrokeRef.current;
-    if (!pending || !canEdit) return;
+    if (!pending || !canEdit) {
+      activeCanvasPointerIdRef.current = null;
+      return;
+    }
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
       // Pointer may already be released.
     }
+    activeCanvasPointerIdRef.current = null;
     pendingStrokeRef.current = null;
 
     const finalized =
@@ -696,8 +844,60 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
         ? pending
         : { ...pending, points: [...pending.points, pending.points[0]] };
     const next = [...canvasStrokes, finalized];
+    if (estimateCanvasBytes(next) > CANVAS_MAX_BYTES) {
+      setLocalMessage('Canvas storage limit reached (30MB). Undo or clear strokes to continue.');
+      drawStrokes(canvasStrokes, null, canvasViewportRef.current);
+      return;
+    }
     setCanvasStrokes(next);
+    setLocalMessage('');
     pushCanvasState(next);
+  };
+
+  const handleCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const prev = canvasViewportRef.current;
+    const anchor = getCanvasPixelPoint(event.clientX, event.clientY);
+
+    if (event.ctrlKey || event.metaKey) {
+      const zoomFactor = Math.exp(-event.deltaY * CANVAS_WHEEL_ZOOM_SENSITIVITY);
+      const nextScale = clamp(prev.scale * zoomFactor, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
+      const worldX = (anchor.x - prev.offsetX) / prev.scale;
+      const worldY = (anchor.y - prev.offsetY) / prev.scale;
+      applyCanvasViewport({
+        scale: nextScale,
+        offsetX: anchor.x - worldX * nextScale,
+        offsetY: anchor.y - worldY * nextScale,
+      });
+      return;
+    }
+
+    applyCanvasViewport({
+      ...prev,
+      offsetX: prev.offsetX - event.deltaX,
+      offsetY: prev.offsetY - event.deltaY,
+    });
+  };
+
+  const adjustCanvasZoom = (multiplier: number) => {
+    const canvas = canvasRef.current;
+    const prev = canvasViewportRef.current;
+    const center = {
+      x: (canvas?.width ?? CANVAS_WIDTH) / 2,
+      y: (canvas?.height ?? CANVAS_HEIGHT) / 2,
+    };
+    const nextScale = clamp(prev.scale * multiplier, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
+    const worldX = (center.x - prev.offsetX) / prev.scale;
+    const worldY = (center.y - prev.offsetY) / prev.scale;
+    applyCanvasViewport({
+      scale: nextScale,
+      offsetX: center.x - worldX * nextScale,
+      offsetY: center.y - worldY * nextScale,
+    });
+  };
+
+  const resetCanvasViewport = () => {
+    applyCanvasViewport({ scale: 1, offsetX: 0, offsetY: 0 });
   };
 
   const handleCanvasUndo = () => {
@@ -717,12 +917,16 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     const ext = format === 'md' ? 'md' : 'txt';
     const mime =
       format === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8';
-    const plain = pagesToPlainText(pages);
+    const latestPages = snapshotPagesFromDom();
+    setPages(latestPages);
+    const plain = pagesToPlainText(latestPages);
     downloadBlob(new Blob([plain], { type: mime }), `${sanitizeDocumentName(documentName)}.${ext}`);
   };
 
   const handleDownloadPdf = () => {
-    const plain = pagesToPlainText(pages);
+    const latestPages = snapshotPagesFromDom();
+    setPages(latestPages);
+    const plain = pagesToPlainText(latestPages);
     const bytes = buildSimplePdfBytes(plain, sanitizeDocumentName(documentName));
     const pdfBuffer = bytes.buffer.slice(
       bytes.byteOffset,
@@ -888,56 +1092,84 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('bold')}
               disabled={!canEdit}
+              title="Bold"
+              aria-label="Bold"
             >
-              Bold
+              <span className="text-sm font-black">B</span>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('italic')}
               disabled={!canEdit}
+              title="Italic"
+              aria-label="Italic"
             >
-              Italic
+              <span className="text-sm font-semibold italic">I</span>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('justifyLeft')}
               disabled={!canEdit}
+              title="Align Left"
+              aria-label="Align Left"
             >
-              Left
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden="true">
+                <path d="M2 3h10M2 6h7M2 9h10M2 12h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('justifyCenter')}
               disabled={!canEdit}
+              title="Align Center"
+              aria-label="Align Center"
             >
-              Center
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden="true">
+                <path d="M3 3h10M5 6h6M3 9h10M5 12h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('justifyRight')}
               disabled={!canEdit}
+              title="Align Right"
+              aria-label="Align Right"
             >
-              Right
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden="true">
+                <path d="M4 3h10M7 6h7M4 9h10M7 12h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('insertUnorderedList')}
               disabled={!canEdit}
+              title="Bulleted List"
+              aria-label="Bulleted List"
             >
-              Bullets
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden="true">
+                <circle cx="3" cy="4" r="1.2" fill="currentColor" />
+                <circle cx="3" cy="8" r="1.2" fill="currentColor" />
+                <circle cx="3" cy="12" r="1.2" fill="currentColor" />
+                <path d="M6 4h7M6 8h7M6 12h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
             </button>
             <button
               type="button"
               className={commandButtonClass(false)}
               onClick={() => applyCommandToSelection('insertOrderedList')}
               disabled={!canEdit}
+              title="Numbered List"
+              aria-label="Numbered List"
             >
-              Numbered
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" aria-hidden="true">
+                <path d="M1.6 3.6h2M2.6 2.8v3.1M1.6 7.5h2M1.6 11.2h2M1.6 11.2l2 2H1.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M6 4h7M6 8h7M6 12h7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
 
@@ -979,18 +1211,17 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
                         onInput={(event) => {
                           const html = (event.currentTarget as HTMLDivElement).innerHTML;
                           const sanitized = sanitizePageHtml(html);
-                          setPages((prev) => {
-                            const next = prev.map((entry) =>
-                              entry.id === page.id
-                                ? {
-                                    ...entry,
-                                    html: sanitized,
-                                  }
-                                : entry,
-                            );
-                            scheduleDocumentSync(next, pageSize);
-                            return next;
-                          });
+                          const base = pagesRef.current.length > 0 ? pagesRef.current : pages;
+                          const next = base.map((entry) =>
+                            entry.id === page.id
+                              ? {
+                                  ...entry,
+                                  html: sanitized,
+                                }
+                              : entry,
+                          );
+                          pagesRef.current = next;
+                          scheduleDocumentSync(next, pageSize);
                         }}
                         onBlur={() => syncPageFromDom(page.id)}
                       />
@@ -1050,17 +1281,43 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
             >
               Download PNG
             </button>
+            <button
+              type="button"
+              className="btn-secondary px-2 py-1 text-sm"
+              onClick={() => adjustCanvasZoom(0.85)}
+            >
+              -
+            </button>
+            <span className="rounded-md border border-white/10 px-2 py-1 text-xs muted">
+              Zoom {Math.round(canvasViewport.scale * 100)}%
+            </span>
+            <button
+              type="button"
+              className="btn-secondary px-2 py-1 text-sm"
+              onClick={() => adjustCanvasZoom(1.15)}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              className="btn-secondary px-3 py-2 text-sm"
+              onClick={resetCanvasViewport}
+            >
+              Reset View
+            </button>
           </div>
 
           <div className="overflow-hidden rounded-xl border border-white/10 bg-black/40">
             <canvas
               ref={canvasRef}
-              width={1000}
-              height={560}
+              width={CANVAS_WIDTH}
+              height={CANVAS_HEIGHT}
               className="h-auto w-full touch-none"
+              onWheel={handleCanvasWheel}
               onPointerDown={onCanvasPointerDown}
               onPointerMove={onCanvasPointerMove}
               onPointerUp={finishStroke}
+              onPointerCancel={finishStroke}
               onPointerLeave={finishStroke}
             />
           </div>

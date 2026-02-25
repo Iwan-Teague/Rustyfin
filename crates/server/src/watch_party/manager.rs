@@ -110,6 +110,14 @@ pub struct RoomRuntime {
 }
 
 impl RoomRuntime {
+    fn sync_audio_position_to_now(queue: &mut AudioQueueState, now_ms: i64) {
+        if queue.playing && now_ms > queue.updated_ts_ms {
+            let elapsed_ms = (now_ms - queue.updated_ts_ms) as u64;
+            queue.position_ms = queue.position_ms.saturating_add(elapsed_ms);
+        }
+        queue.updated_ts_ms = now_ms;
+    }
+
     pub fn new(room_id: String, item_id: String) -> Self {
         Self::new_video(room_id, item_id)
     }
@@ -541,6 +549,8 @@ impl RoomRuntime {
         if from_index >= len || to_index >= len {
             return None;
         }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self::sync_audio_position_to_now(&mut queue, now_ms);
         if from_index != to_index {
             let current_track_id = queue.track_ids.get(queue.current_index).cloned();
             let moved = queue.track_ids.remove(from_index);
@@ -553,7 +563,6 @@ impl RoomRuntime {
                 }
             }
         }
-        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
         let mut activity = self.last_activity_ts_ms.write().await;
         *activity = queue.updated_ts_ms;
         Some(queue.clone())
@@ -562,8 +571,9 @@ impl RoomRuntime {
     pub async fn set_audio_shuffle_enabled(&self, enabled: bool) -> Option<AudioQueueState> {
         let queue_lock = self.audio_queue.as_ref()?;
         let mut queue = queue_lock.write().await;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self::sync_audio_position_to_now(&mut queue, now_ms);
         queue.shuffle_enabled = enabled;
-        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
         let mut activity = self.last_activity_ts_ms.write().await;
         *activity = queue.updated_ts_ms;
         Some(queue.clone())
@@ -572,8 +582,9 @@ impl RoomRuntime {
     pub async fn set_audio_repeat_mode(&self, mode: AudioRepeatMode) -> Option<AudioQueueState> {
         let queue_lock = self.audio_queue.as_ref()?;
         let mut queue = queue_lock.write().await;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self::sync_audio_position_to_now(&mut queue, now_ms);
         queue.repeat_mode = mode;
-        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
         let mut activity = self.last_activity_ts_ms.write().await;
         *activity = queue.updated_ts_ms;
         Some(queue.clone())
@@ -758,7 +769,7 @@ impl WatchPartyManager {
                     RoomRuntime::new_audio(
                         room_id.to_string(),
                         item_id.to_string(),
-                        audio_source.unwrap_or("library").to_string(),
+                        audio_source.unwrap_or("online").to_string(),
                         audio_library_id.map(str::to_string),
                         audio_track_ids.unwrap_or_default(),
                     )
@@ -853,5 +864,72 @@ async fn remove_room_audio_files(room_audio_root: &Path, room_id: &str) -> std::
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_audio_runtime(track_ids: Vec<String>) -> RoomRuntime {
+        RoomRuntime::new_audio(
+            "room-test".to_string(),
+            "item-test".to_string(),
+            "library".to_string(),
+            Some("library-1".to_string()),
+            track_ids,
+        )
+    }
+
+    #[tokio::test]
+    async fn set_audio_shuffle_preserves_playback_progress() {
+        let runtime = build_audio_runtime(vec!["track-a".to_string()]);
+        let queue_lock = runtime.audio_queue.as_ref().expect("audio queue");
+        let base_now_ms = chrono::Utc::now().timestamp_millis();
+
+        {
+            let mut queue = queue_lock.write().await;
+            queue.playing = true;
+            queue.position_ms = 12_000;
+            queue.updated_ts_ms = base_now_ms - 3_000;
+        }
+
+        let updated = runtime
+            .set_audio_shuffle_enabled(true)
+            .await
+            .expect("shuffle update");
+
+        assert!(updated.shuffle_enabled);
+        assert!(
+            updated.position_ms >= 15_000,
+            "expected projected position >= 15000ms, got {}",
+            updated.position_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn set_audio_repeat_preserves_playback_progress() {
+        let runtime = build_audio_runtime(vec!["track-a".to_string()]);
+        let queue_lock = runtime.audio_queue.as_ref().expect("audio queue");
+        let base_now_ms = chrono::Utc::now().timestamp_millis();
+
+        {
+            let mut queue = queue_lock.write().await;
+            queue.playing = true;
+            queue.position_ms = 7_500;
+            queue.updated_ts_ms = base_now_ms - 2_000;
+        }
+
+        let updated = runtime
+            .set_audio_repeat_mode(AudioRepeatMode::Queue)
+            .await
+            .expect("repeat update");
+
+        assert_eq!(updated.repeat_mode, AudioRepeatMode::Queue);
+        assert!(
+            updated.position_ms >= 9_500,
+            "expected projected position >= 9500ms, got {}",
+            updated.position_ms
+        );
     }
 }

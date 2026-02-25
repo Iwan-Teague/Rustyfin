@@ -43,6 +43,8 @@ const DEFAULT_CREATE_DOCUMENT_NAME: &str = "Untitled Document";
 const CREATE_DOCUMENT_NAME_MAX_LEN: usize = 120;
 const YOUTUBE_SEARCH_URL: &str = "https://www.youtube.com/results";
 const YOUTUBE_SEARCH_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const AUDIO_QUEUE_LOCAL_PREFIX: &str = "local:";
+const AUDIO_QUEUE_ONLINE_PREFIX: &str = "online:";
 
 static CREATE_ROOM_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static JOIN_ROOM_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
@@ -209,6 +211,8 @@ pub struct InviteResponse {
 pub struct AudioTracksQuery {
     #[serde(default)]
     pub q: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,11 +229,25 @@ pub struct QueueOnlineAudioRequest {
     pub play_now: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct QueueLocalAudioRequest {
+    pub track_id: String,
+    #[serde(default)]
+    pub play_now: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct QueueOnlineAudioResponse {
     pub ok: bool,
     pub track_id: String,
     pub already_downloaded: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QueueLocalAudioResponse {
+    pub ok: bool,
+    pub track_id: String,
+    pub already_queued: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -279,19 +297,6 @@ fn default_false() -> bool {
 
 fn default_join_role() -> String {
     "viewer".to_string()
-}
-
-fn shuffle_track_ids(track_ids: &mut [String]) {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let seed = chrono::Utc::now().timestamp_millis() as u64;
-    for i in (1..track_ids.len()).rev() {
-        let mut hasher = DefaultHasher::new();
-        (seed ^ i as u64).hash(&mut hasher);
-        let j = (hasher.finish() as usize) % (i + 1);
-        track_ids.swap(i, j);
-    }
 }
 
 fn create_room_rate_limiter() -> &'static RateLimiter {
@@ -966,18 +971,12 @@ fn normalize_create_document_name(
     Ok(value)
 }
 
-fn normalize_audio_source(raw: Option<&str>) -> Result<String, AppError> {
-    let normalized = raw
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("library")
-        .to_ascii_lowercase();
-    match normalized.as_str() {
-        "library" | "online" => Ok(normalized),
-        _ => Err(
-            ApiError::BadRequest("audio_source must be either 'library' or 'online'".into()).into(),
-        ),
-    }
+fn encode_local_queue_track_id(track_id: &str) -> String {
+    format!("{AUDIO_QUEUE_LOCAL_PREFIX}{track_id}")
+}
+
+fn encode_online_queue_track_id(track_id: &str) -> String {
+    format!("{AUDIO_QUEUE_ONLINE_PREFIX}{track_id}")
 }
 
 fn room_audio_dir(state: &AppState, room_id: &str) -> PathBuf {
@@ -1396,11 +1395,11 @@ fn room_title_for_listing(
         return room_name.trim().to_string();
     }
     if room_mode == "audio" {
-        if audio_source == "online" {
-            return "Online Music Party".to_string();
-        }
         if audio_library_name.is_empty() {
-            return "Music Party".to_string();
+            return "Listen Together".to_string();
+        }
+        if audio_source == "online" {
+            return format!("Listen Together: {audio_library_name}");
         }
         return format!("Music: {audio_library_name}");
     }
@@ -1865,72 +1864,41 @@ pub async fn create_room(
             None,
             None,
         )
-    } else if requested_mode.as_deref() == Some("audio")
-        && normalize_audio_source(body.audio_source.as_deref())? == "online"
-    {
+    } else if requested_mode.as_deref() == Some("audio") {
+        let resolved_audio_library_id = if let Some(audio_lib_id) = body
+            .audio_library_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let library = rustfin_db::repo::libraries::get_library(&state.db, audio_lib_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("audio library not found".into()))?;
+
+            if library.kind != "music" {
+                return Err(ApiError::BadRequest(
+                    "audio_library_id must refer to a music library".into(),
+                )
+                .into());
+            }
+
+            ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
+            Some(audio_lib_id.to_string())
+        } else {
+            None
+        };
+
         (
             "audio".to_string(),
             "online".to_string(),
             None,
-            None,
+            resolved_audio_library_id,
             Some(Vec::new()),
             None,
             None,
             None,
         )
-    } else if let Some(audio_lib_id) = body
-        .audio_library_id
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    {
-        // Audio room
-        let library = rustfin_db::repo::libraries::get_library(&state.db, audio_lib_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("audio library not found".into()))?;
-
-        if library.kind != "music" {
-            return Err(ApiError::BadRequest(
-                "audio_library_id must refer to a music library".into(),
-            )
-            .into());
-        }
-
-        ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
-
-        // Get all tracks from the library
-        let tracks =
-            rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_lib_id, None)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-        if tracks.is_empty() {
-            return Err(ApiError::BadRequest(
-                "the music library has no tracks; scan it first".into(),
-            )
-            .into());
-        }
-
-        // Shuffle tracks
-        let mut track_ids: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
-        shuffle_track_ids(&mut track_ids);
-
-        let first_track_id = track_ids[0].clone();
-        (
-            "audio".to_string(),
-            "library".to_string(),
-            Some(first_track_id),
-            Some(audio_lib_id.to_string()),
-            Some(track_ids),
-            None,
-            None,
-            None,
-        )
-    } else if requested_mode.as_deref() == Some("audio") {
-        return Err(ApiError::BadRequest(
-            "audio_library_id is required for local listen-together rooms".into(),
-        )
-        .into());
     } else {
         // Video room
         let item_id = body
@@ -1995,10 +1963,10 @@ pub async fn create_room(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
             ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
-        } else if room_mode == "audio" && audio_source == "library" {
-            let lib_id = audio_library_id
-                .as_ref()
-                .ok_or_else(|| ApiError::BadRequest("audio library is required".into()))?;
+        } else if room_mode == "audio" {
+            let Some(lib_id) = audio_library_id.as_ref() else {
+                continue;
+            };
             ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
         }
 
@@ -2182,41 +2150,23 @@ pub async fn reconfigure_room(
             )
         }
         "audio" => {
-            let source = normalize_audio_source(body.audio_source.as_deref())?;
-            if source == "online" {
-                let (existing_queue, existing_index) =
-                    if room.room_mode == "audio" && room.audio_source == "online" {
-                        rustfin_db::repo::watch_party::get_audio_queue(&state.db, &room_id)
-                            .await
-                            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                            .unwrap_or((Vec::new(), 0))
-                    } else {
-                        (Vec::new(), 0)
-                    };
-
-                (
-                    "online".to_string(),
-                    existing_queue.get(existing_index).cloned(),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(existing_queue),
-                    existing_index,
-                )
+            let (existing_queue, existing_index) = if room.room_mode == "audio" {
+                rustfin_db::repo::watch_party::get_audio_queue(&state.db, &room_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .unwrap_or((Vec::new(), 0))
             } else {
-                let library_id = body
-                    .audio_library_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        ApiError::BadRequest(
-                            "audio_library_id is required for local listen-together rooms".into(),
-                        )
-                    })?;
+                (Vec::new(), 0)
+            };
 
+            let requested_audio_library_id = body.audio_library_id.as_ref().map(|value| value.trim());
+            let resolved_audio_library_id = match requested_audio_library_id {
+                Some(value) if value.is_empty() => None, // explicit clear
+                Some(value) => Some(value.to_string()),
+                None => room.audio_library_id.clone(),
+            };
+
+            if let Some(ref library_id) = resolved_audio_library_id {
                 let library = rustfin_db::repo::libraries::get_library(&state.db, library_id)
                     .await
                     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2241,37 +2191,25 @@ pub async fn reconfigure_room(
                         .into());
                     }
                 }
-
-                let tracks =
-                    rustfin_db::repo::watch_party::get_library_tracks(&state.db, library_id, None)
-                        .await
-                        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-                if tracks.is_empty() {
-                    return Err(ApiError::BadRequest(
-                        "the music library has no tracks; scan it first".into(),
-                    )
-                    .into());
-                }
-
-                let mut track_ids: Vec<String> = tracks.into_iter().map(|t| t.id).collect();
-                shuffle_track_ids(&mut track_ids);
-                let first_track = track_ids.first().cloned().ok_or_else(|| {
-                    ApiError::BadRequest("the music library has no tracks; scan it first".into())
-                })?;
-
-                (
-                    "library".to_string(),
-                    Some(first_track),
-                    Some(library_id.to_string()),
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(track_ids),
-                    0,
-                )
             }
+
+            let bounded_index = if existing_queue.is_empty() {
+                0
+            } else {
+                existing_index.min(existing_queue.len() - 1)
+            };
+
+            (
+                "online".to_string(),
+                existing_queue.get(bounded_index).cloned(),
+                resolved_audio_library_id,
+                None,
+                None,
+                None,
+                None,
+                Some(existing_queue),
+                bounded_index,
+            )
         }
         "youtube" => {
             let youtube_video_id = body
@@ -2860,9 +2798,10 @@ pub async fn invite_members(
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
                 .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
             ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
-        } else if room.room_mode == "audio" && room.audio_source == "library" {
+        } else if room.room_mode == "audio" {
             let Some(ref lib_id) = room.audio_library_id else {
-                return Err(ApiError::BadRequest("audio room missing library id".into()).into());
+                // Audio rooms can run without a configured local music library.
+                continue;
             };
             ensure_library_access_for_user(&state, &user.id, &user.role, lib_id).await?;
         }
@@ -3017,15 +2956,23 @@ pub async fn list_audio_tracks(
         return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
     }
 
-    if room.audio_source == "online" {
-        let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
-        if member.status != "joined" {
-            return Err(ApiError::Forbidden("room membership is not joined".into()).into());
-        }
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
 
+    let source = params
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase();
+
+    if source == "online" {
         let tracks = rustfin_db::repo::watch_party::list_online_audio_tracks(
             &state.db,
             &room_id,
@@ -3047,9 +2994,14 @@ pub async fn list_audio_tracks(
         return Ok(Json(responses));
     }
 
-    let audio_lib_id = room.audio_library_id.as_deref().ok_or_else(|| {
-        ApiError::BadRequest("audio room is missing a local music library".into())
-    })?;
+    if source != "local" {
+        return Err(ApiError::BadRequest("audio track source must be 'local' or 'online'".into()).into());
+    }
+
+    let Some(audio_lib_id) = room.audio_library_id.as_deref() else {
+        // Unified listen rooms can exist without local library backing.
+        return Ok(Json(Vec::new()));
+    };
 
     ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
 
@@ -3106,11 +3058,8 @@ pub async fn search_online_audio(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    if room.room_mode != "audio" || room.audio_source != "online" {
-        return Err(ApiError::BadRequest(
-            "online audio search is only available in online listen-together rooms".into(),
-        )
-        .into());
+    if room.room_mode != "audio" {
+        return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
     }
 
     let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
@@ -3143,11 +3092,8 @@ pub async fn queue_online_audio(
     if room.status != "lobby" {
         return Err(ApiError::Conflict("room is not active".into()).into());
     }
-    if room.room_mode != "audio" || room.audio_source != "online" {
-        return Err(ApiError::BadRequest(
-            "this endpoint is only available in online listen-together rooms".into(),
-        )
-        .into());
+    if room.room_mode != "audio" {
+        return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
     }
 
     let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
@@ -3439,20 +3385,24 @@ pub async fn queue_online_audio(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .unwrap_or((Vec::new(), 0));
 
+    let queued_track_id = encode_online_queue_track_id(&track_row.id);
     let queue_was_empty = queue_ids.is_empty();
-    if let Some(existing_index) = queue_ids.iter().position(|id| id == &track_row.id) {
+    if let Some(existing_index) = queue_ids
+        .iter()
+        .position(|id| id == &queued_track_id || id == &track_row.id)
+    {
         if body.play_now {
             current_index = existing_index;
         }
     } else {
-        queue_ids.push(track_row.id.clone());
+        queue_ids.push(queued_track_id.clone());
         if body.play_now || queue_ids.len() == 1 {
             current_index = queue_ids.len().saturating_sub(1);
         }
     }
     let queue_position = queue_ids
         .iter()
-        .position(|id| id == &track_row.id)
+        .position(|id| id == &queued_track_id || id == &track_row.id)
         .map(|idx| idx + 1)
         .unwrap_or(1);
     let should_start_playback = body.play_now || (queue_was_empty && !queue_ids.is_empty());
@@ -3539,6 +3489,139 @@ pub async fn queue_online_audio(
     }))
 }
 
+pub async fn queue_local_audio(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Json(body): Json<QueueLocalAudioRequest>,
+) -> Result<Json<QueueLocalAudioResponse>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.status != "lobby" {
+        return Err(ApiError::Conflict("room is not active".into()).into());
+    }
+    if room.room_mode != "audio" {
+        return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
+    }
+
+    let member = rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Forbidden("room membership not found; join first".into()))?;
+    if member.status != "joined" {
+        return Err(ApiError::Forbidden("room membership is not joined".into()).into());
+    }
+
+    if body.play_now {
+        let policy: RoomPolicy = serde_json::from_str(&room.policy_json)
+            .map_err(|e| ApiError::Internal(format!("invalid room policy JSON: {e}")))?;
+        if !can_play_pause(&member.role, &policy) {
+            return Err(ApiError::Forbidden(
+                "play now is not allowed for this user in this room".into(),
+            )
+            .into());
+        }
+    }
+
+    let audio_lib_id = room.audio_library_id.as_deref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "this room has no local music library configured for offline track search".into(),
+        )
+    })?;
+
+    ensure_library_access_for_user(&state, &auth.user_id, &auth.role, audio_lib_id).await?;
+
+    let local_track_id = body.track_id.trim();
+    if local_track_id.is_empty() {
+        return Err(ApiError::BadRequest("track_id is required".into()).into());
+    }
+
+    let item = rustfin_db::repo::items::get_item(&state.db, local_track_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("track not found".into()))?;
+    if item.kind != "track" {
+        return Err(ApiError::BadRequest("track_id must refer to a music track".into()).into());
+    }
+    if item.library_id != audio_lib_id {
+        return Err(ApiError::BadRequest(
+            "track does not belong to this room's configured local music library".into(),
+        )
+        .into());
+    }
+
+    let (mut queue_ids, mut current_index) =
+        rustfin_db::repo::watch_party::get_audio_queue(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .unwrap_or((Vec::new(), 0));
+
+    let queued_track_id = encode_local_queue_track_id(local_track_id);
+    let queue_was_empty = queue_ids.is_empty();
+    let mut already_queued = false;
+    if let Some(existing_index) = queue_ids
+        .iter()
+        .position(|id| id == &queued_track_id || id == local_track_id)
+    {
+        already_queued = true;
+        if body.play_now {
+            current_index = existing_index;
+        }
+    } else {
+        queue_ids.push(queued_track_id.clone());
+        if body.play_now || queue_ids.len() == 1 {
+            current_index = queue_ids.len().saturating_sub(1);
+        }
+    }
+
+    let should_start_playback = body.play_now || (queue_was_empty && !queue_ids.is_empty());
+    let queue_json = serde_json::to_string(&queue_ids)
+        .map_err(|e| ApiError::Internal(format!("queue serialization error: {e}")))?;
+    rustfin_db::repo::watch_party::upsert_audio_queue(
+        &state.db,
+        &room_id,
+        &queue_json,
+        current_index,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
+
+    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await.as_ref() {
+        let (position_ms, playing) = if should_start_playback {
+            (0_u64, true)
+        } else {
+            runtime
+                .snapshot_audio_queue()
+                .await
+                .map(|q| {
+                    if q.playing {
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let elapsed_ms = (now_ms - q.updated_ts_ms).max(0) as u64;
+                        (q.position_ms.saturating_add(elapsed_ms), true)
+                    } else {
+                        (q.position_ms, false)
+                    }
+                })
+                .unwrap_or((0_u64, false))
+        };
+
+        runtime
+            .set_audio_queue(queue_ids.clone(), current_index, position_ms, playing)
+            .await;
+        super::ws::broadcast_current_state(&state, runtime, &room_id).await?;
+    }
+
+    Ok(Json(QueueLocalAudioResponse {
+        ok: true,
+        track_id: local_track_id.to_string(),
+        already_queued,
+    }))
+}
+
 fn online_audio_content_type(path: &StdPath) -> &'static str {
     match path
         .extension()
@@ -3578,8 +3661,8 @@ pub async fn stream_online_audio_track(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
-    if room.room_mode != "audio" || room.audio_source != "online" {
-        return Err(ApiError::BadRequest("room is not using online audio mode".into()).into());
+    if room.room_mode != "audio" {
+        return Err(ApiError::BadRequest("this room is not an audio room".into()).into());
     }
 
     let track =

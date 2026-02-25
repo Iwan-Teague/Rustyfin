@@ -282,7 +282,8 @@ fn transcribe_audio_chunk(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_print_special(false);
-    params.set_no_context(true);
+    // Keep per-user worker context between chunks to improve recognition continuity.
+    params.set_no_context(false);
     if let Some(lang) = language {
         let trimmed = lang.trim();
         if !trimmed.is_empty() {
@@ -523,6 +524,8 @@ async fn transcribe_chunk(
         .map_err(|e| ApiError::BadRequest(format!("whisper transcription failed: {e}")))?;
 
     let mut segments = Vec::new();
+    let offset_count = offsets.len();
+    let fallback_segment_ms = (chunk_duration_ms / (offset_count.max(1) as i64)).clamp(250, 3_000);
     for seg in offsets {
         let mut started_ts_ms = body.started_ts_ms + seg.start_offset_ms.max(0);
         let mut ended_ts_ms = body.started_ts_ms + seg.end_offset_ms.max(seg.start_offset_ms);
@@ -533,7 +536,17 @@ async fn transcribe_chunk(
             ended_ts_ms = body.ended_ts_ms;
         }
         if ended_ts_ms <= started_ts_ms {
-            continue;
+            let min_end = (started_ts_ms + fallback_segment_ms).min(body.ended_ts_ms);
+            if min_end <= started_ts_ms {
+                if body.ended_ts_ms > body.started_ts_ms {
+                    started_ts_ms = body.started_ts_ms;
+                    ended_ts_ms = body.ended_ts_ms;
+                } else {
+                    continue;
+                }
+            } else {
+                ended_ts_ms = min_end;
+            }
         }
         segments.push(TranscriptSegment {
             started_ts_ms,

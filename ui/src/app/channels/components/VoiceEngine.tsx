@@ -29,9 +29,8 @@ const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
 const TRANSCRIPTION_SAMPLE_RATE = 16_000;
-const TRANSCRIPTION_CHUNK_SECONDS = 1;
+const TRANSCRIPTION_CHUNK_SECONDS = 4;
 const TRANSCRIPTION_CHUNK_SAMPLES = TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
-const DEFAULT_TRANSCRIPTION_LANGUAGE = 'en';
 
 type SpeakingMonitor = {
   source: MediaStreamAudioSourceNode;
@@ -145,6 +144,36 @@ export default function VoiceEngine({
     return btoa(binary);
   }
 
+  function measurePeak(samples: Int16Array): number {
+    if (samples.length === 0) return 0;
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const value = Math.abs(samples[i]);
+      if (value > peak) peak = value;
+    }
+    return peak / 32768;
+  }
+
+  function normalizeChunk(samples: Int16Array): Int16Array {
+    const peak = measurePeak(samples);
+    if (peak <= 0.0001 || peak >= 0.14) {
+      return samples;
+    }
+    const gain = Math.min(8, 0.14 / peak);
+    const out = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      const value = Math.round(samples[i] * gain);
+      if (value > 32767) {
+        out[i] = 32767;
+      } else if (value < -32768) {
+        out[i] = -32768;
+      } else {
+        out[i] = value;
+      }
+    }
+    return out;
+  }
+
   function teardownTranscriptionCapture() {
     transcriptionProcessorRef.current?.disconnect();
     transcriptionSourceRef.current?.disconnect();
@@ -166,6 +195,11 @@ export default function VoiceEngine({
     const chunkSize = force ? samples.length : TRANSCRIPTION_CHUNK_SAMPLES;
     const chunk = samples.splice(0, chunkSize);
     if (chunk.length === 0) return;
+    const raw = Int16Array.from(chunk);
+    if (measurePeak(raw) < 0.003) {
+      return;
+    }
+    const normalized = normalizeChunk(raw);
 
     const now = Date.now();
     const durationMs = Math.max(1, Math.round((chunk.length / TRANSCRIPTION_SAMPLE_RATE) * 1000));
@@ -174,8 +208,7 @@ export default function VoiceEngine({
       sample_rate_hz: TRANSCRIPTION_SAMPLE_RATE,
       started_ts_ms: now - durationMs,
       ended_ts_ms: now,
-      pcm_s16le_base64: pcmInt16ToBase64(Int16Array.from(chunk)),
-      language: DEFAULT_TRANSCRIPTION_LANGUAGE,
+      pcm_s16le_base64: pcmInt16ToBase64(normalized),
     };
 
     void onTranscriptionChunk(channelId, payload);
@@ -488,9 +521,10 @@ export default function VoiceEngine({
       transcriptionState?.status === 'running'
         ? (transcriptionState.session_id ?? null)
         : null;
-    const localTrack = localStream?.getAudioTracks()[0] ?? null;
+    const transcriptionStream = getOutboundStream() ?? localStream;
+    const localTrack = transcriptionStream?.getAudioTracks()[0] ?? null;
 
-    if (!localStream || !localTrack || !sessionId) {
+    if (!transcriptionStream || !localTrack || !sessionId) {
       const previousSession = activeTranscriptionSessionRef.current;
       if (previousSession) {
         flushTranscriptionChunk(previousSession, true);
@@ -518,7 +552,7 @@ export default function VoiceEngine({
     }
 
     try {
-      const source = context.createMediaStreamSource(localStream);
+      const source = context.createMediaStreamSource(transcriptionStream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       processor.onaudioprocess = (event) => {
         if (!localTrack.enabled) {
@@ -559,7 +593,7 @@ export default function VoiceEngine({
       teardownTranscriptionCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localStream, transcriptionState?.status, transcriptionState?.session_id, channelId]);
+  }, [localStream, transcriptionState?.status, transcriptionState?.session_id, channelId, localMicGain]);
 
   useEffect(() => {
     audioElementsRef.current.forEach((audio, userId) => {
