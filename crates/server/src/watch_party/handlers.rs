@@ -3439,6 +3439,7 @@ pub async fn queue_online_audio(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .unwrap_or((Vec::new(), 0));
 
+    let queue_was_empty = queue_ids.is_empty();
     if let Some(existing_index) = queue_ids.iter().position(|id| id == &track_row.id) {
         if body.play_now {
             current_index = existing_index;
@@ -3454,6 +3455,7 @@ pub async fn queue_online_audio(
         .position(|id| id == &track_row.id)
         .map(|idx| idx + 1)
         .unwrap_or(1);
+    let should_start_playback = body.play_now || (queue_was_empty && !queue_ids.is_empty());
 
     emit_online_audio_status(
         runtime.as_ref(),
@@ -3482,7 +3484,7 @@ pub async fn queue_online_audio(
         Some(&track_row.id),
         "queue_update",
         "success",
-        if body.play_now {
+        if should_start_playback {
             "Queue updated. Starting playback…".to_string()
         } else {
             format!("Queued at position {}.", queue_position)
@@ -3490,13 +3492,21 @@ pub async fn queue_online_audio(
     );
 
     if let Some(runtime) = runtime.as_ref() {
-        let (position_ms, playing) = if body.play_now {
+        let (position_ms, playing) = if should_start_playback {
             (0_u64, true)
         } else {
             runtime
                 .snapshot_audio_queue()
                 .await
-                .map(|q| (q.position_ms, q.playing))
+                .map(|q| {
+                    if q.playing {
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let elapsed_ms = (now_ms - q.updated_ts_ms).max(0) as u64;
+                        (q.position_ms.saturating_add(elapsed_ms), true)
+                    } else {
+                        (q.position_ms, false)
+                    }
+                })
                 .unwrap_or((0_u64, false))
         };
         runtime
@@ -3508,9 +3518,13 @@ pub async fn queue_online_audio(
             &room_id,
             Some(&video_id),
             Some(&track_row.id),
-            if body.play_now { "playing" } else { "queued" },
+            if should_start_playback {
+                "playing"
+            } else {
+                "queued"
+            },
             "success",
-            if body.play_now {
+            if should_start_playback {
                 "Track is now playing in the room."
             } else {
                 "Track is ready in queue."
