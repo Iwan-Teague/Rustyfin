@@ -44,6 +44,7 @@ USER rustfin
 
 ENV RUSTFIN_DB=/config/rustfin.db
 ENV RUSTFIN_TRANSCODE_DIR=/transcode
+ENV RUSTFIN_CACHE_DIR=/cache
 ENV RUSTFIN_BIND=0.0.0.0:8096
 ENV RUST_LOG=info
 

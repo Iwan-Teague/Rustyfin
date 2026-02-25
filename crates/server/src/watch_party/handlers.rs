@@ -984,6 +984,103 @@ fn room_audio_dir(state: &AppState, room_id: &str) -> PathBuf {
     state.watch_party_audio_dir.join(room_id)
 }
 
+async fn canonical_watch_party_audio_root_for_validation(
+    state: &AppState,
+) -> Result<PathBuf, AppError> {
+    tokio::fs::create_dir_all(&state.watch_party_audio_dir)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!(
+                "failed to ensure watch-party audio root directory: {e}"
+            ))
+        })?;
+    state.watch_party_audio_dir.canonicalize().map_err(|e| {
+        ApiError::Internal(format!(
+            "failed to canonicalize watch-party audio root for validation: {e}"
+        ))
+        .into()
+    })
+}
+
+async fn canonical_room_audio_dir_for_validation(
+    state: &AppState,
+    room_id: &str,
+) -> Result<PathBuf, AppError> {
+    let room_dir = room_audio_dir(state, room_id);
+    tokio::fs::create_dir_all(&room_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to ensure room audio directory: {e}")))?;
+    room_dir.canonicalize().map_err(|e| {
+        ApiError::Internal(format!(
+            "failed to canonicalize room audio directory for validation: {e}"
+        ))
+        .into()
+    })
+}
+
+fn path_contains_component(path: &StdPath, component: &str) -> bool {
+    let expected = std::ffi::OsStr::new(component);
+    path.components().any(|part| part.as_os_str() == expected)
+}
+
+async fn reconcile_agent_file_path_for_room(
+    state: &AppState,
+    room_id: &str,
+    raw_path: &StdPath,
+) -> PathBuf {
+    if tokio::fs::metadata(raw_path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        return raw_path.to_path_buf();
+    }
+
+    if !path_contains_component(raw_path, room_id) {
+        return raw_path.to_path_buf();
+    }
+    let Some(file_name) = raw_path.file_name() else {
+        return raw_path.to_path_buf();
+    };
+
+    let remapped = room_audio_dir(state, room_id).join(file_name);
+    if tokio::fs::metadata(&remapped)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        return remapped;
+    }
+
+    raw_path.to_path_buf()
+}
+
+fn validate_room_audio_scope(
+    canonical_file: &StdPath,
+    canonical_room_root: &StdPath,
+    canonical_cache_root: &StdPath,
+    room_id: &str,
+) -> Result<(), AppError> {
+    if canonical_file.starts_with(canonical_room_root) {
+        return Ok(());
+    }
+
+    if canonical_file.starts_with(canonical_cache_root)
+        && path_contains_component(canonical_file, room_id)
+    {
+        return Ok(());
+    }
+
+    Err(ApiError::Forbidden(format!(
+        "youtube-agent returned a file path outside this room scope (file={}, room_root={}, cache_root={}, room_id={})",
+        canonical_file.display(),
+        canonical_room_root.display(),
+        canonical_cache_root.display(),
+        room_id
+    ))
+    .into())
+}
+
 async fn remove_room_audio_files(state: &AppState, room_id: &str) -> Result<(), AppError> {
     let dir = room_audio_dir(state, room_id);
     match tokio::fs::metadata(&dir).await {
@@ -1069,7 +1166,8 @@ async fn download_youtube_audio_mp3_for_room(
         ))
     })?;
 
-    let file_path = PathBuf::from(&payload.file_path);
+    let file_path =
+        reconcile_agent_file_path_for_room(state, room_id, StdPath::new(&payload.file_path)).await;
     let file_meta = tokio::fs::metadata(&file_path)
         .await
         .map_err(|e| ApiError::Internal(format!("downloaded audio path missing from disk: {e}")))?;
@@ -1083,18 +1181,14 @@ async fn download_youtube_audio_mp3_for_room(
     let canonical_file = file_path.canonicalize().map_err(|e| {
         ApiError::Internal(format!("failed to canonicalize downloaded audio path: {e}"))
     })?;
-    let canonical_room_root = room_audio_dir(state, room_id).canonicalize().map_err(|e| {
-        ApiError::Internal(format!(
-            "failed to canonicalize room audio directory for validation: {e}"
-        ))
-    })?;
-
-    if !canonical_file.starts_with(&canonical_room_root) {
-        return Err(ApiError::Forbidden(
-            "youtube-agent returned a file path outside this room scope".into(),
-        )
-        .into());
-    }
+    let canonical_room_root = canonical_room_audio_dir_for_validation(state, room_id).await?;
+    let canonical_cache_root = canonical_watch_party_audio_root_for_validation(state).await?;
+    validate_room_audio_scope(
+        &canonical_file,
+        &canonical_room_root,
+        &canonical_cache_root,
+        room_id,
+    )?;
 
     Ok(DownloadedOnlineAudio {
         file_path,
@@ -3488,14 +3582,14 @@ pub async fn stream_online_audio_track(
     let canonical_file = file_path
         .canonicalize()
         .map_err(|e| ApiError::Internal(format!("failed to canonicalize audio path: {e}")))?;
-    let canonical_room_root = room_audio_dir(&state, &room_id)
-        .canonicalize()
-        .map_err(|e| ApiError::Internal(format!("failed to canonicalize room audio root: {e}")))?;
-    if !canonical_file.starts_with(&canonical_room_root) {
-        return Err(
-            ApiError::Forbidden("online audio file path is outside room scope".into()).into(),
-        );
-    }
+    let canonical_room_root = canonical_room_audio_dir_for_validation(&state, &room_id).await?;
+    let canonical_cache_root = canonical_watch_party_audio_root_for_validation(&state).await?;
+    validate_room_audio_scope(
+        &canonical_file,
+        &canonical_room_root,
+        &canonical_cache_root,
+        &room_id,
+    )?;
 
     let file_size = tokio::fs::metadata(&file_path)
         .await

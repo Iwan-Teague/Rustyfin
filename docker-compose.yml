@@ -25,6 +25,7 @@ services:
       - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
       - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-./media}
       - RUSTFIN_MEDIA_CONTAINER_ROOT=${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}
+      - RUSTFIN_CACHE_DIR=/cache
       - RUSTFIN_WS_ALLOWED_ORIGINS=${RUSTFIN_WS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       rustfin-youtube-agent:
