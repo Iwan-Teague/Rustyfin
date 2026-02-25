@@ -1,8 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { apiFetch } from '@/lib/api';
+import {
+  cancelVoiceTranscription,
+  getVoiceTranscriptionStatus,
+  startVoiceTranscription,
+  stopVoiceTranscription,
+} from '@/lib/channelsApi';
 import { useChannels } from '@/lib/channelsContext';
-import type { ChannelEvent, ChannelInfo, UserInfo } from '@/lib/channelsApi';
+import type {
+  ChannelEvent,
+  ChannelInfo,
+  UserInfo,
+  VoiceTranscriptionState,
+  VoiceTranscriptionStatus,
+} from '@/lib/channelsApi';
 
 interface Props {
   channel: ChannelInfo;
@@ -97,6 +110,7 @@ export default function VoiceChannelView({
   const {
     voiceSession,
     voiceSpeaking,
+    voiceTranscriptions,
     remoteVolumes,
     localMicGain,
     joinVoice,
@@ -105,12 +119,16 @@ export default function VoiceChannelView({
     toggleDeafen,
     setRemoteVolume,
     setLocalMicGain,
+    setVoiceTranscriptionState,
   } = useChannels();
   const [error, setError] = useState<string | null>(null);
+  const [transcriptionBusy, setTranscriptionBusy] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
 
   const members = voicePresence[channel.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
   const isConnected = voiceSession?.channelId === channel.id;
+  const transcriptionState = voiceTranscriptions[channel.id] ?? null;
   const muted = isConnected ? (voiceSession?.muted ?? false) : false;
   const deafened = isConnected ? (voiceSession?.deafened ?? false) : false;
 
@@ -123,6 +141,121 @@ export default function VoiceChannelView({
   function handleDisconnect() {
     leaveVoice();
   }
+
+  function mapStatusToState(status: VoiceTranscriptionStatus): VoiceTranscriptionState {
+    return {
+      status: status.status,
+      session_id: status.session_id ?? null,
+      started_by_username: status.started_by_username ?? null,
+      started_ts: status.started_ts ?? null,
+      ended_ts: status.ended_ts ?? null,
+      output_available: status.output_available,
+      message: status.message ?? null,
+    };
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVoiceTranscriptionStatus(channel.id)
+      .then((status) => {
+        if (cancelled) return;
+        setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTranscriptionError('Unable to load transcription state for this channel.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel.id]);
+
+  async function handleStartTranscription() {
+    setTranscriptionBusy(true);
+    setTranscriptionError(null);
+    try {
+      const status = await startVoiceTranscription(channel.id);
+      setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to start transcription');
+    } finally {
+      setTranscriptionBusy(false);
+    }
+  }
+
+  async function handleStopTranscription() {
+    setTranscriptionBusy(true);
+    setTranscriptionError(null);
+    try {
+      const status = await stopVoiceTranscription(channel.id);
+      setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to stop transcription');
+    } finally {
+      setTranscriptionBusy(false);
+    }
+  }
+
+  async function handleCancelTranscription() {
+    setTranscriptionBusy(true);
+    setTranscriptionError(null);
+    try {
+      const status = await cancelVoiceTranscription(channel.id);
+      setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to cancel transcription');
+    } finally {
+      setTranscriptionBusy(false);
+    }
+  }
+
+  async function handleDownloadTranscription() {
+    if (!transcriptionState?.session_id || !transcriptionState.output_available) {
+      return;
+    }
+    setTranscriptionBusy(true);
+    setTranscriptionError(null);
+    try {
+      const path = `/channels/${channel.id}/transcription/sessions/${transcriptionState.session_id}/download`;
+      const response = await apiFetch(path, { method: 'GET' });
+      if (!response.ok) {
+        throw new Error('failed to download transcript');
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `voice-transcript-${transcriptionState.session_id}.md`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to download transcript');
+    } finally {
+      setTranscriptionBusy(false);
+    }
+  }
+
+  const transcriptionStatusLabel = (() => {
+    const status = transcriptionState?.status ?? 'idle';
+    switch (status) {
+      case 'running':
+        return 'Running';
+      case 'finalizing':
+        return 'Finalizing';
+      case 'completed':
+        return 'Completed';
+      case 'cancelled':
+        return 'Cancelled';
+      case 'failed':
+        return 'Failed';
+      default:
+        return 'Idle';
+    }
+  })();
 
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
@@ -166,8 +299,55 @@ export default function VoiceChannelView({
               </button>
             </>
           )}
+          {isConnected && (
+            <>
+              <span className="chip text-xs" title="Channel transcript status">
+                Transcript: {transcriptionStatusLabel}
+              </span>
+              {transcriptionState?.status === 'running' ? (
+                <>
+                  <button
+                    onClick={handleStopTranscription}
+                    disabled={transcriptionBusy}
+                    className="btn-secondary px-3 py-1.5 text-sm"
+                  >
+                    Stop &amp; Save
+                  </button>
+                  <button
+                    onClick={handleCancelTranscription}
+                    disabled={transcriptionBusy}
+                    className="btn-secondary px-3 py-1.5 text-sm text-red-300"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleStartTranscription}
+                  disabled={transcriptionBusy}
+                  className="btn-secondary px-3 py-1.5 text-sm"
+                >
+                  Start Transcript
+                </button>
+              )}
+              {transcriptionState?.output_available && transcriptionState?.session_id && (
+                <button
+                  onClick={handleDownloadTranscription}
+                  disabled={transcriptionBusy}
+                  className="btn-secondary px-3 py-1.5 text-sm"
+                >
+                  Download
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
+      {transcriptionError && (
+        <div className="px-4 py-2 border-b border-[var(--border)] text-xs text-red-300">
+          {transcriptionError}
+        </div>
+      )}
 
       {/* Participant grid */}
       <div className="flex-1 overflow-y-auto p-4">

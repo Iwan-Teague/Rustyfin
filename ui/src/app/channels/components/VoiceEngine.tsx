@@ -1,7 +1,12 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import type { ChannelEvent, UserInfo } from '@/lib/channelsApi';
+import type {
+  ChannelEvent,
+  UserInfo,
+  VoiceTranscribeChunkRequest,
+  VoiceTranscriptionState,
+} from '@/lib/channelsApi';
 
 interface Props {
   localStream: MediaStream | null;
@@ -14,6 +19,8 @@ interface Props {
   remoteVolumes: Record<string, number>;
   localMicGain: number;
   onSpeakingChange: (channelId: string, userId: string, speaking: boolean) => void;
+  transcriptionState: VoiceTranscriptionState | null;
+  onTranscriptionChunk: (channelId: string, payload: VoiceTranscribeChunkRequest) => Promise<void>;
 }
 
 const STUN_URL =
@@ -21,6 +28,9 @@ const STUN_URL =
 const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
+const TRANSCRIPTION_SAMPLE_RATE = 16_000;
+const TRANSCRIPTION_CHUNK_SECONDS = 2;
+const TRANSCRIPTION_CHUNK_SAMPLES = TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
 
 type SpeakingMonitor = {
   source: MediaStreamAudioSourceNode;
@@ -52,6 +62,8 @@ export default function VoiceEngine({
   remoteVolumes,
   localMicGain,
   onSpeakingChange,
+  transcriptionState,
+  onTranscriptionChunk,
 }: Props) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -63,6 +75,11 @@ export default function VoiceEngine({
   const localMicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const localMicProcessedStreamRef = useRef<MediaStream | null>(null);
   const localMicInputTrackIdRef = useRef<string | null>(null);
+  const transcriptionContextRef = useRef<AudioContext | null>(null);
+  const transcriptionSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const transcriptionProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const transcriptionSamplesRef = useRef<number[]>([]);
+  const activeTranscriptionSessionRef = useRef<string | null>(null);
 
   function getAudioContext(): AudioContext | null {
     if (audioContextRef.current) {
@@ -76,6 +93,90 @@ export default function VoiceEngine({
     }
     audioContextRef.current = new audioContextCtor();
     return audioContextRef.current;
+  }
+
+  function floatToInt16(input: Float32Array): Int16Array {
+    const out = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, input[i]));
+      out[i] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
+    }
+    return out;
+  }
+
+  function downsampleTo16k(input: Float32Array, inputRate: number): Int16Array {
+    if (!Number.isFinite(inputRate) || inputRate <= 0) {
+      return new Int16Array();
+    }
+    if (inputRate === TRANSCRIPTION_SAMPLE_RATE) {
+      return floatToInt16(input);
+    }
+
+    const ratio = inputRate / TRANSCRIPTION_SAMPLE_RATE;
+    const outputLength = Math.max(1, Math.floor(input.length / ratio));
+    const output = new Int16Array(outputLength);
+    let outputIndex = 0;
+    let sourceIndex = 0;
+    while (outputIndex < outputLength) {
+      const nextSourceIndex = Math.min(input.length, Math.round((outputIndex + 1) * ratio));
+      let accumulator = 0;
+      let count = 0;
+      for (let i = sourceIndex; i < nextSourceIndex; i++) {
+        accumulator += input[i];
+        count += 1;
+      }
+      const sample = count > 0 ? accumulator / count : 0;
+      const clamped = Math.max(-1, Math.min(1, sample));
+      output[outputIndex] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
+      outputIndex += 1;
+      sourceIndex = nextSourceIndex;
+    }
+    return output;
+  }
+
+  function pcmInt16ToBase64(samples: Int16Array): string {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function teardownTranscriptionCapture() {
+    transcriptionProcessorRef.current?.disconnect();
+    transcriptionSourceRef.current?.disconnect();
+    if (transcriptionContextRef.current) {
+      void transcriptionContextRef.current.close().catch(() => {});
+    }
+    transcriptionProcessorRef.current = null;
+    transcriptionSourceRef.current = null;
+    transcriptionContextRef.current = null;
+    transcriptionSamplesRef.current = [];
+    activeTranscriptionSessionRef.current = null;
+  }
+
+  function flushTranscriptionChunk(sessionId: string, force = false) {
+    const samples = transcriptionSamplesRef.current;
+    if (samples.length === 0) return;
+    if (!force && samples.length < TRANSCRIPTION_CHUNK_SAMPLES) return;
+
+    const chunkSize = force ? samples.length : TRANSCRIPTION_CHUNK_SAMPLES;
+    const chunk = samples.splice(0, chunkSize);
+    if (chunk.length === 0) return;
+
+    const now = Date.now();
+    const durationMs = Math.max(1, Math.round((chunk.length / TRANSCRIPTION_SAMPLE_RATE) * 1000));
+    const payload: VoiceTranscribeChunkRequest = {
+      session_id: sessionId,
+      sample_rate_hz: TRANSCRIPTION_SAMPLE_RATE,
+      started_ts_ms: now - durationMs,
+      ended_ts_ms: now,
+      pcm_s16le_base64: pcmInt16ToBase64(Int16Array.from(chunk)),
+    };
+
+    void onTranscriptionChunk(channelId, payload);
   }
 
   function stopSpeakingMonitor(userId: string) {
@@ -349,6 +450,7 @@ export default function VoiceEngine({
         stopSpeakingMonitor(userId);
       }
       teardownLocalMicPipeline();
+      teardownTranscriptionCapture();
       if (audioContextRef.current) {
         void audioContextRef.current.close().catch(() => {});
         audioContextRef.current = null;
@@ -368,6 +470,7 @@ export default function VoiceEngine({
     return () => {
       stopSpeakingMonitor(currentUserId);
       teardownLocalMicPipeline();
+      teardownTranscriptionCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localStream, currentUserId, channelId]);
@@ -377,6 +480,87 @@ export default function VoiceEngine({
       localMicGainNodeRef.current.gain.value = localMicGain;
     }
   }, [localMicGain]);
+
+  useEffect(() => {
+    const sessionId =
+      transcriptionState?.status === 'running'
+        ? (transcriptionState.session_id ?? null)
+        : null;
+    const localTrack = localStream?.getAudioTracks()[0] ?? null;
+
+    if (!localStream || !localTrack || !sessionId) {
+      const previousSession = activeTranscriptionSessionRef.current;
+      if (previousSession) {
+        flushTranscriptionChunk(previousSession, true);
+      }
+      teardownTranscriptionCapture();
+      return;
+    }
+
+    if (
+      transcriptionContextRef.current &&
+      activeTranscriptionSessionRef.current === sessionId
+    ) {
+      return;
+    }
+
+    const previousSession = activeTranscriptionSessionRef.current;
+    if (previousSession) {
+      flushTranscriptionChunk(previousSession, true);
+    }
+    teardownTranscriptionCapture();
+
+    const audioContextCtor =
+      window.AudioContext ||
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!audioContextCtor) {
+      return;
+    }
+
+    try {
+      const context = new audioContextCtor();
+      const source = context.createMediaStreamSource(localStream);
+      const processor = context.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (event) => {
+        if (!localTrack.enabled) {
+          return;
+        }
+        const input = event.inputBuffer.getChannelData(0);
+        const downsampled = downsampleTo16k(input, event.inputBuffer.sampleRate);
+        if (downsampled.length === 0) {
+          return;
+        }
+        const target = transcriptionSamplesRef.current;
+        for (let i = 0; i < downsampled.length; i++) {
+          target.push(downsampled[i]);
+        }
+        while (target.length >= TRANSCRIPTION_CHUNK_SAMPLES) {
+          flushTranscriptionChunk(sessionId, false);
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(context.destination);
+      void context.resume().catch(() => {});
+
+      transcriptionContextRef.current = context;
+      transcriptionSourceRef.current = source;
+      transcriptionProcessorRef.current = processor;
+      activeTranscriptionSessionRef.current = sessionId;
+    } catch (err) {
+      console.warn('VoiceEngine: failed to start transcription capture pipeline', err);
+      teardownTranscriptionCapture();
+      return;
+    }
+
+    return () => {
+      if (activeTranscriptionSessionRef.current === sessionId) {
+        flushTranscriptionChunk(sessionId, true);
+      }
+      teardownTranscriptionCapture();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localStream, transcriptionState?.status, transcriptionState?.session_id, channelId]);
 
   useEffect(() => {
     audioElementsRef.current.forEach((audio, userId) => {

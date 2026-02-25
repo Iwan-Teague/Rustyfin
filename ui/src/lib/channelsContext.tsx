@@ -9,7 +9,15 @@ import {
   useState,
 } from 'react';
 import { useAuth } from './auth';
-import type { ChannelEvent, ChannelInfo, ChannelMessage, UserInfo } from './channelsApi';
+import { uploadVoiceTranscriptionChunk } from './channelsApi';
+import type {
+  ChannelEvent,
+  ChannelInfo,
+  ChannelMessage,
+  UserInfo,
+  VoiceTranscribeChunkRequest,
+  VoiceTranscriptionState,
+} from './channelsApi';
 import VoiceEngine from '@/app/channels/components/VoiceEngine';
 import VoiceBar from '@/app/channels/components/VoiceBar';
 
@@ -37,6 +45,7 @@ export interface ChannelsContextValue {
   voicePresence: Record<string, UserInfo[]>;
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
+  voiceTranscriptions: Record<string, VoiceTranscriptionState>;
   remoteVolumes: Record<string, number>;
   localMicGain: number;
   newMessages: ChannelMessage[];
@@ -48,6 +57,14 @@ export interface ChannelsContextValue {
   toggleDeafen: () => void;
   setRemoteVolume: (userId: string, volume: number) => void;
   setLocalMicGain: (volume: number) => void;
+  setVoiceTranscriptionState: (
+    channelId: string,
+    next: VoiceTranscriptionState | null,
+  ) => void;
+  sendTranscriptionChunk: (
+    channelId: string,
+    payload: VoiceTranscribeChunkRequest,
+  ) => Promise<void>;
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -111,6 +128,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [voicePresence, setVoicePresence] = useState<Record<string, UserInfo[]>>({});
   const [voiceActiveSince, setVoiceActiveSince] = useState<Record<string, number>>({});
   const [voiceSpeaking, setVoiceSpeaking] = useState<Record<string, string[]>>({});
+  const [voiceTranscriptions, setVoiceTranscriptions] = useState<
+    Record<string, VoiceTranscriptionState>
+  >({});
   const [remoteVolumes, setRemoteVolumes] = useState<Record<string, number>>({});
   const [localMicGain, setLocalMicGainState] = useState(1);
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
@@ -162,6 +182,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoicePresence({});
       setVoiceActiveSince({});
       setVoiceSpeaking({});
+      setVoiceTranscriptions({});
       setRemoteVolumes({});
       clearPersistedVoiceSession();
       pendingVoiceRef.current = null;
@@ -202,6 +223,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           setChannels(event.channels);
           setVoicePresence(event.voice_presence);
           setVoiceActiveSince(event.voice_active_since_ts ?? {});
+          setVoiceTranscriptions(event.voice_transcriptions ?? {});
           setVoiceSpeaking({});
           setWsReady(true);
           // Auto-rejoin voice channel if there was an active session before the reconnect
@@ -341,8 +363,19 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             clearPersistedVoiceSession();
           }
           setChannels((prev) => prev.filter((c) => c.id !== event.channel_id));
+          setVoiceTranscriptions((prev) => {
+            if (!(event.channel_id in prev)) return prev;
+            const next = { ...prev };
+            delete next[event.channel_id];
+            return next;
+          });
         } else if (event.type === 'message_deleted') {
           setNewMessages((prev) => prev.filter((m) => m.id !== event.message_id));
+        } else if (event.type === 'voice_transcription_state') {
+          setVoiceTranscriptions((prev) => ({
+            ...prev,
+            [event.channel_id]: event.state,
+          }));
         }
       };
 
@@ -512,6 +545,35 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     setLocalMicGainState((prev) => (prev === rounded ? prev : rounded));
   }, []);
 
+  const setVoiceTranscriptionState = useCallback(
+    (channelId: string, next: VoiceTranscriptionState | null) => {
+      setVoiceTranscriptions((prev) => {
+        if (!next) {
+          if (!(channelId in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[channelId];
+          return copy;
+        }
+        return {
+          ...prev,
+          [channelId]: next,
+        };
+      });
+    },
+    [],
+  );
+
+  const sendTranscriptionChunk = useCallback(
+    async (channelId: string, payload: VoiceTranscribeChunkRequest) => {
+      try {
+        await uploadVoiceTranscriptionChunk(channelId, payload);
+      } catch (err) {
+        console.warn('Voice transcription chunk upload failed', err);
+      }
+    },
+    [],
+  );
+
   const handleSpeakingChange = useCallback(
     (channelId: string, userId: string, speaking: boolean) => {
       setVoiceSpeaking((prev) => {
@@ -546,6 +608,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     voicePresence,
     voiceActiveSince,
     voiceSpeaking,
+    voiceTranscriptions,
     remoteVolumes,
     localMicGain,
     newMessages,
@@ -557,6 +620,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     toggleDeafen,
     setRemoteVolume,
     setLocalMicGain,
+    setVoiceTranscriptionState,
+    sendTranscriptionChunk,
   };
 
   return (
@@ -576,6 +641,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           remoteVolumes={remoteVolumes}
           localMicGain={localMicGain}
           onSpeakingChange={handleSpeakingChange}
+          transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
+          onTranscriptionChunk={sendTranscriptionChunk}
         />
       )}
       {/* Floating bar shown on every page while in a voice channel */}

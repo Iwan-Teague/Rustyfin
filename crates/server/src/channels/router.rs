@@ -29,5 +29,29 @@ pub fn channels_router() -> Router<AppState> {
             "/{channel_id}/messages/{message_id}",
             delete(super::handlers::delete_message),
         )
+        .route(
+            "/{id}/transcription/status",
+            get(super::handlers::get_transcription_status),
+        )
+        .route(
+            "/{id}/transcription/start",
+            post(super::handlers::start_transcription),
+        )
+        .route(
+            "/{id}/transcription/stop",
+            post(super::handlers::stop_transcription),
+        )
+        .route(
+            "/{id}/transcription/cancel",
+            post(super::handlers::cancel_transcription),
+        )
+        .route(
+            "/{id}/transcription/chunk",
+            post(super::handlers::transcribe_chunk),
+        )
+        .route(
+            "/{id}/transcription/sessions/{session_id}/download",
+            get(super::handlers::download_transcription),
+        )
         .route("/ws", get(super::ws::ws_handler))
 }

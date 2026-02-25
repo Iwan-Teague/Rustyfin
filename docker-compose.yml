@@ -19,6 +19,8 @@ services:
       - RUSTFIN_TMDB_AGENT_TOKEN=${RUSTFIN_TMDB_AGENT_TOKEN:-}
       - RUSTFIN_YOUTUBE_AGENT_URL=${RUSTFIN_YOUTUBE_AGENT_URL:-http://rustfin-youtube-agent:8101}
       - RUSTFIN_YOUTUBE_AGENT_TOKEN=${RUSTFIN_YOUTUBE_AGENT_TOKEN:-}
+      - RUSTFIN_TRANSCRIPTION_AGENT_URL=${RUSTFIN_TRANSCRIPTION_AGENT_URL:-http://rustfin-transcription-agent:8102}
+      - RUSTFIN_TRANSCRIPTION_AGENT_TOKEN=${RUSTFIN_TRANSCRIPTION_AGENT_TOKEN:-}
       - RUSTFIN_YOUTUBE_COOKIE=${RUSTFIN_YOUTUBE_COOKIE:-}
       - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
       - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-./media}
@@ -26,6 +28,8 @@ services:
       - RUSTFIN_WS_ALLOWED_ORIGINS=${RUSTFIN_WS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       rustfin-youtube-agent:
+        condition: service_started
+      rustfin-transcription-agent:
         condition: service_started
     restart: unless-stopped
     healthcheck:
@@ -78,6 +82,27 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8101/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  rustfin-transcription-agent:
+    build:
+      context: .
+      dockerfile: crates/transcription-agent/Dockerfile
+    environment:
+      - RUST_LOG=info
+      - RUSTFIN_TRANSCRIPTION_AGENT_BIND=0.0.0.0:8102
+      - RUSTFIN_CACHE_DIR=/cache
+      - RUSTFIN_TRANSCRIPTION_AGENT_TOKEN=${RUSTFIN_TRANSCRIPTION_AGENT_TOKEN:-}
+      - RUSTFIN_WHISPER_MODEL_PATH=${RUSTFIN_WHISPER_MODEL_PATH:-/cache/whisper/ggml-base.en.bin}
+      - RUSTFIN_WHISPER_MODEL_URL=${RUSTFIN_WHISPER_MODEL_URL:-https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin}
+    volumes:
+      - rustfin-cache:/cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8102/health"]
       interval: 15s
       timeout: 3s
       retries: 5

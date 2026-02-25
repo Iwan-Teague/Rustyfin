@@ -38,6 +38,8 @@ pub struct AppState {
     pub jwt_secret: String,
     pub youtube_agent_url: String,
     pub youtube_agent_token: Option<String>,
+    pub transcription_agent_url: String,
+    pub transcription_agent_token: Option<String>,
     pub transcoder: Arc<rustfin_transcoder::session::SessionManager>,
     pub ffmpeg_path: std::path::PathBuf,
     pub ffprobe_path: std::path::PathBuf,

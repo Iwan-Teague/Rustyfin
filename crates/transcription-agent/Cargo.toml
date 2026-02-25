@@ -1,0 +1,22 @@
+[package]
+name = "rustfin-transcription-agent"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rustfin-transcription-agent"
+path = "src/main.rs"
+
+[dependencies]
+rustfin-core = { path = "../core" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
+whisper-rs = "0.12"
+num_cpus = "1.16"

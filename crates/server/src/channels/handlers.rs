@@ -3,8 +3,10 @@ use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
+use chrono::{DateTime, Utc};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::path::Path as StdPath;
 use tokio::fs;
 use tracing::warn;
@@ -12,8 +14,11 @@ use tracing::warn;
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::transcription_agent::{self, AgentTranscribeChunkRequest};
 
-use super::protocol::{ChannelEvent, ChannelInfo, MessageAttachmentInfo, MessageInfo};
+use super::protocol::{
+    ChannelEvent, ChannelInfo, MessageAttachmentInfo, MessageInfo, VoiceTranscriptionStateInfo,
+};
 
 const MAX_MESSAGE_CHARS: usize = 2000;
 const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
@@ -810,5 +815,629 @@ pub async fn download_attachment(
         headers.insert(header::CONTENT_LENGTH, content_length);
     }
 
+    Ok(response)
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceTranscriptionStatusResponse {
+    pub channel_id: String,
+    pub status: String,
+    pub session_id: Option<String>,
+    pub started_by_username: Option<String>,
+    pub started_ts: Option<i64>,
+    pub ended_ts: Option<i64>,
+    pub output_available: bool,
+    pub output_download_path: Option<String>,
+    pub message: Option<String>,
+    pub entry_count: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscribeChunkRequest {
+    pub session_id: String,
+    pub sample_rate_hz: u32,
+    pub started_ts_ms: i64,
+    pub ended_ts_ms: i64,
+    pub pcm_s16le_base64: String,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TranscribeChunkResponse {
+    pub accepted: bool,
+    pub persisted_segments: i64,
+}
+
+fn status_info_from_session(
+    session: Option<&rustfin_db::repo::channel_transcripts::TranscriptSessionRow>,
+    message: Option<String>,
+) -> VoiceTranscriptionStateInfo {
+    match session {
+        Some(s) => VoiceTranscriptionStateInfo {
+            status: s.status.clone(),
+            session_id: Some(s.id.clone()),
+            started_by_username: Some(s.started_by_username.clone()),
+            started_ts: Some(s.started_ts),
+            ended_ts: s.ended_ts,
+            output_available: s.output_path.is_some(),
+            message,
+        },
+        None => VoiceTranscriptionStateInfo {
+            status: "idle".to_string(),
+            session_id: None,
+            started_by_username: None,
+            started_ts: None,
+            ended_ts: None,
+            output_available: false,
+            message,
+        },
+    }
+}
+
+async fn is_user_in_voice_channel(state: &AppState, channel_id: &str, user_id: &str) -> bool {
+    let snapshot = state.channel_manager.voice_snapshot().await;
+    snapshot
+        .get(channel_id)
+        .map(|members| members.iter().any(|u| u.user_id == user_id))
+        .unwrap_or(false)
+}
+
+fn format_timestamp_compact(ts: i64) -> String {
+    let Some(dt) = DateTime::<Utc>::from_timestamp(ts, 0) else {
+        return ts.to_string();
+    };
+    dt.to_rfc3339()
+}
+
+fn format_ms(ms: i64) -> String {
+    let total_ms = ms.max(0);
+    let hours = total_ms / 3_600_000;
+    let minutes = (total_ms % 3_600_000) / 60_000;
+    let seconds = (total_ms % 60_000) / 1000;
+    let millis = total_ms % 1000;
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+fn build_transcript_markdown(
+    channel: &rustfin_db::repo::channels::ChannelRow,
+    session: &rustfin_db::repo::channel_transcripts::TranscriptSessionRow,
+    entries: &[rustfin_db::repo::channel_transcripts::TranscriptEntryRow],
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "# Voice Channel Transcript");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "- Channel: {}", channel.name);
+    let _ = writeln!(out, "- Channel ID: {}", channel.id);
+    let _ = writeln!(out, "- Session ID: {}", session.id);
+    let _ = writeln!(
+        out,
+        "- Started: {} (by {})",
+        format_timestamp_compact(session.started_ts),
+        session.started_by_username
+    );
+    if let Some(ended) = session.ended_ts {
+        let _ = writeln!(out, "- Ended: {}", format_timestamp_compact(ended));
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(out, "## Timeline");
+    let _ = writeln!(out);
+
+    if entries.is_empty() {
+        let _ = writeln!(out, "_No transcript lines captured._");
+        return out;
+    }
+
+    for entry in entries {
+        let _ = writeln!(
+            out,
+            "[{} - {}] {}: {}",
+            format_ms(entry.started_ts_ms),
+            format_ms(entry.ended_ts_ms),
+            entry.username,
+            entry.text.trim()
+        );
+    }
+    out
+}
+
+pub async fn get_transcription_status(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<VoiceTranscriptionStatusResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let session = if running.is_some() {
+        running
+    } else {
+        rustfin_db::repo::channel_transcripts::get_latest_session_for_channel(
+            &state.db,
+            &channel_id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    };
+
+    let entry_count = if let Some(ref s) = session {
+        rustfin_db::repo::channel_transcripts::count_entries_for_session(&state.db, &s.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    } else {
+        0
+    };
+
+    Ok(Json(VoiceTranscriptionStatusResponse {
+        channel_id,
+        status: session
+            .as_ref()
+            .map(|s| s.status.clone())
+            .unwrap_or_else(|| "idle".to_string()),
+        session_id: session.as_ref().map(|s| s.id.clone()),
+        started_by_username: session.as_ref().map(|s| s.started_by_username.clone()),
+        started_ts: session.as_ref().map(|s| s.started_ts),
+        ended_ts: session.as_ref().and_then(|s| s.ended_ts),
+        output_available: session
+            .as_ref()
+            .map(|s| s.output_path.is_some())
+            .unwrap_or(false),
+        output_download_path: session.as_ref().and_then(|s| {
+            if s.output_path.is_some() {
+                Some(format!(
+                    "/api/v1/channels/{}/transcription/sessions/{}/download",
+                    channel.id, s.id
+                ))
+            } else {
+                None
+            }
+        }),
+        message: session.as_ref().and_then(|s| s.failure_reason.clone()),
+        entry_count,
+    }))
+}
+
+pub async fn start_transcription(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<VoiceTranscriptionStatusResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+    if !is_user_in_voice_channel(&state, &channel_id, &auth.user_id).await {
+        return Err(ApiError::Forbidden(
+            "join the voice channel before starting transcription".into(),
+        )
+        .into());
+    }
+
+    if let Some(existing) = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    {
+        return Ok(Json(VoiceTranscriptionStatusResponse {
+            channel_id: channel_id.clone(),
+            status: existing.status.clone(),
+            session_id: Some(existing.id.clone()),
+            started_by_username: Some(existing.started_by_username.clone()),
+            started_ts: Some(existing.started_ts),
+            ended_ts: existing.ended_ts,
+            output_available: existing.output_path.is_some(),
+            output_download_path: None,
+            message: Some("transcription is already running".to_string()),
+            entry_count: rustfin_db::repo::channel_transcripts::count_entries_for_session(
+                &state.db,
+                &existing.id,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?,
+        }));
+    }
+
+    let session = rustfin_db::repo::channel_transcripts::create_running_session(
+        &state.db,
+        &channel_id,
+        &auth.user_id,
+        &auth.username,
+    )
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(db_err) = &e {
+            if db_err.is_unique_violation() {
+                return ApiError::BadRequest("a transcription is already running".into());
+            }
+        }
+        ApiError::Internal(format!("db error: {e}"))
+    })?;
+
+    if let Err(err) = transcription_agent::start_session(&state, &session.id).await {
+        let _ = rustfin_db::repo::channel_transcripts::fail_session(
+            &state.db,
+            &session.id,
+            &err.to_string(),
+        )
+        .await;
+        state
+            .channel_manager
+            .broadcast(ChannelEvent::VoiceTranscriptionState {
+                channel_id: channel_id.clone(),
+                state: VoiceTranscriptionStateInfo {
+                    status: "failed".to_string(),
+                    session_id: Some(session.id.clone()),
+                    started_by_username: Some(session.started_by_username.clone()),
+                    started_ts: Some(session.started_ts),
+                    ended_ts: Some(chrono::Utc::now().timestamp()),
+                    output_available: false,
+                    message: Some(err.to_string()),
+                },
+            });
+        return Err(err.into());
+    }
+
+    state
+        .channel_manager
+        .broadcast(ChannelEvent::VoiceTranscriptionState {
+            channel_id: channel_id.clone(),
+            state: status_info_from_session(Some(&session), None),
+        });
+
+    Ok(Json(VoiceTranscriptionStatusResponse {
+        channel_id,
+        status: session.status,
+        session_id: Some(session.id),
+        started_by_username: Some(session.started_by_username),
+        started_ts: Some(session.started_ts),
+        ended_ts: session.ended_ts,
+        output_available: false,
+        output_download_path: None,
+        message: None,
+        entry_count: 0,
+    }))
+}
+
+pub async fn transcribe_chunk(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Json(body): Json<TranscribeChunkRequest>,
+) -> Result<Json<TranscribeChunkResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+    if !is_user_in_voice_channel(&state, &channel_id, &auth.user_id).await {
+        return Err(ApiError::Forbidden(
+            "join the voice channel before uploading transcript audio".into(),
+        )
+        .into());
+    }
+    if body.session_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("session_id is required".into()).into());
+    }
+    if body.pcm_s16le_base64.trim().is_empty() {
+        return Ok(Json(TranscribeChunkResponse {
+            accepted: true,
+            persisted_segments: 0,
+        }));
+    }
+
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    .ok_or_else(|| {
+        ApiError::BadRequest("no active transcription session for this channel".into())
+    })?;
+    if body.session_id != running.id {
+        return Err(ApiError::BadRequest(
+            "chunk does not match the active transcription session".into(),
+        )
+        .into());
+    }
+
+    let segments = transcription_agent::transcribe_chunk(
+        &state,
+        &AgentTranscribeChunkRequest {
+            session_id: running.id.clone(),
+            user_id: auth.user_id.clone(),
+            username: auth.username.clone(),
+            sample_rate_hz: body.sample_rate_hz,
+            started_ts_ms: body.started_ts_ms,
+            ended_ts_ms: body.ended_ts_ms,
+            pcm_s16le_base64: body.pcm_s16le_base64,
+            language: body.language.clone(),
+        },
+    )
+    .await?;
+
+    let mut persisted_segments = 0_i64;
+    for segment in segments {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        rustfin_db::repo::channel_transcripts::append_entry(
+            &state.db,
+            rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
+                session_id: &running.id,
+                channel_id: &channel_id,
+                user_id: &auth.user_id,
+                username: &auth.username,
+                started_ts_ms: segment.started_ts_ms,
+                ended_ts_ms: segment.ended_ts_ms,
+                text,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        persisted_segments += 1;
+    }
+
+    Ok(Json(TranscribeChunkResponse {
+        accepted: true,
+        persisted_segments,
+    }))
+}
+
+pub async fn stop_transcription(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<VoiceTranscriptionStatusResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+    if !is_user_in_voice_channel(&state, &channel_id, &auth.user_id).await {
+        return Err(ApiError::Forbidden(
+            "join the voice channel before stopping transcription".into(),
+        )
+        .into());
+    }
+
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    .ok_or_else(|| {
+        ApiError::BadRequest("no active transcription session for this channel".into())
+    })?;
+
+    state
+        .channel_manager
+        .broadcast(ChannelEvent::VoiceTranscriptionState {
+            channel_id: channel_id.clone(),
+            state: VoiceTranscriptionStateInfo {
+                status: "finalizing".to_string(),
+                session_id: Some(running.id.clone()),
+                started_by_username: Some(running.started_by_username.clone()),
+                started_ts: Some(running.started_ts),
+                ended_ts: None,
+                output_available: false,
+                message: Some("finalizing transcript".to_string()),
+            },
+        });
+
+    if let Err(err) = transcription_agent::stop_session(&state, &running.id).await {
+        let _ = rustfin_db::repo::channel_transcripts::fail_session(
+            &state.db,
+            &running.id,
+            &err.to_string(),
+        )
+        .await;
+        state
+            .channel_manager
+            .broadcast(ChannelEvent::VoiceTranscriptionState {
+                channel_id: channel_id.clone(),
+                state: VoiceTranscriptionStateInfo {
+                    status: "failed".to_string(),
+                    session_id: Some(running.id.clone()),
+                    started_by_username: Some(running.started_by_username.clone()),
+                    started_ts: Some(running.started_ts),
+                    ended_ts: Some(chrono::Utc::now().timestamp()),
+                    output_available: false,
+                    message: Some(err.to_string()),
+                },
+            });
+        return Err(err.into());
+    }
+
+    let entries =
+        rustfin_db::repo::channel_transcripts::list_entries_for_session(&state.db, &running.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let mut finished = rustfin_db::repo::channel_transcripts::get_session(&state.db, &running.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Internal("transcript session disappeared".into()))?;
+    finished.ended_ts = Some(chrono::Utc::now().timestamp());
+
+    let transcript_dir = state
+        .cache_dir
+        .join("channel_transcripts")
+        .join(&channel_id);
+    fs::create_dir_all(&transcript_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create transcript output dir: {e}")))?;
+    let output_path = transcript_dir.join(format!("{}.md", running.id));
+    let markdown = build_transcript_markdown(&channel, &finished, &entries);
+    fs::write(&output_path, markdown)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to write transcript file: {e}")))?;
+
+    rustfin_db::repo::channel_transcripts::complete_session(
+        &state.db,
+        &running.id,
+        &output_path.to_string_lossy(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let completed = rustfin_db::repo::channel_transcripts::get_session(&state.db, &running.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Internal("completed transcript session disappeared".into()))?;
+    let entry_count =
+        rustfin_db::repo::channel_transcripts::count_entries_for_session(&state.db, &running.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    state
+        .channel_manager
+        .broadcast(ChannelEvent::VoiceTranscriptionState {
+            channel_id: channel_id.clone(),
+            state: status_info_from_session(Some(&completed), None),
+        });
+
+    Ok(Json(VoiceTranscriptionStatusResponse {
+        channel_id,
+        status: completed.status,
+        session_id: Some(completed.id.clone()),
+        started_by_username: Some(completed.started_by_username),
+        started_ts: Some(completed.started_ts),
+        ended_ts: completed.ended_ts,
+        output_available: completed.output_path.is_some(),
+        output_download_path: Some(format!(
+            "/api/v1/channels/{}/transcription/sessions/{}/download",
+            channel.id, completed.id
+        )),
+        message: None,
+        entry_count,
+    }))
+}
+
+pub async fn cancel_transcription(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<VoiceTranscriptionStatusResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+    if !is_user_in_voice_channel(&state, &channel_id, &auth.user_id).await {
+        return Err(ApiError::Forbidden(
+            "join the voice channel before cancelling transcription".into(),
+        )
+        .into());
+    }
+
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    .ok_or_else(|| {
+        ApiError::BadRequest("no active transcription session for this channel".into())
+    })?;
+
+    let _ = transcription_agent::cancel_session(&state, &running.id).await;
+    rustfin_db::repo::channel_transcripts::cancel_session(&state.db, &running.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    state
+        .channel_manager
+        .broadcast(ChannelEvent::VoiceTranscriptionState {
+            channel_id: channel_id.clone(),
+            state: VoiceTranscriptionStateInfo {
+                status: "cancelled".to_string(),
+                session_id: Some(running.id),
+                started_by_username: Some(running.started_by_username),
+                started_ts: Some(running.started_ts),
+                ended_ts: Some(chrono::Utc::now().timestamp()),
+                output_available: false,
+                message: Some("transcription cancelled".to_string()),
+            },
+        });
+
+    Ok(Json(VoiceTranscriptionStatusResponse {
+        channel_id,
+        status: "cancelled".to_string(),
+        session_id: None,
+        started_by_username: None,
+        started_ts: None,
+        ended_ts: None,
+        output_available: false,
+        output_download_path: None,
+        message: Some("transcription cancelled".to_string()),
+        entry_count: 0,
+    }))
+}
+
+pub async fn download_transcription(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((channel_id, session_id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let _channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    let session = rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("transcript session not found".into()))?;
+    if session.channel_id != channel_id {
+        return Err(ApiError::NotFound("transcript session not found for channel".into()).into());
+    }
+    let output_path = session
+        .output_path
+        .ok_or_else(|| ApiError::BadRequest("transcript output is not available".into()))?;
+    let bytes = fs::read(&output_path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::NotFound("transcript file not found".into())
+        } else {
+            ApiError::Internal(format!("failed reading transcript file: {e}"))
+        }
+    })?;
+
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/markdown; charset=utf-8"),
+    );
+    let file_name = format!("voice-transcript-{}.md", session_id);
+    let content_disposition = format!(
+        "attachment; filename=\"{}\"",
+        sanitize_content_disposition_filename(&file_name)
+    );
+    if let Ok(value) = HeaderValue::from_str(&content_disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
     Ok(response)
 }
