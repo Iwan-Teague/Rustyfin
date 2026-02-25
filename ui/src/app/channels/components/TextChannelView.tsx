@@ -401,7 +401,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
       {/* Input */}
       <div className="px-4 py-3 border-t border-[var(--border)] shrink-0">
-        <div className="flex items-end gap-2">
+        <div className="flex items-stretch gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -423,8 +423,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             +
           </button>
           <textarea
-            className="panel flex-1 resize-none rounded-lg px-3 py-2 text-sm"
-            rows={2}
+            className="panel h-10 flex-1 resize-none overflow-y-auto rounded-lg px-3 py-2 text-sm"
+            rows={1}
             placeholder={`Message #${channel.name}`}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

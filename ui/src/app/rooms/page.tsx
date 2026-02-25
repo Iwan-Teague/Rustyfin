@@ -34,8 +34,6 @@ type LibrarySummary = {
 
 type RoomMode = 'watch' | 'audio' | 'play' | 'create';
 type WatchSource = 'local' | 'youtube' | 'web';
-type AudioSource = 'local' | 'online';
-type CreateTool = 'text' | 'canvas';
 type RightPanelTab = 'invites' | 'options';
 
 const DEFAULT_POLICY: WatchPartyPolicy = {
@@ -56,8 +54,6 @@ export default function WatchPartyPage() {
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
   const [watchSource, setWatchSource] = useState<WatchSource>('local');
-  const [audioSource, setAudioSource] = useState<AudioSource>('local');
-  const [createTool, setCreateTool] = useState<CreateTool>('text');
   const [webStartUrl, setWebStartUrl] = useState('');
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('invites');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
@@ -297,7 +293,7 @@ export default function WatchPartyPage() {
         const payload = {
           room_name: normalizedRoomName || undefined,
           room_mode: 'create' as const,
-          create_tool: createTool,
+          create_tool: 'text' as const,
           create_document_name: normalizedRoomName || undefined,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
@@ -307,30 +303,14 @@ export default function WatchPartyPage() {
         setMessage(`Room created: ${created.room_id}`);
         router.push(created.join_path);
       } else if (roomMode === 'audio') {
-        const payload =
-          audioSource === 'online'
-            ? {
-                room_name: normalizedRoomName || undefined,
-                room_mode: 'audio' as const,
-                audio_source: 'online' as const,
-                invites: invitesPayload,
-                password: password.trim() ? password.trim() : undefined,
-                policy,
-              }
-            : (() => {
-                if (!selectedAudioLibraryId) {
-                  throw new Error('Select a music library first.');
-                }
-                return {
-                  room_name: normalizedRoomName || undefined,
-                  room_mode: 'audio' as const,
-                  audio_source: 'library' as const,
-                  audio_library_id: selectedAudioLibraryId,
-                  invites: invitesPayload,
-                  password: password.trim() ? password.trim() : undefined,
-                  policy,
-                };
-              })();
+        const payload = {
+          room_name: normalizedRoomName || undefined,
+          room_mode: 'audio' as const,
+          audio_library_id: selectedAudioLibraryId || undefined,
+          invites: invitesPayload,
+          password: password.trim() ? password.trim() : undefined,
+          policy,
+        };
 
         const created = await createWatchPartyRoom(payload);
         setMessage(`Room created: ${created.room_id}`);
@@ -408,7 +388,7 @@ export default function WatchPartyPage() {
       : roomMode === 'create'
         ? true
       : roomMode === 'audio'
-        ? (audioSource === 'online' ? true : !!selectedAudioLibraryId)
+        ? true
         : watchSource === 'youtube' || watchSource === 'web'
           ? true
           : !!selectedItem;
@@ -539,27 +519,6 @@ export default function WatchPartyPage() {
               ))}
             </div>
           )}
-          {roomMode === 'audio' && (
-            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-              {([
-                ['local', 'Local'],
-                ['online', 'Online'],
-              ] as const).map(([source, label]) => (
-                <button
-                  key={source}
-                  type="button"
-                  onClick={() => setAudioSource(source)}
-                  className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                    audioSource === source
-                      ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                      : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
 
           <div className="overflow-hidden" style={fixedColumnHeightStyle}>
             <div className="h-full overflow-y-auto pr-1">
@@ -612,47 +571,54 @@ export default function WatchPartyPage() {
                 )
               ) : roomMode === 'audio' ? (
                 <div className="space-y-3">
-                  {audioSource === 'online' ? (
-                    <div className="space-y-3">
-                      <p className="text-sm muted">
-                        Online mode lets room members search YouTube tracks in-lobby. Tracks are downloaded to room-scoped MP3 files and removed when the room is deleted.
-                      </p>
-                      <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                        Create the room, then search and queue tracks from inside the lobby.
-                      </div>
-                    </div>
-                  ) : musicLibraries.length === 0 ? (
-                    <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                      No music libraries available. Create a music library and scan it first.
-                    </div>
-                  ) : (
+                  <p className="text-sm muted">
+                    Listen Together rooms now support both online YouTube audio search and offline
+                    local-library search inside the same room queue.
+                  </p>
+                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                    Create the room, then use both search sections in-lobby to queue local and
+                    online tracks together.
+                  </div>
+
+                  {musicLibraries.length > 0 ? (
                     <div className="space-y-2">
                       <label
-                        htmlFor="audio-library-select"
+                        htmlFor="create-audio-library"
                         className="block text-xs uppercase tracking-wide muted"
                       >
-                        Music Library
+                        Offline Local Library (optional)
                       </label>
                       <select
-                        id="audio-library-select"
+                        id="create-audio-library"
                         value={selectedAudioLibraryId}
                         onChange={(e) => setSelectedAudioLibraryId(e.target.value)}
                         className="select px-3 py-2 text-sm"
                       >
-                        {musicLibraries.map((lib) => (
-                          <option key={lib.id} value={lib.id}>
-                            {lib.name}
+                        <option value="">No local library (online only)</option>
+                        {musicLibraries.map((library) => (
+                          <option key={library.id} value={library.id}>
+                            {library.name}
                           </option>
                         ))}
                       </select>
-                      {selectedAudioLibraryId && (
-                        <div className="notice-ok rounded-xl px-3 py-2 text-xs">
-                          Selected:{' '}
-                          <strong>
-                            {musicLibraries.find((l) => l.id === selectedAudioLibraryId)?.name}
-                          </strong>
-                        </div>
-                      )}
+                      <p className="text-xs muted">
+                        This library powers offline local-track search in the room. Online search
+                        remains available either way.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      No local music library is currently shared with selected invitees. Online
+                      search will still work for this room.
+                    </div>
+                  )}
+
+                  {musicLibraries.length > 0 && selectedAudioLibraryId && (
+                    <div className="notice-ok rounded-xl px-3 py-2 text-xs">
+                      Offline local search library:{' '}
+                      <strong>
+                        {musicLibraries.find((l) => l.id === selectedAudioLibraryId)?.name}
+                      </strong>
                     </div>
                   )}
                 </div>
@@ -661,50 +627,12 @@ export default function WatchPartyPage() {
                   <div className="space-y-2">
                     <h2 className="text-xl font-semibold">Create Together</h2>
                     <p className="text-sm muted">
-                      Work collaboratively on shared text/PDF documents or a paint-style shared canvas.
+                      Create the room directly. Inside the room, users can switch between shared
+                      document and shared canvas at any time.
                     </p>
                   </div>
-
-                  <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-                    {([
-                      ['text', 'Shared Document'],
-                      ['canvas', 'Shared Canvas'],
-                    ] as const).map(([tool, label]) => (
-                      <button
-                        key={tool}
-                        type="button"
-                        onClick={() => setCreateTool(tool)}
-                        className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                          createTool === tool
-                            ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                            : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="space-y-3">
-                    {createTool === 'text' ? (
-                      <>
-                        <p className="text-sm muted">
-                          Shared document mode supports live text editing, Markdown, PDF import (text extraction), and export to TXT/MD/PDF from inside the room.
-                        </p>
-                        <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                          Members with edit access can collaboratively update one shared document in real time.
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-sm muted">
-                          Shared canvas mode provides an MS Paint style drawing board with color/brush controls and PNG download.
-                        </p>
-                        <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                          Canvas edits sync to everyone in the room using realtime websocket updates.
-                        </div>
-                      </>
-                    )}
+                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                    Room creation no longer requires picking document vs canvas first.
                   </div>
                 </section>
               ) : (
@@ -813,9 +741,9 @@ export default function WatchPartyPage() {
         </button>
       </section>
 
-      {roomMode === 'audio' && audioSource === 'local' && musicLibraries.length === 0 && (
+      {roomMode === 'audio' && musicLibraries.length === 0 && (
         <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-          No shared music libraries are available for the current invite selection.
+          No shared local music libraries are available for the current invite selection.
         </div>
       )}
     </div>

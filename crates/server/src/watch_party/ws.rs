@@ -38,6 +38,7 @@ const MAX_CREATE_DOCUMENT_NAME_LEN: usize = 120;
 const MAX_CANVAS_STROKES: usize = 512;
 const MAX_CANVAS_POINTS_PER_STROKE: usize = 1024;
 const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
+const MAX_CANVAS_BYTES: usize = 30 * 1024 * 1024;
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
@@ -623,6 +624,24 @@ async fn authorize_ws_connection(
         }
     }
 
+    // Audio rooms may optionally have a backing local music library for offline search.
+    if room.room_mode == "audio" {
+        if let Some(audio_library_id) = room.audio_library_id.as_deref() {
+            if claims.role != "admin" {
+                let allowed = rustfin_db::repo::users::is_library_allowed(
+                    &state.db,
+                    &claims.sub,
+                    audio_library_id,
+                )
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+                if !allowed {
+                    return Err(ApiError::Forbidden("library access denied".into()).into());
+                }
+            }
+        }
+    }
+
     let member = rustfin_db::repo::watch_party::get_member(&state.db, room_id, &claims.sub)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -794,6 +813,17 @@ fn normalize_canvas_strokes(
         stroke.id = stroke.id.trim().to_string();
         stroke.color = stroke.color.to_ascii_lowercase();
         normalized.push(stroke);
+    }
+
+    let serialized_len = serde_json::to_vec(&normalized)
+        .map_err(|e| ApiError::Internal(format!("failed to serialize canvas strokes: {e}")))?
+        .len();
+    if serialized_len > MAX_CANVAS_BYTES {
+        return Err(ApiError::BadRequest(format!(
+            "canvas payload exceeds {}MB limit",
+            MAX_CANVAS_BYTES / (1024 * 1024)
+        ))
+        .into());
     }
 
     Ok(normalized)
@@ -1937,14 +1967,28 @@ async fn build_audio_state_message(
     runtime: &RoomRuntime,
     room_id: &str,
 ) -> Result<ServerMessage, AppError> {
-    type AudioTrackMetadata = (
+    const AUDIO_QUEUE_LOCAL_PREFIX: &str = "local:";
+    const AUDIO_QUEUE_ONLINE_PREFIX: &str = "online:";
+
+    type LocalTrackMetadata = (
         String,         // title
         String,         // album
-        String,         // artist/channel
-        Option<String>, // album art / thumbnail
+        String,         // artist
+        Option<String>, // album_art_url
         Option<u64>,    // duration_ms
-        Option<String>, // video_id (online mode only)
     );
+    type OnlineTrackMetadata = (
+        String,         // title
+        String,         // channel
+        Option<String>, // thumbnail_url
+        Option<u64>,    // duration_ms
+        String,         // video_id
+    );
+
+    enum QueueTrackRef {
+        Local { item_id: String },
+        Online { track_id: String },
+    }
 
     let queue_snapshot = match runtime.snapshot_audio_queue().await {
         Some(q) => q,
@@ -1967,7 +2011,7 @@ async fn build_audio_state_message(
         };
 
     // Get current track ID
-    let current_track_id = queue_snapshot
+    let current_queue_track_id = queue_snapshot
         .track_ids
         .get(queue_snapshot.current_index)
         .cloned()
@@ -1975,100 +2019,151 @@ async fn build_audio_state_message(
     let audio_source = runtime
         .audio_source
         .as_deref()
-        .unwrap_or("library")
+        .unwrap_or("online")
         .to_string();
-    let online_mode = audio_source == "online";
 
-    // Fetch metadata for all tracks in one query via the backing source.
-    let track_metadata: HashMap<String, AudioTrackMetadata> = if online_mode {
+    let local_track_metadata: HashMap<String, LocalTrackMetadata> =
+        if let Some(audio_library_id) = runtime.audio_library_id.as_deref() {
+            rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .into_iter()
+                .map(|t| {
+                    (
+                        t.id,
+                        (t.title, t.album, t.artist, t.album_art_url, t.duration_ms),
+                    )
+                })
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
+    let online_track_metadata: HashMap<String, OnlineTrackMetadata> =
         rustfin_db::repo::watch_party::list_online_audio_tracks(&state.db, room_id, None)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .into_iter()
             .map(|t| {
                 (
-                    t.id.clone(),
-                    (
-                        t.title,
-                        String::new(),
-                        t.channel,
-                        t.thumbnail_url,
-                        t.duration_ms,
-                        Some(t.video_id),
-                    ),
+                    t.id,
+                    (t.title, t.channel, t.thumbnail_url, t.duration_ms, t.video_id),
                 )
             })
-            .collect()
-    } else {
-        let audio_library_id = match runtime.audio_library_id.as_deref() {
-            Some(id) => id,
-            None => return Err(ApiError::Internal("audio room missing library id".into()).into()),
-        };
+            .collect();
 
-        rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .into_iter()
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    (
-                        t.title,
-                        t.album,
-                        t.artist,
-                        t.album_art_url,
-                        t.duration_ms,
-                        None,
-                    ),
-                )
-            })
-            .collect()
+    let resolve_queue_track_ref = |raw_id: &str| -> QueueTrackRef {
+        if let Some(item_id) = raw_id.strip_prefix(AUDIO_QUEUE_LOCAL_PREFIX) {
+            return QueueTrackRef::Local {
+                item_id: item_id.to_string(),
+            };
+        }
+        if let Some(track_id) = raw_id.strip_prefix(AUDIO_QUEUE_ONLINE_PREFIX) {
+            return QueueTrackRef::Online {
+                track_id: track_id.to_string(),
+            };
+        }
+        if online_track_metadata.contains_key(raw_id) {
+            return QueueTrackRef::Online {
+                track_id: raw_id.to_string(),
+            };
+        }
+        QueueTrackRef::Local {
+            item_id: raw_id.to_string(),
+        }
     };
 
-    let (current_title, current_album, current_artist, current_art, current_dur, _current_video_id) =
-        track_metadata
-            .get(&current_track_id)
-            .cloned()
-            .unwrap_or_else(|| {
-                (
-                    "Unknown".to_string(),
-                    String::new(),
-                    String::new(),
-                    None,
-                    None,
-                    None,
-                )
-            });
-
-    let stream_url = if online_mode && !current_track_id.is_empty() {
-        let token =
-            issue_room_track_stream_token(room_id, &current_track_id, 60 * 60, &state.jwt_secret)
-                .map_err(|_| {
-                ApiError::Internal("failed to issue room-track stream token".to_string())
-            })?;
-        Some(format!(
-            "/api/v1/watch-party/rooms/{room_id}/audio/online/tracks/{current_track_id}/stream?st={token}"
-        ))
-    } else {
+    let current_track_ref = if current_queue_track_id.is_empty() {
         None
+    } else {
+        Some(resolve_queue_track_ref(&current_queue_track_id))
+    };
+
+    let (current_title, current_album, current_artist, current_art, current_dur) =
+        match current_track_ref.as_ref() {
+            Some(QueueTrackRef::Local { item_id }) => local_track_metadata
+                .get(item_id)
+                .cloned()
+                .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None)),
+            Some(QueueTrackRef::Online { track_id }) => online_track_metadata
+                .get(track_id)
+                .map(|(title, channel, thumbnail, duration_ms, _)| {
+                    (
+                        title.clone(),
+                        "YouTube".to_string(),
+                        channel.clone(),
+                        thumbnail.clone(),
+                        *duration_ms,
+                    )
+                })
+                .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None)),
+            None => ("Unknown".to_string(), String::new(), String::new(), None, None),
+        };
+
+    let stream_url = match current_track_ref.as_ref() {
+        Some(QueueTrackRef::Online { track_id }) => {
+            let token = issue_room_track_stream_token(room_id, track_id, 60 * 60, &state.jwt_secret)
+                .map_err(|_| ApiError::Internal("failed to issue room-track stream token".to_string()))?;
+            Some(format!(
+                "/api/v1/watch-party/rooms/{room_id}/audio/online/tracks/{track_id}/stream?st={token}"
+            ))
+        }
+        _ => None,
     };
 
     let queue: Vec<QueueEntry> = queue_snapshot
         .track_ids
         .iter()
-        .map(|tid| {
-            let (title, album, artist, art, dur, video_id) = track_metadata
-                .get(tid)
-                .cloned()
-                .unwrap_or_else(|| (tid.clone(), String::new(), String::new(), None, None, None));
-            QueueEntry {
-                track_id: tid.clone(),
-                title,
-                artist,
-                album,
-                album_art_url: art,
-                video_id,
-                duration_ms: dur,
+        .map(|raw_track_id| match resolve_queue_track_ref(raw_track_id) {
+            QueueTrackRef::Local { item_id } => {
+                let (title, album, artist, art, dur) = local_track_metadata
+                    .get(&item_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        (
+                            item_id.clone(),
+                            String::new(),
+                            String::new(),
+                            None,
+                            None,
+                        )
+                    });
+                QueueEntry {
+                    track_id: raw_track_id.clone(),
+                    title,
+                    artist,
+                    album,
+                    album_art_url: art,
+                    video_id: None,
+                    duration_ms: dur,
+                }
+            }
+            QueueTrackRef::Online { track_id } => {
+                let (title, channel, thumbnail, duration_ms, video_id) = online_track_metadata
+                    .get(&track_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        (
+                            track_id.clone(),
+                            String::new(),
+                            None,
+                            None,
+                            String::new(),
+                        )
+                    });
+                QueueEntry {
+                    track_id: raw_track_id.clone(),
+                    title,
+                    artist: channel,
+                    album: "YouTube".to_string(),
+                    album_art_url: thumbnail,
+                    video_id: if video_id.is_empty() {
+                        None
+                    } else {
+                        Some(video_id)
+                    },
+                    duration_ms,
+                }
             }
         })
         .collect();
@@ -2103,7 +2198,7 @@ async fn build_audio_state_message(
     Ok(ServerMessage::AudioState {
         room_id: room_id.to_string(),
         audio_source,
-        track_id: current_track_id,
+        track_id: current_queue_track_id,
         title: current_title,
         artist: current_artist,
         album: current_album,

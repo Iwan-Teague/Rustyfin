@@ -24,8 +24,8 @@ It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first run
 - Rooms (formerly watch-party)
   - Watch Together: local media, YouTube embed, and shared web room.
   - Listen Together:
-    - Local mode (music library based).
-    - Online mode: YouTube search, room-scoped audio download to MP3, shared queue and playback.
+    - Unified mode with shared queue and playback.
+    - Online search/download from YouTube plus offline local-library search in the same room.
   - Create Together:
     - Shared collaborative document editor (plain text / markdown / PDF-text workflow).
     - Shared paint-style canvas with synchronized strokes.

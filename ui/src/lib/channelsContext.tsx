@@ -565,10 +565,27 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
 
   const sendTranscriptionChunk = useCallback(
     async (channelId: string, payload: VoiceTranscribeChunkRequest) => {
-      try {
-        await uploadVoiceTranscriptionChunk(channelId, payload);
-      } catch (err) {
-        console.warn('Voice transcription chunk upload failed', err);
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await uploadVoiceTranscriptionChunk(channelId, payload);
+          return;
+        } catch (err) {
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
+          }
+          console.warn(
+            'Voice transcription chunk upload failed',
+            {
+              channelId,
+              sessionId: payload.session_id,
+              sampleRateHz: payload.sample_rate_hz,
+              startedTsMs: payload.started_ts_ms,
+              endedTsMs: payload.ended_ts_ms,
+            },
+            err,
+          );
+        }
       }
     },
     [],

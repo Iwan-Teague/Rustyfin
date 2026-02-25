@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { createPortal } from 'react-dom';
 import { apiFetch, apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import {
@@ -173,20 +174,19 @@ export default function WatchPartyRoomPage() {
   const [info, setInfo] = useState('');
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [debugLog, setDebugLog] = useState<string[]>([]);
   const [allLibraries, setAllLibraries] = useState<MediaLibrary[]>([]);
   const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
   const [reconfigureMode, setReconfigureMode] = useState<RoomMode>('video');
   const [reconfigureWatchSource, setReconfigureWatchSource] = useState<'video' | 'youtube' | 'web'>('video');
   const [reconfigureVideoLibraryId, setReconfigureVideoLibraryId] = useState('');
   const [reconfigureVideoItem, setReconfigureVideoItem] = useState<MediaItemNode | null>(null);
-  const [reconfigureAudioSource, setReconfigureAudioSource] = useState<'local' | 'online'>('local');
   const [reconfigureAudioLibraryId, setReconfigureAudioLibraryId] = useState('');
   const [reconfigureWebUrl, setReconfigureWebUrl] = useState('');
   const [reconfigureCreateTool, setReconfigureCreateTool] = useState<'text' | 'canvas'>('text');
   const [reconfigureDirty, setReconfigureDirty] = useState(false);
   const [reconfiguring, setReconfiguring] = useState(false);
-  const [roomPanelExpanded, setRoomPanelExpanded] = useState(false);
+  const [reconfigureModalOpen, setReconfigureModalOpen] = useState(false);
+  const [portalMounted, setPortalMounted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const hlsRef = useRef<any>(null);
@@ -213,7 +213,6 @@ export default function WatchPartyRoomPage() {
   }, [clearInfoTimeout]);
 
   const isAudioRoom = room?.room_mode === 'audio';
-  const isOnlineAudioRoom = room?.room_mode === 'audio' && (room.audio_source ?? 'library') === 'online';
   const isWebRoom = room?.room_mode === 'web';
   const isYoutubeRoom = room?.room_mode === 'youtube';
   const isCreateRoom = room?.room_mode === 'create';
@@ -279,16 +278,10 @@ export default function WatchPartyRoomPage() {
   }, [allUsers, activeMembers, me]);
 
   const appendDebug = useCallback((message: string) => {
-    const line = `${new Date().toISOString()} ${message}`;
-    setDebugLog((prev) => [...prev.slice(-199), line]);
     if (typeof window !== 'undefined') {
       console.info(`[watch-party:${roomId}] ${message}`);
     }
   }, [roomId]);
-
-  const handleYoutubeDebug = useCallback((message: string) => {
-    appendDebug(`youtube ${message}`);
-  }, [appendDebug]);
 
   const sendWs = useCallback((payload: Record<string, unknown>): boolean => {
     const socket = wsRef.current;
@@ -314,6 +307,21 @@ export default function WatchPartyRoomPage() {
   useEffect(() => () => {
     clearInfoTimeout();
   }, [clearInfoTimeout]);
+
+  useEffect(() => {
+    setPortalMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!reconfigureModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setReconfigureModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [reconfigureModalOpen]);
 
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
@@ -392,7 +400,7 @@ export default function WatchPartyRoomPage() {
     if (!reconfigureDirty) {
       setReconfigureMode(mode);
       if (mode === 'audio') {
-        setReconfigureAudioSource(room.audio_source === 'online' ? 'online' : 'local');
+        setReconfigureAudioLibraryId(room.audio_library_id ?? '');
         // Keep last watch source when switching away from watch-together mode.
         return;
       }
@@ -405,7 +413,7 @@ export default function WatchPartyRoomPage() {
         setReconfigureWebUrl(room.web_url || '');
       }
     }
-  }, [room?.room_mode, room?.audio_source, room?.web_url, room?.create_tool, reconfigureDirty]);
+  }, [room?.room_mode, room?.audio_library_id, room?.web_url, room?.create_tool, reconfigureDirty]);
 
   useEffect(() => {
     if (!room || !me || joinedRole !== 'host') return;
@@ -610,7 +618,7 @@ export default function WatchPartyRoomPage() {
             setInfo('Room configuration changed. Refreshing room mode…');
             setReconfigureDirty(false);
             setReconfigureVideoItem(null);
-            setReconfigureAudioSource(payload.audio_source === 'online' ? 'online' : 'local');
+            setReconfigureAudioLibraryId(payload.audio_library_id || '');
             setReconfigureWebUrl(payload.web_url || '');
             setReconfigureCreateTool(payload.create_tool === 'canvas' ? 'canvas' : 'text');
             setDescriptor(null);
@@ -1080,17 +1088,6 @@ export default function WatchPartyRoomPage() {
     }
   }
 
-  async function copyDebugLog() {
-    try {
-      await navigator.clipboard.writeText(debugLog.join('\n'));
-      setInfo('Diagnostics copied to clipboard.');
-      appendDebug('diagnostics copied to clipboard');
-    } catch {
-      setError('Failed to copy diagnostics');
-      appendDebug('diagnostics copy failed');
-    }
-  }
-
   async function handleLeave() {
     setLeaving(true);
     setError('');
@@ -1166,22 +1163,10 @@ export default function WatchPartyRoomPage() {
         item_id: reconfigureVideoItem.id,
       };
     } else if (reconfigureMode === 'audio') {
-      if (reconfigureAudioSource === 'online') {
-        payload = {
-          room_mode: 'audio',
-          audio_source: 'online',
-        };
-      } else {
-        if (!reconfigureAudioLibraryId) {
-          setError('Select a music library first.');
-          return;
-        }
-        payload = {
-          room_mode: 'audio',
-          audio_source: 'library',
-          audio_library_id: reconfigureAudioLibraryId,
-        };
-      }
+      payload = {
+        room_mode: 'audio',
+        audio_library_id: reconfigureAudioLibraryId,
+      };
     } else if (reconfigureMode === 'web') {
       payload = {
         room_mode: 'web',
@@ -1205,6 +1190,7 @@ export default function WatchPartyRoomPage() {
     try {
       await reconfigureWatchPartyRoom(roomId, payload);
       setInfoForDuration('Reconfiguring room for all participants…', 10_000);
+      setReconfigureModalOpen(false);
     } catch (err: any) {
       setError(err?.message || 'Failed to reconfigure room');
     } finally {
@@ -1268,28 +1254,12 @@ export default function WatchPartyRoomPage() {
   return (
     <div className="space-y-6 animate-rise">
       <section className="panel p-3 sm:p-4">
-        <div
-          role="button"
-          tabIndex={0}
-          aria-expanded={roomPanelExpanded}
-          aria-label="Toggle room details"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/10 px-3 py-2"
-          onClick={() => setRoomPanelExpanded((prev) => !prev)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              setRoomPanelExpanded((prev) => !prev);
-            }
-          }}
-        >
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/10 px-3 py-2">
           <div className="min-w-0">
             <p className="text-sm font-semibold">
-              {roomPanelExpanded ? 'Hide room details' : 'Show room details'}
-            </p>
-            <p className="text-[11px] muted truncate">
               {roomDisplayName || `Room ${room.room_id}`}
             </p>
-            {roomDisplayName && <p className="text-[11px] muted truncate">Room {room.room_id}</p>}
+            <p className="text-[11px] muted truncate">Room {room.room_id}</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1297,20 +1267,23 @@ export default function WatchPartyRoomPage() {
             <button
               type="button"
               className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={(event) => {
-                event.stopPropagation();
-                void copyLink();
-              }}
+              onClick={() => setReconfigureModalOpen(true)}
+              disabled={!joinedRole}
+              title={!joinedRole ? 'Join the room to reconfigure' : undefined}
+            >
+              Reconfigure room
+            </button>
+            <button
+              type="button"
+              className="btn-secondary px-3 py-1.5 text-xs"
+              onClick={() => void copyLink()}
             >
               Copy room link
             </button>
             <button
               type="button"
               className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={(event) => {
-                event.stopPropagation();
-                void handleLeave();
-              }}
+              onClick={() => void handleLeave()}
               disabled={leaving}
             >
               {leaving ? 'Leaving…' : 'Leave room'}
@@ -1319,10 +1292,7 @@ export default function WatchPartyRoomPage() {
               <button
                 type="button"
                 className="btn-secondary px-3 py-1.5 text-xs"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setPendingEndRoomConfirm(true);
-                }}
+                onClick={() => setPendingEndRoomConfirm(true)}
                 disabled={ending}
               >
                 {ending ? 'Ending…' : 'End room'}
@@ -1330,274 +1300,6 @@ export default function WatchPartyRoomPage() {
             )}
           </div>
         </div>
-
-        {roomPanelExpanded && (
-          <div className="mt-4">
-            {joinedRole === 'host' ? (
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <h2 className="text-xl font-semibold">Reconfigure Room</h2>
-                  <p className="text-sm muted">
-                    Switch between Watch Together, Listen Together, Create Together, and Web without creating a new room.
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/10 p-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className={`px-4 py-2 text-sm rounded-lg ${isWatchReconfigureMode ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => {
-                        setReconfigureDirty(true);
-                        setReconfigureMode(reconfigureWatchSource);
-                      }}
-                    >
-                      Watch Together
-                    </button>
-                    <button
-                      type="button"
-                      className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => {
-                        setReconfigureDirty(true);
-                        setReconfigureMode('audio');
-                      }}
-                    >
-                      Listen Together
-                    </button>
-                    <button
-                      type="button"
-                      className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => {
-                        setReconfigureDirty(true);
-                        setReconfigureMode('create');
-                      }}
-                    >
-                      Create Together
-                    </button>
-                  </div>
-                  <div className="flex w-full justify-end sm:w-auto">
-                      <button
-                        type="button"
-                        className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
-                      onClick={handleReconfigureRoom}
-                      disabled={
-                        reconfiguring ||
-                        (reconfigureMode === 'video' && !reconfigureVideoItem) ||
-                        (reconfigureMode === 'audio' &&
-                          reconfigureAudioSource === 'local' &&
-                          !reconfigureAudioLibraryId)
-                      }
-                    >
-                      {reconfiguring ? 'Reconfiguring…' : 'Apply Room Mode'}
-                    </button>
-                  </div>
-                </div>
-
-                {reconfigureMode === 'audio' ? (
-                  <div className="space-y-3">
-                    <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-                      {([
-                        ['local', 'Local'],
-                        ['online', 'Online'],
-                      ] as const).map(([source, label]) => (
-                        <button
-                          key={source}
-                          type="button"
-                          onClick={() => {
-                            setReconfigureDirty(true);
-                            setReconfigureAudioSource(source);
-                          }}
-                          className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                            reconfigureAudioSource === source
-                              ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                              : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {reconfigureAudioSource === 'online' ? (
-                      <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                        Online mode lets members search YouTube tracks and download MP3s into this room.
-                      </div>
-                    ) : reconfigureMusicLibraries.length === 0 ? (
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                        No shared music libraries available for current room participants.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <label
-                          htmlFor="reconfigure-audio-library"
-                          className="block text-xs uppercase tracking-wide muted"
-                        >
-                          Music Library
-                        </label>
-                        <select
-                          id="reconfigure-audio-library"
-                          value={reconfigureAudioLibraryId}
-                          onChange={(e) => setReconfigureAudioLibraryId(e.target.value)}
-                          className="select px-3 py-2 text-sm"
-                        >
-                          {reconfigureMusicLibraries.map((library) => (
-                            <option key={library.id} value={library.id}>
-                              {library.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                ) : reconfigureMode === 'create' ? (
-                  <div className="space-y-3">
-                    <p className="text-xs uppercase tracking-wide muted">Create Tool</p>
-                    <div role="radiogroup" aria-label="Create tool" className="grid gap-2 sm:grid-cols-2">
-                      <label
-                        className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                          reconfigureCreateTool === 'text' ? 'border-[var(--purple)]' : ''
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          className="sr-only"
-                          checked={reconfigureCreateTool === 'text'}
-                          onChange={() => {
-                            setReconfigureDirty(true);
-                            setReconfigureCreateTool('text');
-                          }}
-                        />
-                        <p className="text-sm font-medium">Shared Document</p>
-                        <p className="text-xs muted">Collaborative text + PDF conversion workflow.</p>
-                      </label>
-                      <label
-                        className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                          reconfigureCreateTool === 'canvas' ? 'border-[var(--purple)]' : ''
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          className="sr-only"
-                          checked={reconfigureCreateTool === 'canvas'}
-                          onChange={() => {
-                            setReconfigureDirty(true);
-                            setReconfigureCreateTool('canvas');
-                          }}
-                        />
-                        <p className="text-sm font-medium">Shared Canvas</p>
-                        <p className="text-xs muted">MS Paint style collaborative whiteboard.</p>
-                      </label>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <p className="text-xs uppercase tracking-wide muted">Watch Source</p>
-                      <div role="radiogroup" aria-label="Watch source" className="grid gap-2 sm:grid-cols-3">
-                        <label
-                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                            reconfigureMode === 'video' ? 'border-[var(--purple)]' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            className="sr-only"
-                            checked={reconfigureMode === 'video'}
-                            onChange={() => {
-                              setReconfigureDirty(true);
-                              setReconfigureWatchSource('video');
-                              setReconfigureMode('video');
-                            }}
-                          />
-                          <p className="text-sm font-medium">Local Media</p>
-                          <p className="text-xs muted">Use content from shared server libraries.</p>
-                        </label>
-                        <label
-                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                            reconfigureMode === 'youtube' ? 'border-[var(--purple)]' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            className="sr-only"
-                            checked={reconfigureMode === 'youtube'}
-                            onChange={() => {
-                              setReconfigureDirty(true);
-                              setReconfigureWatchSource('youtube');
-                              setReconfigureMode('youtube');
-                            }}
-                          />
-                          <p className="text-sm font-medium">YouTube</p>
-                          <p className="text-xs muted">Shared search and queue inside the lobby.</p>
-                        </label>
-                        <label
-                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                            reconfigureMode === 'web' ? 'border-[var(--purple)]' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            className="sr-only"
-                            checked={reconfigureMode === 'web'}
-                            onChange={() => {
-                              setReconfigureDirty(true);
-                              setReconfigureWatchSource('web');
-                              setReconfigureMode('web');
-                            }}
-                          />
-                          <p className="text-sm font-medium">Web</p>
-                          <p className="text-xs muted">Shared synchronized browser URL.</p>
-                        </label>
-                      </div>
-                    </div>
-
-                    {reconfigureMode === 'video' ? (
-                      reconfigureVideoLibraries.length === 0 ? (
-                        <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                          No shared video libraries available for current room participants.
-                        </div>
-                      ) : (
-                        <MediaPicker
-                          libraries={allLibraries}
-                          eligibleLibraryIds={eligibleLibraryIds}
-                          selectedLibraryId={reconfigureVideoLibraryId}
-                          selectedItem={reconfigureVideoItem}
-                          layout="stacked"
-                          surfaceClassName="panel-soft"
-                          noShadow
-                          onLibraryChange={setReconfigureVideoLibraryId}
-                          onSelectItem={setReconfigureVideoItem}
-                        />
-                      )
-                    ) : reconfigureMode === 'web' ? (
-                      <div className="space-y-2">
-                        <label className="block text-xs uppercase tracking-wide muted" htmlFor="reconfigure-web-url">
-                          Shared URL
-                        </label>
-                        <input
-                          id="reconfigure-web-url"
-                          type="text"
-                          value={reconfigureWebUrl}
-                          onChange={(e) => setReconfigureWebUrl(e.target.value)}
-                          className="input px-3 py-2 text-sm"
-                          placeholder="https://www.mozilla.org/"
-                          maxLength={2048}
-                        />
-                        <p className="text-xs muted">
-                          Apply mode to push this URL to all joined members.
-                        </p>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                Only room admins can reconfigure the room.
-              </div>
-            )}
-          </div>
-        )}
       </section>
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
@@ -1637,7 +1339,6 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isAudioRoom && audioState && (
         <AudioPlayer
           audioState={audioState}
-          audioSource={room.audio_source === 'online' ? 'online' : 'library'}
           onlineStatusEvents={onlineAudioStatusEvents}
           canControl={canPlayPause}
           canSeek={canSeek}
@@ -1649,7 +1350,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isAudioRoom && !audioState && (
         <section className="panel p-5 sm:p-6">
           <p className="text-sm muted">
-            {isOnlineAudioRoom ? 'Connecting to online music party…' : 'Connecting to music party…'}
+            Connecting to music party…
           </p>
         </section>
       )}
@@ -1667,7 +1368,6 @@ export default function WatchPartyRoomPage() {
             canQueue={!!joinedRole}
             wsConnected={wsConnected}
             sendWs={sendWs}
-            onDebugLog={handleYoutubeDebug}
           />
         </section>
       )}
@@ -1702,64 +1402,314 @@ export default function WatchPartyRoomPage() {
         </section>
       )}
 
-      {joinedRole && isYoutubeRoom && (
-        <section className="panel space-y-3 p-4 sm:p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">YouTube Diagnostics</h2>
-            <button
-              type="button"
-              className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={copyDebugLog}
+      {reconfigureModalOpen &&
+        portalMounted &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+            onClick={() => setReconfigureModalOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Reconfigure room"
+              className="panel w-full max-w-5xl max-h-[88vh] space-y-4 overflow-y-auto rounded-2xl border border-[var(--border)] p-5 sm:p-6"
+              onClick={(event) => event.stopPropagation()}
             >
-              Copy logs
-            </button>
-          </div>
-          <p className="text-xs muted">
-            These logs capture websocket and YouTube player events for this room.
-          </p>
-          <div className="max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[11px] leading-5 text-white/80">
-            {debugLog.length === 0 ? (
-              <p className="muted">No diagnostic events yet.</p>
-            ) : (
-              <pre className="whitespace-pre-wrap break-words font-mono">
-                {debugLog.join('\n')}
-              </pre>
-            )}
-          </div>
-        </section>
-      )}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="text-xl font-semibold">Reconfigure Room</h2>
+                  <p className="text-sm muted">
+                    Switch between Watch Together, Listen Together, Create Together, and Web without creating a new room.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-secondary px-3 py-1.5 text-xs"
+                  onClick={() => setReconfigureModalOpen(false)}
+                >
+                  Close
+                </button>
+              </div>
 
-      {pendingEndRoomConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
-          <div className="panel w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] p-6">
-            <h2 className="text-lg font-semibold">End Room</h2>
-            <p className="text-sm muted">
-              End this room for everyone? All participants will be disconnected from this room.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPendingEndRoomConfirm(false)}
-                className="btn-ghost px-4 py-2 text-sm"
-                disabled={ending}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPendingEndRoomConfirm(false);
-                  void handleEndRoom();
-                }}
-                className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
-                disabled={ending}
-              >
-                {ending ? 'Ending…' : 'End room'}
-              </button>
+              {joinedRole === 'host' ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/10 p-3">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm rounded-lg ${isWatchReconfigureMode ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => {
+                          setReconfigureDirty(true);
+                          setReconfigureMode(reconfigureWatchSource);
+                        }}
+                      >
+                        Watch Together
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => {
+                          setReconfigureDirty(true);
+                          setReconfigureMode('audio');
+                        }}
+                      >
+                        Listen Together
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => {
+                          setReconfigureDirty(true);
+                          setReconfigureMode('create');
+                        }}
+                      >
+                        Create Together
+                      </button>
+                    </div>
+                    <div className="flex w-full justify-end sm:w-auto">
+                      <button
+                        type="button"
+                        className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
+                        onClick={handleReconfigureRoom}
+                        disabled={
+                          reconfiguring ||
+                          (reconfigureMode === 'video' && !reconfigureVideoItem)
+                        }
+                      >
+                        {reconfiguring ? 'Reconfiguring…' : 'Apply Room Mode'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {reconfigureMode === 'audio' ? (
+                    <div className="space-y-3">
+                      <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                        Listen Together now uses one unified room mode. Members can search and queue
+                        both online (YouTube download) and offline (local library) tracks in the
+                        same queue.
+                      </div>
+                      {reconfigureMusicLibraries.length === 0 ? (
+                        <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                          No shared local music libraries are available for current room participants.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <label
+                            htmlFor="reconfigure-audio-library"
+                            className="block text-xs uppercase tracking-wide muted"
+                          >
+                            Music Library
+                          </label>
+                          <select
+                            id="reconfigure-audio-library"
+                            value={reconfigureAudioLibraryId}
+                            onChange={(e) => {
+                              setReconfigureDirty(true);
+                              setReconfigureAudioLibraryId(e.target.value);
+                            }}
+                            className="select px-3 py-2 text-sm"
+                          >
+                            <option value="">No local library (online only)</option>
+                            {reconfigureMusicLibraries.map((library) => (
+                              <option key={library.id} value={library.id}>
+                                {library.name}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs muted">
+                            This controls offline local-track search. Online YouTube search remains
+                            available either way.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ) : reconfigureMode === 'create' ? (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-wide muted">Create Tool</p>
+                      <div role="radiogroup" aria-label="Create tool" className="grid gap-2 sm:grid-cols-2">
+                        <label
+                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                            reconfigureCreateTool === 'text' ? 'border-[var(--purple)]' : ''
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            className="sr-only"
+                            checked={reconfigureCreateTool === 'text'}
+                            onChange={() => {
+                              setReconfigureDirty(true);
+                              setReconfigureCreateTool('text');
+                            }}
+                          />
+                          <p className="text-sm font-medium">Shared Document</p>
+                          <p className="text-xs muted">Collaborative text + PDF conversion workflow.</p>
+                        </label>
+                        <label
+                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                            reconfigureCreateTool === 'canvas' ? 'border-[var(--purple)]' : ''
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            className="sr-only"
+                            checked={reconfigureCreateTool === 'canvas'}
+                            onChange={() => {
+                              setReconfigureDirty(true);
+                              setReconfigureCreateTool('canvas');
+                            }}
+                          />
+                          <p className="text-sm font-medium">Shared Canvas</p>
+                          <p className="text-xs muted">MS Paint style collaborative whiteboard.</p>
+                        </label>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase tracking-wide muted">Watch Source</p>
+                        <div role="radiogroup" aria-label="Watch source" className="grid gap-2 sm:grid-cols-3">
+                          <label
+                            className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                              reconfigureMode === 'video' ? 'border-[var(--purple)]' : ''
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              className="sr-only"
+                              checked={reconfigureMode === 'video'}
+                              onChange={() => {
+                                setReconfigureDirty(true);
+                                setReconfigureWatchSource('video');
+                                setReconfigureMode('video');
+                              }}
+                            />
+                            <p className="text-sm font-medium">Local Media</p>
+                            <p className="text-xs muted">Use content from shared server libraries.</p>
+                          </label>
+                          <label
+                            className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                              reconfigureMode === 'youtube' ? 'border-[var(--purple)]' : ''
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              className="sr-only"
+                              checked={reconfigureMode === 'youtube'}
+                              onChange={() => {
+                                setReconfigureDirty(true);
+                                setReconfigureWatchSource('youtube');
+                                setReconfigureMode('youtube');
+                              }}
+                            />
+                            <p className="text-sm font-medium">YouTube</p>
+                            <p className="text-xs muted">Shared search and queue inside the lobby.</p>
+                          </label>
+                          <label
+                            className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
+                              reconfigureMode === 'web' ? 'border-[var(--purple)]' : ''
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              className="sr-only"
+                              checked={reconfigureMode === 'web'}
+                              onChange={() => {
+                                setReconfigureDirty(true);
+                                setReconfigureWatchSource('web');
+                                setReconfigureMode('web');
+                              }}
+                            />
+                            <p className="text-sm font-medium">Web</p>
+                            <p className="text-xs muted">Shared synchronized browser URL.</p>
+                          </label>
+                        </div>
+                      </div>
+
+                      {reconfigureMode === 'video' ? (
+                        reconfigureVideoLibraries.length === 0 ? (
+                          <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                            No shared video libraries available for current room participants.
+                          </div>
+                        ) : (
+                          <MediaPicker
+                            libraries={allLibraries}
+                            eligibleLibraryIds={eligibleLibraryIds}
+                            selectedLibraryId={reconfigureVideoLibraryId}
+                            selectedItem={reconfigureVideoItem}
+                            layout="stacked"
+                            surfaceClassName="panel-soft"
+                            noShadow
+                            onLibraryChange={setReconfigureVideoLibraryId}
+                            onSelectItem={setReconfigureVideoItem}
+                          />
+                        )
+                      ) : reconfigureMode === 'web' ? (
+                        <div className="space-y-2">
+                          <label className="block text-xs uppercase tracking-wide muted" htmlFor="reconfigure-web-url">
+                            Shared URL
+                          </label>
+                          <input
+                            id="reconfigure-web-url"
+                            type="text"
+                            value={reconfigureWebUrl}
+                            onChange={(e) => setReconfigureWebUrl(e.target.value)}
+                            className="input px-3 py-2 text-sm"
+                            placeholder="https://www.mozilla.org/"
+                            maxLength={2048}
+                          />
+                          <p className="text-xs muted">
+                            Apply mode to push this URL to all joined members.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                  Only room admins can reconfigure the room.
+                </div>
+              )}
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
+
+      {pendingEndRoomConfirm &&
+        portalMounted &&
+        createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+            <div className="panel w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] p-6">
+              <h2 className="text-lg font-semibold">End Room</h2>
+              <p className="text-sm muted">
+                End this room for everyone? All participants will be disconnected from this room.
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPendingEndRoomConfirm(false)}
+                  className="btn-ghost px-4 py-2 text-sm"
+                  disabled={ending}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingEndRoomConfirm(false);
+                    void handleEndRoom();
+                  }}
+                  className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
+                  disabled={ending}
+                >
+                  {ending ? 'Ending…' : 'End room'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       {joinedRole && !isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && (
         <>
@@ -1834,7 +1784,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && (
         <div className="grid gap-5 xl:grid-cols-2">
           <section className="panel space-y-3 p-5 sm:p-6">
-            <h2 className="text-xl font-semibold">Roster</h2>
+            <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
             <ul className="space-y-2">
               {activeMembers.map((member) => (
                 <li key={member.user_id} className="tile rounded-xl px-3 py-2">
@@ -1843,7 +1793,20 @@ export default function WatchPartyRoomPage() {
                       <p className="text-sm font-medium">{member.username}</p>
                       <p className="text-xs muted">{roleLabel(member.role, effectiveRoomMode)}</p>
                     </div>
-                    <span className="chip">{member.connected ? 'Connected' : 'Offline'}</span>
+                    <span
+                      className={`chip inline-flex items-center gap-1.5 ${
+                        member.connected
+                          ? 'border-emerald-400/50 bg-emerald-500/10 text-emerald-200'
+                          : 'border-white/15 text-white/60'
+                      }`}
+                    >
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          member.connected ? 'bg-emerald-400' : 'bg-white/35'
+                        }`}
+                      />
+                      {member.connected ? 'Online' : 'Offline'}
+                    </span>
                   </div>
                 </li>
               ))}
