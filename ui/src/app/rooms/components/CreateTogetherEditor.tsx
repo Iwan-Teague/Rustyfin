@@ -14,8 +14,28 @@ type Point = { x: number; y: number };
 
 type ActiveTool = 'text' | 'canvas';
 type TextFormat = 'plain' | 'markdown' | 'pdf_text';
+type PageSize = 'a4' | 'letter';
+
+type RichDocPage = {
+  id: string;
+  html: string;
+};
+
+type RichDocument = {
+  version: 1;
+  type: 'rich_doc';
+  page_size: PageSize;
+  pages: RichDocPage[];
+};
 
 const MAX_DOC_NAME = 120;
+const MAX_DOC_PAGES = 80;
+const EMPTY_PAGE_HTML = '<p><br></p>';
+
+const PAGE_SIZES: Record<PageSize, { label: string; widthPx: number; heightPx: number }> = {
+  a4: { label: 'A4', widthPx: 794, heightPx: 1123 },
+  letter: { label: 'Letter', widthPx: 816, heightPx: 1056 },
+};
 
 function sanitizeDocumentName(name: string): string {
   const trimmed = name.trim();
@@ -35,6 +55,211 @@ function downloadBlob(blob: Blob, fileName: string) {
   a.download = fileName;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function createPageId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function makeEmptyPage(): RichDocPage {
+  return {
+    id: createPageId(),
+    html: EMPTY_PAGE_HTML,
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function plainTextToPageHtml(value: string): string {
+  const normalized = value.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  if (lines.length === 0) {
+    return EMPTY_PAGE_HTML;
+  }
+
+  const html = lines
+    .map((line) => {
+      const escaped = escapeHtml(line);
+      return escaped.length === 0 ? '<p><br></p>' : `<p>${escaped}</p>`;
+    })
+    .join('');
+
+  return html || EMPTY_PAGE_HTML;
+}
+
+function sanitizeStyleValue(styleValue: string): string | null {
+  const match = styleValue.match(/text-align\s*:\s*(left|center|right|justify)/i);
+  if (!match) return null;
+  return `text-align:${match[1].toLowerCase()};`;
+}
+
+function sanitizePageHtml(rawHtml: string): string {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return rawHtml || EMPTY_PAGE_HTML;
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${rawHtml}</div>`, 'text/html');
+  const root = doc.body.firstElementChild as HTMLElement | null;
+  if (!root) return EMPTY_PAGE_HTML;
+
+  const allowedTags = new Set([
+    'P',
+    'DIV',
+    'SPAN',
+    'B',
+    'STRONG',
+    'I',
+    'EM',
+    'U',
+    'BR',
+    'UL',
+    'OL',
+    'LI',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'BLOCKQUOTE',
+  ]);
+
+  const walk = (node: Node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement;
+      if (!allowedTags.has(el.tagName)) {
+        const parent = el.parentNode;
+        if (parent) {
+          while (el.firstChild) {
+            parent.insertBefore(el.firstChild, el);
+          }
+          parent.removeChild(el);
+        }
+        return;
+      }
+
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on')) {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+
+        if (name === 'style') {
+          const sanitizedStyle = sanitizeStyleValue(attr.value);
+          if (sanitizedStyle) {
+            el.setAttribute('style', sanitizedStyle);
+          } else {
+            el.removeAttribute(attr.name);
+          }
+          continue;
+        }
+
+        el.removeAttribute(attr.name);
+      }
+    }
+
+    for (const child of Array.from(node.childNodes)) {
+      walk(child);
+    }
+  };
+
+  walk(root);
+
+  const cleaned = root.innerHTML.trim();
+  return cleaned.length > 0 ? cleaned : EMPTY_PAGE_HTML;
+}
+
+function htmlToPlainText(html: string): string {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return html;
+  }
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${html}</div>`, 'text/html');
+  return doc.body.textContent || '';
+}
+
+function normalizePages(input: RichDocPage[]): RichDocPage[] {
+  const next = input
+    .slice(0, MAX_DOC_PAGES)
+    .map((page) => ({
+      id: page.id || createPageId(),
+      html: sanitizePageHtml(page.html || ''),
+    }));
+
+  if (next.length === 0) {
+    return [makeEmptyPage()];
+  }
+
+  return next;
+}
+
+function serializeRichDocument(pages: RichDocPage[], pageSize: PageSize): string {
+  const payload: RichDocument = {
+    version: 1,
+    type: 'rich_doc',
+    page_size: pageSize,
+    pages: normalizePages(pages),
+  };
+  return JSON.stringify(payload);
+}
+
+function decodeRichDocument(raw: string): { pages: RichDocPage[]; pageSize: PageSize } {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return {
+      pages: [makeEmptyPage()],
+      pageSize: 'a4',
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<RichDocument>;
+    if (parsed.type === 'rich_doc' && Array.isArray(parsed.pages)) {
+      const pageSize = parsed.page_size === 'letter' ? 'letter' : 'a4';
+      const pages = normalizePages(
+        parsed.pages.map((page) => ({
+          id: page.id || createPageId(),
+          html: page.html || '',
+        })),
+      );
+      return { pages, pageSize };
+    }
+  } catch {
+    // Fallback to legacy plain-text content.
+  }
+
+  return {
+    pages: [
+      {
+        id: createPageId(),
+        html: plainTextToPageHtml(raw),
+      },
+    ],
+    pageSize: 'a4',
+  };
+}
+
+function pagesToPlainText(pages: RichDocPage[]): string {
+  return pages
+    .map((page, index) => {
+      const body = htmlToPlainText(page.html).trim();
+      if (index === 0) return body;
+      return `\n\n--- Page ${index + 1} ---\n\n${body}`;
+    })
+    .join('')
+    .trim();
 }
 
 function escapePdfText(value: string): string {
@@ -174,17 +399,23 @@ function extractPdfText(buffer: ArrayBuffer): string {
   return text;
 }
 
+function commandButtonClass(active = false): string {
+  return `rounded-md px-3 py-1.5 text-xs ${active ? 'btn-primary' : 'btn-secondary'}`;
+}
+
 export default function CreateTogetherEditor({ createState, canEdit, sendWs }: Props) {
   const [activeTool, setActiveTool] = useState<ActiveTool>('text');
   const [documentName, setDocumentName] = useState('Untitled Document');
-  const [textFormat, setTextFormat] = useState<TextFormat>('plain');
-  const [textContent, setTextContent] = useState('');
+  const [pages, setPages] = useState<RichDocPage[]>([makeEmptyPage()]);
+  const [pageSize, setPageSize] = useState<PageSize>('a4');
+  const [activePageId, setActivePageId] = useState<string | null>(null);
   const [canvasStrokes, setCanvasStrokes] = useState<WsCreateCanvasStroke[]>([]);
   const [brushColor, setBrushColor] = useState('#b95cff');
   const [brushSize, setBrushSize] = useState(4);
   const [localMessage, setLocalMessage] = useState('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pendingStrokeRef = useRef<WsCreateCanvasStroke | null>(null);
   const textDebounceRef = useRef<number | null>(null);
   const nameDebounceRef = useRef<number | null>(null);
@@ -198,6 +429,83 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     };
   }, []);
 
+  const pushTextState = useCallback(
+    (nextText: string, nextFormat: TextFormat = 'plain') => {
+      if (!canEdit) return;
+      sendWs({
+        type: 'create_set_text',
+        text_content: nextText,
+        text_format: nextFormat,
+      });
+    },
+    [canEdit, sendWs],
+  );
+
+  const pushCanvasState = useCallback(
+    (nextStrokes: WsCreateCanvasStroke[]) => {
+      if (!canEdit) return;
+      sendWs({
+        type: 'create_set_canvas',
+        canvas_strokes: nextStrokes,
+      });
+    },
+    [canEdit, sendWs],
+  );
+
+  const pushDocumentName = useCallback(
+    (nextName: string) => {
+      if (!canEdit) return;
+      sendWs({
+        type: 'create_set_document_name',
+        document_name: sanitizeDocumentName(nextName),
+      });
+    },
+    [canEdit, sendWs],
+  );
+
+  const setToolAndBroadcast = useCallback(
+    (next: ActiveTool) => {
+      setActiveTool(next);
+      if (!canEdit) return;
+      sendWs({ type: 'create_set_tool', tool: next });
+    },
+    [canEdit, sendWs],
+  );
+
+  const scheduleDocumentSync = useCallback(
+    (nextPages: RichDocPage[], nextPageSize: PageSize, immediate = false) => {
+      if (!canEdit) return;
+      const normalized = normalizePages(nextPages);
+      const payload = serializeRichDocument(normalized, nextPageSize);
+
+      if (textDebounceRef.current) {
+        window.clearTimeout(textDebounceRef.current);
+        textDebounceRef.current = null;
+      }
+
+      if (immediate) {
+        pushTextState(payload, 'plain');
+        return;
+      }
+
+      textDebounceRef.current = window.setTimeout(() => {
+        pushTextState(payload, 'plain');
+        textDebounceRef.current = null;
+      }, 220);
+    },
+    [canEdit, pushTextState],
+  );
+
+  const commitDocument = useCallback(
+    (nextPages: RichDocPage[], nextPageSize: PageSize, immediate = false) => {
+      const normalized = normalizePages(nextPages);
+      setPages(normalized);
+      setPageSize(nextPageSize);
+      scheduleDocumentSync(normalized, nextPageSize, immediate);
+    },
+    [scheduleDocumentSync],
+  );
+
   useEffect(() => {
     if (!createState) return;
     if (createState.updated_ts_ms < latestUpdateRef.current) return;
@@ -206,18 +514,25 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     setActiveTool(createState.active_tool === 'canvas' ? 'canvas' : 'text');
     setDocumentName(sanitizeDocumentName(createState.document_name || 'Untitled Document'));
 
-    if (
-      createState.text_format === 'markdown' ||
-      createState.text_format === 'pdf_text'
-    ) {
-      setTextFormat(createState.text_format);
-    } else {
-      setTextFormat('plain');
-    }
+    const decoded = decodeRichDocument(createState.text_content || '');
+    setPageSize(decoded.pageSize);
+    setPages(decoded.pages);
+    setActivePageId((prev) => {
+      if (prev && decoded.pages.some((page) => page.id === prev)) return prev;
+      return decoded.pages[0]?.id ?? null;
+    });
 
-    setTextContent(createState.text_content || '');
     setCanvasStrokes(createState.canvas_strokes || []);
   }, [createState]);
+
+  useEffect(() => {
+    const known = new Set(pages.map((page) => page.id));
+    for (const pageId of Object.keys(pageRefs.current)) {
+      if (!known.has(pageId)) {
+        delete pageRefs.current[pageId];
+      }
+    }
+  }, [pages]);
 
   const canvasMessage = useMemo(() => {
     if (!canEdit) return 'Read-only mode. A room admin must enable non-host editing.';
@@ -260,57 +575,41 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     drawStrokes(canvasStrokes, pendingStrokeRef.current);
   }, [canvasStrokes, drawStrokes]);
 
-  const pushCanvasState = useCallback(
-    (strokes: WsCreateCanvasStroke[]) => {
-      if (!canEdit) return;
-      sendWs({
-        type: 'create_set_canvas',
-        canvas_strokes: strokes,
+  const syncPageFromDom = useCallback(
+    (pageId: string, immediate = false) => {
+      const node = pageRefs.current[pageId];
+      if (!node) return;
+      const sanitized = sanitizePageHtml(node.innerHTML);
+      setPages((prev) => {
+        const next = prev.map((page) =>
+          page.id === pageId
+            ? {
+                ...page,
+                html: sanitized,
+              }
+            : page,
+        );
+        scheduleDocumentSync(next, pageSize, immediate);
+        return next;
       });
     },
-    [canEdit, sendWs],
+    [pageSize, scheduleDocumentSync],
   );
 
-  const pushTextState = useCallback(
-    (nextText: string, nextFormat: TextFormat) => {
+  const applyCommandToSelection = useCallback(
+    (command: 'bold' | 'italic' | 'justifyLeft' | 'justifyCenter' | 'justifyRight' | 'insertUnorderedList' | 'insertOrderedList') => {
       if (!canEdit) return;
-      sendWs({
-        type: 'create_set_text',
-        text_content: nextText,
-        text_format: nextFormat,
-      });
-    },
-    [canEdit, sendWs],
-  );
+      const targetPageId = activePageId ?? pages[0]?.id;
+      if (!targetPageId) return;
+      const node = pageRefs.current[targetPageId];
+      if (!node) return;
 
-  const pushDocumentName = useCallback(
-    (nextName: string) => {
-      if (!canEdit) return;
-      sendWs({
-        type: 'create_set_document_name',
-        document_name: sanitizeDocumentName(nextName),
-      });
+      node.focus();
+      document.execCommand(command, false);
+      syncPageFromDom(targetPageId);
     },
-    [canEdit, sendWs],
+    [canEdit, activePageId, pages, syncPageFromDom],
   );
-
-  const setToolAndBroadcast = useCallback(
-    (next: ActiveTool) => {
-      setActiveTool(next);
-      if (!canEdit) return;
-      sendWs({ type: 'create_set_tool', tool: next });
-    },
-    [canEdit, sendWs],
-  );
-
-  const onTextChange = (next: string) => {
-    setTextContent(next);
-    if (!canEdit) return;
-    if (textDebounceRef.current) window.clearTimeout(textDebounceRef.current);
-    textDebounceRef.current = window.setTimeout(() => {
-      pushTextState(next, textFormat);
-    }, 220);
-  };
 
   const onNameChange = (next: string) => {
     setDocumentName(next.slice(0, MAX_DOC_NAME));
@@ -318,13 +617,34 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     if (nameDebounceRef.current) window.clearTimeout(nameDebounceRef.current);
     nameDebounceRef.current = window.setTimeout(() => {
       pushDocumentName(next);
+      nameDebounceRef.current = null;
     }, 280);
   };
 
-  const onTextFormatChange = (next: TextFormat) => {
-    setTextFormat(next);
+  const handleAddPage = () => {
+    const page = makeEmptyPage();
+    const next = [...pages, page];
+    commitDocument(next, pageSize, true);
+    setActivePageId(page.id);
+    window.setTimeout(() => {
+      pageRefs.current[page.id]?.focus();
+    }, 0);
+  };
+
+  const handleRemovePage = (pageId: string) => {
     if (!canEdit) return;
-    pushTextState(textContent, next);
+    if (pages.length <= 1) return;
+
+    const next = pages.filter((page) => page.id !== pageId);
+    commitDocument(next, pageSize, true);
+    if (activePageId === pageId) {
+      setActivePageId(next[0]?.id ?? null);
+    }
+  };
+
+  const handlePageSizeChange = (nextPageSize: PageSize) => {
+    setPageSize(nextPageSize);
+    scheduleDocumentSync(pages, nextPageSize, true);
   };
 
   const getCanvasPoint = (event: ReactPointerEvent<HTMLCanvasElement>): Point => {
@@ -371,7 +691,10 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     }
     pendingStrokeRef.current = null;
 
-    const finalized = pending.points.length > 1 ? pending : { ...pending, points: [...pending.points, pending.points[0]] };
+    const finalized =
+      pending.points.length > 1
+        ? pending
+        : { ...pending, points: [...pending.points, pending.points[0]] };
     const next = [...canvasStrokes, finalized];
     setCanvasStrokes(next);
     pushCanvasState(next);
@@ -392,17 +715,23 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
   const handleDownloadText = (format: 'txt' | 'md') => {
     const ext = format === 'md' ? 'md' : 'txt';
-    const mime = format === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8';
-    downloadBlob(new Blob([textContent], { type: mime }), `${sanitizeDocumentName(documentName)}.${ext}`);
+    const mime =
+      format === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8';
+    const plain = pagesToPlainText(pages);
+    downloadBlob(new Blob([plain], { type: mime }), `${sanitizeDocumentName(documentName)}.${ext}`);
   };
 
   const handleDownloadPdf = () => {
-    const bytes = buildSimplePdfBytes(textContent, sanitizeDocumentName(documentName));
+    const plain = pagesToPlainText(pages);
+    const bytes = buildSimplePdfBytes(plain, sanitizeDocumentName(documentName));
     const pdfBuffer = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,
     ) as ArrayBuffer;
-    downloadBlob(new Blob([pdfBuffer], { type: 'application/pdf' }), `${sanitizeDocumentName(documentName)}.pdf`);
+    downloadBlob(
+      new Blob([pdfBuffer], { type: 'application/pdf' }),
+      `${sanitizeDocumentName(documentName)}.pdf`,
+    );
   };
 
   const handleDownloadCanvasPng = () => {
@@ -425,21 +754,22 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       setToolAndBroadcast('text');
 
       const lower = file.name.toLowerCase();
-      let nextText = '';
-      let nextFormat: TextFormat = 'plain';
+      let importedText = '';
 
       if (lower.endsWith('.pdf')) {
         const buffer = await file.arrayBuffer();
-        nextText = extractPdfText(buffer);
-        nextFormat = 'pdf_text';
+        importedText = extractPdfText(buffer);
       } else {
-        nextText = await file.text();
-        nextFormat = lower.endsWith('.md') ? 'markdown' : 'plain';
+        importedText = await file.text();
       }
 
-      setTextFormat(nextFormat);
-      setTextContent(nextText);
-      pushTextState(nextText, nextFormat);
+      const page: RichDocPage = {
+        id: createPageId(),
+        html: plainTextToPageHtml(importedText),
+      };
+
+      commitDocument([page], pageSize, true);
+      setActivePageId(page.id);
       setLocalMessage(`Loaded ${file.name}`);
     } catch (err: any) {
       setLocalMessage(err?.message || 'Failed to import file');
@@ -448,12 +778,14 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     }
   };
 
+  const metrics = PAGE_SIZES[pageSize];
+
   return (
     <section className="panel space-y-4 p-5 sm:p-6">
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Create Together</h2>
         <p className="text-sm muted">
-          Shared docs + shared canvas. Export as TXT/MD/PDF/PNG. PDF import extracts text for collaborative editing.
+          Collaborative paged documents + shared canvas. Use rich text controls and add pages like a standard document editor.
         </p>
       </div>
 
@@ -489,16 +821,25 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       {activeTool === 'text' ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs uppercase tracking-wide muted">Page Size</label>
             <select
               className="select px-3 py-2 text-sm"
-              value={textFormat}
-              onChange={(event) => onTextFormatChange(event.target.value as TextFormat)}
+              value={pageSize}
+              onChange={(event) => handlePageSizeChange(event.target.value as PageSize)}
               disabled={!canEdit}
             >
-              <option value="plain">Plain Text</option>
-              <option value="markdown">Markdown</option>
-              <option value="pdf_text">PDF Text</option>
+              <option value="a4">A4</option>
+              <option value="letter">Letter</option>
             </select>
+
+            <button
+              type="button"
+              className="btn-secondary px-3 py-2 text-sm"
+              onClick={handleAddPage}
+              disabled={!canEdit || pages.length >= MAX_DOC_PAGES}
+            >
+              Add Page
+            </button>
 
             <input
               ref={fileInputRef}
@@ -516,6 +857,7 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
             >
               Import TXT/MD/PDF
             </button>
+
             <button
               type="button"
               className="btn-secondary px-3 py-2 text-sm"
@@ -539,16 +881,129 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
             </button>
           </div>
 
-          <textarea
-            value={textContent}
-            onChange={(event) => onTextChange(event.target.value)}
-            className="input min-h-[22rem] w-full resize-y px-3 py-2 text-sm font-mono leading-6"
-            placeholder="Start writing together..."
-            disabled={!canEdit}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs uppercase tracking-wide muted">Format</span>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('bold')}
+              disabled={!canEdit}
+            >
+              Bold
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('italic')}
+              disabled={!canEdit}
+            >
+              Italic
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('justifyLeft')}
+              disabled={!canEdit}
+            >
+              Left
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('justifyCenter')}
+              disabled={!canEdit}
+            >
+              Center
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('justifyRight')}
+              disabled={!canEdit}
+            >
+              Right
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('insertUnorderedList')}
+              disabled={!canEdit}
+            >
+              Bullets
+            </button>
+            <button
+              type="button"
+              className={commandButtonClass(false)}
+              onClick={() => applyCommandToSelection('insertOrderedList')}
+              disabled={!canEdit}
+            >
+              Numbered
+            </button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="max-h-[74vh] overflow-auto pr-1">
+              <div className="mx-auto flex w-full flex-col items-center gap-6 pb-2">
+                {pages.map((page, index) => (
+                  <div key={page.id} className="w-full">
+                    <div className="mx-auto mb-2 flex w-full items-center justify-between text-xs muted" style={{ maxWidth: `${metrics.widthPx}px` }}>
+                      <span>
+                        Page {index + 1} · {metrics.label}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-ghost px-2 py-0.5 text-xs"
+                        disabled={!canEdit || pages.length <= 1}
+                        onClick={() => handleRemovePage(page.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div
+                      className="mx-auto w-full rounded-md border border-black/20 bg-white text-black shadow-[0_18px_40px_rgba(0,0,0,0.38)]"
+                      style={{
+                        maxWidth: `${metrics.widthPx}px`,
+                        minHeight: `${metrics.heightPx}px`,
+                      }}
+                    >
+                      <div
+                        ref={(node) => {
+                          pageRefs.current[page.id] = node;
+                        }}
+                        contentEditable={canEdit}
+                        suppressContentEditableWarning
+                        className="outline-none px-14 py-14 text-[15px] leading-7"
+                        style={{ minHeight: `${metrics.heightPx - 112}px` }}
+                        dangerouslySetInnerHTML={{ __html: page.html }}
+                        onFocus={() => setActivePageId(page.id)}
+                        onInput={(event) => {
+                          const html = (event.currentTarget as HTMLDivElement).innerHTML;
+                          const sanitized = sanitizePageHtml(html);
+                          setPages((prev) => {
+                            const next = prev.map((entry) =>
+                              entry.id === page.id
+                                ? {
+                                    ...entry,
+                                    html: sanitized,
+                                  }
+                                : entry,
+                            );
+                            scheduleDocumentSync(next, pageSize);
+                            return next;
+                          });
+                        }}
+                        onBlur={() => syncPageFromDom(page.id)}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <p className="text-xs muted">
             {canEdit
-              ? 'Edits sync in realtime for everyone in the room.'
+              ? 'Paged edits sync in realtime for everyone in the room.'
               : 'Read-only mode. A room admin must enable non-host editing.'}
           </p>
         </div>
