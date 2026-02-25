@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::io::AsyncSeekExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::auth::{AdminUser, AuthUser, validate_stream_token};
 use crate::error::AppError;
@@ -984,14 +984,6 @@ fn room_audio_dir(state: &AppState, room_id: &str) -> PathBuf {
     state.watch_party_audio_dir.join(room_id)
 }
 
-async fn ensure_room_audio_dir(state: &AppState, room_id: &str) -> Result<PathBuf, AppError> {
-    let dir = room_audio_dir(state, room_id);
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed to create room audio dir: {e}")))?;
-    Ok(dir)
-}
-
 async fn remove_room_audio_files(state: &AppState, room_id: &str) -> Result<(), AppError> {
     let dir = room_audio_dir(state, room_id);
     match tokio::fs::metadata(&dir).await {
@@ -1088,14 +1080,14 @@ async fn download_youtube_audio_mp3_for_room(
         .into());
     }
 
-    let canonical_file = file_path
-        .canonicalize()
-        .map_err(|e| ApiError::Internal(format!("failed to canonicalize downloaded audio path: {e}")))?;
-    let canonical_room_root = room_audio_dir(state, room_id)
-        .canonicalize()
-        .map_err(|e| ApiError::Internal(format!(
+    let canonical_file = file_path.canonicalize().map_err(|e| {
+        ApiError::Internal(format!("failed to canonicalize downloaded audio path: {e}"))
+    })?;
+    let canonical_room_root = room_audio_dir(state, room_id).canonicalize().map_err(|e| {
+        ApiError::Internal(format!(
             "failed to canonicalize room audio directory for validation: {e}"
-        )))?;
+        ))
+    })?;
 
     if !canonical_file.starts_with(&canonical_room_root) {
         return Err(ApiError::Forbidden(
