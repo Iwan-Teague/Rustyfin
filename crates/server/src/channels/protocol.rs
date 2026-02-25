@@ -43,6 +43,8 @@ pub enum ChannelEvent {
         channels: Vec<ChannelInfo>,
         voice_presence: HashMap<String, Vec<UserInfo>>,
         voice_active_since_ts: HashMap<String, i64>,
+        #[serde(default)]
+        voice_transcriptions: HashMap<String, VoiceTranscriptionStateInfo>,
     },
     VoicePresence {
         channel_id: String,
@@ -54,6 +56,10 @@ pub enum ChannelEvent {
     VoiceJoined {
         channel_id: String,
         existing_members: Vec<UserInfo>,
+    },
+    VoiceTranscriptionState {
+        channel_id: String,
+        state: VoiceTranscriptionStateInfo,
     },
     RtcOffer {
         from_user_id: String,
@@ -126,4 +132,15 @@ pub struct MessageAttachmentInfo {
     pub content_type: String,
     pub size_bytes: i64,
     pub download_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceTranscriptionStateInfo {
+    pub status: String,
+    pub session_id: Option<String>,
+    pub started_by_username: Option<String>,
+    pub started_ts: Option<i64>,
+    pub ended_ts: Option<i64>,
+    pub output_available: bool,
+    pub message: Option<String>,
 }

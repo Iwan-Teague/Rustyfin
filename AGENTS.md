@@ -6,7 +6,7 @@ This file defines repo-specific operating rules for coding agents and contributo
 
 Rustyfin is a Docker-first local media platform with:
 - Rust backend (`crates/server`, Axum + SQLite)
-- Rust microservices (`crates/calendar`, `crates/tmdb-agent`)
+- Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`)
 - Next.js frontend (`ui`)
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`)
 
@@ -37,6 +37,8 @@ Primary containers:
 - `rustfin` (main API)
 - `rustfin-calendar` (calendar service)
 - `rustfin-tmdb-agent` (TMDB sync service)
+- `rustfin-youtube-agent` (YouTube audio download service)
+- `rustfin-transcription-agent` (Whisper transcription service)
 - `rustfin-ui` (Next.js app)
 - `rustfin-edge` (HTTPS edge proxy)
 
@@ -60,4 +62,3 @@ Run before finalizing substantial changes:
 - Keep code pragmatic and production-oriented.
 - Reuse existing repo patterns before adding new abstractions.
 - Keep changes scoped and readable; avoid unrelated refactors.
-

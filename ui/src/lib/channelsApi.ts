@@ -65,6 +65,7 @@ export type ChannelEvent =
       channels: ChannelInfo[];
       voice_presence: Record<string, UserInfo[]>;
       voice_active_since_ts: Record<string, number>;
+      voice_transcriptions?: Record<string, VoiceTranscriptionState>;
     }
   | {
       type: 'voice_presence';
@@ -75,6 +76,11 @@ export type ChannelEvent =
       active_since_ts?: number | null;
     }
   | { type: 'voice_joined'; channel_id: string; existing_members: UserInfo[] }
+  | {
+      type: 'voice_transcription_state';
+      channel_id: string;
+      state: VoiceTranscriptionState;
+    }
   | { type: 'rtc_offer'; from_user_id: string; channel_id: string; sdp: string }
   | { type: 'rtc_answer'; from_user_id: string; channel_id: string; sdp: string }
   | { type: 'rtc_ice'; from_user_id: string; channel_id: string; candidate: string }
@@ -85,6 +91,43 @@ export type ChannelEvent =
   | { type: 'message_deleted'; message_id: string; channel_id: string }
   | { type: 'pong' }
   | { type: 'error'; message: string };
+
+export type VoiceTranscriptionState = {
+  status: string;
+  session_id?: string | null;
+  started_by_username?: string | null;
+  started_ts?: number | null;
+  ended_ts?: number | null;
+  output_available: boolean;
+  message?: string | null;
+};
+
+export type VoiceTranscriptionStatus = {
+  channel_id: string;
+  status: string;
+  session_id?: string | null;
+  started_by_username?: string | null;
+  started_ts?: number | null;
+  ended_ts?: number | null;
+  output_available: boolean;
+  output_download_path?: string | null;
+  message?: string | null;
+  entry_count: number;
+};
+
+export type VoiceTranscribeChunkRequest = {
+  session_id: string;
+  sample_rate_hz: number;
+  started_ts_ms: number;
+  ended_ts_ms: number;
+  pcm_s16le_base64: string;
+  language?: string;
+};
+
+export type VoiceTranscribeChunkResponse = {
+  accepted: boolean;
+  persisted_segments: number;
+};
 
 // ── REST API ─────────────────────────────────────────────────────────────────
 
@@ -157,4 +200,42 @@ export async function uploadMessageAttachment(
 
 export async function deleteMessage(channelId: string, messageId: string): Promise<void> {
   await apiJson<void>(`/channels/${channelId}/messages/${messageId}`, { method: 'DELETE' });
+}
+
+export async function getVoiceTranscriptionStatus(
+  channelId: string,
+): Promise<VoiceTranscriptionStatus> {
+  return apiJson<VoiceTranscriptionStatus>(`/channels/${channelId}/transcription/status`);
+}
+
+export async function startVoiceTranscription(
+  channelId: string,
+): Promise<VoiceTranscriptionStatus> {
+  return apiJson<VoiceTranscriptionStatus>(`/channels/${channelId}/transcription/start`, {
+    method: 'POST',
+  });
+}
+
+export async function stopVoiceTranscription(channelId: string): Promise<VoiceTranscriptionStatus> {
+  return apiJson<VoiceTranscriptionStatus>(`/channels/${channelId}/transcription/stop`, {
+    method: 'POST',
+  });
+}
+
+export async function cancelVoiceTranscription(
+  channelId: string,
+): Promise<VoiceTranscriptionStatus> {
+  return apiJson<VoiceTranscriptionStatus>(`/channels/${channelId}/transcription/cancel`, {
+    method: 'POST',
+  });
+}
+
+export async function uploadVoiceTranscriptionChunk(
+  channelId: string,
+  payload: VoiceTranscribeChunkRequest,
+): Promise<VoiceTranscribeChunkResponse> {
+  return apiJson<VoiceTranscribeChunkResponse>(`/channels/${channelId}/transcription/chunk`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }

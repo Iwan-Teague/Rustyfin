@@ -1,4 +1,5 @@
 pub mod calendar;
+pub mod channel_transcripts;
 pub mod channels;
 pub mod episodes;
 pub mod idempotency;

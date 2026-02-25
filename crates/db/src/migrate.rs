@@ -66,6 +66,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "016_library_tmdb_management",
         include_str!("../migrations/016_library_tmdb_management.sql"),
     ),
+    (
+        "017_channel_transcription",
+        include_str!("../migrations/017_channel_transcription.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

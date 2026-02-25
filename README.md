@@ -35,6 +35,7 @@ It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first run
 - Channels
   - Text channels with live updates and file/image attachments.
   - Voice channels with speaking indicators, mute, deafen, per-peer output volume, and local mic gain.
+  - Voice channel transcription with per-speaker capture, Whisper-based transcription, stop/save, cancel, and markdown download.
 - Calendar
   - Separate Rust calendar service with admin-global and user-personal events.
   - Recurring birthdays and multiple calendar views in UI.
@@ -57,6 +58,9 @@ Rustyfin runs as a multi-service stack in Docker Compose:
 - `rustfin-youtube-agent` (Rust YouTube download API)
   - Dedicated online-audio fetch/convert service for Listen Together.
   - Downloads YouTube source audio with multi-strategy fallback, converts to MP3, writes room-scoped files under shared cache.
+- `rustfin-transcription-agent` (Rust Whisper transcription API)
+  - Dedicated voice transcription microservice for channels.
+  - Lazily loads/downloads Whisper model, runs per-session-per-user worker contexts, and returns timestamped transcript segments.
 - `rustfin-ui` (Next.js App Router frontend)
   - Browser client for all product areas.
 - `rustfin-edge` (Caddy TLS edge)
@@ -77,6 +81,7 @@ Supporting host process:
 - `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
 - `crates/calendar` - standalone calendar service API.
 - `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
+- `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.
 - `ui` - Next.js frontend.
 - `scripts` - operational scripts (`start.sh`, `stop.sh`, `clean_install.sh`, packaging helpers).
 - `tests` - test harness and E2E suites.
@@ -154,6 +159,10 @@ Common runtime variables:
 - `RUSTFIN_YOUTUBE_COOKIE_FILE`
 - `RUSTFIN_YOUTUBE_AGENT_URL`
 - `RUSTFIN_YOUTUBE_AGENT_TOKEN`
+- `RUSTFIN_TRANSCRIPTION_AGENT_URL`
+- `RUSTFIN_TRANSCRIPTION_AGENT_TOKEN`
+- `RUSTFIN_WHISPER_MODEL_PATH`
+- `RUSTFIN_WHISPER_MODEL_URL`
 - `RUSTFIN_SECRETS_ENV_FILE`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`
 - `RUSTFIN_FFMPEG_PATH`

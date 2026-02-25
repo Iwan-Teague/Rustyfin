@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::protocol::{ChannelEvent, ClientMsg, MessageInfo};
+use super::protocol::{ChannelEvent, ClientMsg, MessageInfo, VoiceTranscriptionStateInfo};
 
 const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
 const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
@@ -481,11 +481,32 @@ async fn build_hello(state: &AppState) -> ChannelEvent {
 
     let voice_presence = state.channel_manager.voice_snapshot().await;
     let voice_active_since_ts = state.channel_manager.voice_active_since_snapshot().await;
+    let voice_transcriptions =
+        rustfin_db::repo::channel_transcripts::list_running_sessions(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|session| {
+                (
+                    session.channel_id.clone(),
+                    VoiceTranscriptionStateInfo {
+                        status: session.status,
+                        session_id: Some(session.id),
+                        started_by_username: Some(session.started_by_username),
+                        started_ts: Some(session.started_ts),
+                        ended_ts: session.ended_ts,
+                        output_available: session.output_path.is_some(),
+                        message: session.failure_reason,
+                    },
+                )
+            })
+            .collect();
 
     ChannelEvent::Hello {
         channels,
         voice_presence,
         voice_active_since_ts,
+        voice_transcriptions,
     }
 }
 
