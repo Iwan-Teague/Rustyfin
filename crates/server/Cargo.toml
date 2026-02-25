@@ -37,7 +37,6 @@ tokio-util = { workspace = true }
 futures = "0.3"
 async-stream = "0.3"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
-rusty_ytdl = "0.7"
 
 [dev-dependencies]
 axum-test = { version = "18", features = ["ws"] }

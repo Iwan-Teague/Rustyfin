@@ -2974,7 +2974,6 @@ dependencies = [
  "rustfin-metadata",
  "rustfin-scanner",
  "rustfin-transcoder",
- "rusty_ytdl",
  "serde",
  "serde_json",
  "sha2",
@@ -3020,6 +3019,24 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "rustfin-youtube-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "regex",
+ "reqwest",
+ "rustfin-core",
+ "rusty_ytdl",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

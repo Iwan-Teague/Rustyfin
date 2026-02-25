@@ -39,6 +39,8 @@ async fn test_app() -> TestServer {
     let state = AppState {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
@@ -90,6 +92,8 @@ async fn test_app_http() -> TestServer {
     let state = AppState {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
@@ -260,6 +264,8 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
     let state = AppState {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
@@ -974,6 +980,8 @@ async fn stream_file_with_range_returns_206() {
     let state = AppState {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
@@ -1918,6 +1926,8 @@ async fn test_app_fresh() -> TestServer {
     let state = AppState {
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
