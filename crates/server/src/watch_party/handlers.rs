@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncSeekExt;
 
 use crate::auth::{AdminUser, AuthUser, validate_stream_token};
 use crate::error::AppError;
@@ -37,6 +37,7 @@ const WEB_URL_MAX_LEN: usize = 2048;
 const ROOM_NAME_MAX_LEN: usize = 120;
 const ONLINE_AUDIO_SEARCH_MAX_LIMIT: usize = 20;
 const ONLINE_AUDIO_SEARCH_DEFAULT_LIMIT: usize = 12;
+const YOUTUBE_AGENT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 240;
 const DEFAULT_WEB_ROOM_URL: &str = "https://www.mozilla.org/";
 const DEFAULT_CREATE_DOCUMENT_NAME: &str = "Untitled Document";
 const CREATE_DOCUMENT_NAME_MAX_LEN: usize = 120;
@@ -1014,351 +1015,22 @@ async fn remove_room_audio_files(state: &AppState, room_id: &str) -> Result<(), 
     }
 }
 
-async fn probe_audio_duration_ms(
-    ffprobe_path: &StdPath,
-    path: &StdPath,
-) -> Result<Option<u64>, AppError> {
-    let output = tokio::process::Command::new(ffprobe_path)
-        .arg("-v")
-        .arg("error")
-        .arg("-show_entries")
-        .arg("format=duration")
-        .arg("-of")
-        .arg("default=noprint_wrappers=1:nokey=1")
-        .arg(path)
-        .output()
-        .await
-        .map_err(|e| ApiError::Internal(format!("ffprobe execution failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ApiError::Internal(format!(
-            "ffprobe failed while probing downloaded audio: {}",
-            stderr.trim()
-        ))
-        .into());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let seconds = stdout.trim().parse::<f64>().ok();
-    Ok(seconds.and_then(|s| {
-        if !s.is_finite() || s < 0.0 {
-            None
-        } else {
-            Some((s * 1000.0).round() as u64)
-        }
-    }))
-}
-
-async fn convert_to_mp3(
-    ffmpeg_path: &StdPath,
-    input_path: &StdPath,
-    output_path: &StdPath,
-) -> Result<(), AppError> {
-    let output = tokio::process::Command::new(ffmpeg_path)
-        .arg("-y")
-        .arg("-i")
-        .arg(input_path)
-        .arg("-vn")
-        .arg("-acodec")
-        .arg("libmp3lame")
-        .arg("-b:a")
-        .arg("192k")
-        .arg(output_path)
-        .output()
-        .await
-        .map_err(|e| ApiError::Internal(format!("ffmpeg execution failed: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ApiError::Internal(format!(
-            "ffmpeg failed while converting downloaded audio to mp3: {}",
-            stderr.trim()
-        ))
-        .into());
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
 struct DownloadedOnlineAudio {
     file_path: PathBuf,
     duration_ms: Option<u64>,
 }
 
-fn youtube_cookie_from_env() -> Option<String> {
-    std::env::var("RUSTFIN_YOUTUBE_COOKIE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+#[derive(Debug, Serialize)]
+struct YouTubeAgentDownloadRequest<'a> {
+    room_id: &'a str,
+    video_id: &'a str,
 }
 
-fn youtube_video_options(
-    quality: rusty_ytdl::VideoQuality,
-    filter: rusty_ytdl::VideoSearchOptions,
-) -> rusty_ytdl::VideoOptions {
-    let mut default_headers = reqwest::header::HeaderMap::new();
-    default_headers.insert(
-        reqwest::header::USER_AGENT,
-        reqwest::header::HeaderValue::from_static(YOUTUBE_SEARCH_USER_AGENT),
-    );
-    default_headers.insert(
-        reqwest::header::ACCEPT_LANGUAGE,
-        reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
-    );
-    default_headers.insert(
-        reqwest::header::ACCEPT,
-        reqwest::header::HeaderValue::from_static("*/*"),
-    );
-    default_headers.insert(
-        reqwest::header::REFERER,
-        reqwest::header::HeaderValue::from_static("https://www.youtube.com/"),
-    );
-    default_headers.insert(
-        reqwest::header::ORIGIN,
-        reqwest::header::HeaderValue::from_static("https://www.youtube.com"),
-    );
-    if let Some(cookie_value) = youtube_cookie_from_env() {
-        if let Ok(header_value) = reqwest::header::HeaderValue::from_str(&cookie_value) {
-            default_headers.insert(reqwest::header::COOKIE, header_value);
-        }
-    }
-
-    let request_client = reqwest::Client::builder()
-        .default_headers(default_headers)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    rusty_ytdl::VideoOptions {
-        quality,
-        filter,
-        request_options: rusty_ytdl::RequestOptions {
-            client: Some(request_client),
-            max_retries: Some(5),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-fn compact_source_url_for_error(source_url: &str) -> String {
-    reqwest::Url::parse(source_url)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| format!("{}://{}{}", url.scheme(), host, url.path()))
-        })
-        .unwrap_or_else(|| source_url.chars().take(200).collect::<String>())
-}
-
-fn sanitize_youtube_download_error(raw: &str) -> String {
-    static URL_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = URL_RE.get_or_init(|| {
-        regex::Regex::new(r"https?://[^\s\)]+")
-            .expect("valid regex for sanitizing youtube download errors")
-    });
-    re.replace_all(raw, |captures: &regex::Captures<'_>| {
-        compact_source_url_for_error(&captures[0])
-    })
-    .to_string()
-}
-
-fn format_matches_filter(
-    format: &rusty_ytdl::VideoFormat,
-    filter: &rusty_ytdl::VideoSearchOptions,
-) -> bool {
-    match filter {
-        rusty_ytdl::VideoSearchOptions::Audio => {
-            (!format.has_video && format.has_audio) || format.is_live
-        }
-        rusty_ytdl::VideoSearchOptions::Video => {
-            (format.has_video && !format.has_audio) || format.is_live
-        }
-        rusty_ytdl::VideoSearchOptions::VideoAudio => {
-            (format.has_video && format.has_audio) || format.is_live
-        }
-        rusty_ytdl::VideoSearchOptions::Custom(func) => func(format) || format.is_live,
-    }
-}
-
-fn candidate_format_urls(
-    info: &rusty_ytdl::VideoInfo,
-    options: &rusty_ytdl::VideoOptions,
-) -> Vec<String> {
-    let mut formats: Vec<&rusty_ytdl::VideoFormat> = info
-        .formats
-        .iter()
-        .filter(|format| {
-            !format.url.trim().is_empty()
-                && !format.is_hls
-                && !format.is_dash_mpd
-                && format_matches_filter(format, &options.filter)
-        })
-        .collect();
-
-    if formats.is_empty() {
-        // Fallback: any non-live format that at least has audio, even if muxed.
-        formats = info
-            .formats
-            .iter()
-            .filter(|format| {
-                !format.url.trim().is_empty()
-                    && !format.is_hls
-                    && !format.is_dash_mpd
-                    && format.has_audio
-            })
-            .collect();
-    }
-
-    match options.quality {
-        rusty_ytdl::VideoQuality::Lowest
-        | rusty_ytdl::VideoQuality::LowestAudio
-        | rusty_ytdl::VideoQuality::LowestVideo => formats.reverse(),
-        _ => {}
-    }
-
-    formats
-        .into_iter()
-        .take(8)
-        .map(|format| format.url.trim().to_string())
-        .collect()
-}
-
-async fn download_url_to_temp_with_headers(
-    source_url: &str,
-    temp_path: &StdPath,
-    cookie: Option<&str>,
-) -> Result<u64, String> {
-    let compact_source_url = compact_source_url_for_error(source_url);
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("http client build failed: {e}"))?;
-
-    let mut request = client
-        .get(source_url)
-        .header(reqwest::header::USER_AGENT, YOUTUBE_SEARCH_USER_AGENT)
-        .header(reqwest::header::REFERER, "https://www.youtube.com/")
-        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
-        .header(reqwest::header::ACCEPT, "*/*")
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
-
-    if let Some(cookie_value) = cookie {
-        request = request.header(reqwest::header::COOKIE, cookie_value);
-    }
-
-    let mut response = request
-        .send()
-        .await
-        .map_err(|e| format!("http request failed: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "http status {} for source ({compact_source_url})",
-            response.status(),
-        ));
-    }
-
-    let mut file = tokio::fs::File::create(temp_path)
-        .await
-        .map_err(|e| format!("temp file create failed: {e}"))?;
-
-    let mut downloaded_bytes: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("http response read failed: {e}"))?
-    {
-        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("temp file write failed: {e}"))?;
-    }
-
-    file.flush()
-        .await
-        .map_err(|e| format!("temp file flush failed: {e}"))?;
-
-    if downloaded_bytes == 0 {
-        return Err("downloaded zero bytes".to_string());
-    }
-
-    Ok(downloaded_bytes)
-}
-
-async fn download_youtube_source_to_temp_with_stream(
-    watch_url: &str,
-    options: rusty_ytdl::VideoOptions,
-    temp_path: &StdPath,
-) -> Result<u64, String> {
-    let video = rusty_ytdl::Video::new_with_options(watch_url, options)
-        .map_err(|e| format!("download init failed: {e}"))?;
-    let stream = video
-        .stream()
-        .await
-        .map_err(|e| format!("stream open failed: {e}"))?;
-
-    let mut file = tokio::fs::File::create(temp_path)
-        .await
-        .map_err(|e| format!("temp file create failed: {e}"))?;
-
-    let mut downloaded_bytes: u64 = 0;
-    while let Some(chunk) = stream
-        .chunk()
-        .await
-        .map_err(|e| format!("stream read failed: {e}"))?
-    {
-        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("temp file write failed: {e}"))?;
-    }
-
-    file.flush()
-        .await
-        .map_err(|e| format!("temp file flush failed: {e}"))?;
-
-    if downloaded_bytes == 0 {
-        return Err("downloaded zero bytes".to_string());
-    }
-
-    Ok(downloaded_bytes)
-}
-
-async fn download_youtube_source_to_temp(
-    watch_url: &str,
-    options: rusty_ytdl::VideoOptions,
-    temp_path: &StdPath,
-) -> Result<u64, String> {
-    let video = rusty_ytdl::Video::new_with_options(watch_url, options.clone())
-        .map_err(|e| format!("download init failed: {e}"))?;
-    let info = video
-        .get_info()
-        .await
-        .map_err(|e| format!("format resolution failed: {e}"))?;
-    let candidate_urls = candidate_format_urls(&info, &options);
-    if candidate_urls.is_empty() {
-        return Err("no candidate formats with downloadable URL".to_string());
-    }
-
-    let cookie = youtube_cookie_from_env();
-    let mut errors: Vec<String> = Vec::new();
-    for (idx, source_url) in candidate_urls.iter().enumerate() {
-        match download_url_to_temp_with_headers(source_url, temp_path, cookie.as_deref()).await {
-            Ok(bytes) => return Ok(bytes),
-            Err(reason) => {
-                errors.push(format!("candidate #{}: {}", idx + 1, reason));
-                let _ = tokio::fs::remove_file(temp_path).await;
-            }
-        }
-    }
-
-    Err(format!(
-        "all candidate format URLs failed. {}",
-        errors.join(" | ")
-    ))
+#[derive(Debug, Deserialize)]
+struct YouTubeAgentDownloadResponse {
+    file_path: String,
+    duration_ms: Option<u64>,
 }
 
 async fn download_youtube_audio_mp3_for_room(
@@ -1366,101 +1038,75 @@ async fn download_youtube_audio_mp3_for_room(
     room_id: &str,
     video_id: &str,
 ) -> Result<DownloadedOnlineAudio, AppError> {
-    let room_dir = ensure_room_audio_dir(state, room_id).await?;
-    let temp_file_name = format!("{}.source", uuid::Uuid::new_v4());
-    let output_file_name = format!("{}.mp3", uuid::Uuid::new_v4());
-    let temp_path = room_dir.join(temp_file_name);
-    let output_path = room_dir.join(output_file_name);
-    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+    let base = state.youtube_agent_url.trim_end_matches('/');
+    let request_url = format!("{base}/api/v1/download/audio");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(YOUTUBE_AGENT_DOWNLOAD_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("failed to build youtube-agent client: {e}")))?;
 
-    // Some YouTube videos expose only muxed streams to this extractor.
-    // Retry with progressively looser selectors, then strip video during ffmpeg conversion.
-    let attempts: [(&str, rusty_ytdl::VideoOptions); 4] = [
-        (
-            "highest-audio-only",
-            youtube_video_options(
-                rusty_ytdl::VideoQuality::HighestAudio,
-                rusty_ytdl::VideoSearchOptions::Audio,
-            ),
-        ),
-        (
-            "highest-muxed",
-            youtube_video_options(
-                rusty_ytdl::VideoQuality::Highest,
-                rusty_ytdl::VideoSearchOptions::VideoAudio,
-            ),
-        ),
-        (
-            "lowest-audio-only",
-            youtube_video_options(
-                rusty_ytdl::VideoQuality::LowestAudio,
-                rusty_ytdl::VideoSearchOptions::Audio,
-            ),
-        ),
-        (
-            "lowest-muxed",
-            youtube_video_options(
-                rusty_ytdl::VideoQuality::Lowest,
-                rusty_ytdl::VideoSearchOptions::VideoAudio,
-            ),
-        ),
-    ];
-
-    let mut last_errors: Vec<String> = Vec::new();
-    let mut stream_downloaded = false;
-
-    for (label, options) in attempts {
-        // First try the crate stream downloader (range-based and retried),
-        // then fall back to direct candidate URL fetch.
-        match download_youtube_source_to_temp_with_stream(&watch_url, options.clone(), &temp_path)
-            .await
-        {
-            Ok(_bytes) => {
-                stream_downloaded = true;
-                break;
-            }
-            Err(stream_reason) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                match download_youtube_source_to_temp(&watch_url, options, &temp_path).await {
-                    Ok(_bytes) => {
-                        stream_downloaded = true;
-                        break;
-                    }
-                    Err(candidate_reason) => {
-                        let stream_reason = sanitize_youtube_download_error(&stream_reason);
-                        let candidate_reason = sanitize_youtube_download_error(&candidate_reason);
-                        last_errors.push(format!(
-                            "{label}: stream={stream_reason} | direct={candidate_reason}"
-                        ));
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-                    }
-                }
-            }
-        }
+    let mut request = client
+        .post(&request_url)
+        .json(&YouTubeAgentDownloadRequest { room_id, video_id });
+    if let Some(token) = state.youtube_agent_token.as_ref().filter(|s| !s.is_empty()) {
+        request = request.header("x-agent-token", token);
     }
 
-    if !stream_downloaded {
-        let cookie_hint = if youtube_cookie_from_env().is_none() {
-            " Configure RUSTFIN_YOUTUBE_COOKIE with a valid YouTube session cookie and retry."
-        } else {
-            ""
-        };
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("youtube-agent request failed: {e}")))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<failed to read youtube-agent response>".to_string());
+
+    if !status.is_success() {
+        let sanitized = body_text.replace('\n', " ").trim().to_string();
         return Err(ApiError::BadRequest(format!(
-            "failed to open YouTube audio stream for this video. {}{}",
-            last_errors.join(" | "),
-            cookie_hint
+            "failed to download YouTube audio via youtube-agent: {sanitized}"
         ))
         .into());
     }
 
-    convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path).await?;
-    let duration_ms = probe_audio_duration_ms(&state.ffprobe_path, &output_path).await?;
+    let payload: YouTubeAgentDownloadResponse = serde_json::from_str(&body_text).map_err(|e| {
+        ApiError::Internal(format!(
+            "youtube-agent returned invalid JSON payload for download response: {e}"
+        ))
+    })?;
 
-    let _ = tokio::fs::remove_file(&temp_path).await;
+    let file_path = PathBuf::from(&payload.file_path);
+    let file_meta = tokio::fs::metadata(&file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("downloaded audio path missing from disk: {e}")))?;
+    if !file_meta.is_file() {
+        return Err(ApiError::Internal(
+            "youtube-agent returned a path that is not a regular file".into(),
+        )
+        .into());
+    }
+
+    let canonical_file = file_path
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!("failed to canonicalize downloaded audio path: {e}")))?;
+    let canonical_room_root = room_audio_dir(state, room_id)
+        .canonicalize()
+        .map_err(|e| ApiError::Internal(format!(
+            "failed to canonicalize room audio directory for validation: {e}"
+        )))?;
+
+    if !canonical_file.starts_with(&canonical_room_root) {
+        return Err(ApiError::Forbidden(
+            "youtube-agent returned a file path outside this room scope".into(),
+        )
+        .into());
+    }
 
     Ok(DownloadedOnlineAudio {
-        file_path: output_path,
-        duration_ms,
+        file_path,
+        duration_ms: payload.duration_ms,
     })
 }
 

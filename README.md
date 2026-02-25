@@ -54,6 +54,9 @@ Rustyfin runs as a multi-service stack in Docker Compose:
 - `rustfin-tmdb-agent` (Rust TMDB sync API)
   - Dedicated metadata/poster sync microservice.
   - Scans indexed items in a library, resolves TMDB matches, downloads posters to shared cache, updates DB artwork paths.
+- `rustfin-youtube-agent` (Rust YouTube download API)
+  - Dedicated online-audio fetch/convert service for Listen Together.
+  - Downloads YouTube source audio with multi-strategy fallback, converts to MP3, writes room-scoped files under shared cache.
 - `rustfin-ui` (Next.js App Router frontend)
   - Browser client for all product areas.
 - `rustfin-edge` (Caddy TLS edge)
@@ -73,6 +76,7 @@ Supporting host process:
 - `crates/transcoder` - ffmpeg/ffprobe orchestration and HLS session logic.
 - `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
 - `crates/calendar` - standalone calendar service API.
+- `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
 - `ui` - Next.js frontend.
 - `scripts` - operational scripts (`start.sh`, `stop.sh`, `clean_install.sh`, packaging helpers).
 - `tests` - test harness and E2E suites.
@@ -103,7 +107,7 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 ### `start.sh` options
 
 ```bash
-./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [-f docker-compose.yml]
+./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [--youtube-cookie "<cookie>"] [-f docker-compose.yml]
 ```
 
 - Default behavior performs a smart incremental rebuild:
@@ -147,6 +151,9 @@ Common runtime variables:
 - `RUSTFIN_TMDB_AGENT_URL`
 - `RUSTFIN_TMDB_AGENT_TOKEN`
 - `RUSTFIN_YOUTUBE_COOKIE`
+- `RUSTFIN_YOUTUBE_COOKIE_FILE`
+- `RUSTFIN_YOUTUBE_AGENT_URL`
+- `RUSTFIN_YOUTUBE_AGENT_TOKEN`
 - `RUSTFIN_SECRETS_ENV_FILE`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`
 - `RUSTFIN_FFMPEG_PATH`

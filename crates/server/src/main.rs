@@ -81,6 +81,12 @@ async fn main() -> anyhow::Result<()> {
     // JWT secret: use env or generate random
     let jwt_secret =
         std::env::var("RUSTFIN_JWT_SECRET").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let youtube_agent_url = std::env::var("RUSTFIN_YOUTUBE_AGENT_URL")
+        .unwrap_or_else(|_| "http://rustfin-youtube-agent:8101".to_string());
+    let youtube_agent_token = std::env::var("RUSTFIN_YOUTUBE_AGENT_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // Transcoder config
     let transcode_dir = std::env::var("RUSTFIN_TRANSCODE_DIR")
@@ -146,6 +152,8 @@ async fn main() -> anyhow::Result<()> {
     let app_state = rustfin_server::state::AppState {
         db: pool,
         jwt_secret,
+        youtube_agent_url,
+        youtube_agent_token,
         transcoder: session_mgr,
         ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
         ffprobe_path: std::path::PathBuf::from(&ffprobe_path),

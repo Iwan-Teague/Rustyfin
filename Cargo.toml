@@ -7,6 +7,7 @@ members = [
     "crates/metadata",
     "crates/scanner",
     "crates/tmdb-agent",
+    "crates/youtube-agent",
     "crates/transcoder",
     "crates/server",
 ]
