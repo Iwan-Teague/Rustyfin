@@ -73,7 +73,9 @@ struct DownloadedAudio {
 }
 
 fn normalized_secret(value: Option<String>) -> Option<String> {
-    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn verify_agent_token(headers: &HeaderMap, expected: Option<&str>) -> Result<(), AppError> {
@@ -112,8 +114,10 @@ fn normalize_room_id(raw: &str) -> Option<String> {
 fn parse_video_id_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)(?:youtu\.be/|youtube\.com/(?:watch\?.*v=|shorts/|embed/))([A-Za-z0-9_-]{11})")
-            .expect("valid youtube id regex")
+        Regex::new(
+            r"(?i)(?:youtu\.be/|youtube\.com/(?:watch\?.*v=|shorts/|embed/))([A-Za-z0-9_-]{11})",
+        )
+        .expect("valid youtube id regex")
     })
 }
 
@@ -256,10 +260,7 @@ fn youtube_cookie_header(state: &AppState) -> Option<String> {
 
     match value {
         Some(mut cookie) => {
-            if !cookie
-                .to_ascii_lowercase()
-                .contains("consent=")
-            {
+            if !cookie.to_ascii_lowercase().contains("consent=") {
                 cookie.push_str("; ");
                 cookie.push_str(YOUTUBE_CONSENT_COOKIE);
             }
@@ -306,6 +307,151 @@ fn sanitize_youtube_download_error(raw: &str) -> String {
         compact_source_url_for_error(&captures[0])
     })
     .to_string()
+}
+
+fn extract_url_from_signature_cipher(cipher: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(&format!("https://example.invalid/?{cipher}")).ok()?;
+    let mut url = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "url")
+        .map(|(_, v)| v.to_string())?;
+    let sp = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "sp")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_else(|| "signature".to_string());
+
+    if let Some(sig) = parsed
+        .query_pairs()
+        .find(|(k, _)| k == "sig" || k == "signature")
+        .map(|(_, v)| v.to_string())
+    {
+        let joiner = if url.contains('?') { "&" } else { "?" };
+        url.push_str(joiner);
+        url.push_str(&sp);
+        url.push('=');
+        url.push_str(&sig);
+        return Some(url);
+    }
+
+    if parsed.query_pairs().any(|(k, _)| k == "s") {
+        return None;
+    }
+
+    Some(url)
+}
+
+fn extract_innertube_api_key(html: &str) -> Option<String> {
+    static KEY_RE: OnceLock<Regex> = OnceLock::new();
+    KEY_RE
+        .get_or_init(|| {
+            Regex::new(r#""INNERTUBE_API_KEY":"([^"]+)""#).expect("valid innertube key regex")
+        })
+        .captures(html)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+async fn youtubei_audio_candidate_urls(
+    video_id: &str,
+    cookie_header: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("youtubei client build failed: {e}"))?;
+
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+    let mut watch_req = client
+        .get(&watch_url)
+        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+    if let Some(cookie) = cookie_header {
+        watch_req = watch_req.header(reqwest::header::COOKIE, cookie);
+    }
+
+    let watch_html = watch_req
+        .send()
+        .await
+        .map_err(|e| format!("watch page request failed: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("watch page body read failed: {e}"))?;
+    let api_key = extract_innertube_api_key(&watch_html)
+        .ok_or_else(|| "missing INNERTUBE_API_KEY in watch page".to_string())?;
+
+    let youtubei_url = format!("https://www.youtube.com/youtubei/v1/player?key={api_key}");
+    let mut player_req = client
+        .post(youtubei_url)
+        .header(reqwest::header::USER_AGENT, YOUTUBE_USER_AGENT)
+        .header(reqwest::header::REFERER, "https://www.youtube.com/")
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&serde_json::json!({
+            "videoId": video_id,
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "19.08.35",
+                    "hl": "en",
+                    "gl": "US"
+                }
+            },
+            "contentCheckOk": true,
+            "racyCheckOk": true
+        }));
+    if let Some(cookie) = cookie_header {
+        player_req = player_req.header(reqwest::header::COOKIE, cookie);
+    }
+
+    let payload: serde_json::Value = player_req
+        .send()
+        .await
+        .map_err(|e| format!("youtubei player request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("youtubei player response parse failed: {e}"))?;
+
+    let mut out: Vec<String> = Vec::new();
+    for path in ["/streamingData/adaptiveFormats", "/streamingData/formats"] {
+        let Some(formats) = payload.pointer(path).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for format in formats {
+            let mime = format
+                .get("mimeType")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let has_audio = format.get("audioQuality").is_some()
+                || format.get("audioSampleRate").is_some()
+                || mime.starts_with("audio/");
+            if !has_audio {
+                continue;
+            }
+
+            if let Some(url) = format.get("url").and_then(|v| v.as_str()) {
+                if !url.trim().is_empty() {
+                    out.push(url.to_string());
+                    continue;
+                }
+            }
+            if let Some(cipher) = format.get("signatureCipher").and_then(|v| v.as_str()) {
+                if let Some(url) = extract_url_from_signature_cipher(cipher) {
+                    out.push(url);
+                }
+            }
+        }
+    }
+
+    out.retain(|v| !v.trim().is_empty());
+    out.dedup();
+    if out.is_empty() {
+        return Err("youtubei returned no direct audio candidate URLs".to_string());
+    }
+    Ok(out)
 }
 
 fn format_matches_filter(
@@ -568,8 +714,12 @@ async fn download_youtube_audio_mp3_for_room(
         ];
 
         for (label, options) in attempts {
-            match download_youtube_source_to_temp_with_stream(&watch_url, options.clone(), &temp_path)
-                .await
+            match download_youtube_source_to_temp_with_stream(
+                &watch_url,
+                options.clone(),
+                &temp_path,
+            )
+            .await
             {
                 Ok(_bytes) => {
                     source_downloaded = true;
@@ -610,6 +760,41 @@ async fn download_youtube_audio_mp3_for_room(
     }
 
     if !source_downloaded {
+        match youtubei_audio_candidate_urls(video_id, cookie_header.as_deref()).await {
+            Ok(candidate_urls) => {
+                for (idx, source_url) in candidate_urls.iter().enumerate() {
+                    match download_url_to_temp_with_headers(
+                        source_url,
+                        &temp_path,
+                        cookie_header.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(_bytes) => {
+                            source_downloaded = true;
+                            break;
+                        }
+                        Err(reason) => {
+                            last_errors.push(format!(
+                                "youtubei-direct candidate #{}: {}",
+                                idx + 1,
+                                sanitize_youtube_download_error(&reason)
+                            ));
+                            let _ = tokio::fs::remove_file(&temp_path).await;
+                        }
+                    }
+                }
+            }
+            Err(reason) => {
+                last_errors.push(format!(
+                    "youtubei-direct resolution failed: {}",
+                    sanitize_youtube_download_error(&reason)
+                ));
+            }
+        }
+    }
+
+    if !source_downloaded {
         let cookie_hint = if state.youtube_cookie.is_none() && state.youtube_cookie_file.is_none() {
             " Configure RUSTFIN_YOUTUBE_COOKIE (or RUSTFIN_YOUTUBE_COOKIE_FILE) and retry."
         } else {
@@ -645,7 +830,9 @@ async fn download_audio(
     verify_agent_token(&headers, state.agent_token.as_deref())?;
 
     let room_id = normalize_room_id(&body.room_id).ok_or_else(|| {
-        ApiError::BadRequest("room_id must contain only letters, numbers, underscores, and dashes".into())
+        ApiError::BadRequest(
+            "room_id must contain only letters, numbers, underscores, and dashes".into(),
+        )
     })?;
     let video_id = normalize_video_id(&body.video_id)
         .ok_or_else(|| ApiError::BadRequest("video_id must be a valid YouTube URL or ID".into()))?;
@@ -675,22 +862,22 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr =
         std::env::var("RUSTFIN_YOUTUBE_AGENT_BIND").unwrap_or_else(|_| "0.0.0.0:8101".to_string());
-    let cache_dir = PathBuf::from(
-        std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".to_string()),
-    );
+    let cache_dir =
+        PathBuf::from(std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".to_string()));
     std::fs::create_dir_all(&cache_dir).context("failed to create cache dir")?;
     std::fs::create_dir_all(cache_dir.join("watch_party_audio"))
         .context("failed to create watch_party_audio cache dir")?;
 
-    let ffmpeg_path =
-        PathBuf::from(std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string()));
+    let ffmpeg_path = PathBuf::from(
+        std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string()),
+    );
     let ffprobe_path = PathBuf::from(
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
     );
 
     let youtube_cookie = normalized_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE").ok());
-    let youtube_cookie_file = normalized_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE_FILE").ok())
-        .map(PathBuf::from);
+    let youtube_cookie_file =
+        normalized_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE_FILE").ok()).map(PathBuf::from);
     let agent_token = normalized_secret(std::env::var("RUSTFIN_YOUTUBE_AGENT_TOKEN").ok());
 
     let state = AppState {
