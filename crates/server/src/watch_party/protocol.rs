@@ -134,6 +134,15 @@ pub enum ServerMessage {
         queue_index: usize,
         members: Vec<PresenceMember>,
     },
+    OnlineAudioStatus {
+        room_id: String,
+        video_id: Option<String>,
+        track_id: Option<String>,
+        stage: String,
+        status: String,
+        message: String,
+        updated_ts_ms: i64,
+    },
     #[serde(rename = "youtube_state")]
     YouTubeState {
         room_id: String,

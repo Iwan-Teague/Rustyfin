@@ -10,7 +10,7 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
@@ -1100,6 +1100,123 @@ async fn download_youtube_audio_mp3_for_room(
         file_path,
         duration_ms: payload.duration_ms,
     })
+}
+
+fn truncate_status_message(raw: impl AsRef<str>) -> String {
+    const MAX_CHARS: usize = 320;
+    let compact = raw.as_ref().replace('\n', " ");
+    let trimmed = compact.trim();
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+
+    let mut shortened = String::with_capacity(MAX_CHARS + 1);
+    for ch in trimmed.chars().take(MAX_CHARS) {
+        shortened.push(ch);
+    }
+    shortened.push('…');
+    shortened
+}
+
+fn emit_online_audio_status(
+    runtime: Option<&Arc<super::manager::RoomRuntime>>,
+    room_id: &str,
+    video_id: Option<&str>,
+    track_id: Option<&str>,
+    stage: &str,
+    status: &str,
+    message: impl AsRef<str>,
+) {
+    let Some(runtime) = runtime else {
+        return;
+    };
+
+    let _ = runtime
+        .tx
+        .send(super::protocol::ServerMessage::OnlineAudioStatus {
+            room_id: room_id.to_string(),
+            video_id: video_id.map(ToOwned::to_owned),
+            track_id: track_id.map(ToOwned::to_owned),
+            stage: stage.to_string(),
+            status: status.to_string(),
+            message: truncate_status_message(message),
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+        });
+}
+
+async fn download_youtube_audio_mp3_for_room_with_status(
+    state: &AppState,
+    runtime: Option<&Arc<super::manager::RoomRuntime>>,
+    room_id: &str,
+    video_id: &str,
+) -> Result<DownloadedOnlineAudio, AppError> {
+    emit_online_audio_status(
+        runtime,
+        room_id,
+        Some(video_id),
+        None,
+        "download_start",
+        "pending",
+        "Requesting YouTube download and MP3 conversion…",
+    );
+
+    let start = tokio::time::Instant::now();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
+
+    let download_fut = download_youtube_audio_mp3_for_room(state, room_id, video_id);
+    tokio::pin!(download_fut);
+
+    loop {
+        tokio::select! {
+            result = &mut download_fut => {
+                match &result {
+                    Ok(downloaded) => {
+                        emit_online_audio_status(
+                            runtime,
+                            room_id,
+                            Some(video_id),
+                            None,
+                            "download_complete",
+                            "success",
+                            format!(
+                                "Downloaded and converted to MP3 (duration: {}).",
+                                downloaded
+                                    .duration_ms
+                                    .map(|ms| format!("{}s", ms / 1000))
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            ),
+                        );
+                    }
+                    Err(err) => {
+                        emit_online_audio_status(
+                            runtime,
+                            room_id,
+                            Some(video_id),
+                            None,
+                            "download_failed",
+                            "error",
+                            format!("Download/conversion failed: {}", err.0),
+                        );
+                    }
+                }
+                break result;
+            }
+            _ = heartbeat.tick() => {
+                let elapsed = start.elapsed().as_secs();
+                emit_online_audio_status(
+                    runtime,
+                    room_id,
+                    Some(video_id),
+                    None,
+                    "download_progress",
+                    "pending",
+                    format!("Downloading and converting… {}s elapsed.", elapsed),
+                );
+            }
+        }
+    }
 }
 
 fn hash_room_password(password: &str) -> Result<String, AppError> {
@@ -2954,6 +3071,22 @@ pub async fn queue_online_audio(
         ApiError::BadRequest("video_id must be a valid YouTube URL or 11-character ID".into())
     })?;
 
+    let runtime = state.watch_party.get_runtime(&room_id).await;
+    emit_online_audio_status(
+        runtime.as_ref(),
+        &room_id,
+        Some(&video_id),
+        None,
+        "request_received",
+        "pending",
+        if body.play_now {
+            "Preparing online track request (play now)…"
+        } else {
+            "Preparing online track request (queue)…"
+        },
+    );
+
+    let metadata_client = reqwest::Client::new();
     let mut already_downloaded = false;
     let track_row = if let Some(existing) =
         rustfin_db::repo::watch_party::get_online_audio_track_by_video_id(
@@ -2962,6 +3095,15 @@ pub async fn queue_online_audio(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
     {
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            Some(&existing.id),
+            "track_lookup",
+            "pending",
+            "Existing room track found; validating staged file.",
+        );
         let path = StdPath::new(&existing.file_path);
         if tokio::fs::metadata(path)
             .await
@@ -2969,21 +3111,88 @@ pub async fn queue_online_audio(
             .unwrap_or(false)
         {
             already_downloaded = true;
+            emit_online_audio_status(
+                runtime.as_ref(),
+                &room_id,
+                Some(&video_id),
+                Some(&existing.id),
+                "cache_hit",
+                "success",
+                "Track already downloaded and staged in this room cache.",
+            );
             existing
         } else {
-            let metadata = fetch_youtube_video_metadata(&reqwest::Client::new(), &video_id)
-                .await
-                .unwrap_or(YouTubeSearchResult {
-                    video_id: video_id.clone(),
-                    title: format!("YouTube {video_id}"),
-                    channel: "YouTube".to_string(),
-                    thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
-                    view_count: None,
-                });
+            emit_online_audio_status(
+                runtime.as_ref(),
+                &room_id,
+                Some(&video_id),
+                Some(&existing.id),
+                "cache_miss",
+                "pending",
+                "Track existed in room history, but cached file was missing. Re-downloading.",
+            );
+            emit_online_audio_status(
+                runtime.as_ref(),
+                &room_id,
+                Some(&video_id),
+                None,
+                "metadata_lookup",
+                "pending",
+                "Resolving YouTube metadata…",
+            );
+            let metadata = match fetch_youtube_video_metadata(&metadata_client, &video_id).await {
+                Some(metadata) => {
+                    emit_online_audio_status(
+                        runtime.as_ref(),
+                        &room_id,
+                        Some(&video_id),
+                        None,
+                        "metadata_resolved",
+                        "success",
+                        format!(
+                            "Metadata resolved: {} — {}.",
+                            metadata.title, metadata.channel
+                        ),
+                    );
+                    metadata
+                }
+                None => {
+                    emit_online_audio_status(
+                        runtime.as_ref(),
+                        &room_id,
+                        Some(&video_id),
+                        None,
+                        "metadata_fallback",
+                        "pending",
+                        "Metadata lookup failed. Using fallback metadata while continuing download.",
+                    );
+                    YouTubeSearchResult {
+                        video_id: video_id.clone(),
+                        title: format!("YouTube {video_id}"),
+                        channel: "YouTube".to_string(),
+                        thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+                        view_count: None,
+                    }
+                }
+            };
 
-            let downloaded =
-                download_youtube_audio_mp3_for_room(&state, &room_id, &video_id).await?;
-            rustfin_db::repo::watch_party::upsert_online_audio_track(
+            let downloaded = download_youtube_audio_mp3_for_room_with_status(
+                &state,
+                runtime.as_ref(),
+                &room_id,
+                &video_id,
+            )
+            .await?;
+            emit_online_audio_status(
+                runtime.as_ref(),
+                &room_id,
+                Some(&video_id),
+                None,
+                "staging_track",
+                "pending",
+                "Staging converted audio in room directory…",
+            );
+            let staged = rustfin_db::repo::watch_party::upsert_online_audio_track(
                 &state.db,
                 &room_id,
                 &uuid::Uuid::new_v4().to_string(),
@@ -2995,21 +3204,90 @@ pub async fn queue_online_audio(
                 downloaded.duration_ms,
             )
             .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+            emit_online_audio_status(
+                runtime.as_ref(),
+                &room_id,
+                Some(&video_id),
+                Some(&staged.id),
+                "staged",
+                "success",
+                format!("Track staged and ready: {}.", metadata.title),
+            );
+            staged
         }
     } else {
-        let metadata = fetch_youtube_video_metadata(&reqwest::Client::new(), &video_id)
-            .await
-            .unwrap_or(YouTubeSearchResult {
-                video_id: video_id.clone(),
-                title: format!("YouTube {video_id}"),
-                channel: "YouTube".to_string(),
-                thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
-                view_count: None,
-            });
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            None,
+            "track_lookup",
+            "pending",
+            "No existing room track found. Starting new download pipeline.",
+        );
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            None,
+            "metadata_lookup",
+            "pending",
+            "Resolving YouTube metadata…",
+        );
+        let metadata = match fetch_youtube_video_metadata(&metadata_client, &video_id).await {
+            Some(metadata) => {
+                emit_online_audio_status(
+                    runtime.as_ref(),
+                    &room_id,
+                    Some(&video_id),
+                    None,
+                    "metadata_resolved",
+                    "success",
+                    format!(
+                        "Metadata resolved: {} — {}.",
+                        metadata.title, metadata.channel
+                    ),
+                );
+                metadata
+            }
+            None => {
+                emit_online_audio_status(
+                    runtime.as_ref(),
+                    &room_id,
+                    Some(&video_id),
+                    None,
+                    "metadata_fallback",
+                    "pending",
+                    "Metadata lookup failed. Using fallback metadata while continuing download.",
+                );
+                YouTubeSearchResult {
+                    video_id: video_id.clone(),
+                    title: format!("YouTube {video_id}"),
+                    channel: "YouTube".to_string(),
+                    thumbnail_url: format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"),
+                    view_count: None,
+                }
+            }
+        };
 
-        let downloaded = download_youtube_audio_mp3_for_room(&state, &room_id, &video_id).await?;
-        rustfin_db::repo::watch_party::upsert_online_audio_track(
+        let downloaded = download_youtube_audio_mp3_for_room_with_status(
+            &state,
+            runtime.as_ref(),
+            &room_id,
+            &video_id,
+        )
+        .await?;
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            None,
+            "staging_track",
+            "pending",
+            "Staging converted audio in room directory…",
+        );
+        let staged = rustfin_db::repo::watch_party::upsert_online_audio_track(
             &state.db,
             &room_id,
             &uuid::Uuid::new_v4().to_string(),
@@ -3021,7 +3299,17 @@ pub async fn queue_online_audio(
             downloaded.duration_ms,
         )
         .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        emit_online_audio_status(
+            runtime.as_ref(),
+            &room_id,
+            Some(&video_id),
+            Some(&staged.id),
+            "staged",
+            "success",
+            format!("Track staged and ready: {}.", metadata.title),
+        );
+        staged
     };
 
     let (mut queue_ids, mut current_index) =
@@ -3040,7 +3328,21 @@ pub async fn queue_online_audio(
             current_index = queue_ids.len().saturating_sub(1);
         }
     }
+    let queue_position = queue_ids
+        .iter()
+        .position(|id| id == &track_row.id)
+        .map(|idx| idx + 1)
+        .unwrap_or(1);
 
+    emit_online_audio_status(
+        runtime.as_ref(),
+        &room_id,
+        Some(&video_id),
+        Some(&track_row.id),
+        "queue_update",
+        "pending",
+        "Updating room queue state…",
+    );
     let queue_json = serde_json::to_string(&queue_ids)
         .map_err(|e| ApiError::Internal(format!("queue serialization error: {e}")))?;
     rustfin_db::repo::watch_party::upsert_audio_queue(
@@ -3052,8 +3354,21 @@ pub async fn queue_online_audio(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
+    emit_online_audio_status(
+        runtime.as_ref(),
+        &room_id,
+        Some(&video_id),
+        Some(&track_row.id),
+        "queue_updated",
+        "success",
+        if body.play_now {
+            "Queue updated. Starting playback…".to_string()
+        } else {
+            format!("Queued at position {}.", queue_position)
+        },
+    );
 
-    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+    if let Some(runtime) = runtime.as_ref() {
         let (position_ms, playing) = if body.play_now {
             (0_u64, true)
         } else {
@@ -3066,7 +3381,20 @@ pub async fn queue_online_audio(
         runtime
             .set_audio_queue(queue_ids.clone(), current_index, position_ms, playing)
             .await;
-        super::ws::broadcast_current_state(&state, &runtime, &room_id).await?;
+        super::ws::broadcast_current_state(&state, runtime, &room_id).await?;
+        emit_online_audio_status(
+            Some(runtime),
+            &room_id,
+            Some(&video_id),
+            Some(&track_row.id),
+            if body.play_now { "playing" } else { "queued" },
+            "success",
+            if body.play_now {
+                "Track is now playing in the room."
+            } else {
+                "Track is ready in queue."
+            },
+        );
     }
 
     Ok(Json(QueueOnlineAudioResponse {

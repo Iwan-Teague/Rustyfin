@@ -10,6 +10,7 @@ import {
   WatchPartyUser,
   WsAudioStateMessage,
   WsCreateStateMessage,
+  WsOnlineAudioStatusMessage,
   WsRoomReconfiguredMessage,
   WsWebStateMessage,
   WsYouTubeStateMessage,
@@ -90,6 +91,7 @@ type RoomMode = 'video' | 'audio' | 'youtube' | 'web' | 'create';
 type WsMessage =
   | WsStateMessage
   | WsAudioStateMessage
+  | WsOnlineAudioStatusMessage
   | WsWebStateMessage
   | WsYouTubeStateMessage
   | WsCreateStateMessage
@@ -142,6 +144,9 @@ export default function WatchPartyRoomPage() {
   const [room, setRoom] = useState<WatchPartyRoomResponse | null>(null);
   const [roomState, setRoomState] = useState<WsStateMessage | null>(null);
   const [audioState, setAudioState] = useState<WsAudioStateMessage | null>(null);
+  const [onlineAudioStatusEvents, setOnlineAudioStatusEvents] = useState<
+    WsOnlineAudioStatusMessage[]
+  >([]);
   const [webState, setWebState] = useState<WsWebStateMessage | null>(null);
   const [youtubeState, setYoutubeState] = useState<WsYouTubeStateMessage | null>(null);
   const [createState, setCreateState] = useState<WsCreateStateMessage | null>(null);
@@ -553,6 +558,17 @@ export default function WatchPartyRoomPage() {
               if (!prev) return prev;
               return { ...prev, members: payload.members };
             });
+          } else if (payload.type === 'online_audio_status') {
+            appendDebug(
+              `online audio status stage=${payload.stage} status=${payload.status} message=${payload.message}`,
+            );
+            setOnlineAudioStatusEvents((prev) => {
+              const next = [...prev, payload];
+              if (next.length > 40) {
+                return next.slice(next.length - 40);
+              }
+              return next;
+            });
           } else if (payload.type === 'web_state') {
             appendDebug(`web state url=${payload.url || 'none'} updated_ts_ms=${payload.updated_ts_ms}`);
             setWebState(payload);
@@ -590,6 +606,7 @@ export default function WatchPartyRoomPage() {
             setDescriptor(null);
             setRoomState(null);
             setAudioState(null);
+            setOnlineAudioStatusEvents([]);
             setWebState(null);
             setYoutubeState(null);
             setCreateState(null);
@@ -1611,6 +1628,7 @@ export default function WatchPartyRoomPage() {
         <AudioPlayer
           audioState={audioState}
           audioSource={room.audio_source === 'online' ? 'online' : 'library'}
+          onlineStatusEvents={onlineAudioStatusEvents}
           canControl={canPlayPause}
           canSeek={canSeek}
           roomId={roomId}

@@ -173,7 +173,15 @@ service_build_reason() {
   fi
 
   if [[ -z "$prev_fingerprint" ]]; then
-    reasons+=("first tracked build")
+    # If a prior build state file exists but this specific key is missing
+    # (for example after smart-rebuild schema evolution), do not force a
+    # one-time rebuild purely due absent tracking metadata.
+    # We still rebuild when the image is missing (handled above).
+    if [[ "${BUILD_STATE_EXISTS:-false}" == "true" ]]; then
+      :
+    else
+      reasons+=("first tracked build")
+    fi
   elif [[ "$prev_fingerprint" != "$current_fingerprint" ]]; then
     reasons+=("source changed")
   fi
@@ -737,7 +745,9 @@ if [[ "$BUILD" == "true" ]]; then
     prev_transcription_agent_fp=""
     prev_youtube_agent_fp=""
     prev_ui_fp=""
+    BUILD_STATE_EXISTS=false
     if [[ -f "$BUILD_STATE_FILE" ]]; then
+      BUILD_STATE_EXISTS=true
       # shellcheck disable=SC1090
       source "$BUILD_STATE_FILE" || true
       prev_rustfin_fp="${RUSTFIN_FP:-}"
