@@ -558,190 +558,240 @@ export default function AudioPlayer({
         )}
 
         {audioSource === 'online' ? (
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-semibold shrink-0">Online Search</h2>
-            <div className="relative flex-1">
-              <input
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                className="input w-full px-3 py-1.5 pr-10 text-sm"
-                placeholder="Search YouTube tracks…"
-                aria-label="Search online tracks"
-              />
-              {searchQuery.trim().length > 0 && (
+          <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold shrink-0">Online Search</h2>
+                <div className="relative flex-1">
+                  <input
+                    value={searchQuery}
+                    onChange={(e) => handleSearch(e.target.value)}
+                    className="input w-full px-3 py-1.5 pr-10 text-sm"
+                    placeholder="Search YouTube tracks…"
+                    aria-label="Search online tracks"
+                  />
+                  {searchQuery.trim().length > 0 && (
+                    <button
+                      type="button"
+                      onClick={clearSearch}
+                      className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                      aria-label="Clear search"
+                      title="Clear search"
+                    >
+                      <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                        <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                        <path
+                          d="M9 9l6 6M15 9l-6 6"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
-                  onClick={clearSearch}
-                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
-                  aria-label="Clear search"
-                  title="Clear search"
+                  className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
+                  onClick={() => setShowOnlineSearchResults((prev) => !prev)}
                 >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
-                    <path
-                      d="M9 9l6 6M15 9l-6 6"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                    />
-                  </svg>
+                  {showOnlineSearchResults ? 'Hide Results ▴' : 'Show Results ▾'}
                 </button>
+              </div>
+
+              {searching && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
+              )}
+
+              {!searching && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
+              )}
+
+              {!searching &&
+                showOnlineSearchResults &&
+                onlineSearchResults !== null &&
+                onlineSearchResults.length > 0 && (
+                <ul className="max-h-64 space-y-2 overflow-y-auto">
+                  {onlineSearchResults.map((result) => {
+                    const queueKey = `${result.video_id}:queue`;
+                    const playKey = `${result.video_id}:play`;
+                    const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
+                    return (
+                      <li key={result.video_id} className="tile rounded-xl px-3 py-2">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={result.thumbnail_url}
+                            alt={result.title}
+                            className="h-12 w-20 rounded-md object-cover"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{result.title}</p>
+                            <p className="truncate text-xs muted">{result.channel}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                              disabled={busy}
+                              onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
+                            >
+                              Queue
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                              disabled={busy || !canControl}
+                              onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
+                            >
+                              Play now
+                            </button>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              {!searching &&
+                !showOnlineSearchResults &&
+                onlineSearchResults !== null &&
+                onlineSearchResults.length > 0 && (
+                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+                    Search results hidden.
+                  </div>
+                )}
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
+              {audioState.queue.length > 0 ? (
+                <ul ref={queueRef} className="max-h-[34rem] space-y-1 overflow-y-auto">
+                  {audioState.queue.map((entry, idx) => {
+                    const isActive = idx === audioState.queue_index;
+                    return (
+                      <li
+                        key={entry.track_id}
+                        data-active={isActive ? 'true' : 'false'}
+                        className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''}`}
+                        style={{ boxShadow: 'none' }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="w-5 flex-shrink-0 text-center text-xs muted">
+                            {isActive ? '►' : idx + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{entry.title}</p>
+                            <p className="truncate text-xs muted">
+                              {entry.artist}
+                              {entry.album ? ` • ${entry.album}` : ''}
+                              {entry.duration_ms ? ` • ${formatMs(entry.duration_ms)}` : ''}
+                            </p>
+                          </div>
+                          {canControl && (
+                            <button
+                              type="button"
+                              onClick={() => handlePlayTrack(entry.track_id)}
+                              className={`px-3 py-1 text-xs ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+                            >
+                              {isActive ? 'Playing' : 'Play'}
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : (
+                <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+                  Room queue is empty.
+                </div>
               )}
             </div>
-            <button
-              type="button"
-              className="btn-secondary shrink-0 px-3 py-1.5 text-xs"
-              onClick={() => setShowOnlineSearchResults((prev) => !prev)}
-            >
-              {showOnlineSearchResults ? 'Hide Results ▴' : 'Show Results ▾'}
-            </button>
           </div>
         ) : (
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">
-              {librarySearchResults !== null ? 'Search Results' : 'Queue'}
-            </h2>
-            <div className="relative w-full max-w-sm">
-              <input
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                className="input w-full px-3 py-1.5 pr-10 text-sm"
-                placeholder="Search tracks…"
-                aria-label="Search tracks"
-              />
-              {searchQuery.trim().length > 0 && (
-                <button
-                  type="button"
-                  onClick={clearSearch}
-                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
-                  aria-label="Clear search"
-                  title="Clear search"
-                >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
-                    <path
-                      d="M9 9l6 6M15 9l-6 6"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
-              )}
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold">
+                {librarySearchResults !== null ? 'Search Results' : 'Queue'}
+              </h2>
+              <div className="relative w-full max-w-sm">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => handleSearch(e.target.value)}
+                  className="input w-full px-3 py-1.5 pr-10 text-sm"
+                  placeholder="Search tracks…"
+                  aria-label="Search tracks"
+                />
+                {searchQuery.trim().length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearSearch}
+                    className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+                      <path
+                        d="M9 9l6 6M15 9l-6 6"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
 
-        {searching && (
-          <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
-        )}
+            {searching && (
+              <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
+            )}
 
-        {audioSource === 'online' && !searching && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
-          <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
-        )}
+            {!searching && librarySearchResults !== null && librarySearchResults.length === 0 && (
+              <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No tracks found.</div>
+            )}
 
-        {audioSource === 'online' &&
-          !searching &&
-          showOnlineSearchResults &&
-          onlineSearchResults !== null &&
-          onlineSearchResults.length > 0 && (
-          <ul className="max-h-64 space-y-2 overflow-y-auto">
-            {onlineSearchResults.map((result) => {
-              const queueKey = `${result.video_id}:queue`;
-              const playKey = `${result.video_id}:play`;
-              const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
-              return (
-                <li key={result.video_id} className="tile rounded-xl px-3 py-2">
-                  <div className="flex items-center gap-3">
-                    <img
-                      src={result.thumbnail_url}
-                      alt={result.title}
-                      className="h-12 w-20 rounded-md object-cover"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{result.title}</p>
-                      <p className="truncate text-xs muted">{result.channel}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
-                        disabled={busy}
-                        onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
-                      >
-                        Queue
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
-                        disabled={busy || !canControl}
-                        onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
-                      >
-                        Play now
-                      </button>
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {audioSource === 'online' &&
-          !searching &&
-          !showOnlineSearchResults &&
-          onlineSearchResults !== null &&
-          onlineSearchResults.length > 0 && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
-              Search results hidden.
-            </div>
-          )}
-
-        {audioSource !== 'online' && !searching && librarySearchResults !== null && librarySearchResults.length === 0 && (
-          <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No tracks found.</div>
-        )}
-
-        {audioSource === 'online' && (
-          <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
-        )}
-
-        {!searching && displayList.length > 0 && (
-          <ul ref={queueRef} className={`space-y-1 overflow-y-auto ${audioSource === 'online' ? 'max-h-72' : 'max-h-80'}`}>
-            {displayList.map((entry, idx) => {
-              const isActive =
-                !entry.isSearchResult && idx === audioState.queue_index;
-              return (
-                <li
-                  key={entry.track_id}
-                  data-active={isActive ? 'true' : 'false'}
-                  className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="w-5 flex-shrink-0 text-center text-xs muted">
-                      {isActive ? '►' : idx + 1}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{entry.title}</p>
-                      <p className="truncate text-xs muted">
-                        {entry.artist}
-                        {entry.album ? ` • ${entry.album}` : ''}
-                        {entry.duration_ms ? ` • ${formatMs(entry.duration_ms)}` : ''}
-                      </p>
-                    </div>
-                    {canControl && (
-                      <button
-                        type="button"
-                        onClick={() => handlePlayTrack(entry.track_id)}
-                        className={`px-3 py-1 text-xs ${isActive ? 'btn-primary' : 'btn-secondary'}`}
-                      >
-                        {isActive ? 'Playing' : 'Play'}
-                      </button>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+            {!searching && displayList.length > 0 && (
+              <ul ref={queueRef} className="max-h-80 space-y-1 overflow-y-auto">
+                {displayList.map((entry, idx) => {
+                  const isActive = !entry.isSearchResult && idx === audioState.queue_index;
+                  return (
+                    <li
+                      key={entry.track_id}
+                      data-active={isActive ? 'true' : 'false'}
+                      className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''}`}
+                      style={{ boxShadow: 'none' }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="w-5 flex-shrink-0 text-center text-xs muted">
+                          {isActive ? '►' : idx + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{entry.title}</p>
+                          <p className="truncate text-xs muted">
+                            {entry.artist}
+                            {entry.album ? ` • ${entry.album}` : ''}
+                            {entry.duration_ms ? ` • ${formatMs(entry.duration_ms)}` : ''}
+                          </p>
+                        </div>
+                        {canControl && (
+                          <button
+                            type="button"
+                            onClick={() => handlePlayTrack(entry.track_id)}
+                            className={`px-3 py-1 text-xs ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+                          >
+                            {isActive ? 'Playing' : 'Play'}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </>
         )}
       </section>
     </div>
