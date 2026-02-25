@@ -10,6 +10,12 @@ It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first run
   - Movie, TV, and music libraries with deep directory scanning.
   - Per-library access control per user.
   - TMDB metadata enrichment (configurable in Admin).
+  - Per-library TMDB management:
+    - Guided movie-vs-TV matching by library kind.
+    - Toggle poster/backdrop/metadata/reviews fetching.
+    - Optional artwork storage directly in media folders.
+    - Auto TMDB sync on newly detected media.
+    - Scheduled TMDB sync (`hourly`, `daily`, `weekly`, `monthly`, or `manual`).
   - Optional dedicated TMDB sync agent (separate Rust container) for on-demand poster download.
 - Playback
   - Direct Play (HTTP range) and HLS transcode modes.
@@ -100,9 +106,13 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 ./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [-f docker-compose.yml]
 ```
 
-- Default behavior rebuilds images with cache.
+- Default behavior performs a smart incremental rebuild:
+  - It fingerprints source/build inputs per service.
+  - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-ui`).
+  - If nothing changed, it skips image rebuild and reuses existing images.
 - `--full-rebuild` forces no-cache rebuild.
 - `--no-build` skips rebuild.
+- If `RUSTFIN_YOUTUBE_COOKIE` is exported once, `start.sh` persists it to a local secrets file and auto-loads it on future runs.
 
 ## Access URLs and LAN Behavior
 
@@ -136,6 +146,8 @@ Common runtime variables:
 - `RUSTFIN_TMDB_KEY`
 - `RUSTFIN_TMDB_AGENT_URL`
 - `RUSTFIN_TMDB_AGENT_TOKEN`
+- `RUSTFIN_YOUTUBE_COOKIE`
+- `RUSTFIN_SECRETS_ENV_FILE`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`
 - `RUSTFIN_FFMPEG_PATH`
 - `RUSTFIN_FFPROBE_PATH`

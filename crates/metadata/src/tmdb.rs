@@ -57,6 +57,32 @@ impl TmdbClient {
             .await
             .map_err(|e| MetadataError::Provider(format!("parse JSON: {e}")))
     }
+
+    pub async fn get_movie_reviews(
+        &self,
+        provider_id: &str,
+    ) -> Result<serde_json::Value, MetadataError> {
+        let data = self
+            .get_json(
+                &format!("/movie/{provider_id}/reviews"),
+                &[("language", "en-US"), ("page", "1")],
+            )
+            .await?;
+        Ok(data["results"].clone())
+    }
+
+    pub async fn get_series_reviews(
+        &self,
+        provider_id: &str,
+    ) -> Result<serde_json::Value, MetadataError> {
+        let data = self
+            .get_json(
+                &format!("/tv/{provider_id}/reviews"),
+                &[("language", "en-US"), ("page", "1")],
+            )
+            .await?;
+        Ok(data["results"].clone())
+    }
 }
 
 #[async_trait::async_trait]

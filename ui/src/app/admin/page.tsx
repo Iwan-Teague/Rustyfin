@@ -14,6 +14,14 @@ interface Library {
     show_images: boolean;
     prefer_local_artwork: boolean;
     fetch_online_artwork: boolean;
+    tmdb_store_in_media_dir: boolean;
+    tmdb_sync_on_new_media: boolean;
+    tmdb_sync_schedule: 'manual' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+    tmdb_last_sync_ts?: number | null;
+    tmdb_fetch_posters: boolean;
+    tmdb_fetch_backdrops: boolean;
+    tmdb_fetch_metadata: boolean;
+    tmdb_fetch_reviews: boolean;
   };
   item_count: number;
 }
@@ -24,6 +32,13 @@ interface LibraryEditState {
   show_images: boolean;
   prefer_local_artwork: boolean;
   fetch_online_artwork: boolean;
+  tmdb_store_in_media_dir: boolean;
+  tmdb_sync_on_new_media: boolean;
+  tmdb_sync_schedule: 'manual' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+  tmdb_fetch_posters: boolean;
+  tmdb_fetch_backdrops: boolean;
+  tmdb_fetch_metadata: boolean;
+  tmdb_fetch_reviews: boolean;
 }
 
 interface Job {
@@ -93,7 +108,19 @@ interface TmdbConfig {
   source: 'database' | 'environment' | null;
 }
 
+interface TmdbSyncStatusRow {
+  library_id: string;
+  library_name: string;
+  library_kind: string;
+  last_run_result: string;
+  last_run_ts: number | null;
+  next_scheduled_run_ts: number | null;
+  next_scheduled_run_label: string;
+  failure_reason: string | null;
+}
+
 type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'logs' | 'tmdb';
+type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
 
 const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'users', label: 'Users' },
@@ -104,11 +131,51 @@ const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'tmdb', label: 'TMDB Metadata' },
 ];
 
+const LOG_FILTER_TABS: { key: LogFilterTab; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'complete', label: 'Complete' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'in_progress', label: 'In Progress' },
+];
+
+const TMDB_SCHEDULE_INTERVAL_SECONDS: Record<'hourly' | 'daily' | 'weekly' | 'monthly', number> =
+  {
+    hourly: 60 * 60,
+    daily: 60 * 60 * 24,
+    weekly: 60 * 60 * 24 * 7,
+    monthly: 60 * 60 * 24 * 30,
+  };
+
+function formatTs(ts: number | null | undefined): string {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString();
+}
+
+function formatJobStatus(status: string): string {
+  switch (status) {
+    case 'queued':
+      return 'Queued';
+    case 'running':
+      return 'Running';
+    case 'completed':
+      return 'Completed';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'never':
+      return 'Never';
+    default:
+      return status;
+  }
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
 
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
+  const [logFilterTab, setLogFilterTab] = useState<LogFilterTab>('all');
 
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [libraryEdits, setLibraryEdits] = useState<Record<string, LibraryEditState>>({});
@@ -128,6 +195,13 @@ export default function AdminPage() {
     show_images: true,
     prefer_local_artwork: true,
     fetch_online_artwork: true,
+    tmdb_store_in_media_dir: false,
+    tmdb_sync_on_new_media: true,
+    tmdb_sync_schedule: 'manual' as 'manual' | 'hourly' | 'daily' | 'weekly' | 'monthly',
+    tmdb_fetch_posters: true,
+    tmdb_fetch_backdrops: true,
+    tmdb_fetch_metadata: true,
+    tmdb_fetch_reviews: false,
   });
   const [newUser, setNewUser] = useState({
     username: '',
@@ -172,6 +246,13 @@ export default function AdminPage() {
       show_images: library.settings?.show_images ?? true,
       prefer_local_artwork: library.settings?.prefer_local_artwork ?? true,
       fetch_online_artwork: library.settings?.fetch_online_artwork ?? true,
+      tmdb_store_in_media_dir: library.settings?.tmdb_store_in_media_dir ?? false,
+      tmdb_sync_on_new_media: library.settings?.tmdb_sync_on_new_media ?? true,
+      tmdb_sync_schedule: library.settings?.tmdb_sync_schedule ?? 'manual',
+      tmdb_fetch_posters: library.settings?.tmdb_fetch_posters ?? true,
+      tmdb_fetch_backdrops: library.settings?.tmdb_fetch_backdrops ?? true,
+      tmdb_fetch_metadata: library.settings?.tmdb_fetch_metadata ?? true,
+      tmdb_fetch_reviews: library.settings?.tmdb_fetch_reviews ?? false,
     };
   }
 
@@ -181,7 +262,14 @@ export default function AdminPage() {
       a.path === b.path &&
       a.show_images === b.show_images &&
       a.prefer_local_artwork === b.prefer_local_artwork &&
-      a.fetch_online_artwork === b.fetch_online_artwork
+      a.fetch_online_artwork === b.fetch_online_artwork &&
+      a.tmdb_store_in_media_dir === b.tmdb_store_in_media_dir &&
+      a.tmdb_sync_on_new_media === b.tmdb_sync_on_new_media &&
+      a.tmdb_sync_schedule === b.tmdb_sync_schedule &&
+      a.tmdb_fetch_posters === b.tmdb_fetch_posters &&
+      a.tmdb_fetch_backdrops === b.tmdb_fetch_backdrops &&
+      a.tmdb_fetch_metadata === b.tmdb_fetch_metadata &&
+      a.tmdb_fetch_reviews === b.tmdb_fetch_reviews
     );
   }
 
@@ -352,6 +440,94 @@ export default function AdminPage() {
     return new Map(users.map((u) => [u.id, u]));
   }, [users]);
 
+  const filteredLogJobs = useMemo(() => {
+    switch (logFilterTab) {
+      case 'complete':
+        return jobs.filter((job) => job.status === 'completed');
+      case 'failed':
+        return jobs.filter((job) => job.status === 'failed');
+      case 'in_progress':
+        return jobs.filter((job) => job.status === 'queued' || job.status === 'running');
+      case 'all':
+      default:
+        return jobs;
+    }
+  }, [jobs, logFilterTab]);
+
+  const tmdbSyncStatusRows = useMemo<TmdbSyncStatusRow[]>(() => {
+    const nowTs = Math.floor(Date.now() / 1000);
+    const jobsByLibraryId = new Map<string, Job[]>();
+
+    for (const job of jobs) {
+      if (job.kind !== 'library_tmdb_sync') continue;
+      const payload = job.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+      const libraryId = payload.library_id;
+      if (typeof libraryId !== 'string' || !libraryId.trim()) continue;
+      const list = jobsByLibraryId.get(libraryId) ?? [];
+      list.push(job);
+      jobsByLibraryId.set(libraryId, list);
+    }
+
+    for (const list of jobsByLibraryId.values()) {
+      list.sort((a, b) => b.updated_ts - a.updated_ts);
+    }
+
+    return libraries
+      .filter((lib) => lib.kind === 'movies' || lib.kind === 'tv_shows')
+      .map((lib) => {
+        const schedule = lib.settings.tmdb_sync_schedule;
+        const libraryJobs = jobsByLibraryId.get(lib.id) ?? [];
+
+        const latestActive = libraryJobs.find(
+          (job) => job.status === 'queued' || job.status === 'running',
+        );
+        const latestTerminal = libraryJobs.find(
+          (job) => job.status !== 'queued' && job.status !== 'running',
+        );
+        const latestFailure = libraryJobs.find(
+          (job) => job.status === 'failed' && typeof job.error === 'string' && job.error.trim(),
+        );
+
+        const lastRunResult = latestTerminal?.status ?? latestActive?.status ?? 'never';
+        const lastRunTs =
+          latestTerminal?.updated_ts ??
+          lib.settings.tmdb_last_sync_ts ??
+          latestActive?.updated_ts ??
+          null;
+
+        let nextScheduledRunTs: number | null = null;
+        let nextScheduledRunLabel = 'Manual only';
+
+        if (schedule !== 'manual') {
+          const intervalSeconds =
+            TMDB_SCHEDULE_INTERVAL_SECONDS[
+              schedule as keyof typeof TMDB_SCHEDULE_INTERVAL_SECONDS
+            ] ?? null;
+          if (intervalSeconds) {
+            const anchorTs = lib.settings.tmdb_last_sync_ts ?? null;
+            nextScheduledRunTs = anchorTs ? anchorTs + intervalSeconds : nowTs;
+            nextScheduledRunLabel =
+              nextScheduledRunTs <= nowTs ? 'Due now' : formatTs(nextScheduledRunTs);
+          } else {
+            nextScheduledRunLabel = '—';
+          }
+        }
+
+        return {
+          library_id: lib.id,
+          library_name: lib.name,
+          library_kind: lib.kind,
+          last_run_result: formatJobStatus(lastRunResult),
+          last_run_ts: lastRunTs,
+          next_scheduled_run_ts: nextScheduledRunTs,
+          next_scheduled_run_label: nextScheduledRunLabel,
+          failure_reason: latestFailure?.error?.trim() || null,
+        };
+      })
+      .sort((a, b) => a.library_name.localeCompare(b.library_name));
+  }, [jobs, libraries]);
+
   function setOk(message: string) {
     setMsgType('ok');
     setMsg(message);
@@ -375,6 +551,13 @@ export default function AdminPage() {
             show_images: newLib.show_images,
             prefer_local_artwork: newLib.prefer_local_artwork,
             fetch_online_artwork: newLib.fetch_online_artwork,
+            tmdb_store_in_media_dir: newLib.tmdb_store_in_media_dir,
+            tmdb_sync_on_new_media: newLib.tmdb_sync_on_new_media,
+            tmdb_sync_schedule: newLib.tmdb_sync_schedule,
+            tmdb_fetch_posters: newLib.tmdb_fetch_posters,
+            tmdb_fetch_backdrops: newLib.tmdb_fetch_backdrops,
+            tmdb_fetch_metadata: newLib.tmdb_fetch_metadata,
+            tmdb_fetch_reviews: newLib.tmdb_fetch_reviews,
           },
         }),
       });
@@ -386,6 +569,13 @@ export default function AdminPage() {
         show_images: true,
         prefer_local_artwork: true,
         fetch_online_artwork: true,
+        tmdb_store_in_media_dir: false,
+        tmdb_sync_on_new_media: true,
+        tmdb_sync_schedule: 'manual',
+        tmdb_fetch_posters: true,
+        tmdb_fetch_backdrops: true,
+        tmdb_fetch_metadata: true,
+        tmdb_fetch_reviews: false,
       });
       await loadData();
     } catch (err: any) {
@@ -442,6 +632,13 @@ export default function AdminPage() {
           show_images: true,
           prefer_local_artwork: true,
           fetch_online_artwork: true,
+          tmdb_store_in_media_dir: false,
+          tmdb_sync_on_new_media: true,
+          tmdb_sync_schedule: 'manual',
+          tmdb_fetch_posters: true,
+          tmdb_fetch_backdrops: true,
+          tmdb_fetch_metadata: true,
+          tmdb_fetch_reviews: false,
         }),
         [key]: value,
       },
@@ -480,6 +677,13 @@ export default function AdminPage() {
             show_images: edit.show_images,
             prefer_local_artwork: edit.prefer_local_artwork,
             fetch_online_artwork: edit.fetch_online_artwork,
+            tmdb_store_in_media_dir: edit.tmdb_store_in_media_dir,
+            tmdb_sync_on_new_media: edit.tmdb_sync_on_new_media,
+            tmdb_sync_schedule: edit.tmdb_sync_schedule,
+            tmdb_fetch_posters: edit.tmdb_fetch_posters,
+            tmdb_fetch_backdrops: edit.tmdb_fetch_backdrops,
+            tmdb_fetch_metadata: edit.tmdb_fetch_metadata,
+            tmdb_fetch_reviews: edit.tmdb_fetch_reviews,
           },
         }),
       });
@@ -497,6 +701,13 @@ export default function AdminPage() {
             show_images: edit.show_images,
             prefer_local_artwork: edit.prefer_local_artwork,
             fetch_online_artwork: edit.fetch_online_artwork,
+            tmdb_store_in_media_dir: edit.tmdb_store_in_media_dir,
+            tmdb_sync_on_new_media: edit.tmdb_sync_on_new_media,
+            tmdb_sync_schedule: edit.tmdb_sync_schedule,
+            tmdb_fetch_posters: edit.tmdb_fetch_posters,
+            tmdb_fetch_backdrops: edit.tmdb_fetch_backdrops,
+            tmdb_fetch_metadata: edit.tmdb_fetch_metadata,
+            tmdb_fetch_reviews: edit.tmdb_fetch_reviews,
           },
         };
       });
@@ -1161,7 +1372,7 @@ export default function AdminPage() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
                 <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
                   <input
                     type="checkbox"
@@ -1192,6 +1403,96 @@ export default function AdminPage() {
                     className="h-4 w-4 [accent-color:var(--purple)]"
                   />
                   <span>Fetch missing artwork online</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_store_in_media_dir}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_store_in_media_dir: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Store TMDB images in media folders</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_sync_on_new_media}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_sync_on_new_media: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Auto TMDB sync when scan finds new media</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_fetch_metadata}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_fetch_metadata: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Fetch metadata fields (title, overview, rating)</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_fetch_posters}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_fetch_posters: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Fetch poster images</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_fetch_backdrops}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_fetch_backdrops: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Fetch backdrop/banner images</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newLib.tmdb_fetch_reviews}
+                    onChange={(e) =>
+                      setNewLib({ ...newLib, tmdb_fetch_reviews: e.target.checked })
+                    }
+                    className="h-4 w-4 [accent-color:var(--purple)]"
+                  />
+                  <span>Fetch TMDB reviews</span>
+                </label>
+                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm md:col-span-2 xl:col-span-3">
+                  <span className="w-40 shrink-0">Scheduled TMDB sync</span>
+                  <select
+                    value={newLib.tmdb_sync_schedule}
+                    onChange={(e) =>
+                      setNewLib({
+                        ...newLib,
+                        tmdb_sync_schedule: e.target.value as
+                          | 'manual'
+                          | 'hourly'
+                          | 'daily'
+                          | 'weekly'
+                          | 'monthly',
+                      })
+                    }
+                    className="select flex-1 px-3 py-2 text-sm"
+                  >
+                    <option value="manual">Manual only</option>
+                    <option value="hourly">Every hour</option>
+                    <option value="daily">Every 24 hours</option>
+                    <option value="weekly">Every week</option>
+                    <option value="monthly">Every month</option>
+                  </select>
                 </label>
               </div>
             </form>
@@ -1293,6 +1594,124 @@ export default function AdminPage() {
                           />
                           <span>Fetch missing artwork online</span>
                         </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_store_in_media_dir ??
+                              lib.settings.tmdb_store_in_media_dir
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_store_in_media_dir', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Store TMDB images in media folders</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_sync_on_new_media ??
+                              lib.settings.tmdb_sync_on_new_media
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_sync_on_new_media', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Auto TMDB sync when scan finds new media</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_fetch_metadata ??
+                              lib.settings.tmdb_fetch_metadata
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_fetch_metadata', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Fetch metadata fields (title, overview, rating)</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_fetch_posters ??
+                              lib.settings.tmdb_fetch_posters
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_fetch_posters', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Fetch poster images</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_fetch_backdrops ??
+                              lib.settings.tmdb_fetch_backdrops
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_fetch_backdrops', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Fetch backdrop/banner images</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={
+                              libraryEdits[lib.id]?.tmdb_fetch_reviews ??
+                              lib.settings.tmdb_fetch_reviews
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(lib.id, 'tmdb_fetch_reviews', e.target.checked)
+                            }
+                            className="h-4 w-4 [accent-color:var(--purple)]"
+                          />
+                          <span>Fetch TMDB reviews</span>
+                        </label>
+                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
+                          <span className="w-36 shrink-0">Scheduled TMDB sync</span>
+                          <select
+                            value={
+                              libraryEdits[lib.id]?.tmdb_sync_schedule ??
+                              lib.settings.tmdb_sync_schedule
+                            }
+                            onChange={(e) =>
+                              setLibraryEdit(
+                                lib.id,
+                                'tmdb_sync_schedule',
+                                e.target.value as
+                                  | 'manual'
+                                  | 'hourly'
+                                  | 'daily'
+                                  | 'weekly'
+                                  | 'monthly',
+                              )
+                            }
+                            className="select flex-1 px-3 py-2 text-sm"
+                          >
+                            <option value="manual">Manual only</option>
+                            <option value="hourly">Every hour</option>
+                            <option value="daily">Every 24 hours</option>
+                            <option value="weekly">Every week</option>
+                            <option value="monthly">Every month</option>
+                          </select>
+                        </label>
+                        <p className="px-1 text-xs muted">
+                          Last TMDB sync:{' '}
+                          {lib.settings.tmdb_last_sync_ts
+                            ? new Date(lib.settings.tmdb_last_sync_ts * 1000).toLocaleString()
+                            : 'never'}
+                        </p>
                       </div>
                     </form>
                     <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
@@ -1489,10 +1908,26 @@ export default function AdminPage() {
       {activeTab === 'logs' && (
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">Logs</h2>
-          {jobs.length === 0 ? (
-            <p className="text-sm muted">No logs</p>
+          <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-0">
+            {LOG_FILTER_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setLogFilterTab(tab.key)}
+                className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+                  logFilterTab === tab.key
+                    ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                    : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {filteredLogJobs.length === 0 ? (
+            <p className="text-sm muted">No logs for this filter</p>
           ) : (
-            jobs.map((job) => {
+            filteredLogJobs.map((job) => {
               const isTerminal = !['queued', 'running'].includes(job.status);
               return (
                 <div key={job.id} className="tile space-y-2 p-3">
@@ -1580,6 +2015,55 @@ export default function AdminPage() {
                 })`
               : 'not configured'}
           </p>
+
+          <div className="panel-soft space-y-3 rounded-xl p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">TMDB Sync Status</h3>
+              <p className="text-xs muted">Scheduler checks every 60 seconds</p>
+            </div>
+            {tmdbSyncStatusRows.length === 0 ? (
+              <p className="text-xs muted">No movie/TV libraries configured for TMDB sync.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[760px] w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-[0.14em] muted">
+                      <th className="px-2 py-2 font-medium">Library</th>
+                      <th className="px-2 py-2 font-medium">Last Run Result</th>
+                      <th className="px-2 py-2 font-medium">Next Scheduled Run</th>
+                      <th className="px-2 py-2 font-medium">Failure Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tmdbSyncStatusRows.map((row) => (
+                      <tr key={row.library_id} className="border-b border-[var(--border)]/60">
+                        <td className="px-2 py-2 align-top">
+                          <p className="font-medium">{row.library_name}</p>
+                          <p className="text-xs muted">{row.library_kind}</p>
+                        </td>
+                        <td className="px-2 py-2 align-top">
+                          <p>{row.last_run_result}</p>
+                          <p className="text-xs muted">{formatTs(row.last_run_ts)}</p>
+                        </td>
+                        <td className="px-2 py-2 align-top">
+                          <p>{row.next_scheduled_run_label}</p>
+                        </td>
+                        <td className="px-2 py-2 align-top">
+                          {row.failure_reason ? (
+                            <p className="text-xs text-red-300" title={row.failure_reason}>
+                              {row.failure_reason}
+                            </p>
+                          ) : (
+                            <p className="text-xs muted">—</p>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </section>
       )}
 

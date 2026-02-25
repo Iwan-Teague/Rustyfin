@@ -175,6 +175,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn periodic TMDB auto-sync scheduler for libraries that opt in.
+    {
+        let tmdb_state = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let Err(err) =
+                    rustfin_server::tmdb_sync::run_auto_tmdb_scheduler_tick(&tmdb_state).await
+                {
+                    tracing::warn!(error = %err, "tmdb auto-sync scheduler tick failed");
+                }
+            }
+        });
+    }
+
     let app = rustfin_server::routes::build_router(app_state);
 
     let bind_addr = std::env::var("RUSTFIN_BIND").unwrap_or_else(|_| "0.0.0.0:8096".to_string());

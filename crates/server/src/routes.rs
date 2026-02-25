@@ -520,6 +520,13 @@ struct LibrarySettingsPatchRequest {
     show_images: Option<bool>,
     prefer_local_artwork: Option<bool>,
     fetch_online_artwork: Option<bool>,
+    tmdb_store_in_media_dir: Option<bool>,
+    tmdb_sync_on_new_media: Option<bool>,
+    tmdb_sync_schedule: Option<String>,
+    tmdb_fetch_posters: Option<bool>,
+    tmdb_fetch_backdrops: Option<bool>,
+    tmdb_fetch_metadata: Option<bool>,
+    tmdb_fetch_reviews: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -536,6 +543,14 @@ struct LibrarySettingsResponse {
     show_images: bool,
     prefer_local_artwork: bool,
     fetch_online_artwork: bool,
+    tmdb_store_in_media_dir: bool,
+    tmdb_sync_on_new_media: bool,
+    tmdb_sync_schedule: String,
+    tmdb_last_sync_ts: Option<i64>,
+    tmdb_fetch_posters: bool,
+    tmdb_fetch_backdrops: bool,
+    tmdb_fetch_metadata: bool,
+    tmdb_fetch_reviews: bool,
 }
 
 #[derive(Serialize)]
@@ -601,6 +616,17 @@ fn validate_and_normalize_paths(paths: &[String]) -> Result<Vec<String>, AppErro
     Ok(normalized_paths)
 }
 
+fn normalize_tmdb_sync_schedule(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "manual" => Some("manual"),
+        "hourly" => Some("hourly"),
+        "daily" => Some("daily"),
+        "weekly" => Some("weekly"),
+        "monthly" => Some("monthly"),
+        _ => None,
+    }
+}
+
 async fn load_library_settings_response(
     state: &AppState,
     library_id: &str,
@@ -613,6 +639,14 @@ async fn load_library_settings_response(
         show_images: true,
         prefer_local_artwork: true,
         fetch_online_artwork: true,
+        tmdb_store_in_media_dir: false,
+        tmdb_sync_on_new_media: true,
+        tmdb_sync_schedule: "manual".to_string(),
+        tmdb_last_sync_ts: None,
+        tmdb_fetch_posters: true,
+        tmdb_fetch_backdrops: true,
+        tmdb_fetch_metadata: true,
+        tmdb_fetch_reviews: false,
         updated_ts: chrono::Utc::now().timestamp(),
     });
 
@@ -620,6 +654,14 @@ async fn load_library_settings_response(
         show_images: settings.show_images,
         prefer_local_artwork: settings.prefer_local_artwork,
         fetch_online_artwork: settings.fetch_online_artwork,
+        tmdb_store_in_media_dir: settings.tmdb_store_in_media_dir,
+        tmdb_sync_on_new_media: settings.tmdb_sync_on_new_media,
+        tmdb_sync_schedule: settings.tmdb_sync_schedule,
+        tmdb_last_sync_ts: settings.tmdb_last_sync_ts,
+        tmdb_fetch_posters: settings.tmdb_fetch_posters,
+        tmdb_fetch_backdrops: settings.tmdb_fetch_backdrops,
+        tmdb_fetch_metadata: settings.tmdb_fetch_metadata,
+        tmdb_fetch_reviews: settings.tmdb_fetch_reviews,
     })
 }
 
@@ -676,12 +718,32 @@ async fn create_library(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    let sync_schedule = normalize_tmdb_sync_schedule(
+        body.settings
+            .tmdb_sync_schedule
+            .as_deref()
+            .unwrap_or("manual"),
+    )
+    .ok_or_else(|| {
+        ApiError::BadRequest(
+            "tmdb_sync_schedule must be one of: manual, hourly, daily, weekly, monthly".into(),
+        )
+    })?;
+
     rustfin_db::repo::libraries::upsert_library_settings(
         &state.db,
         &lib.id,
         body.settings.show_images.unwrap_or(true),
         body.settings.prefer_local_artwork.unwrap_or(true),
         body.settings.fetch_online_artwork.unwrap_or(true),
+        body.settings.tmdb_store_in_media_dir.unwrap_or(false),
+        body.settings.tmdb_sync_on_new_media.unwrap_or(true),
+        sync_schedule,
+        None,
+        body.settings.tmdb_fetch_posters.unwrap_or(true),
+        body.settings.tmdb_fetch_backdrops.unwrap_or(true),
+        body.settings.tmdb_fetch_metadata.unwrap_or(true),
+        body.settings.tmdb_fetch_reviews.unwrap_or(false),
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -792,6 +854,13 @@ async fn update_library(
     if body.settings.show_images.is_some()
         || body.settings.prefer_local_artwork.is_some()
         || body.settings.fetch_online_artwork.is_some()
+        || body.settings.tmdb_store_in_media_dir.is_some()
+        || body.settings.tmdb_sync_on_new_media.is_some()
+        || body.settings.tmdb_sync_schedule.is_some()
+        || body.settings.tmdb_fetch_posters.is_some()
+        || body.settings.tmdb_fetch_backdrops.is_some()
+        || body.settings.tmdb_fetch_metadata.is_some()
+        || body.settings.tmdb_fetch_reviews.is_some()
     {
         let current = rustfin_db::repo::libraries::get_library_settings(&state.db, &id)
             .await
@@ -801,8 +870,27 @@ async fn update_library(
                 show_images: true,
                 prefer_local_artwork: true,
                 fetch_online_artwork: true,
+                tmdb_store_in_media_dir: false,
+                tmdb_sync_on_new_media: true,
+                tmdb_sync_schedule: "manual".to_string(),
+                tmdb_last_sync_ts: None,
+                tmdb_fetch_posters: true,
+                tmdb_fetch_backdrops: true,
+                tmdb_fetch_metadata: true,
+                tmdb_fetch_reviews: false,
                 updated_ts: chrono::Utc::now().timestamp(),
             });
+
+        let tmdb_sync_schedule = if let Some(raw) = body.settings.tmdb_sync_schedule.as_deref() {
+            normalize_tmdb_sync_schedule(raw).ok_or_else(|| {
+                ApiError::BadRequest(
+                    "tmdb_sync_schedule must be one of: manual, hourly, daily, weekly, monthly"
+                        .into(),
+                )
+            })?
+        } else {
+            current.tmdb_sync_schedule.as_str()
+        };
 
         let _ = rustfin_db::repo::libraries::upsert_library_settings(
             &state.db,
@@ -814,6 +902,26 @@ async fn update_library(
             body.settings
                 .fetch_online_artwork
                 .unwrap_or(current.fetch_online_artwork),
+            body.settings
+                .tmdb_store_in_media_dir
+                .unwrap_or(current.tmdb_store_in_media_dir),
+            body.settings
+                .tmdb_sync_on_new_media
+                .unwrap_or(current.tmdb_sync_on_new_media),
+            tmdb_sync_schedule,
+            current.tmdb_last_sync_ts,
+            body.settings
+                .tmdb_fetch_posters
+                .unwrap_or(current.tmdb_fetch_posters),
+            body.settings
+                .tmdb_fetch_backdrops
+                .unwrap_or(current.tmdb_fetch_backdrops),
+            body.settings
+                .tmdb_fetch_metadata
+                .unwrap_or(current.tmdb_fetch_metadata),
+            body.settings
+                .tmdb_fetch_reviews
+                .unwrap_or(current.tmdb_fetch_reviews),
         )
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
