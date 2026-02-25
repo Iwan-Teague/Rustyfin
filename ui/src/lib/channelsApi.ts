@@ -115,6 +115,23 @@ export type VoiceTranscriptionStatus = {
   entry_count: number;
 };
 
+export type VoiceTranscriptionSessionSummary = {
+  session_id: string;
+  status: string;
+  started_by_username: string;
+  started_ts: number;
+  ended_ts?: number | null;
+  output_available: boolean;
+  output_download_path?: string | null;
+  message?: string | null;
+  entry_count: number;
+};
+
+export type VoiceTranscriptionSessionsResponse = {
+  channel_id: string;
+  sessions: VoiceTranscriptionSessionSummary[];
+};
+
 export type VoiceTranscribeChunkRequest = {
   session_id: string;
   sample_rate_hz: number;
@@ -206,6 +223,12 @@ export async function getVoiceTranscriptionStatus(
   channelId: string,
 ): Promise<VoiceTranscriptionStatus> {
   return apiJson<VoiceTranscriptionStatus>(`/channels/${channelId}/transcription/status`);
+}
+
+export async function listVoiceTranscriptionSessions(
+  channelId: string,
+): Promise<VoiceTranscriptionSessionsResponse> {
+  return apiJson<VoiceTranscriptionSessionsResponse>(`/channels/${channelId}/transcription/sessions`);
 }
 
 export async function startVoiceTranscription(

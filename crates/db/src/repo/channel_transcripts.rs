@@ -208,6 +208,37 @@ pub async fn get_latest_session_for_channel(
     Ok(row.map(map_session))
 }
 
+pub async fn list_sessions_for_channel(
+    pool: &SqlitePool,
+    channel_id: &str,
+    limit: i64,
+) -> Result<Vec<TranscriptSessionRow>, sqlx::Error> {
+    let clamped_limit = limit.clamp(1, 500);
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
+                started_ts, ended_ts, output_path, failure_reason \
+         FROM channel_transcript_session \
+         WHERE channel_id = ? \
+         ORDER BY started_ts DESC \
+         LIMIT ?",
+    )
+    .bind(channel_id)
+    .bind(clamped_limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(map_session).collect())
+}
+
 pub async fn list_running_sessions(
     pool: &SqlitePool,
 ) -> Result<Vec<TranscriptSessionRow>, sqlx::Error> {
