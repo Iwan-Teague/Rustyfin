@@ -24,6 +24,14 @@ pub struct LibrarySettingsRow {
     pub show_images: bool,
     pub prefer_local_artwork: bool,
     pub fetch_online_artwork: bool,
+    pub tmdb_store_in_media_dir: bool,
+    pub tmdb_sync_on_new_media: bool,
+    pub tmdb_sync_schedule: String,
+    pub tmdb_last_sync_ts: Option<i64>,
+    pub tmdb_fetch_posters: bool,
+    pub tmdb_fetch_backdrops: bool,
+    pub tmdb_fetch_metadata: bool,
+    pub tmdb_fetch_reviews: bool,
     pub updated_ts: i64,
 }
 
@@ -241,8 +249,25 @@ pub async fn get_library_settings(
     pool: &SqlitePool,
     library_id: &str,
 ) -> Result<Option<LibrarySettingsRow>, sqlx::Error> {
-    let row: Option<(String, bool, bool, bool, i64)> = sqlx::query_as(
-        "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, updated_ts \
+    let row: Option<(
+        String,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        String,
+        Option<i64>,
+        bool,
+        bool,
+        bool,
+        bool,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
+            tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
+            tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, \
+            updated_ts \
          FROM library_settings WHERE library_id = ?",
     )
     .bind(library_id)
@@ -250,12 +275,34 @@ pub async fn get_library_settings(
     .await?;
 
     Ok(row.map(
-        |(library_id, show_images, prefer_local_artwork, fetch_online_artwork, updated_ts)| {
+        |(
+            library_id,
+            show_images,
+            prefer_local_artwork,
+            fetch_online_artwork,
+            tmdb_store_in_media_dir,
+            tmdb_sync_on_new_media,
+            tmdb_sync_schedule,
+            tmdb_last_sync_ts,
+            tmdb_fetch_posters,
+            tmdb_fetch_backdrops,
+            tmdb_fetch_metadata,
+            tmdb_fetch_reviews,
+            updated_ts,
+        )| {
             LibrarySettingsRow {
                 library_id,
                 show_images,
                 prefer_local_artwork,
                 fetch_online_artwork,
+                tmdb_store_in_media_dir,
+                tmdb_sync_on_new_media,
+                tmdb_sync_schedule,
+                tmdb_last_sync_ts,
+                tmdb_fetch_posters,
+                tmdb_fetch_backdrops,
+                tmdb_fetch_metadata,
+                tmdb_fetch_reviews,
                 updated_ts,
             }
         },
@@ -268,23 +315,49 @@ pub async fn upsert_library_settings(
     show_images: bool,
     prefer_local_artwork: bool,
     fetch_online_artwork: bool,
+    tmdb_store_in_media_dir: bool,
+    tmdb_sync_on_new_media: bool,
+    tmdb_sync_schedule: &str,
+    tmdb_last_sync_ts: Option<i64>,
+    tmdb_fetch_posters: bool,
+    tmdb_fetch_backdrops: bool,
+    tmdb_fetch_metadata: bool,
+    tmdb_fetch_reviews: bool,
 ) -> Result<LibrarySettingsRow, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
         "INSERT INTO library_settings \
-         (library_id, show_images, prefer_local_artwork, fetch_online_artwork, updated_ts) \
-         VALUES (?, ?, ?, ?, ?) \
+         (library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
+          tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
+          tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, updated_ts) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(library_id) DO UPDATE SET \
            show_images = excluded.show_images, \
            prefer_local_artwork = excluded.prefer_local_artwork, \
            fetch_online_artwork = excluded.fetch_online_artwork, \
+           tmdb_store_in_media_dir = excluded.tmdb_store_in_media_dir, \
+           tmdb_sync_on_new_media = excluded.tmdb_sync_on_new_media, \
+           tmdb_sync_schedule = excluded.tmdb_sync_schedule, \
+           tmdb_last_sync_ts = excluded.tmdb_last_sync_ts, \
+           tmdb_fetch_posters = excluded.tmdb_fetch_posters, \
+           tmdb_fetch_backdrops = excluded.tmdb_fetch_backdrops, \
+           tmdb_fetch_metadata = excluded.tmdb_fetch_metadata, \
+           tmdb_fetch_reviews = excluded.tmdb_fetch_reviews, \
            updated_ts = excluded.updated_ts",
     )
     .bind(library_id)
     .bind(show_images)
     .bind(prefer_local_artwork)
     .bind(fetch_online_artwork)
+    .bind(tmdb_store_in_media_dir)
+    .bind(tmdb_sync_on_new_media)
+    .bind(tmdb_sync_schedule)
+    .bind(tmdb_last_sync_ts)
+    .bind(tmdb_fetch_posters)
+    .bind(tmdb_fetch_backdrops)
+    .bind(tmdb_fetch_metadata)
+    .bind(tmdb_fetch_reviews)
     .bind(now)
     .execute(pool)
     .await?;
@@ -294,6 +367,33 @@ pub async fn upsert_library_settings(
         show_images,
         prefer_local_artwork,
         fetch_online_artwork,
+        tmdb_store_in_media_dir,
+        tmdb_sync_on_new_media,
+        tmdb_sync_schedule: tmdb_sync_schedule.to_string(),
+        tmdb_last_sync_ts,
+        tmdb_fetch_posters,
+        tmdb_fetch_backdrops,
+        tmdb_fetch_metadata,
+        tmdb_fetch_reviews,
         updated_ts: now,
     })
+}
+
+pub async fn touch_tmdb_last_sync_ts(
+    pool: &SqlitePool,
+    library_id: &str,
+    last_sync_ts: i64,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "UPDATE library_settings \
+         SET tmdb_last_sync_ts = ?, updated_ts = ? \
+         WHERE library_id = ?",
+    )
+    .bind(last_sync_ts)
+    .bind(now)
+    .bind(library_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }

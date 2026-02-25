@@ -43,6 +43,19 @@ pub async fn enqueue_library_scan(
                         "scan completed but artwork enrichment failed"
                     );
                 }
+                if result.added > 0 {
+                    let maybe_sync = crate::tmdb_sync::maybe_enqueue_post_scan_tmdb_sync(
+                        &pool, &events_tx, &lib_id, &lib_kind,
+                    )
+                    .await;
+                    if let Err(err) = maybe_sync {
+                        tracing::warn!(
+                            library_id = %lib_id,
+                            error = %err,
+                            "scan completed but TMDB auto-sync enqueue failed"
+                        );
+                    }
+                }
                 tracing::info!(
                     job_id = %job_id,
                     added = result.added,

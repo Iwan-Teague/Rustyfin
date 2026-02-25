@@ -58,6 +58,14 @@ pub async fn enrich_library_artwork(
             show_images: true,
             prefer_local_artwork: true,
             fetch_online_artwork: true,
+            tmdb_store_in_media_dir: false,
+            tmdb_sync_on_new_media: true,
+            tmdb_sync_schedule: "manual".to_string(),
+            tmdb_last_sync_ts: None,
+            tmdb_fetch_posters: true,
+            tmdb_fetch_backdrops: true,
+            tmdb_fetch_metadata: true,
+            tmdb_fetch_reviews: false,
             updated_ts: chrono::Utc::now().timestamp(),
         });
 

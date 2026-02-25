@@ -1097,16 +1097,71 @@ fn youtube_video_options(
     quality: rusty_ytdl::VideoQuality,
     filter: rusty_ytdl::VideoSearchOptions,
 ) -> rusty_ytdl::VideoOptions {
+    let mut default_headers = reqwest::header::HeaderMap::new();
+    default_headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_static(YOUTUBE_SEARCH_USER_AGENT),
+    );
+    default_headers.insert(
+        reqwest::header::ACCEPT_LANGUAGE,
+        reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
+    );
+    default_headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("*/*"),
+    );
+    default_headers.insert(
+        reqwest::header::REFERER,
+        reqwest::header::HeaderValue::from_static("https://www.youtube.com/"),
+    );
+    default_headers.insert(
+        reqwest::header::ORIGIN,
+        reqwest::header::HeaderValue::from_static("https://www.youtube.com"),
+    );
+    if let Some(cookie_value) = youtube_cookie_from_env() {
+        if let Ok(header_value) = reqwest::header::HeaderValue::from_str(&cookie_value) {
+            default_headers.insert(reqwest::header::COOKIE, header_value);
+        }
+    }
+
+    let request_client = reqwest::Client::builder()
+        .default_headers(default_headers)
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
     rusty_ytdl::VideoOptions {
         quality,
         filter,
         request_options: rusty_ytdl::RequestOptions {
-            cookies: youtube_cookie_from_env(),
+            client: Some(request_client),
             max_retries: Some(5),
             ..Default::default()
         },
         ..Default::default()
     }
+}
+
+fn compact_source_url_for_error(source_url: &str) -> String {
+    reqwest::Url::parse(source_url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| format!("{}://{}{}", url.scheme(), host, url.path()))
+        })
+        .unwrap_or_else(|| source_url.chars().take(200).collect::<String>())
+}
+
+fn sanitize_youtube_download_error(raw: &str) -> String {
+    static URL_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = URL_RE.get_or_init(|| {
+        regex::Regex::new(r"https?://[^\s\)]+")
+            .expect("valid regex for sanitizing youtube download errors")
+    });
+    re.replace_all(raw, |captures: &regex::Captures<'_>| {
+        compact_source_url_for_error(&captures[0])
+    })
+    .to_string()
 }
 
 fn format_matches_filter(
@@ -1175,6 +1230,8 @@ async fn download_url_to_temp_with_headers(
     temp_path: &StdPath,
     cookie: Option<&str>,
 ) -> Result<u64, String> {
+    let compact_source_url = compact_source_url_for_error(source_url);
+
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
@@ -1199,8 +1256,8 @@ async fn download_url_to_temp_with_headers(
 
     if !response.status().is_success() {
         return Err(format!(
-            "http status {} for url ({source_url})",
-            response.status()
+            "http status {} for source ({compact_source_url})",
+            response.status(),
         ));
     }
 
@@ -1213,6 +1270,45 @@ async fn download_url_to_temp_with_headers(
         .chunk()
         .await
         .map_err(|e| format!("http response read failed: {e}"))?
+    {
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("temp file write failed: {e}"))?;
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("temp file flush failed: {e}"))?;
+
+    if downloaded_bytes == 0 {
+        return Err("downloaded zero bytes".to_string());
+    }
+
+    Ok(downloaded_bytes)
+}
+
+async fn download_youtube_source_to_temp_with_stream(
+    watch_url: &str,
+    options: rusty_ytdl::VideoOptions,
+    temp_path: &StdPath,
+) -> Result<u64, String> {
+    let video = rusty_ytdl::Video::new_with_options(watch_url, options)
+        .map_err(|e| format!("download init failed: {e}"))?;
+    let stream = video
+        .stream()
+        .await
+        .map_err(|e| format!("stream open failed: {e}"))?;
+
+    let mut file = tokio::fs::File::create(temp_path)
+        .await
+        .map_err(|e| format!("temp file create failed: {e}"))?;
+
+    let mut downloaded_bytes: u64 = 0;
+    while let Some(chunk) = stream
+        .chunk()
+        .await
+        .map_err(|e| format!("stream read failed: {e}"))?
     {
         downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
         file.write_all(&chunk)
@@ -1314,14 +1410,31 @@ async fn download_youtube_audio_mp3_for_room(
     let mut stream_downloaded = false;
 
     for (label, options) in attempts {
-        match download_youtube_source_to_temp(&watch_url, options, &temp_path).await {
+        // First try the crate stream downloader (range-based and retried),
+        // then fall back to direct candidate URL fetch.
+        match download_youtube_source_to_temp_with_stream(&watch_url, options.clone(), &temp_path)
+            .await
+        {
             Ok(_bytes) => {
                 stream_downloaded = true;
                 break;
             }
-            Err(reason) => {
-                last_errors.push(format!("{label}: {reason}"));
+            Err(stream_reason) => {
                 let _ = tokio::fs::remove_file(&temp_path).await;
+                match download_youtube_source_to_temp(&watch_url, options, &temp_path).await {
+                    Ok(_bytes) => {
+                        stream_downloaded = true;
+                        break;
+                    }
+                    Err(candidate_reason) => {
+                        let stream_reason = sanitize_youtube_download_error(&stream_reason);
+                        let candidate_reason = sanitize_youtube_download_error(&candidate_reason);
+                        last_errors.push(format!(
+                            "{label}: stream={stream_reason} | direct={candidate_reason}"
+                        ));
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                    }
+                }
             }
         }
     }

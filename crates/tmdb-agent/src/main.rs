@@ -10,7 +10,7 @@ use rustfin_core::error::{ApiError, ErrorEnvelope};
 use rustfin_metadata::provider::{MetadataProvider, SearchResult};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::path::PathBuf;
+use std::path::{Path as StdPath, PathBuf};
 use std::time::Instant;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -62,6 +62,8 @@ struct EnrichLibraryResponse {
     skipped_items: u64,
     failed_items: u64,
     downloaded_posters: u64,
+    downloaded_backdrops: u64,
+    reviews_updated: u64,
     elapsed_ms: u64,
     note: Option<String>,
     errors: Vec<String>,
@@ -71,6 +73,21 @@ struct EnrichLibraryResponse {
 enum EnrichOutcome {
     Updated,
     Skipped,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageSlot {
+    Poster,
+    Backdrop,
+}
+
+impl ImageSlot {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Poster => "poster",
+            Self::Backdrop => "backdrop",
+        }
+    }
 }
 
 fn normalized_secret(value: Option<&str>) -> Option<String> {
@@ -165,19 +182,92 @@ fn guess_extension_from_url(url: &str) -> &'static str {
     }
 }
 
-async fn download_poster_to_disk(
+async fn resolve_item_art_dir(
     state: &AppState,
-    library_id: &str,
     item_id: &str,
-    poster_url: &str,
+    item_kind: &str,
+    store_in_media_dir: bool,
+    library_id: &str,
+) -> Result<PathBuf, AppError> {
+    if !store_in_media_dir {
+        let target = state
+            .image_root
+            .join("tmdb_agent")
+            .join(library_id)
+            .join(item_id);
+        std::fs::create_dir_all(&target)
+            .map_err(|e| ApiError::Internal(format!("create artwork dir failed: {e}")))?;
+        return Ok(target);
+    }
+
+    let direct_media_path = rustfin_db::repo::items::get_item_media_path(&state.db, item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let media_path = if let Some(path) = direct_media_path {
+        Some(path)
+    } else {
+        rustfin_db::repo::items::get_first_descendant_media_path(&state.db, item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    };
+
+    let Some(media_path) = media_path else {
+        return Err(ApiError::BadRequest("item has no media file mapping yet".into()).into());
+    };
+    let media = PathBuf::from(&media_path);
+    let Some(parent_dir) = media.parent() else {
+        return Err(ApiError::BadRequest("item media path has no parent directory".into()).into());
+    };
+    let art_dir = if item_kind == "series" {
+        parent_dir.parent().unwrap_or(parent_dir).to_path_buf()
+    } else {
+        parent_dir.to_path_buf()
+    };
+    std::fs::create_dir_all(&art_dir)
+        .map_err(|e| ApiError::Internal(format!("create media artwork dir failed: {e}")))?;
+    Ok(art_dir)
+}
+
+fn find_existing_local_artwork(dir: &StdPath, slot: ImageSlot) -> Option<PathBuf> {
+    let names: &[&str] = match slot {
+        ImageSlot::Poster => &[
+            "poster.jpg",
+            "poster.jpeg",
+            "poster.png",
+            "folder.jpg",
+            "folder.jpeg",
+            "folder.png",
+            "cover.jpg",
+            "cover.jpeg",
+            "cover.png",
+        ],
+        ImageSlot::Backdrop => &[
+            "backdrop.jpg",
+            "backdrop.jpeg",
+            "backdrop.png",
+            "fanart.jpg",
+            "fanart.jpeg",
+            "fanart.png",
+            "banner.jpg",
+            "banner.jpeg",
+            "banner.png",
+        ],
+    };
+    names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.exists() && path.is_file())
+}
+
+async fn download_image_to_disk(
+    state: &AppState,
+    target_dir: &StdPath,
+    image_url: &str,
+    slot: ImageSlot,
     force: bool,
 ) -> Result<Option<PathBuf>, AppError> {
-    let ext = guess_extension_from_url(poster_url);
-    let target_dir = state.image_root.join("tmdb_agent").join(library_id);
-    std::fs::create_dir_all(&target_dir)
-        .map_err(|e| ApiError::Internal(format!("create poster dir failed: {e}")))?;
-
-    let target_path = target_dir.join(format!("{item_id}.{ext}"));
+    let ext = guess_extension_from_url(image_url);
+    let target_path = target_dir.join(format!("{}.{}", slot.as_str(), ext));
 
     if target_path.exists() && !force {
         return Ok(None);
@@ -185,14 +275,15 @@ async fn download_poster_to_disk(
 
     let resp = state
         .http
-        .get(poster_url)
+        .get(image_url)
         .send()
         .await
-        .map_err(|e| ApiError::Internal(format!("poster download failed: {e}")))?;
+        .map_err(|e| ApiError::Internal(format!("{} download failed: {e}", slot.as_str())))?;
 
     if !resp.status().is_success() {
         return Err(ApiError::BadRequest(format!(
-            "poster download failed with status {}",
+            "{} download failed with status {}",
+            slot.as_str(),
             resp.status()
         ))
         .into());
@@ -201,22 +292,52 @@ async fn download_poster_to_disk(
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| ApiError::Internal(format!("poster read failed: {e}")))?;
+        .map_err(|e| ApiError::Internal(format!("{} read failed: {e}", slot.as_str())))?;
 
     tokio::fs::write(&target_path, &bytes)
         .await
-        .map_err(|e| ApiError::Internal(format!("poster write failed: {e}")))?;
+        .map_err(|e| ApiError::Internal(format!("{} write failed: {e}", slot.as_str())))?;
 
     Ok(Some(target_path))
+}
+
+async fn upsert_tmdb_reviews(
+    pool: &SqlitePool,
+    item_id: &str,
+    reviews: &serde_json::Value,
+) -> Result<(), AppError> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item_tmdb_review (item_id, reviews_json, updated_ts) \
+         VALUES (?, ?, ?) \
+         ON CONFLICT(item_id) DO UPDATE SET \
+            reviews_json = excluded.reviews_json, \
+            updated_ts = excluded.updated_ts",
+    )
+    .bind(item_id)
+    .bind(reviews.to_string())
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(())
 }
 
 async fn enrich_one_item(
     state: &AppState,
     library_id: &str,
+    library_kind: &str,
+    settings: &rustfin_db::repo::libraries::LibrarySettingsRow,
     item: &rustfin_db::repo::items::ItemRow,
     tmdb_client: &rustfin_metadata::tmdb::TmdbClient,
     force: bool,
-) -> Result<(EnrichOutcome, bool), AppError> {
+) -> Result<(EnrichOutcome, bool, bool, bool), AppError> {
+    let expects_movie = library_kind == "movies";
+    let expects_series = library_kind == "tv_shows";
+    if (expects_movie && item.kind != "movie") || (expects_series && item.kind != "series") {
+        return Ok((EnrichOutcome::Skipped, false, false, false));
+    }
+
     let item_year = item.year.map(|y| y as i32);
 
     let existing_tmdb_id = rustfin_metadata::merge::get_provider_ids(&state.db, &item.id)
@@ -234,77 +355,166 @@ async fn enrich_one_item(
     let provider_id = if let Some(existing) = existing_tmdb_id {
         Some(existing)
     } else {
-        let search_results = match item.kind.as_str() {
-            "movie" => tmdb_client
+        let search_results = if expects_movie {
+            tmdb_client
                 .search_movie(&item.title, item_year)
                 .await
-                .map_err(|e| ApiError::BadRequest(format!("TMDB search failed: {e}")))?,
-            "series" => tmdb_client
+                .map_err(|e| ApiError::BadRequest(format!("TMDB movie search failed: {e}")))?
+        } else if expects_series {
+            tmdb_client
                 .search_series(&item.title, item_year)
                 .await
-                .map_err(|e| ApiError::BadRequest(format!("TMDB search failed: {e}")))?,
-            _ => Vec::new(),
+                .map_err(|e| ApiError::BadRequest(format!("TMDB series search failed: {e}")))?
+        } else {
+            Vec::new()
         };
 
         pick_best_search_provider_id(&item.title, item_year, &search_results)
     };
 
     let Some(provider_id) = provider_id else {
-        return Ok((EnrichOutcome::Skipped, false));
+        return Ok((EnrichOutcome::Skipped, false, false, false));
     };
 
-    let provider_meta = match item.kind.as_str() {
-        "movie" => tmdb_client
+    let mut provider_meta = if expects_movie {
+        tmdb_client
             .get_movie(&provider_id)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("TMDB movie fetch failed: {e}")))?,
-        "series" => tmdb_client
+            .map_err(|e| ApiError::BadRequest(format!("TMDB movie fetch failed: {e}")))?
+    } else if expects_series {
+        tmdb_client
             .get_series(&provider_id)
             .await
-            .map_err(|e| ApiError::BadRequest(format!("TMDB series fetch failed: {e}")))?,
-        _ => return Ok((EnrichOutcome::Skipped, false)),
+            .map_err(|e| ApiError::BadRequest(format!("TMDB series fetch failed: {e}")))?
+    } else {
+        return Ok((EnrichOutcome::Skipped, false, false, false));
     };
 
     rustfin_metadata::merge::set_provider_id(&state.db, &item.id, "tmdb", &provider_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    if !settings.tmdb_fetch_metadata {
+        provider_meta.title = None;
+        provider_meta.original_title = None;
+        provider_meta.sort_title = None;
+        provider_meta.overview = None;
+        provider_meta.tagline = None;
+        provider_meta.year = None;
+        provider_meta.premiere_date = None;
+        provider_meta.end_date = None;
+        provider_meta.runtime_minutes = None;
+        provider_meta.community_rating = None;
+        provider_meta.official_rating = None;
+        provider_meta.genres = None;
+        provider_meta.studios = None;
+        provider_meta.people = None;
+    }
+    if !settings.tmdb_fetch_posters {
+        provider_meta.poster_url = None;
+    }
+    if !settings.tmdb_fetch_backdrops {
+        provider_meta.backdrop_url = None;
+    }
+
     let merge = rustfin_metadata::merge::merge_metadata(&state.db, &item.id, &provider_meta)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    let mut downloaded = false;
+    let mut downloaded_poster = false;
+    let mut downloaded_backdrop = false;
+    let mut reviews_updated = false;
 
-    if let Some(poster_url) = provider_meta.poster_url.as_deref() {
-        let downloaded_path =
-            download_poster_to_disk(state, library_id, &item.id, poster_url, force).await?;
-        if let Some(local_path) = downloaded_path {
-            downloaded = true;
-            let existing = rustfin_db::repo::items::get_item_artwork(&state.db, &item.id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .unwrap_or((None, None, None, None));
-            rustfin_db::repo::items::update_item_artwork(
-                &state.db,
-                &item.id,
-                Some(local_path.to_string_lossy().as_ref()),
-                existing.1.as_deref(),
-                existing.2.as_deref(),
-                existing.3.as_deref(),
-            )
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let art_dir = resolve_item_art_dir(
+        state,
+        &item.id,
+        &item.kind,
+        settings.tmdb_store_in_media_dir,
+        library_id,
+    )
+    .await?;
+
+    let existing_art = rustfin_db::repo::items::get_item_artwork(&state.db, &item.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .unwrap_or((None, None, None, None));
+
+    let mut next_poster = existing_art.0.clone();
+    let mut next_backdrop = existing_art.1.clone();
+
+    if settings.tmdb_fetch_posters {
+        if let Some(local_existing) = find_existing_local_artwork(&art_dir, ImageSlot::Poster) {
+            next_poster = Some(local_existing.to_string_lossy().to_string());
+        } else if let Some(poster_url) = provider_meta.poster_url.as_deref() {
+            if let Some(downloaded_path) =
+                download_image_to_disk(state, &art_dir, poster_url, ImageSlot::Poster, force)
+                    .await?
+            {
+                downloaded_poster = true;
+                next_poster = Some(downloaded_path.to_string_lossy().to_string());
+            }
         }
     }
 
-    let updated = !merge.updated_fields.is_empty() || downloaded;
+    if settings.tmdb_fetch_backdrops {
+        if let Some(local_existing) = find_existing_local_artwork(&art_dir, ImageSlot::Backdrop) {
+            next_backdrop = Some(local_existing.to_string_lossy().to_string());
+        } else if let Some(backdrop_url) = provider_meta.backdrop_url.as_deref() {
+            if let Some(downloaded_path) =
+                download_image_to_disk(state, &art_dir, backdrop_url, ImageSlot::Backdrop, force)
+                    .await?
+            {
+                downloaded_backdrop = true;
+                next_backdrop = Some(downloaded_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    if next_poster != existing_art.0 || next_backdrop != existing_art.1 {
+        rustfin_db::repo::items::update_item_artwork(
+            &state.db,
+            &item.id,
+            next_poster.as_deref(),
+            next_backdrop.as_deref(),
+            existing_art.2.as_deref(),
+            existing_art.3.as_deref(),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
+    if settings.tmdb_fetch_reviews {
+        let reviews = if expects_movie {
+            tmdb_client
+                .get_movie_reviews(&provider_id)
+                .await
+                .map_err(|e| ApiError::BadRequest(format!("TMDB reviews fetch failed: {e}")))?
+        } else {
+            tmdb_client
+                .get_series_reviews(&provider_id)
+                .await
+                .map_err(|e| ApiError::BadRequest(format!("TMDB reviews fetch failed: {e}")))?
+        };
+        upsert_tmdb_reviews(&state.db, &item.id, &reviews).await?;
+        reviews_updated = true;
+    }
+
+    let updated = !merge.updated_fields.is_empty()
+        || downloaded_poster
+        || downloaded_backdrop
+        || reviews_updated;
     let outcome = if updated {
         EnrichOutcome::Updated
     } else {
         EnrichOutcome::Skipped
     };
 
-    Ok((outcome, downloaded))
+    Ok((
+        outcome,
+        downloaded_poster,
+        downloaded_backdrop,
+        reviews_updated,
+    ))
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
@@ -335,6 +545,21 @@ async fn enrich_library(
     let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, &library_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let s = settings.unwrap_or(rustfin_db::repo::libraries::LibrarySettingsRow {
+        library_id: library_id.clone(),
+        show_images: true,
+        prefer_local_artwork: true,
+        fetch_online_artwork: true,
+        tmdb_store_in_media_dir: false,
+        tmdb_sync_on_new_media: true,
+        tmdb_sync_schedule: "manual".to_string(),
+        tmdb_last_sync_ts: None,
+        tmdb_fetch_posters: true,
+        tmdb_fetch_backdrops: true,
+        tmdb_fetch_metadata: true,
+        tmdb_fetch_reviews: false,
+        updated_ts: chrono::Utc::now().timestamp(),
+    });
 
     let mut response = EnrichLibraryResponse {
         library_id: library_id.clone(),
@@ -346,22 +571,22 @@ async fn enrich_library(
         skipped_items: 0,
         failed_items: 0,
         downloaded_posters: 0,
+        downloaded_backdrops: 0,
+        reviews_updated: 0,
         elapsed_ms: 0,
         note: None,
         errors: Vec::new(),
     };
 
-    if let Some(s) = settings {
-        if !s.show_images {
-            response.note = Some("library has artwork thumbnails disabled".to_string());
-            response.elapsed_ms = started.elapsed().as_millis() as u64;
-            return Ok(Json(response));
-        }
-        if !s.fetch_online_artwork {
-            response.note = Some("library has online artwork fetching disabled".to_string());
-            response.elapsed_ms = started.elapsed().as_millis() as u64;
-            return Ok(Json(response));
-        }
+    if !s.show_images {
+        response.note = Some("library has artwork thumbnails disabled".to_string());
+        response.elapsed_ms = started.elapsed().as_millis() as u64;
+        return Ok(Json(response));
+    }
+    if !s.fetch_online_artwork {
+        response.note = Some("library has online artwork fetching disabled".to_string());
+        response.elapsed_ms = started.elapsed().as_millis() as u64;
+        return Ok(Json(response));
     }
 
     let scan = rustfin_scanner::scan::run_library_scan(&state.db, &library_id, &lib.kind)
@@ -383,20 +608,38 @@ async fn enrich_library(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    for item in items
-        .into_iter()
-        .filter(|item| item.kind == "movie" || item.kind == "series")
-    {
+    for item in items {
         response.processed_items += 1;
 
-        match enrich_one_item(&state, &library_id, &item, &tmdb_client, force).await {
-            Ok((EnrichOutcome::Updated, downloaded)) => {
+        match enrich_one_item(
+            &state,
+            &library_id,
+            &lib.kind,
+            &s,
+            &item,
+            &tmdb_client,
+            force,
+        )
+        .await
+        {
+            Ok((
+                EnrichOutcome::Updated,
+                downloaded_poster,
+                downloaded_backdrop,
+                reviews_updated,
+            )) => {
                 response.updated_items += 1;
-                if downloaded {
+                if downloaded_poster {
                     response.downloaded_posters += 1;
                 }
+                if downloaded_backdrop {
+                    response.downloaded_backdrops += 1;
+                }
+                if reviews_updated {
+                    response.reviews_updated += 1;
+                }
             }
-            Ok((EnrichOutcome::Skipped, _)) => {
+            Ok((EnrichOutcome::Skipped, _, _, _)) => {
                 response.skipped_items += 1;
             }
             Err(err) => {
@@ -426,6 +669,8 @@ async fn enrich_library(
         skipped = response.skipped_items,
         failed = response.failed_items,
         downloaded_posters = response.downloaded_posters,
+        downloaded_backdrops = response.downloaded_backdrops,
+        reviews_updated = response.reviews_updated,
         elapsed_ms = response.elapsed_ms,
         "tmdb-agent enrich library completed"
     );

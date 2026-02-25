@@ -62,6 +62,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "015_watch_party_create_together",
         include_str!("../migrations/015_watch_party_create_together.sql"),
     ),
+    (
+        "016_library_tmdb_management",
+        include_str!("../migrations/016_library_tmdb_management.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
