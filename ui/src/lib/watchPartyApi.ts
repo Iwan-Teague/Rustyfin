@@ -243,6 +243,17 @@ export type WsAudioStateMessage = {
   members: WsPresenceMember[];
 };
 
+export type WsOnlineAudioStatusMessage = {
+  type: 'online_audio_status';
+  room_id: string;
+  video_id?: string | null;
+  track_id?: string | null;
+  stage: string;
+  status: 'pending' | 'success' | 'error' | string;
+  message: string;
+  updated_ts_ms: number;
+};
+
 export type WsYouTubeStateMessage = {
   type: 'youtube_state' | 'you_tube_state';
   room_id: string;

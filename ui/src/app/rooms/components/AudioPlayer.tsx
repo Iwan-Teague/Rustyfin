@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '@/lib/api';
 import {
   AudioTrack,
   QueueEntry,
   WsAudioStateMessage,
+  WsOnlineAudioStatusMessage,
   YouTubeSearchResult,
   listAudioTracks,
   queueOnlineAudio,
@@ -15,6 +16,7 @@ import {
 type Props = {
   audioState: WsAudioStateMessage;
   audioSource: 'library' | 'online';
+  onlineStatusEvents: WsOnlineAudioStatusMessage[];
   canControl: boolean;
   canSeek: boolean;
   roomId: string;
@@ -34,6 +36,22 @@ function formatMs(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
+function formatStatusTimestamp(tsMs: number): string {
+  if (!Number.isFinite(tsMs)) return '--:--:--';
+  return new Date(tsMs).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
+function statusBadgeClass(status: string): string {
+  if (status === 'success') return 'bg-emerald-500/20 text-emerald-200';
+  if (status === 'error') return 'bg-red-500/20 text-red-200';
+  return 'bg-white/10 text-white/80';
+}
+
 function projectPosition(state: WsAudioStateMessage): number {
   if (!state.playing) return state.position_ms;
   const now = Date.now();
@@ -44,6 +62,7 @@ function projectPosition(state: WsAudioStateMessage): number {
 export default function AudioPlayer({
   audioState,
   audioSource,
+  onlineStatusEvents,
   canControl,
   canSeek,
   roomId,
@@ -58,11 +77,13 @@ export default function AudioPlayer({
   const [projectedPosition, setProjectedPosition] = useState(audioState.position_ms);
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [streamError, setStreamError] = useState('');
+  const [actionInfo, setActionInfo] = useState('');
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const actionInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queueRef = useRef<HTMLUListElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const loadedTrackKeyRef = useRef<string | null>(null);
@@ -129,6 +150,9 @@ export default function AudioPlayer({
 
   useEffect(() => {
     return () => {
+      if (actionInfoTimeoutRef.current) {
+        clearTimeout(actionInfoTimeoutRef.current);
+      }
       const audio = audioRef.current;
       if (!audio) return;
       audio.pause();
@@ -247,8 +271,22 @@ export default function AudioPlayer({
     async (videoId: string, playNow: boolean) => {
       setQueueingVideoId(`${videoId}:${playNow ? 'play' : 'queue'}`);
       setStreamError('');
+      setActionInfo('');
       try {
-        await queueOnlineAudio(roomId, videoId, playNow);
+        const response = await queueOnlineAudio(roomId, videoId, playNow);
+        if (response.already_downloaded) {
+          const infoText = playNow
+            ? 'Using cached room audio. Playing immediately without re-downloading.'
+            : 'Track already downloaded for this room. Added from cache.';
+          setActionInfo(infoText);
+          if (actionInfoTimeoutRef.current) {
+            clearTimeout(actionInfoTimeoutRef.current);
+          }
+          actionInfoTimeoutRef.current = setTimeout(() => {
+            setActionInfo((current) => (current === infoText ? '' : current));
+            actionInfoTimeoutRef.current = null;
+          }, 5000);
+        }
       } catch (err: any) {
         setStreamError(err?.message || 'Failed to queue online audio track');
       } finally {
@@ -300,6 +338,10 @@ export default function AudioPlayer({
   };
 
   const progressPct = duration > 0 ? Math.min(100, (effectivePosition / duration) * 100) : 0;
+  const recentOnlineStatusEvents = useMemo(() => {
+    if (onlineStatusEvents.length === 0) return [];
+    return [...onlineStatusEvents].reverse().slice(0, 8);
+  }, [onlineStatusEvents]);
 
   const displayList: Array<QueueEntry & { isSearchResult?: boolean }> =
     librarySearchResults !== null
@@ -431,12 +473,53 @@ export default function AudioPlayer({
             {streamError && (
               <div className="notice-error rounded-xl px-3 py-2 text-xs">{streamError}</div>
             )}
+            {actionInfo && (
+              <div className="notice-ok rounded-xl px-3 py-2 text-xs">{actionInfo}</div>
+            )}
           </div>
         </div>
       </section>
 
       {/* Queue & Search */}
       <section className="panel space-y-3 p-5 sm:p-6">
+        {audioSource === 'online' && (
+          <div className="panel-soft space-y-2 rounded-xl px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs uppercase tracking-wide muted">Online Pipeline Status</p>
+              <p className="text-[11px] muted">Latest {Math.min(recentOnlineStatusEvents.length, 8)} updates</p>
+            </div>
+            {recentOnlineStatusEvents.length === 0 ? (
+              <p className="text-xs muted">
+                No pipeline updates yet. Search and queue a track to start the online download flow.
+              </p>
+            ) : (
+              <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
+                {recentOnlineStatusEvents.map((event, idx) => (
+                  <li
+                    key={`${event.updated_ts_ms}-${event.stage}-${idx}`}
+                    className="tile flex items-start gap-2 rounded-lg px-2 py-1.5"
+                  >
+                    <span className="mt-0.5 text-[11px] muted">
+                      {formatStatusTimestamp(event.updated_ts_ms)}
+                    </span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${statusBadgeClass(
+                        event.status,
+                      )}`}
+                    >
+                      {event.status}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] uppercase tracking-wide muted">{event.stage.replaceAll('_', ' ')}</p>
+                      <p className="text-xs leading-snug">{event.message}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {audioSource === 'online' ? (
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold shrink-0">Online Search</h2>

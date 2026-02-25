@@ -1,12 +1,18 @@
 FROM rustlang/rust:nightly-bookworm AS builder
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV WHISPER_DONT_GENERATE_BINDINGS=1
+ENV CARGO_BUILD_JOBS=2
+
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 RUN set -eu; \
     for attempt in 1 2 3; do \
-      if cargo build --release --bin rustfin-transcription-agent; then \
+      if cargo build --bin rustfin-transcription-agent; then \
         exit 0; \
       fi; \
       echo "cargo build failed (attempt ${attempt}/3); retrying..."; \
@@ -22,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN useradd -m -u 1000 rustfin
 RUN mkdir -p /cache && chown -R rustfin:rustfin /cache
 
-COPY --from=builder /app/target/release/rustfin-transcription-agent /usr/local/bin/rustfin-transcription-agent
+COPY --from=builder /app/target/debug/rustfin-transcription-agent /usr/local/bin/rustfin-transcription-agent
 
 USER rustfin
 EXPOSE 8102
