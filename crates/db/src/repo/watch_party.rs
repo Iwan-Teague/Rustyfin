@@ -348,12 +348,15 @@ pub async fn touch_room_updated(pool: &SqlitePool, room_id: &str) -> Result<bool
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn list_lobby_room_ids_updated_before(
+pub async fn list_purgeable_room_ids_updated_before(
     pool: &SqlitePool,
     max_updated_ts: i64,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT id FROM watch_party_room WHERE status = 'lobby' AND updated_ts <= ?",
+        "SELECT id \
+         FROM watch_party_room \
+         WHERE status IN ('lobby', 'ended') \
+           AND updated_ts <= ?",
     )
     .bind(max_updated_ts)
     .fetch_all(pool)
@@ -443,6 +446,25 @@ pub struct PublicRoomRow {
     pub created_ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct AdminRoomRow {
+    pub id: String,
+    pub room_name: String,
+    pub host_user_id: String,
+    pub host_username: String,
+    pub item_id: String,
+    pub item_title: String,
+    pub room_mode: String,
+    pub audio_library_name: String,
+    pub web_url: String,
+    pub password_required: bool,
+    pub invite_only: bool,
+    pub member_count: i64,
+    pub status: String,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
 /// List all non-invite-only rooms that are currently in the lobby.
 pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, sqlx::Error> {
     let rows: Vec<(
@@ -513,6 +535,105 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
             },
         )
         .collect())
+}
+
+pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        String,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
+                COALESCE(i.title, ''), r.room_mode, COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
+                CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
+                CASE WHEN json_extract(r.policy_json, '$.invite_only') = 1 THEN 1 ELSE 0 END, \
+                COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
+                r.status, r.created_ts, r.updated_ts \
+         FROM watch_party_room r \
+         JOIN user host ON host.id = r.host_user_id \
+         LEFT JOIN item i ON i.id = r.item_id \
+         LEFT JOIN library lib ON lib.id = r.audio_library_id \
+         LEFT JOIN watch_party_member m ON m.room_id = r.id \
+         GROUP BY r.id \
+         ORDER BY CASE WHEN r.status = 'lobby' THEN 0 ELSE 1 END, r.updated_ts DESC, r.created_ts DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                room_name,
+                host_user_id,
+                host_username,
+                item_id,
+                item_title,
+                room_mode,
+                audio_library_name,
+                web_url,
+                password_required,
+                invite_only,
+                member_count,
+                status,
+                created_ts,
+                updated_ts,
+            )| AdminRoomRow {
+                id,
+                room_name,
+                host_user_id,
+                host_username,
+                item_id,
+                item_title,
+                room_mode,
+                audio_library_name,
+                web_url,
+                password_required: password_required != 0,
+                invite_only: invite_only != 0,
+                member_count,
+                status,
+                created_ts,
+                updated_ts,
+            },
+        )
+        .collect())
+}
+
+pub async fn update_room_name(
+    pool: &SqlitePool,
+    room_id: &str,
+    room_name: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result =
+        sqlx::query("UPDATE watch_party_room SET room_name = ?, updated_ts = ? WHERE id = ?")
+            .bind(room_name)
+            .bind(now)
+            .bind(room_id)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn delete_room(pool: &SqlitePool, room_id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM watch_party_room WHERE id = ?")
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Upsert the audio queue for a room.

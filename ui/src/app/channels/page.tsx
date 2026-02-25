@@ -105,6 +105,7 @@ export default function ChannelsPage() {
           voiceActiveSince={voiceActiveSince}
           voiceSpeaking={voiceSpeaking}
           activeChannelId={activeChannelId}
+          connectedVoiceChannelId={voiceSession?.channelId ?? null}
           isAdmin={me.role === 'admin'}
           onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
           onQuickJoinVoice={(id, name) => {

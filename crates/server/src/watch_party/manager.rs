@@ -519,8 +519,10 @@ impl WatchPartyManager {
     pub async fn cleanup_empty_lobbies(&self, db: &sqlx::SqlitePool) {
         let cutoff_ts = chrono::Utc::now().timestamp() - EMPTY_ROOM_TTL_SECONDS;
         let candidate_room_ids =
-            match rustfin_db::repo::watch_party::list_lobby_room_ids_updated_before(db, cutoff_ts)
-                .await
+            match rustfin_db::repo::watch_party::list_purgeable_room_ids_updated_before(
+                db, cutoff_ts,
+            )
+            .await
             {
                 Ok(ids) => ids,
                 Err(err) => {
@@ -538,7 +540,7 @@ impl WatchPartyManager {
                 }
             }
 
-            match rustfin_db::repo::watch_party::set_room_status(db, &room_id, "ended").await {
+            match rustfin_db::repo::watch_party::delete_room(db, &room_id).await {
                 Ok(true) => {
                     if let Some(runtime) = runtime {
                         let _ = runtime.tx.send(ServerMessage::RoomEnded);
@@ -547,7 +549,11 @@ impl WatchPartyManager {
                 }
                 Ok(false) => {}
                 Err(err) => {
-                    tracing::warn!(room_id = %room_id, error = %err, "watch party cleanup failed to end room");
+                    tracing::warn!(
+                        room_id = %room_id,
+                        error = %err,
+                        "watch party cleanup failed to purge room"
+                    );
                 }
             }
         }

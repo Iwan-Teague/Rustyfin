@@ -367,7 +367,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             if room.status == "ended" {
                 state.watch_party.remove_runtime(&context.room_id).await;
             } else {
-                // Mark the time the lobby became empty. A background sweeper ends
+                // Mark when the room became empty. A background sweeper purges
                 // empty rooms after 5 minutes across all watch-party modes.
                 let _ =
                     rustfin_db::repo::watch_party::touch_room_updated(&state.db, &context.room_id)

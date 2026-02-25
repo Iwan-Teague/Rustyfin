@@ -1,5 +1,5 @@
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, patch, post};
 
 use crate::state::AppState;
 
@@ -21,6 +21,19 @@ pub fn watch_party_router() -> Router<AppState> {
         .route("/rooms/{room_id}/join", post(super::handlers::join_room))
         .route("/rooms/{room_id}/leave", post(super::handlers::leave_room))
         .route("/rooms/{room_id}/end", post(super::handlers::end_room))
+        .route("/admin/rooms", get(super::handlers::admin_list_rooms))
+        .route(
+            "/admin/rooms/{room_id}/rename",
+            patch(super::handlers::admin_rename_room),
+        )
+        .route(
+            "/admin/rooms/{room_id}/end",
+            post(super::handlers::admin_end_room),
+        )
+        .route(
+            "/admin/rooms/{room_id}",
+            delete(super::handlers::admin_delete_room),
+        )
         .route(
             "/rooms/{room_id}/reconfigure",
             post(super::handlers::reconfigure_room),

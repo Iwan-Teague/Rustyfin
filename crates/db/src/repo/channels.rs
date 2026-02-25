@@ -125,6 +125,22 @@ pub async fn rename_channel(pool: &SqlitePool, id: &str, name: &str) -> Result<(
     Ok(())
 }
 
+pub async fn update_channel(
+    pool: &SqlitePool,
+    id: &str,
+    name: &str,
+    is_private: bool,
+) -> Result<(), sqlx::Error> {
+    let is_private_int: i64 = if is_private { 1 } else { 0 };
+    sqlx::query("UPDATE channel SET name = ?, is_private = ? WHERE id = ?")
+        .bind(name)
+        .bind(is_private_int)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn delete_channel(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM channel WHERE id = ?")
         .bind(id)

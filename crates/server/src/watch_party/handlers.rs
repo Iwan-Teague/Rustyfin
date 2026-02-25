@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use crate::auth::AuthUser;
+use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
@@ -933,6 +933,59 @@ fn web_room_title(web_url: &str) -> String {
     "Web Room".to_string()
 }
 
+fn room_title_for_listing(
+    room_name: &str,
+    room_mode: &str,
+    item_title: &str,
+    audio_library_name: &str,
+    web_url: &str,
+) -> String {
+    if !room_name.trim().is_empty() {
+        return room_name.trim().to_string();
+    }
+    if room_mode == "audio" {
+        if audio_library_name.is_empty() {
+            return "Music Party".to_string();
+        }
+        return format!("Music: {audio_library_name}");
+    }
+    if room_mode == "youtube" {
+        return "YouTube Party".to_string();
+    }
+    if room_mode == "web" {
+        return web_room_title(web_url);
+    }
+    item_title.to_string()
+}
+
+async fn log_admin_room_action(
+    state: &AppState,
+    admin_user_id: &str,
+    action: &str,
+    room_id: &str,
+    payload: serde_json::Value,
+) {
+    let payload = serde_json::json!({
+        "scope": "rooms",
+        "action": action,
+        "admin_user_id": admin_user_id,
+        "room_id": room_id,
+        "data": payload,
+    });
+    let payload_json = serde_json::to_string(&payload).ok();
+    let Ok(job) = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        &format!("admin.rooms.{action}"),
+        payload_json.as_deref(),
+    )
+    .await
+    else {
+        return;
+    };
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job.id, "completed", 1.0, None).await;
+}
+
 #[derive(Debug, Serialize)]
 pub struct PublicRoomEntry {
     pub room_id: String,
@@ -955,21 +1008,13 @@ pub async fn list_public_rooms(
     let entries = rooms
         .into_iter()
         .map(|r| {
-            let title = if !r.room_name.trim().is_empty() {
-                r.room_name.clone()
-            } else if r.room_mode == "audio" {
-                if r.audio_library_name.is_empty() {
-                    "Music Party".to_string()
-                } else {
-                    format!("Music: {}", r.audio_library_name)
-                }
-            } else if r.room_mode == "youtube" {
-                "YouTube Party".to_string()
-            } else if r.room_mode == "web" {
-                web_room_title(&r.web_url)
-            } else {
-                r.item_title
-            };
+            let title = room_title_for_listing(
+                &r.room_name,
+                &r.room_mode,
+                &r.item_title,
+                &r.audio_library_name,
+                &r.web_url,
+            );
             PublicRoomEntry {
                 room_id: r.id,
                 host_username: r.host_username,
@@ -983,6 +1028,176 @@ pub async fn list_public_rooms(
         .collect();
 
     Ok(Json(entries))
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminRoomEntry {
+    pub room_id: String,
+    pub room_name: String,
+    pub title: String,
+    pub host_user_id: String,
+    pub host_username: String,
+    pub item_id: String,
+    pub status: String,
+    pub room_mode: String,
+    pub audio_library_name: String,
+    pub web_url: String,
+    pub password_required: bool,
+    pub invite_only: bool,
+    pub member_count: i64,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminRenameRoomRequest {
+    pub room_name: String,
+}
+
+pub async fn admin_list_rooms(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AdminRoomEntry>>, AppError> {
+    let rooms = rustfin_db::repo::watch_party::list_admin_rooms(&state.db)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(Json(
+        rooms
+            .into_iter()
+            .map(|r| {
+                let title = room_title_for_listing(
+                    &r.room_name,
+                    &r.room_mode,
+                    &r.item_title,
+                    &r.audio_library_name,
+                    &r.web_url,
+                );
+                AdminRoomEntry {
+                    room_id: r.id,
+                    room_name: r.room_name,
+                    title,
+                    host_user_id: r.host_user_id,
+                    host_username: r.host_username,
+                    item_id: r.item_id,
+                    status: r.status,
+                    room_mode: r.room_mode,
+                    audio_library_name: r.audio_library_name,
+                    web_url: r.web_url,
+                    password_required: r.password_required,
+                    invite_only: r.invite_only,
+                    member_count: r.member_count,
+                    created_ts: r.created_ts,
+                    updated_ts: r.updated_ts,
+                }
+            })
+            .collect(),
+    ))
+}
+
+pub async fn admin_rename_room(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+    Json(body): Json<AdminRenameRoomRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    let normalized = normalize_room_name(Some(body.room_name))?.unwrap_or_default();
+    rustfin_db::repo::watch_party::update_room_name(&state.db, &room_id, &normalized)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    log_admin_room_action(
+        &state,
+        &admin.user_id,
+        "rename",
+        &room_id,
+        serde_json::json!({
+            "previous_room_name": room.room_name,
+            "next_room_name": normalized,
+        }),
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn admin_end_room(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if room.status != "ended" {
+        rustfin_db::repo::watch_party::set_room_status(&state.db, &room_id, "ended")
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
+
+    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+        let _ = runtime.tx.send(super::protocol::ServerMessage::RoomEnded);
+    }
+    state.watch_party.remove_runtime(&room_id).await;
+
+    log_admin_room_action(
+        &state,
+        &admin.user_id,
+        "end",
+        &room_id,
+        serde_json::json!({
+            "room_mode": room.room_mode,
+            "host_user_id": room.host_user_id,
+        }),
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn admin_delete_room(
+    admin: AdminUser,
+    State(state): State<AppState>,
+    Path(room_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let room = rustfin_db::repo::watch_party::get_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
+
+    if let Some(runtime) = state.watch_party.get_runtime(&room_id).await {
+        let _ = runtime.tx.send(super::protocol::ServerMessage::RoomEnded);
+    }
+    state.watch_party.remove_runtime(&room_id).await;
+
+    let deleted = rustfin_db::repo::watch_party::delete_room(&state.db, &room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if !deleted {
+        return Err(ApiError::NotFound("watch party room not found".into()).into());
+    }
+
+    log_admin_room_action(
+        &state,
+        &admin.user_id,
+        "delete",
+        &room_id,
+        serde_json::json!({
+            "room_mode": room.room_mode,
+            "host_user_id": room.host_user_id,
+            "room_name": room.room_name,
+        }),
+    )
+    .await;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn list_inviteable_users(

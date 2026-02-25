@@ -31,6 +31,7 @@ type Props = {
   selectedItem: MediaItemNode | null;
   layout?: 'split' | 'stacked';
   noShadow?: boolean;
+  surfaceClassName?: string;
   onLibraryChange: (libraryId: string) => void;
   onSelectItem: (item: MediaItemNode | null) => void;
 };
@@ -42,6 +43,7 @@ export default function MediaPicker({
   selectedItem,
   layout = 'split',
   noShadow = false,
+  surfaceClassName = 'panel',
   onLibraryChange,
   onSelectItem,
 }: Props) {
@@ -113,7 +115,10 @@ export default function MediaPicker({
   const isPlayable = (item: MediaItemNode) => item.kind === 'movie' || item.kind === 'episode';
 
   return (
-    <section className="panel space-y-4 p-5 sm:p-6" style={noShadow ? { boxShadow: 'none' } : undefined}>
+    <section
+      className={`${surfaceClassName} space-y-4 p-5 sm:p-6`}
+      style={noShadow ? { boxShadow: 'none' } : undefined}
+    >
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Media Selection</h2>
         <p className="text-sm muted">
