@@ -123,6 +123,7 @@ export default function VoiceChannelView({
   } = useChannels();
   const [error, setError] = useState<string | null>(null);
   const [transcriptionBusy, setTranscriptionBusy] = useState(false);
+  const [transcriptionStarting, setTranscriptionStarting] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
 
   const members = voicePresence[channel.id] ?? [];
@@ -172,13 +173,24 @@ export default function VoiceChannelView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id]);
 
+  useEffect(() => {
+    if (transcriptionState?.status === 'running') {
+      setTranscriptionStarting(false);
+    }
+  }, [transcriptionState?.status]);
+
   async function handleStartTranscription() {
     setTranscriptionBusy(true);
+    setTranscriptionStarting(true);
     setTranscriptionError(null);
     try {
       const status = await startVoiceTranscription(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      if (status.status !== 'running') {
+        setTranscriptionStarting(false);
+      }
     } catch (err) {
+      setTranscriptionStarting(false);
       setTranscriptionError(err instanceof Error ? err.message : 'Failed to start transcription');
     } finally {
       setTranscriptionBusy(false);
@@ -240,6 +252,9 @@ export default function VoiceChannelView({
   }
 
   const transcriptionStatusLabel = (() => {
+    if (transcriptionStarting) {
+      return 'Starting';
+    }
     const status = transcriptionState?.status ?? 'idle';
     switch (status) {
       case 'running':
@@ -326,8 +341,16 @@ export default function VoiceChannelView({
                   onClick={handleStartTranscription}
                   disabled={transcriptionBusy}
                   className="btn-secondary px-3 py-1.5 text-sm"
+                  aria-busy={transcriptionStarting}
                 >
-                  Start Transcript
+                  {transcriptionStarting ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-[var(--orange-soft)] animate-spin" />
+                      Starting…
+                    </span>
+                  ) : (
+                    'Start Transcript'
+                  )}
                 </button>
               )}
               {transcriptionState?.output_available && transcriptionState?.session_id && (
@@ -343,6 +366,11 @@ export default function VoiceChannelView({
           )}
         </div>
       </div>
+      {transcriptionStarting && (
+        <div className="px-4 py-2 border-b border-[var(--border)] text-xs muted">
+          Preparing transcription model and capture pipeline…
+        </div>
+      )}
       {transcriptionError && (
         <div className="px-4 py-2 border-b border-[var(--border)] text-xs text-red-300">
           {transcriptionError}

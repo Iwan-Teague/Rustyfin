@@ -240,6 +240,8 @@ export type WsAudioStateMessage = {
   server_ts_ms: number;
   queue: QueueEntry[];
   queue_index: number;
+  shuffle_enabled?: boolean;
+  repeat_mode?: 'none' | 'track' | 'queue' | string;
   members: WsPresenceMember[];
 };
 

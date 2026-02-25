@@ -29,6 +29,8 @@ type PlaybackDescriptor = {
   direct_url: string;
 };
 
+type RepeatMode = 'none' | 'track' | 'queue';
+
 function formatMs(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -59,6 +61,11 @@ function projectPosition(state: WsAudioStateMessage): number {
   return state.position_ms + Math.max(0, elapsed);
 }
 
+function normalizeRepeatMode(value: WsAudioStateMessage['repeat_mode']): RepeatMode {
+  if (value === 'track' || value === 'queue') return value;
+  return 'none';
+}
+
 export default function AudioPlayer({
   audioState,
   audioSource,
@@ -81,6 +88,7 @@ export default function AudioPlayer({
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubPosition, setScrubPosition] = useState(0);
+  const [draggedQueueIndex, setDraggedQueueIndex] = useState<number | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const actionInfoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -348,25 +356,81 @@ export default function AudioPlayer({
       () => setAutoplayBlocked(true),
     );
   };
+  const repeatMode = normalizeRepeatMode(audioState.repeat_mode);
+  const shuffleEnabled = !!audioState.shuffle_enabled;
+  const repeatLabel = repeatMode === 'track' ? 'Song' : repeatMode === 'queue' ? 'Queue' : 'Off';
+
+  const handleToggleShuffle = useCallback(() => {
+    if (!canControl) return;
+    sendWs({ type: 'set_audio_shuffle', enabled: !shuffleEnabled });
+  }, [canControl, sendWs, shuffleEnabled]);
+
+  const handleCycleRepeat = useCallback(() => {
+    if (!canControl) return;
+    const next: RepeatMode =
+      repeatMode === 'none' ? 'track' : repeatMode === 'track' ? 'queue' : 'none';
+    sendWs({ type: 'set_audio_repeat_mode', mode: next });
+  }, [canControl, repeatMode, sendWs]);
+
   const handleTrackEnded = useCallback(() => {
     if (!canControl) return;
-    const nextTrack = audioState.queue[audioState.queue_index + 1];
-    if (nextTrack) {
-      sendWs({ type: 'play_track', track_id: nextTrack.track_id });
-      return;
-    }
     sendWs({
-      type: 'pause',
+      type: 'track_ended',
       position_ms: duration > 0 ? duration : Math.max(0, Math.floor(effectivePosition)),
     });
-  }, [
-    canControl,
-    audioState.queue,
-    audioState.queue_index,
-    sendWs,
-    duration,
-    effectivePosition,
-  ]);
+  }, [canControl, sendWs, duration, effectivePosition]);
+
+  const handleQueueDragStart = useCallback(
+    (index: number, event: React.DragEvent<HTMLLIElement>) => {
+      if (!canControl) return;
+      setDraggedQueueIndex(index);
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(index));
+    },
+    [canControl],
+  );
+
+  const handleQueueDragOver = useCallback(
+    (index: number, event: React.DragEvent<HTMLLIElement>) => {
+      if (!canControl || draggedQueueIndex === null || draggedQueueIndex === index) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    },
+    [canControl, draggedQueueIndex],
+  );
+
+  const handleQueueDrop = useCallback(
+    (toIndex: number, event: React.DragEvent<HTMLLIElement>) => {
+      if (!canControl) return;
+      event.preventDefault();
+      const fromRaw = event.dataTransfer.getData('text/plain');
+      const parsedFrom = Number.parseInt(fromRaw, 10);
+      const fromIndex = Number.isFinite(parsedFrom) ? parsedFrom : draggedQueueIndex;
+      setDraggedQueueIndex(null);
+
+      if (
+        fromIndex === null ||
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= audioState.queue.length ||
+        toIndex >= audioState.queue.length
+      ) {
+        return;
+      }
+
+      sendWs({
+        type: 'reorder_audio_queue',
+        from_index: fromIndex,
+        to_index: toIndex,
+      });
+    },
+    [canControl, draggedQueueIndex, audioState.queue.length, sendWs],
+  );
+
+  const handleQueueDragEnd = useCallback(() => {
+    setDraggedQueueIndex(null);
+  }, []);
 
   const recentOnlineStatusEvents = useMemo(() => {
     if (onlineStatusEvents.length === 0) return [];
@@ -467,32 +531,87 @@ export default function AudioPlayer({
                 type="button"
                 onClick={handleSkipPrev}
                 disabled={!canControl}
-                className="btn-secondary rounded-full px-3 py-2 text-sm disabled:opacity-40"
+                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
                 title="Previous"
               >
-                ◄◄
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M11.8 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
+                  <path d="M18.2 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
+                </svg>
               </button>
               <button
                 type="button"
                 onClick={handlePlayPause}
                 disabled={!canControl}
-                className="btn-primary rounded-full px-5 py-2 text-sm disabled:opacity-40"
+                className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
                 title={audioState.playing ? 'Pause' : 'Play'}
               >
-                {audioState.playing ? '▐▐' : '►'}
+                {audioState.playing ? (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <rect x="6.5" y="5.5" width="4" height="13" rx="1" />
+                    <rect x="13.5" y="5.5" width="4" height="13" rx="1" />
+                  </svg>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path d="M8 5.8c0-.9 1-1.5 1.8-1l8.6 5.3c.8.5.8 1.6 0 2.1l-8.6 5.3c-.8.5-1.8-.1-1.8-1V5.8z" />
+                  </svg>
+                )}
               </button>
               <button
                 type="button"
                 onClick={handleSkipNext}
                 disabled={!canControl}
-                className="btn-secondary rounded-full px-3 py-2 text-sm disabled:opacity-40"
+                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
                 title="Next"
               >
-                ►►
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-4 w-4"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M12.2 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
+                  <path d="M5.8 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
+                </svg>
               </button>
               {!canControl && (
                 <span className="text-xs muted">Controls are host-only in this room.</span>
               )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleToggleShuffle}
+                disabled={!canControl}
+                className={`px-3 py-1 text-xs disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
+                title="Shuffle queued songs"
+              >
+                Shuffle: {shuffleEnabled ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                onClick={handleCycleRepeat}
+                disabled={!canControl}
+                className={`px-3 py-1 text-xs disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
+                title="Cycle repeat mode (Off → Song → Queue)"
+              >
+                Repeat: {repeatLabel}
+              </button>
             </div>
 
             {autoplayBlocked && (
@@ -673,8 +792,13 @@ export default function AudioPlayer({
                       <li
                         key={entry.track_id}
                         data-active={isActive ? 'true' : 'false'}
-                        className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''}`}
+                        className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''} ${canControl ? 'cursor-move' : ''} ${draggedQueueIndex === idx ? 'border-dashed border-[var(--purple-strong)] opacity-70' : ''}`}
                         style={{ boxShadow: 'none' }}
+                        draggable={canControl}
+                        onDragStart={(event) => handleQueueDragStart(idx, event)}
+                        onDragOver={(event) => handleQueueDragOver(idx, event)}
+                        onDrop={(event) => handleQueueDrop(idx, event)}
+                        onDragEnd={handleQueueDragEnd}
                       >
                         <div className="flex items-center gap-3">
                           <span className="w-5 flex-shrink-0 text-center text-xs muted">
@@ -757,12 +881,28 @@ export default function AudioPlayer({
               <ul ref={queueRef} className="max-h-80 space-y-1 overflow-y-auto">
                 {displayList.map((entry, idx) => {
                   const isActive = !entry.isSearchResult && idx === audioState.queue_index;
+                  const queueDragEnabled = canControl && !entry.isSearchResult;
                   return (
                     <li
                       key={entry.track_id}
                       data-active={isActive ? 'true' : 'false'}
-                      className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''}`}
+                      className={`tile rounded-xl px-3 py-2 ${isActive ? 'border-[var(--orange-soft)]' : ''} ${queueDragEnabled ? 'cursor-move' : ''} ${queueDragEnabled && draggedQueueIndex === idx ? 'border-dashed border-[var(--purple-strong)] opacity-70' : ''}`}
                       style={{ boxShadow: 'none' }}
+                      draggable={queueDragEnabled}
+                      onDragStart={
+                        queueDragEnabled
+                          ? (event) => handleQueueDragStart(idx, event)
+                          : undefined
+                      }
+                      onDragOver={
+                        queueDragEnabled
+                          ? (event) => handleQueueDragOver(idx, event)
+                          : undefined
+                      }
+                      onDrop={
+                        queueDragEnabled ? (event) => handleQueueDrop(idx, event) : undefined
+                      }
+                      onDragEnd={queueDragEnabled ? handleQueueDragEnd : undefined}
                     >
                       <div className="flex items-center gap-3">
                         <span className="w-5 flex-shrink-0 text-center text-xs muted">

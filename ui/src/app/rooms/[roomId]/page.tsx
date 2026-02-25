@@ -160,6 +160,7 @@ export default function WatchPartyRoomPage() {
   const [startingHls, setStartingHls] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [ending, setEnding] = useState(false);
+  const [pendingEndRoomConfirm, setPendingEndRoomConfirm] = useState(false);
 
   // In-room invite state
   const [allUsers, setAllUsers] = useState<WatchPartyUser[]>([]);
@@ -1320,7 +1321,7 @@ export default function WatchPartyRoomPage() {
                 className="btn-secondary px-3 py-1.5 text-xs"
                 onClick={(event) => {
                   event.stopPropagation();
-                  void handleEndRoom();
+                  setPendingEndRoomConfirm(true);
                 }}
                 disabled={ending}
               >
@@ -1726,6 +1727,38 @@ export default function WatchPartyRoomPage() {
             )}
           </div>
         </section>
+      )}
+
+      {pendingEndRoomConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
+          <div className="panel w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] p-6">
+            <h2 className="text-lg font-semibold">End Room</h2>
+            <p className="text-sm muted">
+              End this room for everyone? All participants will be disconnected from this room.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingEndRoomConfirm(false)}
+                className="btn-ghost px-4 py-2 text-sm"
+                disabled={ending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingEndRoomConfirm(false);
+                  void handleEndRoom();
+                }}
+                className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
+                disabled={ending}
+              >
+                {ending ? 'Ending…' : 'End room'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {joinedRole && !isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && (

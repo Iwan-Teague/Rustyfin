@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{RwLock, broadcast};
 
-use super::protocol::{CreateCanvasStroke, ServerMessage, YouTubeSearchEntry};
+use super::protocol::{AudioRepeatMode, CreateCanvasStroke, ServerMessage, YouTubeSearchEntry};
 
 const MAX_ACTIVE_ROOMS: usize = 512;
 const EMPTY_ROOM_TTL_SECONDS: i64 = 5 * 60;
@@ -40,6 +40,8 @@ pub struct AudioQueueState {
     pub current_index: usize,
     pub position_ms: u64,
     pub playing: bool,
+    pub shuffle_enabled: bool,
+    pub repeat_mode: AudioRepeatMode,
     pub updated_ts_ms: i64,
 }
 
@@ -50,6 +52,8 @@ impl Default for AudioQueueState {
             current_index: 0,
             position_ms: 0,
             playing: false,
+            shuffle_enabled: false,
+            repeat_mode: AudioRepeatMode::None,
             updated_ts_ms: chrono::Utc::now().timestamp_millis(),
         }
     }
@@ -526,6 +530,94 @@ impl RoomRuntime {
         Some(queue.clone())
     }
 
+    pub async fn reorder_audio_queue(
+        &self,
+        from_index: usize,
+        to_index: usize,
+    ) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+        let len = queue.track_ids.len();
+        if from_index >= len || to_index >= len {
+            return None;
+        }
+        if from_index != to_index {
+            let current_track_id = queue.track_ids.get(queue.current_index).cloned();
+            let moved = queue.track_ids.remove(from_index);
+            queue.track_ids.insert(to_index, moved);
+            if let Some(current_id) = current_track_id {
+                if let Some(next_index) = queue.track_ids.iter().position(|id| id == &current_id) {
+                    queue.current_index = next_index;
+                } else {
+                    queue.current_index = 0;
+                }
+            }
+        }
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+        Some(queue.clone())
+    }
+
+    pub async fn set_audio_shuffle_enabled(&self, enabled: bool) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+        queue.shuffle_enabled = enabled;
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+        Some(queue.clone())
+    }
+
+    pub async fn set_audio_repeat_mode(&self, mode: AudioRepeatMode) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+        queue.repeat_mode = mode;
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+        Some(queue.clone())
+    }
+
+    pub async fn handle_audio_track_ended(&self, position_ms: u64) -> Option<AudioQueueState> {
+        let queue_lock = self.audio_queue.as_ref()?;
+        let mut queue = queue_lock.write().await;
+        let len = queue.track_ids.len();
+
+        if len == 0 {
+            queue.playing = false;
+            queue.position_ms = 0;
+        } else if queue.repeat_mode == AudioRepeatMode::Track {
+            queue.playing = true;
+            queue.position_ms = 0;
+        } else if queue.shuffle_enabled && len > 1 {
+            let now_ms = chrono::Utc::now().timestamp_millis().unsigned_abs() as usize;
+            let mut next_index = now_ms % len;
+            if next_index == queue.current_index {
+                next_index = (next_index + 1) % len;
+            }
+            queue.current_index = next_index;
+            queue.playing = true;
+            queue.position_ms = 0;
+        } else if queue.current_index + 1 < len {
+            queue.current_index += 1;
+            queue.playing = true;
+            queue.position_ms = 0;
+        } else if queue.repeat_mode == AudioRepeatMode::Queue {
+            queue.current_index = 0;
+            queue.playing = true;
+            queue.position_ms = 0;
+        } else {
+            queue.playing = false;
+            queue.position_ms = position_ms;
+        }
+
+        queue.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let mut activity = self.last_activity_ts_ms.write().await;
+        *activity = queue.updated_ts_ms;
+        Some(queue.clone())
+    }
+
     pub async fn apply_action(&self, action: PlaybackAction) -> PlaybackState {
         let mut state = self.state.write().await;
         match action {
@@ -558,7 +650,16 @@ impl RoomRuntime {
         match action {
             AudioAction::SkipNext => {
                 if len > 0 {
-                    queue.current_index = (queue.current_index + 1) % len;
+                    if queue.shuffle_enabled && len > 1 {
+                        let now_ms = chrono::Utc::now().timestamp_millis().unsigned_abs() as usize;
+                        let mut next_index = now_ms % len;
+                        if next_index == queue.current_index {
+                            next_index = (next_index + 1) % len;
+                        }
+                        queue.current_index = next_index;
+                    } else {
+                        queue.current_index = (queue.current_index + 1) % len;
+                    }
                 }
                 queue.position_ms = 0;
                 queue.playing = true;

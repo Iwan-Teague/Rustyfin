@@ -1076,6 +1076,121 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::TrackEnded { position_ms } => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode != "audio" {
+                send_error(socket, "track_ended is only valid in audio rooms").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "track end handling is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            if let Some(new_queue) = runtime.handle_audio_track_ended(position_ms).await {
+                let track_ids_json = serde_json::to_string(&new_queue.track_ids)
+                    .unwrap_or_else(|_| "[]".to_string());
+                let _ = rustfin_db::repo::watch_party::upsert_audio_queue(
+                    &state.db,
+                    &context.room_id,
+                    &track_ids_json,
+                    new_queue.current_index,
+                )
+                .await;
+            }
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ReorderAudioQueue {
+            from_index,
+            to_index,
+        } => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode != "audio" {
+                send_error(socket, "reorder_audio_queue is only valid in audio rooms").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "reordering queue is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let Some(new_queue) = runtime.reorder_audio_queue(from_index, to_index).await else {
+                send_error(socket, "invalid queue indexes").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            };
+
+            let track_ids_json =
+                serde_json::to_string(&new_queue.track_ids).unwrap_or_else(|_| "[]".to_string());
+            let _ = rustfin_db::repo::watch_party::upsert_audio_queue(
+                &state.db,
+                &context.room_id,
+                &track_ids_json,
+                new_queue.current_index,
+            )
+            .await;
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::SetAudioShuffle { enabled } => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode != "audio" {
+                send_error(socket, "set_audio_shuffle is only valid in audio rooms").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "shuffle control is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            runtime.set_audio_shuffle_enabled(enabled).await;
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::SetAudioRepeatMode { mode } => {
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if context.room_mode != "audio" {
+                send_error(socket, "set_audio_repeat_mode is only valid in audio rooms").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "repeat control is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            runtime.set_audio_repeat_mode(mode).await;
+            runtime.touch_activity().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
         ClientMessage::ChangeVideo { video_id } => {
             let video_id = video_id.trim().to_string();
             if context.room_mode != "youtube" {
@@ -2001,6 +2116,8 @@ async fn build_audio_state_message(
         server_ts_ms: now_ms,
         queue,
         queue_index: queue_snapshot.current_index,
+        shuffle_enabled: queue_snapshot.shuffle_enabled,
+        repeat_mode: queue_snapshot.repeat_mode,
         members: member_summaries,
     })
 }

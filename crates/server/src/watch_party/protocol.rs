@@ -18,6 +18,19 @@ pub enum ClientMessage {
     PlayTrack {
         track_id: String,
     },
+    TrackEnded {
+        position_ms: u64,
+    },
+    ReorderAudioQueue {
+        from_index: usize,
+        to_index: usize,
+    },
+    SetAudioShuffle {
+        enabled: bool,
+    },
+    SetAudioRepeatMode {
+        mode: AudioRepeatMode,
+    },
     ChangeVideo {
         video_id: String,
     },
@@ -60,6 +73,14 @@ pub enum ClientMessage {
     },
     Ping,
     Pong,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioRepeatMode {
+    None,
+    Track,
+    Queue,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -132,6 +153,8 @@ pub enum ServerMessage {
         server_ts_ms: i64,
         queue: Vec<QueueEntry>,
         queue_index: usize,
+        shuffle_enabled: bool,
+        repeat_mode: AudioRepeatMode,
         members: Vec<PresenceMember>,
     },
     OnlineAudioStatus {
