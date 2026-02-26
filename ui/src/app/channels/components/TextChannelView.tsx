@@ -11,7 +11,7 @@ import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/chann
 import { apiFetch } from '@/lib/api';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
-const DELETE_AFTER_CONFIRM_DELAY_MS = 1000;
+const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
 interface Props {
   channel: ChannelInfo;

@@ -1454,7 +1454,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
           {isWatchRoom && (
             <WatchSourceTabsBar
-              className="absolute left-4 right-4 top-0 z-10 -translate-y-1/2 sm:left-6 sm:right-6"
+              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
               switchingDisabled={reconfiguring || joinedRole !== 'host'}
@@ -1479,7 +1479,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
           {isWatchRoom && (
             <WatchSourceTabsBar
-              className="absolute left-4 right-4 top-0 z-10 -translate-y-1/2 sm:left-6 sm:right-6"
+              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
               switchingDisabled={reconfiguring || joinedRole !== 'host'}
@@ -1670,7 +1670,7 @@ export default function WatchPartyRoomPage() {
           <section className="panel relative space-y-4 p-5 pt-12 sm:p-6 sm:pt-12">
             {isWatchRoom && (
               <WatchSourceTabsBar
-                className="absolute left-4 right-4 top-0 z-10 -translate-y-1/2 sm:left-6 sm:right-6"
+                className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
                 activeSource={activeWatchSource}
                 onSwitchSource={handleSwitchWatchSource}
                 switchingDisabled={reconfiguring || joinedRole !== 'host'}

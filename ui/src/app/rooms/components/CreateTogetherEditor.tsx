@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   PointerEvent as ReactPointerEvent,
-  WheelEvent as ReactWheelEvent,
 } from 'react';
 import type { WsCreateCanvasStroke, WsCreateStateMessage } from '@/lib/watchPartyApi';
 
@@ -16,6 +15,16 @@ type Props = {
 
 type Point = { x: number; y: number };
 type CanvasViewport = { scale: number; offsetX: number; offsetY: number };
+type CanvasWheelEventLike = {
+  deltaX: number;
+  deltaY: number;
+  clientX: number;
+  clientY: number;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  preventDefault: () => void;
+  stopPropagation?: () => void;
+};
 
 type ActiveTool = 'text' | 'canvas';
 type TextFormat = 'plain' | 'markdown' | 'pdf_text';
@@ -566,6 +575,8 @@ function estimateCanvasBytes(strokes: WsCreateCanvasStroke[]): number {
 
 export default function CreateTogetherEditor({ createState, canEdit, sendWs }: Props) {
   const [activeTool, setActiveTool] = useState<ActiveTool>('text');
+  const [canvasPointerMode, setCanvasPointerMode] = useState<'draw' | 'pan'>('draw');
+  const [canvasDragging, setCanvasDragging] = useState(false);
   const [documentName, setDocumentName] = useState('Untitled Document');
   const [pages, setPages] = useState<RichDocPage[]>([makeEmptyPage()]);
   const [pageSize, setPageSize] = useState<PageSize>(FIXED_PAGE_SIZE);
@@ -589,6 +600,12 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   const pagesRef = useRef<RichDocPage[]>([makeEmptyPage()]);
   const pendingStrokeRef = useRef<WsCreateCanvasStroke | null>(null);
   const activeCanvasPointerIdRef = useRef<number | null>(null);
+  const canvasPanDragRef = useRef<{
+    startX: number;
+    startY: number;
+    originOffsetX: number;
+    originOffsetY: number;
+  } | null>(null);
   const canvasViewportRef = useRef<CanvasViewport>({
     scale: 1,
     offsetX: 0,
@@ -609,8 +626,16 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       if (nameDebounceRef.current) window.clearTimeout(nameDebounceRef.current);
       activeCanvasPointerIdRef.current = null;
       pendingStrokeRef.current = null;
+      canvasPanDragRef.current = null;
+      setCanvasDragging(false);
     };
   }, []);
+
+  useEffect(() => {
+    if (!canEdit && canvasPointerMode === 'draw') {
+      setCanvasPointerMode('pan');
+    }
+  }, [canEdit, canvasPointerMode]);
 
   const pushTextState = useCallback(
     (nextText: string, nextFormat: TextFormat = 'plain') => {
@@ -742,10 +767,10 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   const canvasMessage = useMemo(() => {
     const zoomPercent = Math.round(canvasViewport.scale * 100);
     if (!canEdit) {
-      return `Read-only mode. A room admin must enable non-host editing. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom.`;
+      return `Read-only mode. Pan mode is active. A room admin must enable non-host editing to draw. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom.`;
     }
-    return `Draw with mouse or touch. Changes sync for all joined members. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom · 30MB canvas limit.`;
-  }, [canEdit, canvasViewport.scale]);
+    return `${canvasPointerMode === 'pan' ? 'Pan mode' : 'Draw mode'} · changes sync for all joined members. Zoom ${zoomPercent}% · wheel to pan · pinch/ctrl+wheel to zoom · 30MB canvas limit.`;
+  }, [canEdit, canvasPointerMode, canvasViewport.scale]);
 
   const clampCanvasViewport = useCallback((next: CanvasViewport): CanvasViewport => {
     const scale = clamp(next.scale, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
@@ -1118,8 +1143,25 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   };
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0 || !canEdit) return;
+    if (event.button !== 0) return;
     activeCanvasPointerIdRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    if (canvasPointerMode === 'pan' || !canEdit) {
+      const pixel = getCanvasPixelPoint(event.clientX, event.clientY);
+      const currentViewport = canvasViewportRef.current;
+      canvasPanDragRef.current = {
+        startX: pixel.x,
+        startY: pixel.y,
+        originOffsetX: currentViewport.offsetX,
+        originOffsetY: currentViewport.offsetY,
+      };
+      pendingStrokeRef.current = null;
+      setCanvasDragging(true);
+      return;
+    }
+
+    if (!canEdit) return;
     const point = getCanvasPoint(event);
     const stroke: WsCreateCanvasStroke = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -1128,12 +1170,22 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       points: [point],
     };
     pendingStrokeRef.current = stroke;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    setCanvasDragging(false);
     drawStrokes(canvasStrokes, stroke);
   };
 
   const onCanvasPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (activeCanvasPointerIdRef.current !== event.pointerId) return;
+    const panDrag = canvasPanDragRef.current;
+    if (panDrag) {
+      const pixel = getCanvasPixelPoint(event.clientX, event.clientY);
+      applyCanvasViewport({
+        ...canvasViewportRef.current,
+        offsetX: panDrag.originOffsetX + (pixel.x - panDrag.startX),
+        offsetY: panDrag.originOffsetY + (pixel.y - panDrag.startY),
+      });
+      return;
+    }
     const pending = pendingStrokeRef.current;
     if (!pending || !canEdit) return;
     const point = getCanvasPoint(event);
@@ -1143,17 +1195,24 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
   const finishStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (activeCanvasPointerIdRef.current !== event.pointerId) return;
-    const pending = pendingStrokeRef.current;
-    if (!pending || !canEdit) {
-      activeCanvasPointerIdRef.current = null;
-      return;
-    }
     try {
       event.currentTarget.releasePointerCapture(event.pointerId);
     } catch {
       // Pointer may already be released.
     }
     activeCanvasPointerIdRef.current = null;
+    setCanvasDragging(false);
+    if (canvasPanDragRef.current) {
+      canvasPanDragRef.current = null;
+      pendingStrokeRef.current = null;
+      return;
+    }
+
+    const pending = pendingStrokeRef.current;
+    if (!pending || !canEdit) {
+      pendingStrokeRef.current = null;
+      return;
+    }
     pendingStrokeRef.current = null;
 
     const finalized =
@@ -1171,8 +1230,9 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     pushCanvasState(next);
   };
 
-  const handleCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
+  const handleCanvasWheel = useCallback((event: CanvasWheelEventLike) => {
     event.preventDefault();
+    event.stopPropagation?.();
     const prev = canvasViewportRef.current;
     const anchor = getCanvasPixelPoint(event.clientX, event.clientY);
 
@@ -1194,7 +1254,19 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       offsetX: prev.offsetX - event.deltaX,
       offsetY: prev.offsetY - event.deltaY,
     });
-  };
+  }, [applyCanvasViewport, getCanvasPixelPoint]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const nativeWheelListener = (event: WheelEvent) => {
+      handleCanvasWheel(event);
+    };
+    canvas.addEventListener('wheel', nativeWheelListener, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', nativeWheelListener);
+    };
+  }, [handleCanvasWheel]);
 
   const adjustCanvasZoom = (multiplier: number) => {
     const canvas = canvasRef.current;
@@ -1613,6 +1685,35 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs uppercase tracking-wide muted">Mode</label>
+            <div className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-black/25 p-1">
+              <button
+                type="button"
+                className={`${canvasPointerMode === 'pan' ? 'btn-primary' : 'btn-secondary'} inline-flex h-8 w-8 items-center justify-center p-0`}
+                onClick={() => setCanvasPointerMode('pan')}
+                title="Pan canvas"
+                aria-label="Pan canvas"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                  <rect x="7" y="2.8" width="10" height="18.4" rx="5" stroke="currentColor" strokeWidth="1.8" />
+                  <path d="M12 6.8v3.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`${canvasPointerMode === 'draw' ? 'btn-primary' : 'btn-secondary'} inline-flex h-8 w-8 items-center justify-center p-0 disabled:opacity-40`}
+                onClick={() => setCanvasPointerMode('draw')}
+                disabled={!canEdit}
+                title={canEdit ? 'Draw on canvas' : 'Drawing disabled in read-only mode'}
+                aria-label="Draw on canvas"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                  <path d="M4 20h4l10.2-10.2-4-4L4 16v4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                  <path d="m13.8 5.8 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+
             <label className="text-xs uppercase tracking-wide muted">Brush Color</label>
             <input
               type="color"
@@ -1684,8 +1785,13 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
               ref={canvasRef}
               width={CANVAS_WIDTH}
               height={CANVAS_HEIGHT}
-              className="h-auto w-full touch-none"
-              onWheel={handleCanvasWheel}
+              className={`h-auto w-full touch-none ${
+                canvasPointerMode === 'pan' || !canEdit
+                  ? canvasDragging
+                    ? 'cursor-grabbing'
+                    : 'cursor-grab'
+                  : 'cursor-crosshair'
+              }`}
               onPointerDown={onCanvasPointerDown}
               onPointerMove={onCanvasPointerMove}
               onPointerUp={finishStroke}

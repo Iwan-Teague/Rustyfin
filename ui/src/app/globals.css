@@ -449,6 +449,7 @@ input[type="checkbox"]:disabled {
   overflow: visible;
   transform-origin: center center;
   will-change: transform, opacity, filter;
+  backface-visibility: hidden;
 }
 
 .tg-delete-target::before,
@@ -460,49 +461,43 @@ input[type="checkbox"]:disabled {
 }
 
 .tg-delete-target::before {
-  inset: -6px;
+  inset: -4px;
   border-radius: inherit;
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 145, 77, 0.36) 0%,
-    rgba(255, 117, 136, 0.22) 42%,
-    rgba(157, 116, 255, 0) 75%
+  background: linear-gradient(
+    125deg,
+    rgba(255, 145, 77, 0.28) 0%,
+    rgba(255, 117, 136, 0.22) 52%,
+    rgba(157, 116, 255, 0.24) 100%
   );
-  filter: blur(1px);
+  filter: blur(6px);
+  mix-blend-mode: screen;
   z-index: 2;
 }
 
 .tg-delete-target::after {
-  left: -8px;
-  right: -8px;
-  top: -8px;
-  bottom: -8px;
-  border-radius: 999px;
-  background:
-    linear-gradient(0deg, transparent 13%, rgba(255, 145, 77, 0.95) 13% 16%, transparent 16% 23%),
-    linear-gradient(48deg, transparent 11%, rgba(255, 117, 136, 0.92) 11% 14%, transparent 14% 21%),
-    linear-gradient(94deg, transparent 10%, rgba(157, 116, 255, 0.96) 10% 13%, transparent 13% 21%),
-    linear-gradient(142deg, transparent 13%, rgba(255, 145, 77, 0.94) 13% 16%, transparent 16% 24%),
-    linear-gradient(190deg, transparent 12%, rgba(255, 117, 136, 0.9) 12% 15%, transparent 15% 22%),
-    linear-gradient(236deg, transparent 10%, rgba(157, 116, 255, 0.95) 10% 13%, transparent 13% 20%),
-    linear-gradient(284deg, transparent 12%, rgba(255, 145, 77, 0.95) 12% 15%, transparent 15% 22%),
-    linear-gradient(332deg, transparent 11%, rgba(255, 117, 136, 0.92) 11% 14%, transparent 14% 21%);
-  mask: radial-gradient(closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
-  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
+  inset: -2px;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at center,
+    rgba(255, 145, 77, 0) 0%,
+    rgba(255, 145, 77, 0.26) 40%,
+    rgba(255, 117, 136, 0.2) 62%,
+    rgba(157, 116, 255, 0) 100%
+  );
   z-index: 3;
 }
 
 .tg-delete-target.tg-delete-out {
   pointer-events: none;
-  animation: tg-delete-pop-out 320ms cubic-bezier(0.2, 0.86, 0.36, 1) forwards;
+  animation: tg-delete-simmer-pop 1000ms cubic-bezier(0.2, 0.72, 0.2, 1) forwards;
 }
 
 .tg-delete-target.tg-delete-out::before {
-  animation: tg-delete-aura 360ms ease-out forwards;
+  animation: tg-delete-simmer-glow 1000ms ease-in-out forwards;
 }
 
 .tg-delete-target.tg-delete-out::after {
-  animation: tg-delete-sparks 360ms ease-out forwards;
+  animation: tg-delete-pop-flash 1000ms ease-out forwards;
 }
 
 .animate-rise {
@@ -541,42 +536,81 @@ input[type="checkbox"]:disabled {
   }
 }
 
-@keyframes tg-delete-pop-out {
+@keyframes tg-delete-simmer-pop {
   0% {
     opacity: 1;
-    transform: scale(1) translateY(0);
-    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0) saturate(1) brightness(1);
   }
-  18% {
+  14% {
+    transform: translate3d(0.42px, -0.28px, 0) scale(1.001);
+  }
+  28% {
+    transform: translate3d(-0.48px, 0.32px, 0) scale(1.003);
+  }
+  42% {
+    transform: translate3d(0.38px, 0.24px, 0) scale(1.004);
+  }
+  56% {
+    transform: translate3d(-0.32px, -0.26px, 0) scale(1.005);
+  }
+  70% {
+    transform: translate3d(0, 0, 0) scale(1.008);
+  }
+  82% {
+    transform: translate3d(0, 0, 0) scale(1.02);
+  }
+  91% {
     opacity: 1;
-    transform: scale(0.94) translateY(0);
+    transform: translate3d(0, 0, 0) scale(1.036);
+    filter: blur(0) saturate(1.14) brightness(1.08);
   }
   100% {
     opacity: 0;
-    transform: scale(0.74) translateY(-9px);
-    filter: blur(1.8px);
+    transform: translate3d(0, 0, 0) scale(0.9);
+    filter: blur(1.1px) saturate(1.06) brightness(1.08);
   }
 }
 
-@keyframes tg-delete-aura {
+@keyframes tg-delete-simmer-glow {
   0% {
-    opacity: 0.7;
-    transform: scale(0.84);
+    opacity: 0.14;
+    transform: scale(0.98);
   }
-  100% {
-    opacity: 0;
-    transform: scale(1.18);
+  35% {
+    opacity: 0.22;
+    transform: scale(1);
   }
-}
-
-@keyframes tg-delete-sparks {
-  0% {
-    opacity: 0.92;
-    transform: scale(0.78);
+  70% {
+    opacity: 0.34;
+    transform: scale(1.02);
+  }
+  90% {
+    opacity: 0.52;
+    transform: scale(1.07);
   }
   100% {
     opacity: 0;
     transform: scale(1.2);
+  }
+}
+
+@keyframes tg-delete-pop-flash {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  76% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  90% {
+    opacity: 0.42;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
   }
 }
 

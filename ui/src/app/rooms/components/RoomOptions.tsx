@@ -10,6 +10,7 @@ type Props = {
   inviteOnly: boolean;
   defaultJoinRole: 'viewer' | 'controller';
   noShadow?: boolean;
+  fillHeight?: boolean;
   onPasswordChange: (value: string) => void;
   onAllowPlayPauseChange: (value: boolean) => void;
   onAllowSeekChange: (value: boolean) => void;
@@ -25,6 +26,7 @@ export default function RoomOptions({
   inviteOnly,
   defaultJoinRole,
   noShadow = false,
+  fillHeight = false,
   onPasswordChange,
   onAllowPlayPauseChange,
   onAllowSeekChange,
@@ -33,13 +35,20 @@ export default function RoomOptions({
 }: Props) {
   const memberLabel = nonAdminRoleLabel(roomMode);
   return (
-    <section className="panel space-y-4 p-5 sm:p-6" style={noShadow ? { boxShadow: 'none' } : undefined}>
+    <section
+      className={
+        fillHeight
+          ? 'panel h-full min-h-0 p-5 sm:p-6 flex flex-col gap-4'
+          : 'panel space-y-4 p-5 sm:p-6'
+      }
+      style={noShadow ? { boxShadow: 'none' } : undefined}
+    >
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Room Options</h2>
         <p className="text-sm muted">Configure access controls for members.</p>
       </div>
 
-      <div className="space-y-3">
+      <div className={fillHeight ? 'min-h-0 flex-1 space-y-3 overflow-y-auto pr-1' : 'space-y-3'}>
         <label className="block text-sm">
           <span className="mb-1 block text-xs uppercase tracking-wide muted">Room Password (optional)</span>
           <input
