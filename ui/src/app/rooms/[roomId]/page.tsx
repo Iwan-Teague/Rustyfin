@@ -1157,7 +1157,6 @@ export default function WatchPartyRoomPage() {
     setInfo('');
     try {
       await reconfigureWatchPartyRoom(roomId, payload);
-      setInfoForDuration('Reconfiguring room for all participants…', 10_000);
       setReconfigureModalOpen(false);
     } catch (err: any) {
       setError(err?.message || 'Failed to reconfigure room');
@@ -1193,7 +1192,6 @@ export default function WatchPartyRoomPage() {
     setInfo('');
     try {
       await reconfigureWatchPartyRoom(roomId, payload);
-      setInfoForDuration('Reconfiguring room for all participants…', 10_000);
     } catch (err: any) {
       setError(err?.message || 'Failed to switch watch source');
     } finally {
@@ -1220,7 +1218,6 @@ export default function WatchPartyRoomPage() {
         room_mode: 'video',
         item_id: reconfigureVideoItem.id,
       });
-      setInfoForDuration('Reconfiguring room for all participants…', 10_000);
     } catch (err: any) {
       setError(err?.message || 'Failed to apply local media');
     } finally {

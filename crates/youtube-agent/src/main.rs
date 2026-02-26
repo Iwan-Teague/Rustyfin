@@ -24,12 +24,14 @@ const DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS: u64 = 20;
 const DOWNLOAD_TOTAL_TIMEOUT_SECONDS: u64 = 90;
 const MAX_YOUTUBEI_DIRECT_CANDIDATES: usize = 8;
 const CONVERT_TO_MP3_TIMEOUT_SECONDS: u64 = 180;
+const YTDLP_FALLBACK_TIMEOUT_SECONDS: u64 = 240;
 
 #[derive(Clone)]
 struct AppState {
     cache_dir: PathBuf,
     ffmpeg_path: PathBuf,
     ffprobe_path: PathBuf,
+    ytdlp_path: PathBuf,
     youtube_cookie: Option<String>,
     youtube_cookie_file: Option<PathBuf>,
     agent_token: Option<String>,
@@ -967,6 +969,103 @@ async fn download_youtube_source_to_temp(
     ))
 }
 
+fn clip_error_message(raw: &str, max_chars: usize) -> String {
+    if raw.chars().count() <= max_chars {
+        return raw.to_string();
+    }
+    let clipped: String = raw.chars().take(max_chars).collect();
+    format!("{clipped}…")
+}
+
+async fn download_youtube_audio_mp3_via_ytdlp(
+    ytdlp_path: &StdPath,
+    ffmpeg_path: &StdPath,
+    video_id: &str,
+    output_path: &StdPath,
+    cookie_header: Option<&str>,
+    cookie_file: Option<&StdPath>,
+) -> Result<(), String> {
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
+
+    let mut command = tokio::process::Command::new(ytdlp_path);
+    command
+        .arg("--no-playlist")
+        .arg("--no-warnings")
+        .arg("--no-progress")
+        .arg("--newline")
+        .arg("--extract-audio")
+        .arg("--audio-format")
+        .arg("mp3")
+        .arg("--audio-quality")
+        .arg("192K")
+        .arg("--format")
+        .arg("bestaudio[acodec!=none]/best[acodec!=none]")
+        .arg("--js-runtimes")
+        .arg("node")
+        .arg("--extractor-retries")
+        .arg("3")
+        .arg("--retries")
+        .arg("3")
+        .arg("--fragment-retries")
+        .arg("3")
+        .arg("--socket-timeout")
+        .arg("30")
+        .arg("--output")
+        .arg(output_path)
+        .arg("--ffmpeg-location")
+        .arg(ffmpeg_path)
+        .arg("--user-agent")
+        .arg(YOUTUBE_USER_AGENT)
+        .arg("--referer")
+        .arg("https://www.youtube.com/")
+        .arg("--add-header")
+        .arg("Origin:https://www.youtube.com")
+        .arg("--add-header")
+        .arg("Accept-Language:en-US,en;q=0.9");
+
+    if let Some(cookie_file_path) = cookie_file.filter(|path| path.exists()) {
+        command.arg("--cookies").arg(cookie_file_path);
+    } else if let Some(cookie_value) = cookie_header.filter(|value| !value.trim().is_empty()) {
+        command
+            .arg("--add-header")
+            .arg(format!("Cookie: {cookie_value}"));
+    }
+
+    command.arg(&watch_url);
+
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("yt-dlp execution failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = sanitize_youtube_download_error(&String::from_utf8_lossy(&output.stderr));
+        let stdout = sanitize_youtube_download_error(&String::from_utf8_lossy(&output.stdout));
+        let stderr = clip_error_message(stderr.trim(), 1600);
+        let stdout = clip_error_message(stdout.trim(), 600);
+        return Err(format!(
+            "yt-dlp failed (status={}): stderr=\"{}\" stdout=\"{}\"",
+            output.status, stderr, stdout
+        ));
+    }
+
+    let metadata = tokio::fs::metadata(output_path).await.map_err(|e| {
+        format!(
+            "yt-dlp completed but output file is missing at {}: {e}",
+            output_path.to_string_lossy()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() < MIN_SOURCE_BYTES {
+        return Err(format!(
+            "yt-dlp output is invalid (size={} bytes) at {}",
+            metadata.len(),
+            output_path.to_string_lossy()
+        ));
+    }
+
+    Ok(())
+}
+
 async fn try_youtubei_direct_download(
     video_id: &str,
     temp_path: &StdPath,
@@ -1074,6 +1173,7 @@ async fn download_youtube_audio_mp3_for_room(
 
     let mut last_errors: Vec<String> = Vec::new();
     let started_at = std::time::Instant::now();
+    let mut downloaded_via_ytdlp = false;
 
     let mut source_downloaded = try_youtubei_direct_download(
         video_id,
@@ -1084,7 +1184,43 @@ async fn download_youtube_audio_mp3_for_room(
     )
     .await;
 
+    if !source_downloaded {
+        let _ = tokio::fs::remove_file(&output_path).await;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(YTDLP_FALLBACK_TIMEOUT_SECONDS),
+            download_youtube_audio_mp3_via_ytdlp(
+                &state.ytdlp_path,
+                &state.ffmpeg_path,
+                video_id,
+                &output_path,
+                cookie_header.as_deref(),
+                state.youtube_cookie_file.as_deref(),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                downloaded_via_ytdlp = true;
+            }
+            Ok(Err(reason)) => {
+                last_errors.push(format!(
+                    "yt-dlp fallback failed: {}",
+                    sanitize_youtube_download_error(&reason)
+                ));
+            }
+            Err(_) => {
+                last_errors.push(format!(
+                    "yt-dlp fallback timed out after {}s",
+                    YTDLP_FALLBACK_TIMEOUT_SECONDS
+                ));
+            }
+        }
+    }
+
     for watch_url in watch_urls {
+        if downloaded_via_ytdlp {
+            break;
+        }
         if source_downloaded {
             break;
         }
@@ -1251,7 +1387,7 @@ async fn download_youtube_audio_mp3_for_room(
         }
     }
 
-    if !source_downloaded {
+    if !source_downloaded && !downloaded_via_ytdlp {
         source_downloaded = try_youtubei_direct_download(
             video_id,
             &temp_path,
@@ -1262,7 +1398,7 @@ async fn download_youtube_audio_mp3_for_room(
         .await;
     }
 
-    if !source_downloaded {
+    if !source_downloaded && !downloaded_via_ytdlp {
         let cookie_hint = if state.youtube_cookie.is_none() && state.youtube_cookie_file.is_none() {
             " Configure RUSTFIN_YOUTUBE_COOKIE (or RUSTFIN_YOUTUBE_COOKIE_FILE) and retry."
         } else {
@@ -1276,17 +1412,20 @@ async fn download_youtube_audio_mp3_for_room(
         .into());
     }
 
-    tokio::time::timeout(
-        std::time::Duration::from_secs(CONVERT_TO_MP3_TIMEOUT_SECONDS),
-        convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path),
-    )
-    .await
-    .map_err(|_| {
-        ApiError::Internal(format!(
-            "ffmpeg conversion timed out after {}s",
-            CONVERT_TO_MP3_TIMEOUT_SECONDS
-        ))
-    })??;
+    if source_downloaded {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(CONVERT_TO_MP3_TIMEOUT_SECONDS),
+            convert_to_mp3(&state.ffmpeg_path, &temp_path, &output_path),
+        )
+        .await
+        .map_err(|_| {
+            ApiError::Internal(format!(
+                "ffmpeg conversion timed out after {}s",
+                CONVERT_TO_MP3_TIMEOUT_SECONDS
+            ))
+        })??;
+    }
+
     let duration_ms = probe_audio_duration_ms(&state.ffprobe_path, &output_path).await?;
     let _ = tokio::fs::remove_file(&temp_path).await;
 
@@ -1352,6 +1491,8 @@ async fn main() -> anyhow::Result<()> {
     let ffprobe_path = PathBuf::from(
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
     );
+    let ytdlp_path =
+        PathBuf::from(std::env::var("RUSTFIN_YTDLP_PATH").unwrap_or_else(|_| "yt-dlp".to_string()));
 
     let youtube_cookie = normalize_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE").ok());
     let youtube_cookie_file =
@@ -1362,6 +1503,7 @@ async fn main() -> anyhow::Result<()> {
         cache_dir,
         ffmpeg_path,
         ffprobe_path,
+        ytdlp_path,
         youtube_cookie,
         youtube_cookie_file,
         agent_token,

@@ -617,7 +617,7 @@ export default function AudioPlayer({
                       type="button"
                       onClick={handleSkipPrev}
                       disabled={!canControl}
-                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center gap-0 rounded-full p-0 disabled:opacity-40"
                       title="Previous"
                     >
                       <svg
@@ -634,7 +634,7 @@ export default function AudioPlayer({
                       type="button"
                       onClick={handlePlayPause}
                       disabled={!canControl}
-                      className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      className="btn-primary inline-flex h-10 w-10 items-center justify-center gap-0 rounded-full p-0 disabled:opacity-40"
                       title={audioState.playing ? 'Pause' : 'Play'}
                     >
                       {audioState.playing ? (
@@ -662,7 +662,7 @@ export default function AudioPlayer({
                       type="button"
                       onClick={handleSkipNext}
                       disabled={!canControl}
-                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center gap-0 rounded-full p-0 disabled:opacity-40"
                       title="Next"
                     >
                       <svg
@@ -681,7 +681,7 @@ export default function AudioPlayer({
                       type="button"
                       onClick={handleToggleShuffle}
                       disabled={!canControl}
-                      className={`inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
+                      className={`inline-flex h-10 w-10 items-center justify-center gap-0 rounded-full p-0 disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
                       title={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
                       aria-label={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
                     >
@@ -709,7 +709,7 @@ export default function AudioPlayer({
                       type="button"
                       onClick={handleCycleRepeat}
                       disabled={!canControl}
-                      className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
+                      className={`relative inline-flex h-10 w-10 items-center justify-center gap-0 rounded-full p-0 disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
                       title={`Repeat mode: ${repeatLabel}. Click to cycle (Off → Song → Queue)`}
                       aria-label={`Repeat mode: ${repeatLabel}`}
                     >

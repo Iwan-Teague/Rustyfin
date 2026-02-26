@@ -67,6 +67,7 @@ Run before finalizing substantial changes:
 - Enforce server-side authorization; UI checks are UX only.
 - Keep credentials/secrets in environment variables, not hardcoded.
 - Prefer explicit error handling and structured logging in Rust services.
+- For online Listen Together downloads, prefer maintaining a current `yt-dlp` runtime in `rustfin-youtube-agent`; YouTube provider changes can break stale downloader builds.
 
 ## Implementation Style
 
