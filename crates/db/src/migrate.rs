@@ -70,6 +70,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "017_channel_transcription",
         include_str!("../migrations/017_channel_transcription.sql"),
     ),
+    (
+        "018_query_performance_indexes",
+        include_str!("../migrations/018_query_performance_indexes.sql"),
+    ),
+    (
+        "019_database_query_optimizations",
+        include_str!("../migrations/019_database_query_optimizations.sql"),
+    ),
+    (
+        "020_online_audio_search_fts",
+        include_str!("../migrations/020_online_audio_search_fts.sql"),
+    ),
+    (
+        "021_logs_channels_query_indexes",
+        include_str!("../migrations/021_logs_channels_query_indexes.sql"),
+    ),
+    (
+        "022_transcript_query_indexes",
+        include_str!("../migrations/022_transcript_query_indexes.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

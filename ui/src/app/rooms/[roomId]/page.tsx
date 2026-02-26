@@ -122,6 +122,23 @@ function wsUrlForOrigin(origin: string, roomId: string): string {
   return url.toString();
 }
 
+function applyPresenceToState<T extends { members: WsPresenceMember[] }>(
+  prev: T | null,
+  presence: WsPresenceMessage,
+): T | null {
+  if (!prev) return prev;
+  let changed = false;
+  const members = prev.members.map((member) => {
+    if (member.user_id !== presence.user_id || member.connected === presence.connected) {
+      return member;
+    }
+    changed = true;
+    return { ...member, connected: presence.connected };
+  });
+  if (!changed) return prev;
+  return { ...prev, members };
+}
+
 async function waitForVideoMetadata(
   video: HTMLVideoElement,
   timeoutMs = 5000,
@@ -469,11 +486,17 @@ export default function WatchPartyRoomPage() {
 
   useEffect(() => {
     if (!joinedRole) return;
-    const id = window.setInterval(() => {
+    if (!wsConnected) {
       void refreshRoom();
-    }, 5000);
+    }
+    const intervalMs = wsConnected ? 30000 : 5000;
+    const id = window.setInterval(() => {
+      if (!wsConnected || document.visibilityState === 'visible') {
+        void refreshRoom();
+      }
+    }, intervalMs);
     return () => window.clearInterval(id);
-  }, [joinedRole, refreshRoom]);
+  }, [joinedRole, wsConnected, refreshRoom]);
 
   useEffect(() => {
     if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || isCreateRoom) return;
@@ -643,61 +666,11 @@ export default function WatchPartyRoomPage() {
             void loadRoom();
             setWsEpoch((prev) => prev + 1);
           } else if (payload.type === 'presence') {
-            setRoomState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                members: prev.members.map((member) =>
-                  member.user_id === payload.user_id
-                    ? { ...member, connected: payload.connected }
-                    : member,
-                ),
-              };
-            });
-            setAudioState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                members: prev.members.map((member) =>
-                  member.user_id === payload.user_id
-                    ? { ...member, connected: payload.connected }
-                    : member,
-                ),
-              };
-            });
-            setYoutubeState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                members: prev.members.map((member) =>
-                  member.user_id === payload.user_id
-                    ? { ...member, connected: payload.connected }
-                    : member,
-                ),
-              };
-            });
-            setWebState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                members: prev.members.map((member) =>
-                  member.user_id === payload.user_id
-                    ? { ...member, connected: payload.connected }
-                    : member,
-                ),
-              };
-            });
-            setCreateState((prev) => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                members: prev.members.map((member) =>
-                  member.user_id === payload.user_id
-                    ? { ...member, connected: payload.connected }
-                    : member,
-                ),
-              };
-            });
+            setRoomState((prev) => applyPresenceToState(prev, payload));
+            setAudioState((prev) => applyPresenceToState(prev, payload));
+            setYoutubeState((prev) => applyPresenceToState(prev, payload));
+            setWebState((prev) => applyPresenceToState(prev, payload));
+            setCreateState((prev) => applyPresenceToState(prev, payload));
           } else if (payload.type === 'error') {
             setError(payload.message);
             appendDebug(`ws server_error message=${payload.message}`);

@@ -45,22 +45,87 @@ pub async fn create_job(
 }
 
 pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<JobRow>, sqlx::Error> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        f64,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-    )> = sqlx::query_as(
-        "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
-             FROM job ORDER BY created_ts DESC",
-    )
-    .fetch_all(pool)
-    .await?;
+    list_jobs_filtered(pool, &[], None, None, None).await
+}
 
+pub async fn list_jobs_filtered(
+    pool: &SqlitePool,
+    statuses: &[&str],
+    kind: Option<&str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<JobRow>, sqlx::Error> {
+    let mut sql = String::from(
+        "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts FROM job",
+    );
+    let mut where_clauses: Vec<String> = Vec::new();
+
+    if !statuses.is_empty() {
+        let placeholders = std::iter::repeat("?")
+            .take(statuses.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        where_clauses.push(format!("status IN ({placeholders})"));
+    }
+
+    let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty());
+    if normalized_kind.is_some() {
+        where_clauses.push("kind = ?".to_string());
+    }
+
+    if !where_clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_clauses.join(" AND "));
+    }
+
+    sql.push_str(" ORDER BY created_ts DESC");
+
+    let normalized_limit = limit.map(|value| value.clamp(1, 1000));
+    let normalized_offset = offset.map(|value| value.clamp(0, 1_000_000)).unwrap_or(0);
+
+    match normalized_limit {
+        Some(_) => {
+            sql.push_str(" LIMIT ? OFFSET ?");
+        }
+        None if normalized_offset > 0 => {
+            sql.push_str(" LIMIT -1 OFFSET ?");
+        }
+        None => {}
+    }
+
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            f64,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        ),
+    >(&sql);
+
+    for status in statuses {
+        query = query.bind(status);
+    }
+
+    if let Some(kind) = normalized_kind {
+        query = query.bind(kind);
+    }
+
+    match normalized_limit {
+        Some(limit) => {
+            query = query.bind(limit).bind(normalized_offset);
+        }
+        None if normalized_offset > 0 => {
+            query = query.bind(normalized_offset);
+        }
+        None => {}
+    }
+
+    let rows = query.fetch_all(pool).await?;
     Ok(rows.into_iter().map(row_to_job).collect())
 }
 

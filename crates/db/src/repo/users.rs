@@ -110,6 +110,42 @@ pub async fn list_users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> 
         .collect())
 }
 
+/// List users by a set of IDs.
+pub async fn list_users_by_ids(
+    pool: &SqlitePool,
+    user_ids: &[String],
+) -> Result<Vec<UserRow>, sqlx::Error> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(user_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, username, password_hash, role, created_ts \
+         FROM user WHERE id IN ({placeholders})"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, String, String, String, i64)>(&sql);
+    for user_id in user_ids {
+        query = query.bind(user_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, username, password_hash, role, created_ts)| UserRow {
+            id,
+            username,
+            password_hash,
+            role,
+            created_ts,
+        })
+        .collect())
+}
+
 /// Delete a user by ID.
 pub async fn delete_user(pool: &SqlitePool, user_id: &str) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM user WHERE id = ?")
@@ -175,6 +211,32 @@ pub async fn get_library_access(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Return (user_id, library_id) rows for a set of users.
+pub async fn list_library_access_for_users(
+    pool: &SqlitePool,
+    user_ids: &[String],
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(user_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT user_id, library_id FROM user_library_access \
+         WHERE user_id IN ({placeholders}) \
+         ORDER BY user_id, library_id"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+    for user_id in user_ids {
+        query = query.bind(user_id);
+    }
+    query.fetch_all(pool).await
 }
 
 /// Check whether a user can access a specific library.

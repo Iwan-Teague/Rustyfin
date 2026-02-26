@@ -226,6 +226,45 @@ pub async fn get_library_paths(
         .collect())
 }
 
+pub async fn get_library_paths_for_libraries(
+    pool: &SqlitePool,
+    library_ids: &[String],
+) -> Result<Vec<LibraryPathRow>, sqlx::Error> {
+    if library_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(library_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, library_id, path, is_read_only, created_ts \
+         FROM library_path \
+         WHERE library_id IN ({placeholders}) \
+         ORDER BY library_id, created_ts, id"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, String, String, bool, i64)>(&sql);
+    for library_id in library_ids {
+        query = query.bind(library_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, library_id, path, is_read_only, created_ts)| LibraryPathRow {
+                id,
+                library_id,
+                path,
+                is_read_only,
+                created_ts,
+            },
+        )
+        .collect())
+}
+
 /// Count items belonging to a library.
 pub async fn count_library_items(pool: &SqlitePool, library_id: &str) -> Result<i64, sqlx::Error> {
     // Keep this aligned with GET /libraries/{id}/items, which returns top-level rows only.
@@ -235,6 +274,31 @@ pub async fn count_library_items(pool: &SqlitePool, library_id: &str) -> Result<
             .fetch_one(pool)
             .await?;
     Ok(count)
+}
+
+pub async fn count_library_items_for_libraries(
+    pool: &SqlitePool,
+    library_ids: &[String],
+) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    if library_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(library_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT library_id, COUNT(*) FROM item \
+         WHERE parent_id IS NULL AND library_id IN ({placeholders}) \
+         GROUP BY library_id"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
+    for library_id in library_ids {
+        query = query.bind(library_id);
+    }
+    query.fetch_all(pool).await
 }
 
 /// Get all library paths across all libraries.
@@ -307,6 +371,86 @@ pub async fn get_library_settings(
             }
         },
     ))
+}
+
+pub async fn get_library_settings_for_libraries(
+    pool: &SqlitePool,
+    library_ids: &[String],
+) -> Result<Vec<LibrarySettingsRow>, sqlx::Error> {
+    if library_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(library_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
+                tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
+                tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, \
+                updated_ts \
+         FROM library_settings \
+         WHERE library_id IN ({placeholders})"
+    );
+
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            String,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            String,
+            Option<i64>,
+            bool,
+            bool,
+            bool,
+            bool,
+            i64,
+        ),
+    >(&sql);
+    for library_id in library_ids {
+        query = query.bind(library_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                library_id,
+                show_images,
+                prefer_local_artwork,
+                fetch_online_artwork,
+                tmdb_store_in_media_dir,
+                tmdb_sync_on_new_media,
+                tmdb_sync_schedule,
+                tmdb_last_sync_ts,
+                tmdb_fetch_posters,
+                tmdb_fetch_backdrops,
+                tmdb_fetch_metadata,
+                tmdb_fetch_reviews,
+                updated_ts,
+            )| LibrarySettingsRow {
+                library_id,
+                show_images,
+                prefer_local_artwork,
+                fetch_online_artwork,
+                tmdb_store_in_media_dir,
+                tmdb_sync_on_new_media,
+                tmdb_sync_schedule,
+                tmdb_last_sync_ts,
+                tmdb_fetch_posters,
+                tmdb_fetch_backdrops,
+                tmdb_fetch_metadata,
+                tmdb_fetch_reviews,
+                updated_ts,
+            },
+        )
+        .collect())
 }
 
 pub async fn upsert_library_settings(

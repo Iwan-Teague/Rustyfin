@@ -26,9 +26,22 @@ const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
 const MAX_MESSAGES_PER_WINDOW: usize = 300;
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
 
 fn ws_connect_rate_limiter() -> &'static RateLimiter {
     WS_CONNECT_RATE_LIMITER.get_or_init(|| RateLimiter::new(120, 60))
+}
+
+fn ws_allowed_origins() -> &'static Vec<String> {
+    WS_ALLOWED_ORIGINS.get_or_init(|| {
+        std::env::var("RUSTFIN_WS_ALLOWED_ORIGINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(|origin| origin.to_ascii_lowercase())
+            .collect()
+    })
 }
 
 fn extract_client_key(headers: &HeaderMap) -> String {
@@ -88,15 +101,10 @@ fn validate_origin(headers: &HeaderMap) -> Result<(), AppError> {
         return Ok(());
     }
 
-    let allowed: Vec<String> = std::env::var("RUSTFIN_WS_ALLOWED_ORIGINS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
-
-    if allowed.iter().any(|a| a == &origin) {
+    if ws_allowed_origins()
+        .iter()
+        .any(|allowed| allowed == &origin)
+    {
         return Ok(());
     }
 

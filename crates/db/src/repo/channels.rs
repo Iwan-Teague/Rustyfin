@@ -183,19 +183,40 @@ pub async fn list_messages(
     channel_id: &str,
     limit: i64,
     before_ts: i64,
+    before_id: Option<&str>,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, channel_id, user_id, username, content, created_ts \
-         FROM channel_message \
-         WHERE channel_id = ? AND created_ts < ? \
-         ORDER BY created_ts DESC \
-         LIMIT ?",
-    )
-    .bind(channel_id)
-    .bind(before_ts)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let normalized_before_id = before_id.map(str::trim).filter(|id| !id.is_empty());
+    let rows: Vec<(String, String, String, String, String, i64)> =
+        if let Some(before_id) = normalized_before_id {
+            sqlx::query_as(
+                "SELECT id, channel_id, user_id, username, content, created_ts \
+                 FROM channel_message \
+                 WHERE channel_id = ? \
+                   AND (created_ts < ? OR (created_ts = ? AND id < ?)) \
+                 ORDER BY created_ts DESC, id DESC \
+                 LIMIT ?",
+            )
+            .bind(channel_id)
+            .bind(before_ts)
+            .bind(before_ts)
+            .bind(before_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT id, channel_id, user_id, username, content, created_ts \
+                 FROM channel_message \
+                 WHERE channel_id = ? AND created_ts < ? \
+                 ORDER BY created_ts DESC, id DESC \
+                 LIMIT ?",
+            )
+            .bind(channel_id)
+            .bind(before_ts)
+            .bind(limit)
+            .fetch_all(pool)
+            .await?
+        };
 
     let mut messages: Vec<MessageRow> = rows
         .into_iter()
@@ -302,6 +323,58 @@ pub async fn list_message_attachments(
     .bind(message_id)
     .fetch_all(pool)
     .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            )| MessageAttachmentRow {
+                id,
+                message_id,
+                channel_id,
+                filename,
+                content_type,
+                size_bytes,
+                storage_path,
+                created_ts,
+            },
+        )
+        .collect())
+}
+
+pub async fn list_message_attachments_for_messages(
+    pool: &SqlitePool,
+    message_ids: &[String],
+) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(message_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
+         FROM channel_message_attachment \
+         WHERE message_id IN ({placeholders}) \
+         ORDER BY message_id, created_ts, id"
+    );
+
+    let mut query =
+        sqlx::query_as::<_, (String, String, String, String, String, i64, String, i64)>(&sql);
+    for message_id in message_ids {
+        query = query.bind(message_id);
+    }
+    let rows = query.fetch_all(pool).await?;
 
     Ok(rows
         .into_iter()
