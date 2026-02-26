@@ -219,6 +219,54 @@ save_build_fingerprints() {
   chmod 600 "$BUILD_STATE_FILE" 2>/dev/null || true
 }
 
+compute_all_service_fingerprints() {
+  local compose_scope_file="$COMPOSE_FILE"
+
+  current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+    "$REPO_ROOT/Dockerfile" \
+    "$compose_scope_file" \
+    "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/server" \
+    "$REPO_ROOT/crates/core" \
+    "$REPO_ROOT/crates/db" \
+    "$REPO_ROOT/crates/scanner" \
+    "$REPO_ROOT/crates/metadata" \
+    "$REPO_ROOT/crates/transcoder")"
+  current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+    "$REPO_ROOT/crates/calendar/Dockerfile" \
+    "$compose_scope_file" \
+    "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/calendar" \
+    "$REPO_ROOT/crates/core" \
+    "$REPO_ROOT/crates/db")"
+  current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+    "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
+    "$compose_scope_file" \
+    "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/tmdb-agent" \
+    "$REPO_ROOT/crates/core" \
+    "$REPO_ROOT/crates/db" \
+    "$REPO_ROOT/crates/metadata")"
+  current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+    "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
+    "$compose_scope_file" \
+    "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/transcription-agent" \
+    "$REPO_ROOT/crates/core")"
+  current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+    "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
+    "$compose_scope_file" \
+    "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" \
+    "$REPO_ROOT/crates/youtube-agent" \
+    "$REPO_ROOT/crates/core")"
+  current_ui_fp="$(compute_scope_fingerprint "$compose_scope_file" "$REPO_ROOT/ui")"
+}
+
 persist_secret_env_var() {
   local key="$1"
   local value="$2"
@@ -600,6 +648,100 @@ ensure_edge_tls_cert() {
   export RUSTFIN_EDGE_TLS_KEY="$key_path"
 }
 
+compose_has_service() {
+  local service="$1"
+  docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null | grep -Fxq "$service"
+}
+
+wait_for_service_ready() {
+  local service="$1"
+  local timeout_seconds="$2"
+  local start_ts now container_id health_mode status
+  start_ts="$(date +%s)"
+
+  while true; do
+    container_id="$(docker compose -f "$COMPOSE_FILE" ps -q "$service" 2>/dev/null || true)"
+    if [[ -n "$container_id" ]]; then
+      break
+    fi
+    now="$(date +%s)"
+    if (( now - start_ts >= timeout_seconds )); then
+      warn "Timed out waiting for container id for service '$service'."
+      return 1
+    fi
+    sleep 1
+  done
+
+  health_mode="$(docker inspect --format '{{if .Config.Healthcheck}}health{{else}}state{{end}}' "$container_id" 2>/dev/null || echo "state")"
+  while true; do
+    if [[ "$health_mode" == "health" ]]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unknown{{end}}' "$container_id" 2>/dev/null || echo "unknown")"
+      case "$status" in
+        healthy)
+          info "Service ready: $service (healthy)"
+          return 0
+          ;;
+        unhealthy)
+          warn "Service unhealthy: $service"
+          return 1
+          ;;
+      esac
+    else
+      status="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || echo "unknown")"
+      case "$status" in
+        running)
+          info "Service ready: $service (running)"
+          return 0
+          ;;
+        exited|dead)
+          warn "Service failed to stay up: $service ($status)"
+          return 1
+          ;;
+      esac
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts >= timeout_seconds )); then
+      warn "Timed out waiting for service '$service' to become ready (last status: ${status})."
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_critical_services() {
+  local timeout_seconds="${1:-120}"
+  local service=""
+  local failures=0
+  local critical_services=(
+    rustfin
+    rustfin-calendar
+    rustfin-tmdb-agent
+    rustfin-youtube-agent
+    rustfin-transcription-agent
+    rustfin-ui
+    rustfin-edge
+  )
+
+  info "Waiting for critical services to become ready..."
+  for service in "${critical_services[@]}"; do
+    if ! compose_has_service "$service"; then
+      continue
+    fi
+    if ! wait_for_service_ready "$service" "$timeout_seconds"; then
+      failures=$((failures + 1))
+    fi
+  done
+
+  if (( failures > 0 )); then
+    warn "One or more services did not report ready."
+    warn "Inspect logs with: docker compose -f \"$COMPOSE_FILE\" logs -f"
+    return 1
+  fi
+
+  return 0
+}
+
 project_running=false
 if docker compose -f "$COMPOSE_FILE" ps --status running -q 2>/dev/null | grep -q .; then
   project_running=true
@@ -704,44 +846,7 @@ if [[ "$BUILD" == "true" ]]; then
       fi
     fi
 
-    current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/server" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db" \
-      "$REPO_ROOT/crates/scanner" \
-      "$REPO_ROOT/crates/metadata" \
-      "$REPO_ROOT/crates/transcoder")"
-    current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/calendar/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/calendar" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db")"
-    current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/tmdb-agent" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db" \
-      "$REPO_ROOT/crates/metadata")"
-    current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/transcription-agent" \
-      "$REPO_ROOT/crates/core")"
-    current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/youtube-agent" \
-      "$REPO_ROOT/crates/core")"
-    current_ui_fp="$(compute_scope_fingerprint "$REPO_ROOT/ui")"
+    compute_all_service_fingerprints
     save_build_fingerprints \
       "$current_rustfin_fp" \
       "$current_calendar_fp" \
@@ -769,44 +874,7 @@ if [[ "$BUILD" == "true" ]]; then
       prev_ui_fp="${UI_FP:-}"
     fi
 
-    current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/server" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db" \
-      "$REPO_ROOT/crates/scanner" \
-      "$REPO_ROOT/crates/metadata" \
-      "$REPO_ROOT/crates/transcoder")"
-    current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/calendar/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/calendar" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db")"
-    current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/tmdb-agent" \
-      "$REPO_ROOT/crates/core" \
-      "$REPO_ROOT/crates/db" \
-      "$REPO_ROOT/crates/metadata")"
-    current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/transcription-agent" \
-      "$REPO_ROOT/crates/core")"
-    current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
-      "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
-      "$REPO_ROOT/Cargo.toml" \
-      "$REPO_ROOT/Cargo.lock" \
-      "$REPO_ROOT/crates/youtube-agent" \
-      "$REPO_ROOT/crates/core")"
-    current_ui_fp="$(compute_scope_fingerprint "$REPO_ROOT/ui")"
+    compute_all_service_fingerprints
 
     changed_services=()
     changed_reasons=()
@@ -886,19 +954,25 @@ docker compose -f "$COMPOSE_FILE" "${compose_args[@]}"
 } > "$RUNTIME_ENV_FILE"
 chmod 600 "$RUNTIME_ENV_FILE" 2>/dev/null || true
 
-if [[ "$DETACH" == "true" && "$HEALTH_CHECK" == "true" && -n "$(command -v curl || true)" ]]; then
-  info "Waiting for backend health endpoint..."
-  ok=false
-  for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:${RUSTFIN_BACKEND_PORT}/health" >/dev/null 2>&1; then
-      ok=true
-      break
+if [[ "$DETACH" == "true" && "$HEALTH_CHECK" == "true" ]]; then
+  wait_for_critical_services 120 || true
+
+  if command -v curl >/dev/null 2>&1; then
+    info "Waiting for backend health endpoint..."
+    ok=false
+    for _ in $(seq 1 60); do
+      if curl -fsS "http://127.0.0.1:${RUSTFIN_BACKEND_PORT}/health" >/dev/null 2>&1; then
+        ok=true
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$ok" != "true" ]]; then
+      warn "Backend health check did not pass within 60s."
+      warn "Check logs with: docker compose -f \"$COMPOSE_FILE\" logs -f"
     fi
-    sleep 1
-  done
-  if [[ "$ok" != "true" ]]; then
-    warn "Backend health check did not pass within 60s."
-    warn "Check logs with: docker compose -f \"$COMPOSE_FILE\" logs -f"
+  else
+    warn "curl is not installed; skipping host-level backend health check."
   fi
 fi
 
