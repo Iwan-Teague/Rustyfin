@@ -106,6 +106,13 @@ type RuntimeConfig = {
   backend_origin?: string | null;
 };
 
+const INVITE_NAME_MAX_CHARS = 14;
+
+function truncateInviteName(name: string): string {
+  if (name.length <= INVITE_NAME_MAX_CHARS) return name;
+  return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
+}
+
 function wsUrlForOrigin(origin: string, roomId: string): string {
   const url = new URL(origin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1220,17 +1227,10 @@ export default function WatchPartyRoomPage() {
 
     let payload: ReconfigureWatchPartyRoomRequest;
     if (target === 'video') {
-      const fallbackItemId = room.item_id?.trim() || '';
-      const selectedItemId = reconfigureVideoItem?.id?.trim() || '';
-      const nextItemId = selectedItemId || fallbackItemId;
-      if (!nextItemId) {
-        setInfo('Select local media below and click "Apply Local Media" first.');
-        if (activeWatchSource !== 'video') {
-          setReconfigureModalOpen(true);
-        }
-        return;
-      }
-      payload = { room_mode: 'video', item_id: nextItemId };
+      // Switching to local media should land in the in-room local picker flow.
+      // We intentionally clear current item selection so host can choose media inline.
+      setReconfigureVideoItem(null);
+      payload = { room_mode: 'video' };
     } else if (target === 'youtube') {
       payload = { room_mode: 'youtube' };
     } else {
@@ -1273,6 +1273,34 @@ export default function WatchPartyRoomPage() {
       setInfoForDuration('Reconfiguring room for all participants…', 10_000);
     } catch (err: any) {
       setError(err?.message || 'Failed to apply local media');
+    } finally {
+      setReconfiguring(false);
+    }
+  }
+
+  async function handleConfigureAudioLibrary(libraryId: string) {
+    if (joinedRole !== 'host') {
+      setError('Only the room host can configure offline library search.');
+      return;
+    }
+
+    setReconfigureAudioLibraryId(libraryId);
+    setReconfiguring(true);
+    setReconfigureDirty(true);
+    setError('');
+    try {
+      await reconfigureWatchPartyRoom(roomId, {
+        room_mode: 'audio',
+        audio_library_id: libraryId || undefined,
+      });
+      setInfoForDuration(
+        libraryId
+          ? 'Offline library updated for this room.'
+          : 'Offline library cleared. Room is now online-only.',
+        5000,
+      );
+    } catch (err: any) {
+      setError(err?.message || 'Failed to configure offline library');
     } finally {
       setReconfiguring(false);
     }
@@ -1424,6 +1452,16 @@ export default function WatchPartyRoomPage() {
           canSeek={canSeek}
           roomId={roomId}
           sendWs={sendWs}
+          musicLibraries={reconfigureMusicLibraries.map((library) => ({
+            id: library.id,
+            name: library.name,
+          }))}
+          currentAudioLibraryId={reconfigureAudioLibraryId}
+          canConfigureLocalLibrary={joinedRole === 'host'}
+          configuringLocalLibrary={reconfiguring}
+          onConfigureLocalLibrary={(libraryId) => {
+            void handleConfigureAudioLibrary(libraryId);
+          }}
         />
       )}
 
@@ -1437,12 +1475,8 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && isYoutubeRoom && (
         <section className="panel space-y-4 p-5 sm:p-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip">Role: {joinedRoleDisplay}</span>
-            <span className="chip">Controls: {canPlayPause ? 'allowed' : 'host-only'}</span>
-          </div>
           {isWatchRoom && (
-            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+            <div className="-mx-5 -mt-5 flex gap-2 border-b border-[var(--border)] px-5 pt-5 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6">
               {([
                 ['video', 'Local Media'],
                 ['youtube', 'YouTube'],
@@ -1464,6 +1498,10 @@ export default function WatchPartyRoomPage() {
               ))}
             </div>
           )}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="chip">Role: {joinedRoleDisplay}</span>
+            <span className="chip">Controls: {canPlayPause ? 'allowed' : 'host-only'}</span>
+          </div>
           <YouTubePlayer
             roomId={roomId}
             ytState={youtubeState}
@@ -1477,12 +1515,8 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && isWebRoom && (
         <section className="panel space-y-4 p-5 sm:p-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip">Role: {joinedRoleDisplay}</span>
-            <span className="chip">Navigation: {canPlayPause ? 'allowed' : 'admin-only'}</span>
-          </div>
           {isWatchRoom && (
-            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+            <div className="-mx-5 -mt-5 flex gap-2 border-b border-[var(--border)] px-5 pt-5 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6">
               {([
                 ['video', 'Local Media'],
                 ['youtube', 'YouTube'],
@@ -1504,6 +1538,10 @@ export default function WatchPartyRoomPage() {
               ))}
             </div>
           )}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="chip">Role: {joinedRoleDisplay}</span>
+            <span className="chip">Navigation: {canPlayPause ? 'allowed' : 'admin-only'}</span>
+          </div>
           <WebPlayer
             roomId={roomId}
             webState={webState}
@@ -1532,14 +1570,14 @@ export default function WatchPartyRoomPage() {
         portalMounted &&
         createPortal(
           <div
-            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+            className="fixed inset-0 z-40 flex items-start justify-center bg-black/45 p-4 pt-[30vh] backdrop-blur-[2px]"
             onClick={() => setReconfigureModalOpen(false)}
           >
             <div
               role="dialog"
               aria-modal="true"
               aria-label="Reconfigure room"
-              className="panel w-full max-w-5xl max-h-[88vh] space-y-4 overflow-y-auto rounded-2xl border border-[var(--border)] p-5 sm:p-6"
+              className="panel w-full max-w-5xl max-h-[68vh] space-y-4 overflow-y-auto rounded-2xl border border-[var(--border)] p-5 sm:p-6"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1652,42 +1690,10 @@ export default function WatchPartyRoomPage() {
                     </div>
                   ) : reconfigureMode === 'create' ? (
                     <div className="space-y-3">
-                      <p className="text-xs uppercase tracking-wide muted">Create Tool</p>
-                      <div role="radiogroup" aria-label="Create tool" className="grid gap-2 sm:grid-cols-2">
-                        <label
-                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                            reconfigureCreateTool === 'text' ? 'border-[var(--purple)]' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            className="sr-only"
-                            checked={reconfigureCreateTool === 'text'}
-                            onChange={() => {
-                              setReconfigureDirty(true);
-                              setReconfigureCreateTool('text');
-                            }}
-                          />
-                          <p className="text-sm font-medium">Shared Document</p>
-                          <p className="text-xs muted">Collaborative text + PDF conversion workflow.</p>
-                        </label>
-                        <label
-                          className={`tile cursor-pointer rounded-xl px-3 py-3 transition-colors ${
-                            reconfigureCreateTool === 'canvas' ? 'border-[var(--purple)]' : ''
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            className="sr-only"
-                            checked={reconfigureCreateTool === 'canvas'}
-                            onChange={() => {
-                              setReconfigureDirty(true);
-                              setReconfigureCreateTool('canvas');
-                            }}
-                          />
-                          <p className="text-sm font-medium">Shared Canvas</p>
-                          <p className="text-xs muted">MS Paint style collaborative whiteboard.</p>
-                        </label>
+                      <p className="text-xs uppercase tracking-wide muted">Create Together</p>
+                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                        Create Together uses one unified room mode. Document and canvas workspaces are
+                        available inside the room.
                       </div>
                     </div>
                   ) : (
@@ -1840,14 +1846,8 @@ export default function WatchPartyRoomPage() {
       {joinedRole && !isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && (
         <>
           <section className="panel space-y-4 p-5 sm:p-6">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="chip">Role: {joinedRoleDisplay}</span>
-              <span className="chip">Play/Pause: {canPlayPause ? 'allowed' : 'host-only'}</span>
-              <span className="chip">Seek: {canSeek ? 'allowed' : 'host-only'}</span>
-            </div>
-
             {isWatchRoom && (
-              <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+              <div className="-mx-5 -mt-5 flex gap-2 border-b border-[var(--border)] px-5 pt-5 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6">
                 {([
                   ['video', 'Local Media'],
                   ['youtube', 'YouTube'],
@@ -1869,6 +1869,11 @@ export default function WatchPartyRoomPage() {
                 ))}
               </div>
             )}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="chip">Role: {joinedRoleDisplay}</span>
+              <span className="chip">Play/Pause: {canPlayPause ? 'allowed' : 'host-only'}</span>
+              <span className="chip">Seek: {canSeek ? 'allowed' : 'host-only'}</span>
+            </div>
 
             {!room.item_id || room.item_id.trim().length === 0 ? (
               joinedRole === 'host' ? (
@@ -1975,7 +1980,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && (
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="grid gap-5 md:grid-cols-2">
           <section className="panel space-y-3 p-5 sm:p-6">
             <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
             <ul className="space-y-2">
@@ -2023,37 +2028,43 @@ export default function WatchPartyRoomPage() {
                     const role = inviteSelections[user.id] ?? 'viewer';
                     return (
                       <li key={user.id} className="tile rounded-xl px-3 py-2">
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              setInviteSelections((prev) => {
-                                const next = { ...prev };
-                                if (next[user.id] !== undefined) {
-                                  delete next[user.id];
-                                } else {
-                                  next[user.id] = 'viewer';
-                                }
-                                return next;
-                              });
-                            }}
-                            className="h-4 w-4 shrink-0"
-                          />
-                          <span className="flex-1 text-sm font-medium">{user.username}</span>
-                          <select
-                            className="select px-2 py-1.5 text-sm"
-                            value={role}
-                            onChange={(e) =>
-                              setInviteSelections((prev) => ({
-                                ...prev,
-                                [user.id]: e.target.value as 'viewer' | 'controller',
-                              }))
-                            }
-                          >
-                            <option value="viewer">{memberRoleDisplay}</option>
-                            <option value="controller">Admin</option>
-                          </select>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setInviteSelections((prev) => {
+                                  const next = { ...prev };
+                                  if (next[user.id] !== undefined) {
+                                    delete next[user.id];
+                                  } else {
+                                    next[user.id] = 'viewer';
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className="h-4 w-4 shrink-0"
+                            />
+                            <span className="w-[14ch] truncate text-sm font-medium" title={user.username}>
+                              {truncateInviteName(user.username)}
+                            </span>
+                          </div>
+                          <div className="w-[7.75rem] shrink-0">
+                            <select
+                              className="select w-full px-2 py-1.5 text-sm"
+                              value={role}
+                              onChange={(e) =>
+                                setInviteSelections((prev) => ({
+                                  ...prev,
+                                  [user.id]: e.target.value as 'viewer' | 'controller',
+                                }))
+                              }
+                            >
+                              <option value="viewer">{memberRoleDisplay}</option>
+                              <option value="controller">Admin</option>
+                            </select>
+                          </div>
                         </div>
                       </li>
                     );

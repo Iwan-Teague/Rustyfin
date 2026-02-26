@@ -124,9 +124,12 @@ export type JoinWatchPartyRoomResponse = {
 export type ReconfigureWatchPartyRoomRequest =
   | {
       room_mode: 'video';
-      item_id: string;
+      item_id?: string;
       audio_library_id?: never;
       youtube_video_id?: never;
+      web_url?: never;
+      create_tool?: never;
+      create_document_name?: never;
     }
   | {
       room_mode: 'audio';
@@ -135,6 +138,8 @@ export type ReconfigureWatchPartyRoomRequest =
       item_id?: never;
       youtube_video_id?: never;
       web_url?: never;
+      create_tool?: never;
+      create_document_name?: never;
     }
   | {
       room_mode: 'youtube';
@@ -142,6 +147,8 @@ export type ReconfigureWatchPartyRoomRequest =
       item_id?: never;
       audio_library_id?: never;
       web_url?: never;
+      create_tool?: never;
+      create_document_name?: never;
     }
   | {
       room_mode: 'web';
@@ -149,6 +156,8 @@ export type ReconfigureWatchPartyRoomRequest =
       item_id?: never;
       audio_library_id?: never;
       youtube_video_id?: never;
+      create_tool?: never;
+      create_document_name?: never;
     }
   | {
       room_mode: 'create';

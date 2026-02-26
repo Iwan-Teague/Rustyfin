@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
 interface Props {
   channels: ChannelInfo[];
@@ -199,6 +200,7 @@ function ChannelRow({
   return (
     <div>
       <div
+        data-channel-row-id={ch.id}
         className={rowClass}
         onClick={() => onSelect(ch.id)}
         onDoubleClick={() => {
@@ -421,7 +423,9 @@ export default function ChannelSidebar({
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
+                  const target = findDataDeleteTarget('data-channel-row-id', pendingDeleteChannel.id);
+                  await playTelegramDeleteAnimation(target);
                   onDeleteChannel(pendingDeleteChannel.id);
                   setPendingDeleteChannel(null);
                   if (menuOpen?.channelId === pendingDeleteChannel.id) {

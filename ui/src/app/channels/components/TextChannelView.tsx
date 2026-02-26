@@ -9,6 +9,7 @@ import type {
 } from '@/lib/channelsApi';
 import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/channelsApi';
 import { apiFetch } from '@/lib/api';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
 interface Props {
   channel: ChannelInfo;
@@ -189,6 +190,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
   const handleDeleteMessage = useCallback(async (messageId: string) => {
     try {
+      const target = findDataDeleteTarget('data-delete-message-id', messageId);
+      await playTelegramDeleteAnimation(target);
       await deleteMessage(channel.id, messageId);
       setMessages((prev) => prev.filter((m) => m.id !== messageId));
     } catch {
@@ -341,6 +344,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           return (
             <div
               key={msg.id}
+              data-delete-message-id={msg.id}
               className={`group relative ${showHeader ? 'mt-3' : 'mt-0.5'}`}
             >
               {showHeader ? (

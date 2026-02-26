@@ -20,6 +20,11 @@ type Props = {
   canSeek: boolean;
   roomId: string;
   sendWs: (payload: Record<string, unknown>) => void;
+  musicLibraries?: { id: string; name: string }[];
+  currentAudioLibraryId?: string;
+  canConfigureLocalLibrary?: boolean;
+  configuringLocalLibrary?: boolean;
+  onConfigureLocalLibrary?: (libraryId: string) => void;
 };
 
 type PlaybackDescriptor = {
@@ -83,6 +88,11 @@ export default function AudioPlayer({
   canSeek,
   roomId,
   sendWs,
+  musicLibraries = [],
+  currentAudioLibraryId = '',
+  canConfigureLocalLibrary = false,
+  configuringLocalLibrary = false,
+  onConfigureLocalLibrary,
 }: Props) {
   const [onlineSearchQuery, setOnlineSearchQuery] = useState('');
   const [localSearchQuery, setLocalSearchQuery] = useState('');
@@ -108,6 +118,7 @@ export default function AudioPlayer({
   const queueRef = useRef<HTMLUListElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const loadedTrackKeyRef = useRef<string | null>(null);
+  const hasOfflineLibrary = currentAudioLibraryId.trim().length > 0;
 
   // Project position forward in real time
   useEffect(() => {
@@ -285,6 +296,11 @@ export default function AudioPlayer({
         clearTimeout(localSearchTimeoutRef.current);
       }
 
+      if (!hasOfflineLibrary) {
+        setLibrarySearchResults([]);
+        return;
+      }
+
       if (!query.trim()) {
         setLibrarySearchResults(null);
         return;
@@ -302,7 +318,7 @@ export default function AudioPlayer({
         }
       }, 300);
     },
-    [roomId],
+    [hasOfflineLibrary, roomId],
   );
 
   const clearOnlineSearch = useCallback(() => {
@@ -514,6 +530,12 @@ export default function AudioPlayer({
     return onlineStatusEvents[onlineStatusEvents.length - 1] ?? null;
   }, [onlineStatusEvents]);
 
+  useEffect(() => {
+    setLocalSearchQuery('');
+    setLibrarySearchResults(null);
+    setSearchingLocal(false);
+  }, [currentAudioLibraryId]);
+
   return (
     <div className="space-y-4">
       <audio
@@ -660,25 +682,23 @@ export default function AudioPlayer({
                   title={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
                   aria-label={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
                 >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                    <path
-                      d="M4 7h3c2.8 0 4.4.9 6.3 3.5l1.2 1.7C16.1 14.6 17.5 15 20 15h0.9"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M4 17h3.2c2.2 0 3.5-.5 4.9-2.2l3.7-4.6C16.8 8.9 17.9 8 20 8h0.9"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M18 5l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M18 12l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-[18px] w-[18px]"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    shapeRendering="geometricPrecision"
+                    aria-hidden="true"
+                  >
+                    <path d="M4 7h2.5c1.7 0 2.6.6 3.8 2.2l4 5.6c1.2 1.6 2.1 2.2 3.8 2.2H20" />
+                    <path d="M4 17h2.5c1.7 0 2.6-.6 3.8-2.2l1-1.4" />
+                    <path d="M17 4l3 3-3 3" />
+                    <path d="M17 14l3 3-3 3" />
                     {!shuffleEnabled && (
-                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      <path d="M4.5 4.5l15 15" />
                     )}
                   </svg>
                 </button>
@@ -690,25 +710,23 @@ export default function AudioPlayer({
                   title={`Repeat mode: ${repeatLabel}. Click to cycle (Off → Song → Queue)`}
                   aria-label={`Repeat mode: ${repeatLabel}`}
                 >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                    <path
-                      d="M8 7h8a3 3 0 0 1 3 3v1"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M16 17H8a3 3 0 0 1-3-3v-1"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M15 4l3 3-3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M9 14l-3 3 3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-[18px] w-[18px]"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    shapeRendering="geometricPrecision"
+                    aria-hidden="true"
+                  >
+                    <path d="M7 7h9a3 3 0 0 1 3 3v1" />
+                    <path d="M16 5l4 3-4 3" />
+                    <path d="M17 17H8a3 3 0 0 1-3-3v-1" />
+                    <path d="M8 15l-4 3 4 3" />
                     {repeatMode === 'none' && (
-                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                      <path d="M4.5 4.5l15 15" />
                     )}
                   </svg>
                   {repeatMode === 'track' && (
@@ -883,13 +901,55 @@ export default function AudioPlayer({
 
             <div className="space-y-3">
               <p className="text-xs uppercase tracking-wide muted">Offline Search</p>
+              {canConfigureLocalLibrary && (
+                <div className="space-y-2">
+                  <label
+                    htmlFor="offline-audio-library"
+                    className="block text-xs uppercase tracking-wide muted"
+                  >
+                    Offline Library
+                  </label>
+                  <select
+                    id="offline-audio-library"
+                    className="select px-3 py-1.5 text-sm"
+                    value={currentAudioLibraryId}
+                    onChange={(event) => onConfigureLocalLibrary?.(event.target.value)}
+                    disabled={configuringLocalLibrary}
+                  >
+                    <option value="">No local library (online only)</option>
+                    {musicLibraries.map((library) => (
+                      <option key={library.id} value={library.id}>
+                        {library.name}
+                      </option>
+                    ))}
+                  </select>
+                  {configuringLocalLibrary && (
+                    <p className="text-xs muted">Applying offline library…</p>
+                  )}
+                </div>
+              )}
+              {!canConfigureLocalLibrary && hasOfflineLibrary && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
+                  Offline library active in this room.
+                </div>
+              )}
+              {!canConfigureLocalLibrary && !hasOfflineLibrary && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
+                  No offline library configured for this room.
+                </div>
+              )}
               <div className="relative">
                 <input
                   value={localSearchQuery}
                   onChange={(e) => handleLocalSearch(e.target.value)}
                   className="input w-full px-3 py-1.5 pr-10 text-sm"
-                  placeholder="Search local tracks…"
+                  placeholder={
+                    hasOfflineLibrary
+                      ? 'Search local tracks…'
+                      : 'Select an offline library to search local tracks…'
+                  }
                   aria-label="Search local tracks"
+                  disabled={!hasOfflineLibrary}
                 />
                 {localSearchQuery.trim().length > 0 && (
                   <button
@@ -918,7 +978,9 @@ export default function AudioPlayer({
 
               {!searchingLocal && librarySearchResults !== null && librarySearchResults.length === 0 && (
                 <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
-                  No local tracks found (or no local library configured for this room).
+                  {hasOfflineLibrary
+                    ? 'No local tracks found.'
+                    : 'No local library configured for this room.'}
                 </div>
               )}
 

@@ -8,6 +8,13 @@ export type SelectedInvite = {
   role: 'viewer' | 'controller';
 };
 
+const INVITE_NAME_MAX_CHARS = 14;
+
+function truncateInviteName(name: string): string {
+  if (name.length <= INVITE_NAME_MAX_CHARS) return name;
+  return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
+}
+
 type Props = {
   users: WatchPartyUser[];
   currentUserId: string;
@@ -46,31 +53,37 @@ export default function UserInvitePicker({
             const role = isSelected ? selected[user.id].role : (pendingRoles[user.id] ?? 'viewer');
             return (
               <li key={user.id} className="tile rounded-xl px-3 py-2">
-                <div className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggle(user.id, pendingRoles[user.id])}
-                    aria-label={`Invite ${user.username}`}
-                    className="h-4 w-4 shrink-0"
-                  />
-                  <span className="flex-1 text-sm font-medium">{user.username}</span>
-                  <select
-                    className="select px-2 py-1.5 text-sm"
-                    aria-label={`Role for ${user.username}`}
-                    value={role}
-                    onChange={(e) => {
-                      const newRole = e.target.value as 'viewer' | 'controller';
-                      if (isSelected) {
-                        onRoleChange(user.id, newRole);
-                      } else {
-                        setPendingRoles((prev) => ({ ...prev, [user.id]: newRole }));
-                      }
-                    }}
-                  >
-                    <option value="viewer">{memberLabel}</option>
-                    <option value="controller">Admin</option>
-                  </select>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => onToggle(user.id, pendingRoles[user.id])}
+                      aria-label={`Invite ${user.username}`}
+                      className="h-4 w-4 shrink-0"
+                    />
+                    <span className="w-[14ch] truncate text-sm font-medium" title={user.username}>
+                      {truncateInviteName(user.username)}
+                    </span>
+                  </div>
+                  <div className="w-[7.75rem] shrink-0">
+                    <select
+                      className="select w-full px-2 py-1.5 text-sm"
+                      aria-label={`Role for ${user.username}`}
+                      value={role}
+                      onChange={(e) => {
+                        const newRole = e.target.value as 'viewer' | 'controller';
+                        if (isSelected) {
+                          onRoleChange(user.id, newRole);
+                        } else {
+                          setPendingRoles((prev) => ({ ...prev, [user.id]: newRole }));
+                        }
+                      }}
+                    >
+                      <option value="viewer">{memberLabel}</option>
+                      <option value="controller">Admin</option>
+                    </select>
+                  </div>
                 </div>
               </li>
             );

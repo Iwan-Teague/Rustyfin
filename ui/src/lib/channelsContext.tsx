@@ -19,7 +19,6 @@ import type {
   VoiceTranscriptionState,
 } from './channelsApi';
 import VoiceEngine from '@/app/channels/components/VoiceEngine';
-import VoiceBar from '@/app/channels/components/VoiceBar';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -660,18 +659,6 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           onSpeakingChange={handleSpeakingChange}
           transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
           onTranscriptionChunk={sendTranscriptionChunk}
-        />
-      )}
-      {/* Floating bar shown on every page while in a voice channel */}
-      {voiceSession && (
-        <VoiceBar
-          channelName={voiceSession.channelName}
-          muted={voiceSession.muted}
-          deafened={voiceSession.deafened}
-          hasLocalStream={voiceSession.localStream !== null}
-          onToggleMute={toggleMute}
-          onToggleDeafen={toggleDeafen}
-          onLeave={leaveVoice}
         />
       )}
     </ChannelsContext.Provider>

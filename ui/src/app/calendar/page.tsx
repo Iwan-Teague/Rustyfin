@@ -16,6 +16,7 @@ import {
   type CalendarUser,
   type UpdateCalendarEventRequest,
 } from '@/lib/calendarApi';
+import { playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
 type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30' | 'events_30';
 
@@ -286,9 +287,10 @@ export default function CalendarPage() {
     }
   };
 
-  const onDelete = async (eventId: string) => {
+  const onDelete = async (eventId: string, target?: HTMLElement | null) => {
     setError(null);
     try {
+      await playTelegramDeleteAnimation(target);
       await deleteCalendarEvent(eventId);
       if (editingEventId === eventId) {
         resetForm();
@@ -419,7 +421,11 @@ export default function CalendarPage() {
                       ) : (
                         <div className="space-y-1">
                           {dayEvents.map((event) => (
-                            <div key={event.occurrence_id} className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}>
+                            <div
+                              key={event.occurrence_id}
+                              data-calendar-event-id={event.id}
+                              className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}
+                            >
                               <p className="font-medium">{event.title}</p>
                               {event.display_description && <p className="muted">{event.display_description}</p>}
                               {event.owner_username && event.scope === 'personal' && (
@@ -433,7 +439,16 @@ export default function CalendarPage() {
                                     </button>
                                   )}
                                   {event.can_delete && (
-                                    <button type="button" className="btn-ghost px-2 py-0.5 text-xs text-red-300" onClick={() => void onDelete(event.id)}>
+                                    <button
+                                      type="button"
+                                      className="btn-ghost px-2 py-0.5 text-xs text-red-300"
+                                      onClick={(e) =>
+                                        void onDelete(
+                                          event.id,
+                                          (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                        )
+                                      }
+                                    >
                                       Delete
                                     </button>
                                   )}
@@ -488,6 +503,7 @@ export default function CalendarPage() {
                           {dayEvents.map((event) => (
                             <div
                               key={event.occurrence_id}
+                              data-calendar-event-id={event.id}
                               className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
                             >
                               <p className="font-semibold leading-tight">{event.title}</p>
@@ -512,7 +528,12 @@ export default function CalendarPage() {
                                     <button
                                       type="button"
                                       className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
-                                      onClick={() => void onDelete(event.id)}
+                                      onClick={(e) =>
+                                        void onDelete(
+                                          event.id,
+                                          (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                        )
+                                      }
                                     >
                                       Delete
                                     </button>

@@ -2115,43 +2115,51 @@ pub async fn reconfigure_room(
         usize,
     ) = match target_mode.as_str() {
         "video" => {
-            let item_id = body
+            let maybe_item_id = body
                 .item_id
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    ApiError::BadRequest("item_id is required when switching to video mode".into())
-                })?;
+                .filter(|s| !s.is_empty());
 
-            let item = rustfin_db::repo::items::get_item(&state.db, item_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
-
-            if item.kind != "movie" && item.kind != "episode" {
-                return Err(ApiError::BadRequest(
-                    "watch parties currently support movie and episode items only".into(),
-                )
-                .into());
-            }
-
-            for user in &active_users {
-                if ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id)
+            let resolved_item_id = if let Some(item_id) = maybe_item_id {
+                let item = rustfin_db::repo::items::get_item(&state.db, item_id)
                     .await
-                    .is_err()
-                {
-                    return Err(ApiError::BadRequest(format!(
-                        "user '{}' does not have access to the selected video library",
-                        user.username
-                    ))
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+
+                if item.kind != "movie" && item.kind != "episode" {
+                    return Err(ApiError::BadRequest(
+                        "watch parties currently support movie and episode items only".into(),
+                    )
                     .into());
                 }
-            }
+
+                for user in &active_users {
+                    if ensure_library_access_for_user(
+                        &state,
+                        &user.id,
+                        &user.role,
+                        &item.library_id,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err(ApiError::BadRequest(format!(
+                            "user '{}' does not have access to the selected video library",
+                            user.username
+                        ))
+                        .into());
+                    }
+                }
+
+                Some(item.id)
+            } else {
+                None
+            };
 
             (
                 "library".to_string(),
-                Some(item.id),
+                resolved_item_id,
                 None,
                 None,
                 None,
