@@ -1522,6 +1522,7 @@ pub async fn create_room(
         room_name.as_deref(),
         item_id.as_deref(),
         &policy_json,
+        policy.invite_only,
         password_hash.as_deref(),
         &members,
         Some(&room_mode),

@@ -36,10 +36,14 @@ const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
 const MAX_MESSAGES_PER_WINDOW: usize = 80;
 const MAX_CREATE_TEXT_LEN: usize = 100_000;
 const MAX_CREATE_DOCUMENT_NAME_LEN: usize = 120;
+const MAX_CREATE_DOC_PAGES: usize = 80;
+const MAX_CREATE_PAGE_ID_LEN: usize = 128;
+const MAX_CREATE_PAGE_HTML_LEN: usize = MAX_CREATE_TEXT_LEN;
 const MAX_CANVAS_STROKES: usize = 512;
 const MAX_CANVAS_POINTS_PER_STROKE: usize = 1024;
 const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
 const MAX_CANVAS_BYTES: usize = 30 * 1024 * 1024;
+const EMPTY_RICH_PAGE_HTML: &str = "<p><br></p>";
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
@@ -53,6 +57,43 @@ struct ConnectionContext {
     audio_source: Option<String>,
     audio_library_id: Option<String>,
     web_url: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RichDocPage {
+    id: String,
+    html: String,
+}
+
+fn default_rich_doc_version() -> u8 {
+    1
+}
+
+fn default_rich_doc_type() -> String {
+    "rich_doc".to_string()
+}
+
+fn default_rich_doc_page_size() -> String {
+    "a4".to_string()
+}
+
+fn default_rich_doc_page_orientation() -> String {
+    "portrait".to_string()
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RichDocumentPayload {
+    #[serde(default = "default_rich_doc_version")]
+    version: u8,
+    #[serde(rename = "type")]
+    #[serde(default = "default_rich_doc_type")]
+    doc_type: String,
+    #[serde(default = "default_rich_doc_page_size")]
+    page_size: String,
+    #[serde(default = "default_rich_doc_page_orientation")]
+    page_orientation: String,
+    #[serde(default)]
+    pages: Vec<RichDocPage>,
 }
 
 pub async fn ws_connect(
@@ -605,6 +646,134 @@ fn normalize_create_text_content(value: String) -> Result<String, AppError> {
     Ok(value)
 }
 
+fn normalize_create_page_id(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_CREATE_PAGE_ID_LEN {
+        return Err(ApiError::BadRequest("invalid page_id".into()).into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn normalize_create_page_html(raw: String) -> Result<String, AppError> {
+    if raw.len() > MAX_CREATE_PAGE_HTML_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "page_html must be <= {MAX_CREATE_PAGE_HTML_LEN} bytes"
+        ))
+        .into());
+    }
+    Ok(raw)
+}
+
+fn normalize_create_page_orientation(raw: &str) -> Result<&'static str, AppError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "portrait" => Ok("portrait"),
+        "landscape" => Ok("landscape"),
+        _ => Err(ApiError::BadRequest(
+            "page_orientation must be either 'portrait' or 'landscape'".into(),
+        )
+        .into()),
+    }
+}
+
+fn escape_html_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn plain_text_to_rich_page_html(value: &str) -> String {
+    let normalized = value.replace("\r\n", "\n");
+    let lines = normalized.split('\n');
+    let html = lines
+        .map(|line| {
+            if line.is_empty() {
+                EMPTY_RICH_PAGE_HTML.to_string()
+            } else {
+                format!("<p>{}</p>", escape_html_text(line))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    if html.trim().is_empty() {
+        EMPTY_RICH_PAGE_HTML.to_string()
+    } else {
+        html
+    }
+}
+
+fn decode_create_rich_document(raw: &str) -> RichDocumentPayload {
+    let trimmed = raw.trim();
+    if !trimmed.is_empty() {
+        if let Ok(mut parsed) = serde_json::from_str::<RichDocumentPayload>(trimmed) {
+            if parsed.doc_type == "rich_doc" {
+                if parsed.version == 0 {
+                    parsed.version = 1;
+                }
+                if parsed.page_size.trim().is_empty() {
+                    parsed.page_size = "a4".to_string();
+                }
+                if !matches!(parsed.page_orientation.as_str(), "portrait" | "landscape") {
+                    parsed.page_orientation = "portrait".to_string();
+                }
+                if parsed.pages.is_empty() {
+                    parsed.pages.push(RichDocPage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        html: EMPTY_RICH_PAGE_HTML.to_string(),
+                    });
+                }
+                parsed.pages.truncate(MAX_CREATE_DOC_PAGES);
+                return parsed;
+            }
+        }
+    }
+
+    RichDocumentPayload {
+        version: 1,
+        doc_type: "rich_doc".to_string(),
+        page_size: "a4".to_string(),
+        page_orientation: "portrait".to_string(),
+        pages: vec![RichDocPage {
+            id: uuid::Uuid::new_v4().to_string(),
+            html: plain_text_to_rich_page_html(raw),
+        }],
+    }
+}
+
+fn validate_rich_document_pages(doc: &RichDocumentPayload) -> Result<(), AppError> {
+    if doc.pages.is_empty() || doc.pages.len() > MAX_CREATE_DOC_PAGES {
+        return Err(ApiError::BadRequest(format!(
+            "rich document pages must be between 1 and {MAX_CREATE_DOC_PAGES}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+async fn apply_create_text_document_delta<F>(
+    runtime: &RoomRuntime,
+    text_format: Option<String>,
+    mut mutate: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&mut RichDocumentPayload) -> Result<(), AppError>,
+{
+    let snapshot = runtime
+        .snapshot_create_state()
+        .await
+        .ok_or_else(|| ApiError::BadRequest("create state is unavailable".into()))?;
+    let mut doc = decode_create_rich_document(&snapshot.text_content);
+    mutate(&mut doc)?;
+    validate_rich_document_pages(&doc)?;
+    let encoded = serde_json::to_string(&doc)
+        .map_err(|e| ApiError::Internal(format!("failed to encode rich document: {e}")))?;
+    let normalized = normalize_create_text_content(encoded)?;
+    let _ = runtime.set_create_text(normalized, text_format).await;
+    Ok(())
+}
+
 fn is_valid_hex_color(color: &str) -> bool {
     let bytes = color.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' {
@@ -673,6 +842,14 @@ fn normalize_canvas_strokes(
     }
 
     Ok(normalized)
+}
+
+fn normalize_canvas_stroke_id(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_CANVAS_STROKE_ID_LEN {
+        return Err(ApiError::BadRequest("invalid canvas stroke id".into()).into());
+    }
+    Ok(trimmed.to_string())
 }
 
 async fn handle_client_message(
@@ -1519,6 +1696,199 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::CreateUpsertTextPage { page_id, page_html } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_upsert_text_page is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_page_id = normalize_create_page_id(&page_id)?;
+            let normalized_page_html = normalize_create_page_html(page_html)?;
+
+            apply_create_text_document_delta(runtime, None, |doc| {
+                if let Some(existing) = doc
+                    .pages
+                    .iter_mut()
+                    .find(|page| page.id == normalized_page_id)
+                {
+                    existing.html = normalized_page_html.clone();
+                } else {
+                    if doc.pages.len() >= MAX_CREATE_DOC_PAGES {
+                        return Err(ApiError::BadRequest(format!(
+                            "too many document pages; max is {MAX_CREATE_DOC_PAGES}"
+                        ))
+                        .into());
+                    }
+                    doc.pages.push(RichDocPage {
+                        id: normalized_page_id.clone(),
+                        html: normalized_page_html.clone(),
+                    });
+                }
+                Ok(())
+            })
+            .await?;
+
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateInsertTextPage {
+            page_id,
+            page_html,
+            after_page_id,
+        } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_insert_text_page is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_page_id = normalize_create_page_id(&page_id)?;
+            let normalized_page_html = normalize_create_page_html(page_html)?;
+            let normalized_after_page_id = after_page_id
+                .as_deref()
+                .map(normalize_create_page_id)
+                .transpose()?;
+
+            apply_create_text_document_delta(runtime, None, |doc| {
+                if doc.pages.len() >= MAX_CREATE_DOC_PAGES {
+                    return Err(ApiError::BadRequest(format!(
+                        "too many document pages; max is {MAX_CREATE_DOC_PAGES}"
+                    ))
+                    .into());
+                }
+                if doc.pages.iter().any(|page| page.id == normalized_page_id) {
+                    return Err(ApiError::BadRequest("page_id already exists".into()).into());
+                }
+                let insert_index = normalized_after_page_id
+                    .as_ref()
+                    .and_then(|after_id| doc.pages.iter().position(|page| &page.id == after_id))
+                    .map_or(doc.pages.len(), |idx| idx.saturating_add(1));
+
+                doc.pages.insert(
+                    insert_index,
+                    RichDocPage {
+                        id: normalized_page_id.clone(),
+                        html: normalized_page_html.clone(),
+                    },
+                );
+                Ok(())
+            })
+            .await?;
+
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateDeleteTextPage { page_id } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_delete_text_page is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_page_id = normalize_create_page_id(&page_id)?;
+
+            apply_create_text_document_delta(runtime, None, |doc| {
+                let Some(index) = doc
+                    .pages
+                    .iter()
+                    .position(|page| page.id == normalized_page_id)
+                else {
+                    return Ok(());
+                };
+                if doc.pages.len() <= 1 {
+                    doc.pages[index].html = EMPTY_RICH_PAGE_HTML.to_string();
+                } else {
+                    doc.pages.remove(index);
+                }
+                Ok(())
+            })
+            .await?;
+
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateSetTextPageOrientation { page_orientation } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_set_text_page_orientation is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_orientation = normalize_create_page_orientation(&page_orientation)?;
+            apply_create_text_document_delta(runtime, None, |doc| {
+                doc.page_orientation = normalized_orientation.to_string();
+                Ok(())
+            })
+            .await?;
+
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
         ClientMessage::CreateSetCanvas { canvas_strokes } => {
             if context.room_mode != "create" {
                 send_error(
@@ -1543,6 +1913,101 @@ async fn handle_client_message(
 
             let normalized_canvas = normalize_canvas_strokes(canvas_strokes)?;
             let _ = runtime.set_create_canvas(normalized_canvas).await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateCanvasAppendStroke { canvas_stroke } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_canvas_append_stroke is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let mut normalized = normalize_canvas_strokes(vec![canvas_stroke])?;
+            let stroke = normalized
+                .pop()
+                .ok_or_else(|| ApiError::BadRequest("canvas stroke is required".into()))?;
+            let existing = runtime
+                .snapshot_create_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("create state is unavailable".into()))?;
+            let mut candidate = existing.canvas_strokes;
+            candidate.push(stroke.clone());
+            normalize_canvas_strokes(candidate)?;
+            let _ = runtime.append_create_canvas_stroke(stroke).await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateCanvasRemoveStroke { stroke_id } => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_canvas_remove_stroke is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let normalized_stroke_id = normalize_canvas_stroke_id(&stroke_id)?;
+            let _ = runtime
+                .remove_create_canvas_stroke(&normalized_stroke_id)
+                .await;
+            persist_create_state(state, runtime, &context.room_id).await?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::CreateCanvasClear => {
+            if context.room_mode != "create" {
+                send_error(
+                    socket,
+                    "create_canvas_clear is only valid in create-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "editing is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let _ = runtime.clear_create_canvas().await;
             persist_create_state(state, runtime, &context.room_id).await?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())

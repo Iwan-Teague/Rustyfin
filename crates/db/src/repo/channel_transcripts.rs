@@ -121,9 +121,17 @@ pub async fn create_running_session(
     .execute(pool)
     .await?;
 
-    get_session(pool, &id)
-        .await?
-        .ok_or(sqlx::Error::RowNotFound)
+    Ok(TranscriptSessionRow {
+        id,
+        channel_id: channel_id.to_string(),
+        status: "running".to_string(),
+        started_by_user_id: started_by_user_id.to_string(),
+        started_by_username: started_by_username.to_string(),
+        started_ts,
+        ended_ts: None,
+        output_path: None,
+        failure_reason: None,
+    })
 }
 
 pub async fn get_session(
@@ -287,25 +295,17 @@ pub async fn append_entry(
     .execute(pool)
     .await?;
 
-    let row: (
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        String,
-        i64,
-    ) = sqlx::query_as(
-        "SELECT id, session_id, channel_id, user_id, username, started_ts_ms, ended_ts_ms, text, created_ts \
-         FROM channel_transcript_entry \
-         WHERE id = ?",
-    )
-    .bind(&id)
-    .fetch_one(pool)
-    .await?;
-    Ok(map_entry(row))
+    Ok(TranscriptEntryRow {
+        id,
+        session_id: entry.session_id.to_string(),
+        channel_id: entry.channel_id.to_string(),
+        user_id: entry.user_id.to_string(),
+        username: entry.username.to_string(),
+        started_ts_ms: entry.started_ts_ms,
+        ended_ts_ms: entry.ended_ts_ms,
+        text: entry.text.to_string(),
+        created_ts,
+    })
 }
 
 pub async fn list_entries_for_session(
