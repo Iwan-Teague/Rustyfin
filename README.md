@@ -119,10 +119,12 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
   - It fingerprints source/build inputs per service.
   - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-transcription-agent`, `rustfin-youtube-agent`, `rustfin-ui`).
   - If nothing changed, it skips image rebuild and reuses existing images.
+  - Compose file changes are included in the fingerprint scope, so service image rebuilds also trigger when build-relevant compose config changes.
 - Rust Docker build profile defaults to `dev` for faster local builds.
   - Set `RUSTFIN_RUST_BUILD_PROFILE=release` when you need optimized release binaries.
 - `--full-rebuild` forces no-cache rebuild.
 - `--no-build` skips rebuild.
+- Health checks in detached mode wait for critical services (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-youtube-agent`, `rustfin-transcription-agent`, `rustfin-ui`, `rustfin-edge`) before final success output.
 - If `RUSTFIN_YOUTUBE_COOKIE` is exported once, `start.sh` persists it to a local secrets file and auto-loads it on future runs.
 
 ## Access URLs and LAN Behavior
