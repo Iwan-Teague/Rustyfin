@@ -117,8 +117,10 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 
 - Default behavior performs a smart incremental rebuild:
   - It fingerprints source/build inputs per service.
-  - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-ui`).
+  - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-transcription-agent`, `rustfin-youtube-agent`, `rustfin-ui`).
   - If nothing changed, it skips image rebuild and reuses existing images.
+- Rust Docker build profile defaults to `dev` for faster local builds.
+  - Set `RUSTFIN_RUST_BUILD_PROFILE=release` when you need optimized release binaries.
 - `--full-rebuild` forces no-cache rebuild.
 - `--no-build` skips rebuild.
 - If `RUSTFIN_YOUTUBE_COOKIE` is exported once, `start.sh` persists it to a local secrets file and auto-loads it on future runs.
@@ -187,6 +189,19 @@ UI:
 npm --prefix ui run lint
 npm --prefix ui run build
 ```
+
+## UI Animation Standards
+
+To keep interaction behavior consistent across pages:
+
+- Primary/save/create actions:
+  - Use `.btn-primary` buttons for primary actions.
+  - Click feedback is standardized via `ui/src/app/components/PrimaryButtonEffects.tsx` and CSS in `ui/src/app/globals.css` (`.btn-click-burst`).
+  - Do not add one-off custom save/click animations for individual pages/components.
+- Delete actions (messages, channels, transcripts, queues, admin records, calendar events):
+  - Use `playTelegramDeleteAnimation` from `ui/src/lib/deleteAnimation.ts`.
+  - Resolve DOM targets with `findDataDeleteTarget` (or equivalent explicit delete target node lookup).
+  - Keep the shared simmer-then-pop animation defined in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` + keyframes) as the single delete animation style.
 
 E2E harness:
 
