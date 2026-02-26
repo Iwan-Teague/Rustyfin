@@ -1,5 +1,5 @@
 # Multi-stage build for Rustfin server
-FROM rustlang/rust:nightly-bookworm AS builder
+FROM rust:bookworm AS builder
 
 WORKDIR /app
 ARG RUST_BUILD_PROFILE=dev

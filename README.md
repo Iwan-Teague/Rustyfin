@@ -126,7 +126,7 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
   - It fingerprints source/build inputs per service.
   - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-transcription-agent`, `rustfin-youtube-agent`, `rustfin-ui`).
   - If nothing changed, it skips image rebuild and reuses existing images.
-  - Compose file changes are included in the fingerprint scope, so service image rebuilds also trigger when build-relevant compose config changes.
+  - Compose config impact is hashed per service (`docker compose config --hash <service>`), so unrelated compose edits do not invalidate all service fingerprints.
 - Rust Docker build profile defaults to `dev` for faster local builds.
   - Set `RUSTFIN_RUST_BUILD_PROFILE=release` when you need optimized release binaries.
 - `--full-rebuild` forces no-cache rebuild.
@@ -185,6 +185,11 @@ Common runtime variables:
 - `RUSTFIN_TRANSCODE_DIR`
 
 ## Build and Test
+
+Rust toolchain policy:
+
+- The repository is pinned to stable Rust via `/Users/iwanteague/Desktop/Rustyfin/rust-toolchain.toml`.
+- Docker Rust builder images use `rust:bookworm` (stable channel image).
 
 Rust workspace:
 

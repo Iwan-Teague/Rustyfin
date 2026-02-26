@@ -23,11 +23,15 @@ Rustyfin is a Docker-first local media platform with:
 - Prefer extending existing Rust crates/services over introducing new non-Rust backend components.
 - Keep frontend-only logic in UI when it is purely presentational/UX.
 
-3. Keep Existing Architecture Stable
+3. Rust Toolchain Policy
+- Rust toolchain is pinned to stable via `/Users/iwanteague/Desktop/Rustyfin/rust-toolchain.toml`.
+- Do not move this repository to nightly unless explicitly requested and documented.
+
+4. Keep Existing Architecture Stable
 - Do not break: setup flow, libraries/scanning, playback, channels, rooms, calendar, admin, start/stop/clean scripts.
 - Favor additive, backward-compatible changes.
 
-4. UI Animation Consistency (mandatory)
+5. UI Animation Consistency (mandatory)
 - Save/Create/primary actions:
   - Use `.btn-primary` for primary action buttons.
   - Keep click feedback centralized through `ui/src/app/components/PrimaryButtonEffects.tsx` and `.btn-click-burst` styles in `ui/src/app/globals.css`.

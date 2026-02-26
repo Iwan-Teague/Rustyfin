@@ -149,6 +149,24 @@ compute_scope_fingerprint() {
   } | hash_stdin
 }
 
+compose_service_hash() {
+  local service="$1"
+  local line=""
+  local hash=""
+
+  line="$(docker compose -f "$COMPOSE_FILE" config --hash "$service" 2>/dev/null | awk -v svc="$service" '$1 == svc { print $2; exit }' || true)"
+  hash="${line##*$'\n'}"
+
+  if [[ -n "$hash" ]]; then
+    printf '%s' "$hash"
+    return
+  fi
+
+  # Safe fallback: if per-service compose hashing is unavailable, use the
+  # compose file hash so build invalidation is still correct (but broader).
+  printf '%s' "$(hash_file "$COMPOSE_FILE")"
+}
+
 project_name_default() {
   basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g'
 }
@@ -220,11 +238,22 @@ save_build_fingerprints() {
 }
 
 compute_all_service_fingerprints() {
-  local compose_scope_file="$COMPOSE_FILE"
+  local rustfin_compose_hash=""
+  local calendar_compose_hash=""
+  local tmdb_agent_compose_hash=""
+  local transcription_agent_compose_hash=""
+  local youtube_agent_compose_hash=""
+  local ui_compose_hash=""
 
-  current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+  rustfin_compose_hash="$(compose_service_hash "rustfin")"
+  calendar_compose_hash="$(compose_service_hash "rustfin-calendar")"
+  tmdb_agent_compose_hash="$(compose_service_hash "rustfin-tmdb-agent")"
+  transcription_agent_compose_hash="$(compose_service_hash "rustfin-transcription-agent")"
+  youtube_agent_compose_hash="$(compose_service_hash "rustfin-youtube-agent")"
+  ui_compose_hash="$(compose_service_hash "rustfin-ui")"
+
+  current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${rustfin_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/Dockerfile" \
-    "$compose_scope_file" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/server" \
@@ -233,38 +262,34 @@ compute_all_service_fingerprints() {
     "$REPO_ROOT/crates/scanner" \
     "$REPO_ROOT/crates/metadata" \
     "$REPO_ROOT/crates/transcoder")"
-  current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+  current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${calendar_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/calendar/Dockerfile" \
-    "$compose_scope_file" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/calendar" \
     "$REPO_ROOT/crates/core" \
     "$REPO_ROOT/crates/db")"
-  current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+  current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${tmdb_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
-    "$compose_scope_file" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/tmdb-agent" \
     "$REPO_ROOT/crates/core" \
     "$REPO_ROOT/crates/db" \
     "$REPO_ROOT/crates/metadata")"
-  current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+  current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${transcription_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
-    "$compose_scope_file" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/transcription-agent" \
     "$REPO_ROOT/crates/core")"
-  current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
+  current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${youtube_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
-    "$compose_scope_file" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/youtube-agent" \
     "$REPO_ROOT/crates/core")"
-  current_ui_fp="$(compute_scope_fingerprint "$compose_scope_file" "$REPO_ROOT/ui")"
+  current_ui_fp="compose=${ui_compose_hash}:$(compute_scope_fingerprint "$REPO_ROOT/ui")"
 }
 
 persist_secret_env_var() {
