@@ -167,6 +167,10 @@ a {
   z-index: 2;
 }
 
+.btn-primary > .absolute {
+  position: absolute;
+}
+
 .btn-primary:hover {
   transform: translateY(-1px);
   filter: brightness(1.06);

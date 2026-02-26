@@ -146,6 +146,7 @@ If default ports are occupied, it picks free ports.
 
 - ffmpeg/ffprobe are required for transcode and media probing.
 - Room online-audio mode also depends on ffmpeg for conversion.
+- Listen Together online downloads use `rustfin-youtube-agent` with `yt-dlp` fallback and a JavaScript runtime (`node`) for modern YouTube signature handling.
 - Some YouTube videos cannot be embedded or downloaded due to provider restrictions.
 
 ## Key Environment Variables
@@ -163,6 +164,7 @@ Common runtime variables:
 - `RUSTFIN_YOUTUBE_COOKIE_FILE`
 - `RUSTFIN_YOUTUBE_AGENT_URL`
 - `RUSTFIN_YOUTUBE_AGENT_TOKEN`
+- `RUSTFIN_YTDLP_PATH`
 - `RUSTFIN_TRANSCRIPTION_AGENT_URL`
 - `RUSTFIN_TRANSCRIPTION_AGENT_TOKEN`
 - `RUSTFIN_WHISPER_MODEL_PATH`
