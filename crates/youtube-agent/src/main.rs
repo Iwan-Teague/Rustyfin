@@ -2,13 +2,14 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    http::HeaderMap,
     routing::{get, post},
 };
 use regex::Regex;
 use reqwest::header::HeaderValue;
-use rustfin_core::error::{ApiError, ErrorEnvelope};
+use rustfin_core::agent_auth::{normalize_secret, verify_agent_token};
+use rustfin_core::axum_error::AppError;
+use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::OnceLock;
@@ -32,23 +33,6 @@ struct AppState {
     youtube_cookie: Option<String>,
     youtube_cookie_file: Option<PathBuf>,
     agent_token: Option<String>,
-}
-
-struct AppError(ApiError);
-
-impl From<ApiError> for AppError {
-    fn from(value: ApiError) -> Self {
-        Self(value)
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let envelope = ErrorEnvelope::from(&self.0);
-        (status, Json(envelope)).into_response()
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -75,29 +59,6 @@ struct DownloadAudioResponse {
 struct DownloadedAudio {
     file_path: PathBuf,
     duration_ms: Option<u64>,
-}
-
-fn normalized_secret(value: Option<String>) -> Option<String> {
-    value
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
-fn verify_agent_token(headers: &HeaderMap, expected: Option<&str>) -> Result<(), AppError> {
-    let Some(expected_token) = expected.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(());
-    };
-
-    let supplied = headers
-        .get("x-agent-token")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .unwrap_or_default();
-
-    if supplied != expected_token {
-        return Err(ApiError::Unauthorized("missing or invalid youtube-agent token".into()).into());
-    }
-    Ok(())
 }
 
 fn room_id_regex() -> &'static Regex {
@@ -1344,7 +1305,7 @@ async fn download_audio(
     headers: HeaderMap,
     Json(body): Json<DownloadAudioRequest>,
 ) -> Result<Json<DownloadAudioResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(&headers, state.agent_token.as_deref(), "youtube-agent")?;
 
     let room_id = normalize_room_id(&body.room_id).ok_or_else(|| {
         ApiError::BadRequest(
@@ -1392,10 +1353,10 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string()),
     );
 
-    let youtube_cookie = normalized_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE").ok());
+    let youtube_cookie = normalize_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE").ok());
     let youtube_cookie_file =
-        normalized_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE_FILE").ok()).map(PathBuf::from);
-    let agent_token = normalized_secret(std::env::var("RUSTFIN_YOUTUBE_AGENT_TOKEN").ok());
+        normalize_secret(std::env::var("RUSTFIN_YOUTUBE_COOKIE_FILE").ok()).map(PathBuf::from);
+    let agent_token = normalize_secret(std::env::var("RUSTFIN_YOUTUBE_AGENT_TOKEN").ok());
 
     let state = AppState {
         cache_dir,

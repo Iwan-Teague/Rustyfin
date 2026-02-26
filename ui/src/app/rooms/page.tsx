@@ -29,7 +29,6 @@ type LibrarySummary = {
 };
 
 type RoomMode = 'watch' | 'audio' | 'play' | 'create';
-type RightPanelTab = 'invites' | 'options';
 
 const DEFAULT_POLICY: WatchPartyPolicy = {
   allow_non_host_play_pause: true,
@@ -47,7 +46,6 @@ export default function WatchPartyPage() {
   const [invites, setInvites] = useState<WatchPartyInvite[]>([]);
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('invites');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
   const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
   const [roomName, setRoomName] = useState('');
@@ -308,12 +306,9 @@ export default function WatchPartyPage() {
       : roomMode === 'create'
         ? true
         : true;
-  const fixedColumnHeightStyle =
-    roomMode === 'watch'
-      ? { minHeight: '16rem' }
-      : fixedColumnHeightPx
-        ? { height: `${fixedColumnHeightPx}px` }
-        : { minHeight: '24rem' };
+  const fixedColumnHeightStyle = fixedColumnHeightPx
+    ? { height: `${fixedColumnHeightPx}px` }
+    : { minHeight: '24rem' };
 
   return (
     <div className="space-y-6 animate-rise">
@@ -418,124 +413,32 @@ export default function WatchPartyPage() {
         </div>
       </section>
 
-      <div className="mt-0 grid gap-5 xl:grid-cols-2">
-        <section className="space-y-4">
-          <div className="overflow-hidden" style={fixedColumnHeightStyle}>
-            <div className="h-full overflow-y-auto pr-1">
-              {roomMode === 'watch' ? (
-                <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-semibold">Watch Together</h2>
-                    <p className="text-sm muted">
-                      Create the room first, then switch between Local Media, YouTube, and Web
-                      using source tabs above the embedded viewer inside the room.
-                    </p>
-                  </div>
-                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                    Local library/media selection is now handled in-room.
-                  </div>
-                </section>
-              ) : roomMode === 'audio' ? (
-                <div className="space-y-3">
-                  <p className="text-sm muted">
-                    Listen Together rooms now support both online YouTube audio search and offline
-                    local-library search inside the same room queue.
-                  </p>
-                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                    Create the room, then use both search sections in-lobby to queue local and
-                    online tracks together.
-                  </div>
-                  <p className="text-xs muted">
-                    Offline library selection is now done inside the room next to Offline Search.
-                  </p>
-                </div>
-              ) : roomMode === 'create' ? (
-                <section className="panel space-y-4 p-5 sm:p-6">
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-semibold">Create Together</h2>
-                    <p className="text-sm muted">
-                      Create the room directly. Inside the room, users can switch between shared
-                      document and shared canvas at any time.
-                    </p>
-                  </div>
-                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                    Room creation no longer requires picking document vs canvas first.
-                  </div>
-                </section>
-              ) : (
-                <section className="panel space-y-4 p-5 sm:p-6">
-                  <div className="space-y-2">
-                    <h2 className="text-xl font-semibold">Play Together</h2>
-                    <p className="text-sm muted">
-                      Multiplayer room mode is being added. You can already use Watch Together and Listen Together.
-                    </p>
-                  </div>
-                  <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                    Play Together creation is not available yet.
-                  </div>
-                </section>
-              )}
-            </div>
-          </div>
-        </section>
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 top-0 -z-10 opacity-0"
+      >
+        <div ref={roomOptionsMeasureRef}>
+          <RoomOptions
+            roomMode={effectivePolicyRoomMode}
+            password={password}
+            allowPlayPause={policy.allow_non_host_play_pause}
+            allowSeek={policy.allow_non_host_seek}
+            inviteOnly={policy.invite_only}
+            defaultJoinRole={policy.default_join_role}
+            noShadow
+            onPasswordChange={setPassword}
+            onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
+            onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
+            onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
+            onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
+          />
+        </div>
+      </div>
 
-        <section className="space-y-4 relative">
-          <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-            {([
-              ['invites', 'Invite Users'],
-              ['options', 'Room Options'],
-            ] as const).map(([tab, label]) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setRightPanelTab(tab)}
-                className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                  rightPanelTab === tab
-                    ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                    : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute left-0 right-0 top-[calc(2.5rem+0.5rem)] -z-10 opacity-0"
-          >
-            <div ref={roomOptionsMeasureRef}>
-              <RoomOptions
-                roomMode={effectivePolicyRoomMode}
-                password={password}
-                allowPlayPause={policy.allow_non_host_play_pause}
-                allowSeek={policy.allow_non_host_seek}
-                inviteOnly={policy.invite_only}
-                defaultJoinRole={policy.default_join_role}
-                noShadow
-                onPasswordChange={setPassword}
-                onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
-                onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
-                onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
-                onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
-              />
-            </div>
-          </div>
-
-          <div className="overflow-hidden" style={fixedColumnHeightStyle}>
-            {rightPanelTab === 'invites' ? (
-              <div className="h-full overflow-y-auto pr-1">
-                <UserInvitePicker
-                  users={users}
-                  currentUserId={me.id}
-                  roomMode={effectivePolicyRoomMode}
-                  selected={selectedInvites}
-                  noShadow
-                  onToggle={toggleInvite}
-                  onRoleChange={setInviteRole}
-                />
-              </div>
-            ) : (
+      <div className="mt-0 space-y-3">
+        <div className="grid gap-5 xl:grid-cols-2">
+          <section className="space-y-4">
+            <div className="overflow-hidden" style={fixedColumnHeightStyle}>
               <div className="h-full overflow-y-auto pr-1">
                 <RoomOptions
                   roomMode={effectivePolicyRoomMode}
@@ -552,21 +455,37 @@ export default function WatchPartyPage() {
                   onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
                 />
               </div>
-            )}
-          </div>
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <div className="overflow-hidden" style={fixedColumnHeightStyle}>
+              <div className="h-full overflow-y-auto pr-1">
+                <UserInvitePicker
+                  users={users}
+                  currentUserId={me.id}
+                  roomMode={effectivePolicyRoomMode}
+                  selected={selectedInvites}
+                  noShadow
+                  onToggle={toggleInvite}
+                  onRoleChange={setInviteRole}
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section className="panel p-5 sm:p-6">
+          <button
+            type="button"
+            className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
+            onClick={handleCreateRoom}
+            disabled={creating || !canCreate}
+          >
+            {creating ? 'Creating room…' : 'Create Room'}
+          </button>
         </section>
       </div>
-
-      <section className="panel p-5 sm:p-6">
-        <button
-          type="button"
-          className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
-          onClick={handleCreateRoom}
-          disabled={creating || !canCreate}
-        >
-          {creating ? 'Creating room…' : 'Create Room'}
-        </button>
-      </section>
 
     </div>
   );

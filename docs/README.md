@@ -14,6 +14,7 @@
   - Large external or bundled reference material.
 - `docs/reports/`
   - Audits, postmortems, implementation notes, and fix reports.
+  - Latest: `docs/reports/efficiency-deep-dive-2026-02-26.md`
 - `docs/setup-wizard/`
   - Setup flow package artifacts and related specifications.
 

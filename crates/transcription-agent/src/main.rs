@@ -2,12 +2,13 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    http::HeaderMap,
     routing::{get, post},
 };
 use base64::Engine as _;
-use rustfin_core::error::{ApiError, ErrorEnvelope};
+use rustfin_core::agent_auth::{normalize_secret, verify_agent_token};
+use rustfin_core::axum_error::AppError;
+use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,23 +31,6 @@ struct AppState {
     http: reqwest::Client,
     agent_token: Option<String>,
     workers: WorkerRegistry,
-}
-
-struct AppError(ApiError);
-
-impl From<ApiError> for AppError {
-    fn from(value: ApiError) -> Self {
-        Self(value)
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let envelope = ErrorEnvelope::from(&self.0);
-        (status, Json(envelope)).into_response()
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -115,31 +99,6 @@ enum WorkerCommand {
         respond_to: tokio::sync::oneshot::Sender<Result<Vec<SegmentOffset>, String>>,
     },
     Shutdown,
-}
-
-fn normalized_secret(value: Option<String>) -> Option<String> {
-    value
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
-
-fn verify_agent_token(headers: &HeaderMap, expected: Option<&str>) -> Result<(), AppError> {
-    let Some(expected_token) = expected.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(());
-    };
-
-    let supplied = headers
-        .get("x-agent-token")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .unwrap_or_default();
-
-    if supplied != expected_token {
-        return Err(
-            ApiError::Unauthorized("missing or invalid transcription-agent token".into()).into(),
-        );
-    }
-    Ok(())
 }
 
 fn normalize_identifier(raw: &str, label: &str) -> Result<String, AppError> {
@@ -434,7 +393,11 @@ async fn start_session(
     headers: HeaderMap,
     Json(body): Json<SessionControlRequest>,
 ) -> Result<Json<SessionControlResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(
+        &headers,
+        state.agent_token.as_deref(),
+        "transcription-agent",
+    )?;
     normalize_identifier(&body.session_id, "session_id")?;
     ensure_model_available(&state).await?;
     Ok(Json(SessionControlResponse { ok: true }))
@@ -445,7 +408,11 @@ async fn stop_session(
     headers: HeaderMap,
     Json(body): Json<SessionControlRequest>,
 ) -> Result<Json<SessionControlResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(
+        &headers,
+        state.agent_token.as_deref(),
+        "transcription-agent",
+    )?;
     let session_id = normalize_identifier(&body.session_id, "session_id")?;
     state.workers.shutdown_session(&session_id);
     Ok(Json(SessionControlResponse { ok: true }))
@@ -456,7 +423,11 @@ async fn cancel_session(
     headers: HeaderMap,
     Json(body): Json<SessionControlRequest>,
 ) -> Result<Json<SessionControlResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(
+        &headers,
+        state.agent_token.as_deref(),
+        "transcription-agent",
+    )?;
     let session_id = normalize_identifier(&body.session_id, "session_id")?;
     state.workers.shutdown_session(&session_id);
     Ok(Json(SessionControlResponse { ok: true }))
@@ -467,7 +438,11 @@ async fn transcribe_chunk(
     headers: HeaderMap,
     Json(body): Json<TranscribeChunkRequest>,
 ) -> Result<Json<TranscribeChunkResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(
+        &headers,
+        state.agent_token.as_deref(),
+        "transcription-agent",
+    )?;
 
     let session_id = normalize_identifier(&body.session_id, "session_id")?;
     let user_id = normalize_identifier(&body.user_id, "user_id")?;
@@ -574,7 +549,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let agent_token = normalized_secret(std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_TOKEN").ok());
+    let agent_token = normalize_secret(std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_TOKEN").ok());
 
     if !model_path.exists() {
         warn!(

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
@@ -11,6 +11,13 @@ export default function NavBar() {
   const { voiceSession, toggleMute, toggleDeafen, leaveVoice } = useChannels();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
+
+  useEffect(() => {
+    if (!voiceSession && confirmLeaveVoiceOpen) {
+      setConfirmLeaveVoiceOpen(false);
+    }
+  }, [voiceSession, confirmLeaveVoiceOpen]);
 
   if (pathname.startsWith('/setup')) {
     return null;
@@ -55,7 +62,7 @@ export default function NavBar() {
         {/* Right: voice indicator + user section */}
         <div className="ml-auto flex items-center gap-2">
           {voiceSession && (
-            <div className="chip border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
+            <div className="chip h-10 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
               <Link
                 href="/channels"
                 className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300 hover:text-green-200"
@@ -126,7 +133,7 @@ export default function NavBar() {
               </button>
               <button
                 type="button"
-                onClick={leaveVoice}
+                onClick={() => setConfirmLeaveVoiceOpen(true)}
                 className={`${baseVoiceActionClass} h-7 w-7 border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
                 aria-label="Disconnect from voice"
                 title="Disconnect from voice"
@@ -141,13 +148,13 @@ export default function NavBar() {
             <span className="text-sm muted">&hellip;</span>
           ) : me ? (
             <>
-              <span className="chip">{me.username}</span>
-              <button onClick={logout} className="btn-secondary px-4 py-2 text-sm">
+              <span className="chip h-10 px-4 text-sm">{me.username}</span>
+              <button onClick={logout} className="btn-secondary h-10 px-4 text-sm">
                 Logout
               </button>
             </>
           ) : (
-            <Link href="/login" className="btn-secondary px-4 py-2 text-sm">
+            <Link href="/login" className="btn-secondary h-10 px-4 text-sm">
               Login
             </Link>
           )}
@@ -232,7 +239,7 @@ export default function NavBar() {
             </button>
             <button
               type="button"
-              onClick={leaveVoice}
+              onClick={() => setConfirmLeaveVoiceOpen(true)}
               className={`${baseVoiceActionClass} h-6 w-6 border-[var(--border)] bg-black/55 text-white/90`}
               aria-label="Disconnect from voice"
               title="Disconnect from voice"
@@ -281,6 +288,36 @@ export default function NavBar() {
                 Login
               </Link>
             )}
+          </div>
+        </div>
+      )}
+
+      {voiceSession && confirmLeaveVoiceOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-[2px] p-4">
+          <div className="panel w-full max-w-sm rounded-2xl border border-[var(--border)] p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Leave Voice Channel?</h2>
+            <p className="text-sm muted">
+              Leave <span className="font-medium text-[var(--text-main)]">{voiceSession.channelName}</span> and disconnect from the audio call?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmLeaveVoiceOpen(false)}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmLeaveVoiceOpen(false);
+                  leaveVoice();
+                }}
+                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
+              >
+                Leave
+              </button>
+            </div>
           </div>
         </div>
       )}
