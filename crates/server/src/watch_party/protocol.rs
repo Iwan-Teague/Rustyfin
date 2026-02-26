@@ -71,6 +71,20 @@ pub enum ClientMessage {
     CreateSetCanvas {
         canvas_strokes: Vec<CreateCanvasStroke>,
     },
+    PlaySetGame {
+        game: String,
+    },
+    ChessSetPlayers {
+        white_user_id: Option<String>,
+        black_user_id: Option<String>,
+    },
+    ChessMove {
+        from: String,
+        to: String,
+        #[serde(default)]
+        promotion: Option<String>,
+    },
+    ChessReset,
     Ping,
     Pong,
 }
@@ -123,6 +137,20 @@ pub struct CreateCanvasStroke {
     pub color: String,
     pub size: f32,
     pub points: Vec<CreateCanvasPoint>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChessState {
+    pub fen: String,
+    pub turn: String,
+    pub status: String,
+    pub winner_color: Option<String>,
+    pub white_user_id: Option<String>,
+    pub black_user_id: Option<String>,
+    pub last_move_from: Option<String>,
+    pub last_move_to: Option<String>,
+    pub last_move_promotion: Option<String>,
+    pub updated_ts_ms: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -193,6 +221,14 @@ pub enum ServerMessage {
         text_format: String,
         text_content: String,
         canvas_strokes: Vec<CreateCanvasStroke>,
+        updated_ts_ms: i64,
+        server_ts_ms: i64,
+        members: Vec<PresenceMember>,
+    },
+    PlayState {
+        room_id: String,
+        active_game: String,
+        chess: ChessState,
         updated_ts_ms: i64,
         server_ts_ms: i64,
         members: Vec<PresenceMember>,

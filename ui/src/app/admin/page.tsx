@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { apiJson, apiFetch } from '@/lib/api';
+import { apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 
 interface Library {
   id: string;
@@ -413,9 +414,9 @@ export default function AdminPage() {
         key_preview: tmdb.key_preview ?? null,
         source: tmdb.source ?? null,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       setMsgType('error');
-      setMsg(err.message || 'Failed to load admin data');
+      setMsg(clientErrorMessage(err, 'Failed to load admin data'));
     }
   }, [logFilterTab]);
 
@@ -587,8 +588,8 @@ export default function AdminPage() {
         tmdb_fetch_reviews: false,
       });
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to create library');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to create library'));
     }
   }
 
@@ -597,8 +598,8 @@ export default function AdminPage() {
       await apiJson(`/libraries/${libId}/scan`, { method: 'POST' });
       setOk('Scan started');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to start scan');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to start scan'));
     }
   }
 
@@ -607,8 +608,8 @@ export default function AdminPage() {
       await apiJson(`/libraries/${libId}/tmdb-sync`, { method: 'POST' });
       setOk('TMDB sync started');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to start TMDB sync');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to start TMDB sync'));
     }
   }
 
@@ -620,8 +621,8 @@ export default function AdminPage() {
       });
       setNewLib((prev) => ({ ...prev, path: data.path }));
       setOk('Directory selected');
-    } catch (err: any) {
-      setErr(err.message || 'Failed to open directory picker');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to open directory picker'));
     } finally {
       setPickingPath(false);
     }
@@ -662,8 +663,8 @@ export default function AdminPage() {
       });
       setLibraryEdit(libraryId, 'path', data.path);
       setOk('Directory selected');
-    } catch (err: any) {
-      setErr(err.message || 'Failed to open directory picker');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to open directory picker'));
     } finally {
       setPickingPathForLibraryId(null);
     }
@@ -728,8 +729,8 @@ export default function AdminPage() {
       }));
       setOk('Library updated');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to update library');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to update library'));
     }
   }
 
@@ -742,15 +743,11 @@ export default function AdminPage() {
     try {
       const targetEl = findDataDeleteTarget('data-admin-library-card-id', libId);
       await playTelegramDeleteAnimation(targetEl);
-      const res = await apiFetch(`/libraries/${libId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message || 'Delete failed');
-      }
+      await apiJson<void>(`/libraries/${libId}`, { method: 'DELETE' });
       setOk('Library deleted');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to delete library');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to delete library'));
     }
   }
 
@@ -778,8 +775,8 @@ export default function AdminPage() {
         library_ids: [],
       });
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to create user');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to create user'));
     }
   }
 
@@ -839,8 +836,8 @@ export default function AdminPage() {
       }));
       setOk('User permissions updated');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to update permissions');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to update permissions'));
     }
   }
 
@@ -848,15 +845,11 @@ export default function AdminPage() {
     try {
       const targetEl = findDataDeleteTarget('data-admin-user-card-id', userId);
       await playTelegramDeleteAnimation(targetEl);
-      const res = await apiFetch(`/users/${userId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message || 'Delete failed');
-      }
+      await apiJson<void>(`/users/${userId}`, { method: 'DELETE' });
       setOk('User deleted');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to delete user');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to delete user'));
     }
   }
 
@@ -874,8 +867,8 @@ export default function AdminPage() {
         is_private: false,
       });
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to create channel');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to create channel'));
     }
   }
 
@@ -928,8 +921,8 @@ export default function AdminPage() {
       }));
       setOk('Channel updated');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to update channel');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to update channel'));
     }
   }
 
@@ -942,15 +935,11 @@ export default function AdminPage() {
     try {
       const targetEl = findDataDeleteTarget('data-admin-channel-card-id', channelId);
       await playTelegramDeleteAnimation(targetEl);
-      const res = await apiFetch(`/channels/${channelId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message || 'Delete failed');
-      }
+      await apiJson<void>(`/channels/${channelId}`, { method: 'DELETE' });
       setOk('Channel deleted');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to delete channel');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to delete channel'));
     }
   }
 
@@ -994,8 +983,8 @@ export default function AdminPage() {
       }));
       setOk('Room renamed');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to rename room');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to rename room'));
     }
   }
 
@@ -1011,8 +1000,8 @@ export default function AdminPage() {
       });
       setOk('Room ended');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to end room');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to end room'));
     }
   }
 
@@ -1020,17 +1009,13 @@ export default function AdminPage() {
     try {
       const targetEl = findDataDeleteTarget('data-admin-room-card-id', roomId);
       await playTelegramDeleteAnimation(targetEl);
-      const res = await apiFetch(`/watch-party/admin/rooms/${roomId}`, {
+      await apiJson<void>(`/watch-party/admin/rooms/${roomId}`, {
         method: 'DELETE',
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message || 'Delete failed');
-      }
       setOk('Room deleted');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to delete room');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to delete room'));
     }
   }
 
@@ -1049,8 +1034,8 @@ export default function AdminPage() {
       });
       setTmdbApiKey('');
       setOk(updated.configured ? 'TMDB key saved' : 'TMDB key cleared');
-    } catch (err: any) {
-      setErr(err.message || 'Failed to save TMDB key');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to save TMDB key'));
     } finally {
       setSavingTmdb(false);
     }
@@ -1070,8 +1055,8 @@ export default function AdminPage() {
       });
       setTmdbApiKey('');
       setOk(updated.configured ? 'Using environment TMDB key' : 'TMDB key cleared');
-    } catch (err: any) {
-      setErr(err.message || 'Failed to clear TMDB key');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to clear TMDB key'));
     } finally {
       setSavingTmdb(false);
     }
@@ -1081,15 +1066,11 @@ export default function AdminPage() {
     try {
       const targetEl = findDataDeleteTarget('data-admin-job-id', jobId);
       await playTelegramDeleteAnimation(targetEl);
-      const res = await apiFetch(`/jobs/${jobId}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message || 'Delete failed');
-      }
+      await apiJson<void>(`/jobs/${jobId}`, { method: 'DELETE' });
       setOk('Log entry deleted');
       await loadData();
-    } catch (err: any) {
-      setErr(err.message || 'Failed to delete log entry');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to delete log entry'));
     }
   }
 

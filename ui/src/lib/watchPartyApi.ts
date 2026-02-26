@@ -82,6 +82,16 @@ export type CreateWatchPartyRoomRequest =
       invites: WatchPartyInviteInput[];
       password?: string;
       policy: WatchPartyPolicy;
+    }
+  | {
+      room_name?: string;
+      room_mode: 'play';
+      item_id?: never;
+      audio_library_id?: never;
+      web_url?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
     };
 
 export type CreateWatchPartyRoomResponse = {
@@ -167,12 +177,21 @@ export type ReconfigureWatchPartyRoomRequest =
       audio_library_id?: never;
       youtube_video_id?: never;
       web_url?: never;
+    }
+  | {
+      room_mode: 'play';
+      item_id?: never;
+      audio_library_id?: never;
+      youtube_video_id?: never;
+      web_url?: never;
+      create_tool?: never;
+      create_document_name?: never;
     };
 
 export type ReconfigureWatchPartyRoomResponse = {
   ok: boolean;
   audio_source?: 'library' | 'online' | string;
-  room_mode: 'video' | 'audio' | 'youtube' | 'web' | 'create' | string;
+  room_mode: 'video' | 'audio' | 'youtube' | 'web' | 'create' | 'play' | string;
 };
 
 export type WatchPartyInvite = {
@@ -306,6 +325,29 @@ export type WsCreateStateMessage = {
   text_format: 'plain' | 'markdown' | 'pdf_text' | string;
   text_content: string;
   canvas_strokes: WsCreateCanvasStroke[];
+  updated_ts_ms: number;
+  server_ts_ms: number;
+  members: WsPresenceMember[];
+};
+
+export type WsChessState = {
+  fen: string;
+  turn: 'white' | 'black' | string;
+  status: 'active' | 'checkmate' | 'stalemate' | string;
+  winner_color?: 'white' | 'black' | string | null;
+  white_user_id?: string | null;
+  black_user_id?: string | null;
+  last_move_from?: string | null;
+  last_move_to?: string | null;
+  last_move_promotion?: string | null;
+  updated_ts_ms: number;
+};
+
+export type WsPlayStateMessage = {
+  type: 'play_state';
+  room_id: string;
+  active_game: 'chess' | string;
+  chess: WsChessState;
   updated_ts_ms: number;
   server_ts_ms: number;
   members: WsPresenceMember[];

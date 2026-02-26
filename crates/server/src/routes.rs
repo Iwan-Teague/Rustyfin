@@ -1152,7 +1152,7 @@ fn job_to_response(job: rustfin_db::repo::jobs::JobRow) -> JobResponse {
 }
 
 async fn list_jobs(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     Query(params): Query<JobsQuery>,
 ) -> Result<Json<Vec<JobResponse>>, AppError> {
@@ -1162,7 +1162,7 @@ async fn list_jobs(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let limit = params.limit.map(|value| value.clamp(1, 1000));
+    let limit = Some(params.limit.unwrap_or(100).clamp(1, 1000));
     let offset = params.offset.map(|value| value.clamp(0, 1_000_000));
 
     let jobs = rustfin_db::repo::jobs::list_jobs_filtered(
@@ -1179,7 +1179,7 @@ async fn list_jobs(
 }
 
 async fn get_job(
-    _auth: AuthUser,
+    _admin: AdminUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<JobResponse>, AppError> {

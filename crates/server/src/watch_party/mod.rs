@@ -4,3 +4,4 @@ pub mod permissions;
 pub mod protocol;
 pub mod router;
 pub mod ws;
+pub mod youtube;

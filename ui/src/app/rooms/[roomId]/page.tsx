@@ -3,160 +3,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import { apiFetch, apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import {
-  ReconfigureWatchPartyRoomRequest,
-  WatchPartyRoomResponse,
   WatchPartyUser,
-  WsAudioStateMessage,
-  WsCreateStateMessage,
-  WsOnlineAudioStatusMessage,
   WsRoomReconfiguredMessage,
-  WsWebStateMessage,
-  WsYouTubeStateMessage,
   endWatchPartyRoom,
-  getEligibleLibraries,
-  getWatchPartyRoom,
   inviteToRoom,
   joinWatchPartyRoom,
   leaveWatchPartyRoom,
   listWatchPartyUsers,
-  reconfigureWatchPartyRoom,
 } from '@/lib/watchPartyApi';
 import { formatElapsedSeconds } from '@/lib/time';
+import { clientErrorMessage } from '@/lib/errors';
 import { nonAdminRoleLabel, roleLabel } from '@/lib/watchPartyRoles';
 import AudioPlayer from '../components/AudioPlayer';
+import CreateToolTabsBar from '../components/CreateToolTabsBar';
 import CreateTogetherEditor from '../components/CreateTogetherEditor';
-import MediaPicker, { MediaItemNode, MediaLibrary } from '../components/MediaPicker';
+import MediaPicker from '../components/MediaPicker';
+import PlayTogetherChess from '../components/PlayTogetherChess';
 import WatchSourceTabsBar from '../components/WatchSourceTabsBar';
 import WebPlayer from '../components/WebPlayer';
 import YouTubePlayer from '../components/YouTubePlayer';
-
-type PlaybackDescriptor = {
-  item_id: string;
-  file_id: string;
-  direct_url: string;
-  hls_start_url: string;
-  media_info_url: string;
-};
-
-type PlaybackSession = {
-  session_id: string;
-  hls_url: string;
-};
-
-type StartPlaybackOptions = {
-  autoplayWhenNoState?: boolean;
-  silent?: boolean;
-};
-
-type WsPresenceMember = {
-  user_id: string;
-  username: string;
-  role: string;
-  connected: boolean;
-};
-
-type WsStateMessage = {
-  type: 'state';
-  room_id: string;
-  item_id: string;
-  playing: boolean;
-  position_ms: number;
-  updated_ts_ms: number;
-  server_ts_ms: number;
-  members: WsPresenceMember[];
-};
-
-type WsPresenceMessage = {
-  type: 'presence';
-  user_id: string;
-  connected: boolean;
-};
-
-type WsErrorMessage = {
-  type: 'error';
-  message: string;
-};
-
-type WsPongMessage = {
-  type: 'pong';
-};
-
-type WsRoomEndedMessage = {
-  type: 'room_ended';
-};
-
-type RoomMode = 'video' | 'audio' | 'youtube' | 'web' | 'create';
-
-type WsMessage =
-  | WsStateMessage
-  | WsAudioStateMessage
-  | WsOnlineAudioStatusMessage
-  | WsWebStateMessage
-  | WsYouTubeStateMessage
-  | WsCreateStateMessage
-  | WsRoomReconfiguredMessage
-  | WsPresenceMessage
-  | WsErrorMessage
-  | WsPongMessage
-  | WsRoomEndedMessage;
-
-type RuntimeConfig = {
-  backend_origin?: string | null;
-};
+import { useRoomPlayback } from '../hooks/useRoomPlayback';
+import { useRoomReconfigure } from '../hooks/useRoomReconfigure';
+import { useRoomRealtime } from '../hooks/useRoomRealtime';
+import { useWatchRoomData } from '../hooks/useWatchRoomData';
 
 const INVITE_NAME_MAX_CHARS = 14;
 function truncateInviteName(name: string): string {
   if (name.length <= INVITE_NAME_MAX_CHARS) return name;
   return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
-}
-
-function wsUrlForOrigin(origin: string, roomId: string): string {
-  const url = new URL(origin);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = `/api/v1/watch-party/rooms/${roomId}/ws`;
-  url.search = '';
-  url.hash = '';
-  return url.toString();
-}
-
-function applyPresenceToState<T extends { members: WsPresenceMember[] }>(
-  prev: T | null,
-  presence: WsPresenceMessage,
-): T | null {
-  if (!prev) return prev;
-  let changed = false;
-  const members = prev.members.map((member) => {
-    if (member.user_id !== presence.user_id || member.connected === presence.connected) {
-      return member;
-    }
-    changed = true;
-    return { ...member, connected: presence.connected };
-  });
-  if (!changed) return prev;
-  return { ...prev, members };
-}
-
-async function waitForVideoMetadata(
-  video: HTMLVideoElement,
-  timeoutMs = 5000,
-): Promise<void> {
-  if (video.readyState >= 1) return;
-
-  await new Promise<void>((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      video.removeEventListener('loadedmetadata', finish);
-      resolve();
-    };
-
-    video.addEventListener('loadedmetadata', finish);
-    window.setTimeout(finish, timeoutMs);
-  });
 }
 
 export default function WatchPartyRoomPage() {
@@ -166,23 +42,14 @@ export default function WatchPartyRoomPage() {
 
   const roomId = params.roomId as string;
 
-  const [room, setRoom] = useState<WatchPartyRoomResponse | null>(null);
-  const [roomState, setRoomState] = useState<WsStateMessage | null>(null);
-  const [audioState, setAudioState] = useState<WsAudioStateMessage | null>(null);
-  const [onlineAudioStatusEvents, setOnlineAudioStatusEvents] = useState<
-    WsOnlineAudioStatusMessage[]
-  >([]);
-  const [webState, setWebState] = useState<WsWebStateMessage | null>(null);
-  const [youtubeState, setYoutubeState] = useState<WsYouTubeStateMessage | null>(null);
-  const [createState, setCreateState] = useState<WsCreateStateMessage | null>(null);
-  const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
-  const [joinPassword, setJoinPassword] = useState('');
-  const [joinedRole, setJoinedRole] = useState<string | null>(null);
+  const appendDebug = useCallback((message: string) => {
+    if (typeof window !== 'undefined') {
+      console.info(`[watch-party:${roomId}] ${message}`);
+    }
+  }, [roomId]);
 
-  const [loadingRoom, setLoadingRoom] = useState(true);
+  const [joinPassword, setJoinPassword] = useState('');
   const [joining, setJoining] = useState(false);
-  const [startingDirect, setStartingDirect] = useState(false);
-  const [startingHls, setStartingHls] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [ending, setEnding] = useState(false);
   const [pendingEndRoomConfirm, setPendingEndRoomConfirm] = useState(false);
@@ -192,31 +59,40 @@ export default function WatchPartyRoomPage() {
   const [inviteSelections, setInviteSelections] = useState<Record<string, 'viewer' | 'controller'>>({});
   const [sendingInvites, setSendingInvites] = useState(false);
 
-  const [wsConnected, setWsConnected] = useState(false);
-  const [wsEpoch, setWsEpoch] = useState(0);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
-  const [mode, setMode] = useState<'direct' | 'hls'>('direct');
+  const {
+    room,
+    loadingRoom,
+    joinedRole,
+    setJoinedRole,
+    loadRoom,
+    refreshRoom,
+  } = useWatchRoomData({
+    roomId,
+    me,
+    setError,
+    appendDebug,
+  });
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [allLibraries, setAllLibraries] = useState<MediaLibrary[]>([]);
-  const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
-  const [reconfigureMode, setReconfigureMode] = useState<RoomMode>('video');
-  const [reconfigureVideoLibraryId, setReconfigureVideoLibraryId] = useState('');
-  const [reconfigureVideoItem, setReconfigureVideoItem] = useState<MediaItemNode | null>(null);
-  const [reconfigureAudioLibraryId, setReconfigureAudioLibraryId] = useState('');
-  const [reconfigureCreateTool, setReconfigureCreateTool] = useState<'text' | 'canvas'>('text');
-  const [reconfigureDirty, setReconfigureDirty] = useState(false);
-  const [reconfiguring, setReconfiguring] = useState(false);
-  const [reconfigureModalOpen, setReconfigureModalOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const hlsRef = useRef<any>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const sessionIdRef = useRef<string | null>(null);
-  const applyingRemoteRef = useRef(false);
-  const autoPreloadedItemRef = useRef<string | null>(null);
+  const isAudioRoom = room?.room_mode === 'audio';
+  const isWebRoom = room?.room_mode === 'web';
+  const isYoutubeRoom = room?.room_mode === 'youtube';
+  const isCreateRoom = room?.room_mode === 'create';
+  const isPlayRoom = room?.room_mode === 'play';
+  const isVideoRoom =
+    room?.room_mode === 'video' || (!isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && !isPlayRoom);
+  const isWatchRoom = isVideoRoom || isYoutubeRoom || isWebRoom;
+  const activeWatchSource: 'video' | 'youtube' | 'web' = isYoutubeRoom
+    ? 'youtube'
+    : isWebRoom
+      ? 'web'
+      : 'video';
+
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
 
   const clearInfoTimeout = useCallback(() => {
     if (infoTimeoutRef.current) {
@@ -234,24 +110,66 @@ export default function WatchPartyRoomPage() {
     }, durationMs);
   }, [clearInfoTimeout]);
 
-  const isAudioRoom = room?.room_mode === 'audio';
-  const isWebRoom = room?.room_mode === 'web';
-  const isYoutubeRoom = room?.room_mode === 'youtube';
-  const isCreateRoom = room?.room_mode === 'create';
-  const isWatchRoom = !isAudioRoom && !isCreateRoom;
-  const activeWatchSource: 'video' | 'youtube' | 'web' = isYoutubeRoom
-    ? 'youtube'
-    : isWebRoom
-      ? 'web'
-      : 'video';
+  const reconfigure = useRoomReconfigure({
+    roomId,
+    room,
+    me,
+    joinedRole,
+    activeWatchSource,
+    setError,
+    setInfo,
+    setInfoForDuration,
+  });
+
+  const handleRealtimeRoomReconfigured = useCallback(
+    (payload: WsRoomReconfiguredMessage) => {
+      reconfigure.handleRemoteRoomReconfigured(payload);
+      void resetPlaybackRef.current();
+    },
+    [reconfigure.handleRemoteRoomReconfigured],
+  );
+
+  const handleRealtimeRoomEnded = useCallback(() => {
+    router.push('/rooms');
+  }, [router]);
+
+  const realtime = useRoomRealtime({
+    roomId,
+    joinedRole,
+    appendDebug,
+    setError,
+    setInfo,
+    refreshRoom,
+    loadRoom,
+    setJoinedRole,
+    onRoomReconfigured: handleRealtimeRoomReconfigured,
+    onRoomEnded: handleRealtimeRoomEnded,
+  });
+
+  const playback = useRoomPlayback({
+    room,
+    joinedRole,
+    roomState: realtime.roomState,
+    appendDebug,
+    setError,
+    setInfo,
+  });
+
+  useEffect(() => {
+    resetPlaybackRef.current = playback.resetPlaybackState;
+  }, [playback.resetPlaybackState]);
+
+  useEffect(() => {
+    if (realtime.roomState) {
+      void playback.applyRemoteState(realtime.roomState);
+    }
+  }, [realtime.roomState, playback.applyRemoteState]);
+
+  const activeCreateTool: 'text' | 'canvas' =
+    realtime.createState?.active_tool === 'canvas' ? 'canvas' : 'text';
   const effectiveRoomMode = room?.room_mode ?? 'video';
   const memberRoleDisplay = nonAdminRoleLabel(effectiveRoomMode);
   const joinedRoleDisplay = joinedRole ? roleLabel(joinedRole, effectiveRoomMode) : '';
-
-  const myMember = useMemo(() => {
-    if (!room || !me) return null;
-    return room.members.find((member) => member.user_id === me.id) || null;
-  }, [room, me]);
 
   const canPlayPause = useMemo(() => {
     if (!room || !joinedRole) return false;
@@ -267,36 +185,26 @@ export default function WatchPartyRoomPage() {
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
 
-  const reconfigureVideoLibraries = useMemo(
-    () =>
-      allLibraries.filter(
-        (library) => library.kind !== 'music' && eligibleLibraryIds.includes(library.id),
-      ),
-    [allLibraries, eligibleLibraryIds],
-  );
-
-  const reconfigureMusicLibraries = useMemo(
-    () =>
-      allLibraries.filter(
-        (library) => library.kind === 'music' && eligibleLibraryIds.includes(library.id),
-      ),
-    [allLibraries, eligibleLibraryIds],
-  );
-
   const roomDurationSeconds = useMemo(() => {
     if (!room) return 0;
     const endTs = room.ended_ts ?? Math.floor(nowMs / 1000);
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
   const roomDisplayName = room?.room_name?.trim() || '';
-  const isWatchReconfigureMode = reconfigureMode === 'video';
-
-  const activeMembers = (roomState?.members ?? audioState?.members ?? webState?.members ?? youtubeState?.members ?? createState?.members) ?? room?.members.map((member) => ({
-    user_id: member.user_id,
-    username: member.username,
-    role: member.role,
-    connected: member.status === 'joined',
-  })) ?? [];
+  const activeMembers =
+    (realtime.roomState?.members ??
+      realtime.audioState?.members ??
+      realtime.webState?.members ??
+      realtime.youtubeState?.members ??
+      realtime.createState?.members ??
+      realtime.playState?.members) ??
+    room?.members.map((member) => ({
+      user_id: member.user_id,
+      username: member.username,
+      role: member.role,
+      connected: member.status === 'joined',
+    })) ??
+    [];
 
   const invitableUsers = useMemo(() => {
     if (!me) return [];
@@ -304,32 +212,7 @@ export default function WatchPartyRoomPage() {
     return allUsers.filter((user) => user.id !== me.id && !memberIds.has(user.id));
   }, [allUsers, activeMembers, me]);
 
-  const appendDebug = useCallback((message: string) => {
-    if (typeof window !== 'undefined') {
-      console.info(`[watch-party:${roomId}] ${message}`);
-    }
-  }, [roomId]);
-
-  const sendWs = useCallback((payload: Record<string, unknown>): boolean => {
-    const socket = wsRef.current;
-    const msgType = typeof payload.type === 'string' ? payload.type : 'unknown';
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      setWsConnected(false);
-      setError('Watch-party realtime connection is offline. Reconnect and retry.');
-      appendDebug(`ws send rejected type=${msgType} reason=socket_not_open`);
-      return false;
-    }
-    try {
-      socket.send(JSON.stringify(payload));
-      appendDebug(`ws send type=${msgType}`);
-      return true;
-    } catch {
-      setWsConnected(false);
-      setError('Failed to send watch-party command over websocket.');
-      appendDebug(`ws send failed type=${msgType} reason=send_exception`);
-      return false;
-    }
-  }, [appendDebug]);
+  const sendWs = realtime.sendWs;
 
   useEffect(() => () => {
     clearInfoTimeout();
@@ -340,64 +223,15 @@ export default function WatchPartyRoomPage() {
   }, []);
 
   useEffect(() => {
-    if (!reconfigureModalOpen) return;
+    if (!reconfigure.reconfigureModalOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setReconfigureModalOpen(false);
+        reconfigure.setReconfigureModalOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [reconfigureModalOpen]);
-
-  const destroyHls = useCallback(() => {
-    if (hlsRef.current) {
-      try {
-        hlsRef.current.destroy();
-      } catch {
-        // no-op
-      }
-      hlsRef.current = null;
-    }
-  }, []);
-
-  const stopSession = useCallback(async (sessionId: string) => {
-    await apiFetch(`/playback/sessions/${sessionId}/stop`, { method: 'POST' }).catch(() => {});
-  }, []);
-
-  const loadRoom = useCallback(async () => {
-    setLoadingRoom(true);
-    setError('');
-    try {
-      const data = await getWatchPartyRoom(roomId);
-      setRoom(data);
-      appendDebug(
-        `room loaded mode=${data.room_mode} status=${data.status} members=${data.members.length} password_required=${data.password_required}`,
-      );
-      if (me) {
-        const current = data.members.find((member) => member.user_id === me.id);
-        setJoinedRole(current?.status === 'joined' ? current.role : null);
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load watch party room');
-      appendDebug(`room load failed error=${String(err?.message || err)}`);
-    } finally {
-      setLoadingRoom(false);
-    }
-  }, [roomId, me, appendDebug]);
-
-  const refreshRoom = useCallback(async () => {
-    try {
-      const data = await getWatchPartyRoom(roomId);
-      setRoom(data);
-      if (me) {
-        const current = data.members.find((member) => member.user_id === me.id);
-        setJoinedRole(current?.status === 'joined' ? current.role : null);
-      }
-    } catch {
-      // Non-fatal background refresh.
-    }
-  }, [roomId, me]);
+  }, [reconfigure.reconfigureModalOpen, reconfigure.setReconfigureModalOpen]);
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -416,69 +250,6 @@ export default function WatchPartyRoomPage() {
   }, [me]);
 
   useEffect(() => {
-    if (!room) return;
-    const mode =
-      room.room_mode === 'audio' ||
-      room.room_mode === 'youtube' ||
-      room.room_mode === 'web' ||
-      room.room_mode === 'create'
-        ? room.room_mode
-        : 'video';
-    if (!reconfigureDirty) {
-      setReconfigureMode(mode);
-      if (mode === 'audio') {
-        setReconfigureAudioLibraryId(room.audio_library_id ?? '');
-        return;
-      }
-      if (mode === 'create') {
-        setReconfigureCreateTool(room.create_tool === 'canvas' ? 'canvas' : 'text');
-      }
-    }
-  }, [room?.room_mode, room?.audio_library_id, room?.create_tool, reconfigureDirty]);
-
-  useEffect(() => {
-    if (!room || !me || joinedRole !== 'host') return;
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const libraries = await apiJson<MediaLibrary[]>('/libraries');
-        if (cancelled) return;
-        setAllLibraries(libraries);
-
-        const participantIds = room.members
-          .filter((member) => member.user_id !== me.id && member.status !== 'left' && member.status !== 'declined')
-          .map((member) => member.user_id);
-        const eligible = await getEligibleLibraries(participantIds);
-        if (cancelled) return;
-        setEligibleLibraryIds(eligible);
-
-        if (!eligible.includes(reconfigureVideoLibraryId)) {
-          const defaultVideoLibrary = libraries.find(
-            (library) => library.kind !== 'music' && eligible.includes(library.id),
-          );
-          setReconfigureVideoLibraryId(defaultVideoLibrary?.id ?? '');
-          setReconfigureVideoItem(null);
-        }
-
-        if (!eligible.includes(reconfigureAudioLibraryId)) {
-          const defaultAudioLibrary = libraries.find(
-            (library) => library.kind === 'music' && eligible.includes(library.id),
-          );
-          setReconfigureAudioLibraryId(defaultAudioLibrary?.id ?? '');
-        }
-      } catch {
-        // Non-fatal; panel can still render with current state.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [room, me, joinedRole, reconfigureVideoLibraryId, reconfigureAudioLibraryId]);
-
-  useEffect(() => {
     if (!room || room.status === 'ended') return;
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
@@ -486,569 +257,41 @@ export default function WatchPartyRoomPage() {
 
   useEffect(() => {
     if (!joinedRole) return;
-    if (!wsConnected) {
+    if (!realtime.wsConnected) {
       void refreshRoom();
     }
-    const intervalMs = wsConnected ? 30000 : 5000;
+    const intervalMs = realtime.wsConnected ? 30000 : 5000;
     const id = window.setInterval(() => {
-      if (!wsConnected || document.visibilityState === 'visible') {
+      if (!realtime.wsConnected || document.visibilityState === 'visible') {
         void refreshRoom();
       }
     }, intervalMs);
     return () => window.clearInterval(id);
-  }, [joinedRole, wsConnected, refreshRoom]);
+  }, [joinedRole, realtime.wsConnected, refreshRoom]);
 
-  useEffect(() => {
-    if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || isCreateRoom) return;
-    if (!room.item_id || room.item_id.trim().length === 0) {
-      setDescriptor(null);
+  function handleSwitchCreateTool(target: 'text' | 'canvas') {
+    if (!joinedRole || target === activeCreateTool) {
       return;
     }
-
-    let cancelled = false;
-
-    apiJson<PlaybackDescriptor>(`/items/${room.item_id}/playback`)
-      .then((data) => {
-        if (cancelled) return;
-        setDescriptor(data);
-      })
-      .catch((err: any) => {
-        if (!cancelled) {
-          setError(err?.message || 'Failed to load playback descriptor');
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [room, joinedRole, isAudioRoom, isWebRoom, isYoutubeRoom, isCreateRoom]);
-
-  const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!video.currentSrc && !video.src) return;
-
-    applyingRemoteRef.current = true;
-
-    const targetSeconds = stateMessage.position_ms / 1000;
-    if (Math.abs(video.currentTime - targetSeconds) > 1.2) {
-      video.currentTime = targetSeconds;
-    }
-
-    if (stateMessage.playing && video.paused) {
-      await video.play().catch(() => {});
-    }
-
-    if (!stateMessage.playing && !video.paused) {
-      video.pause();
-    }
-
-    window.setTimeout(() => {
-      applyingRemoteRef.current = false;
-    }, 60);
-  }, []);
-
-  useEffect(() => {
-    if (!joinedRole) return;
-
-    let cancelled = false;
-    let activeSocket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-
-    const token = localStorage.getItem('token');
-    if (!token) {
-      appendDebug('ws connect aborted: missing auth token in localStorage');
-      return;
-    }
-
-    const bindOpenSocket = (socket: WebSocket, candidateIndex: number) => {
-      activeSocket = socket;
-      wsRef.current = socket;
-      setWsConnected(true);
-      appendDebug(
-        `ws connected candidate_index=${candidateIndex} url=${socket.url || 'unknown_url'}`,
-      );
-
-      if (candidateIndex > 0) {
-        setInfo('Connected to watch-party websocket via backend fallback.');
-      }
-
-      try {
-        socket.send(JSON.stringify({ type: 'auth', token }));
-        appendDebug('ws auth frame sent');
-      } catch {
-        appendDebug('ws auth frame send failed');
-        setWsConnected(false);
-        setError('Failed to authenticate watch-party websocket connection.');
-        return;
-      }
-
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as WsMessage;
-          appendDebug(`ws recv type=${payload.type}`);
-
-          if (payload.type === 'state') {
-            setRoomState(payload);
-            void applyRemoteState(payload);
-          } else if (payload.type === 'audio_state') {
-            setAudioState(payload);
-            // Update member list in roomState-like fashion
-            setRoomState((prev) => {
-              if (!prev) return prev;
-              return { ...prev, members: payload.members };
-            });
-          } else if (payload.type === 'online_audio_status') {
-            appendDebug(
-              `online audio status stage=${payload.stage} status=${payload.status} message=${payload.message}`,
-            );
-            setOnlineAudioStatusEvents((prev) => {
-              const keyFor = (event: WsOnlineAudioStatusMessage) =>
-                `${event.video_id ?? 'none'}:${event.track_id ?? 'none'}:${event.stage}`;
-              const key = keyFor(payload);
-              const existingIndex = prev.findIndex((event) => keyFor(event) === key);
-              if (existingIndex >= 0) {
-                const next = [...prev];
-                next[existingIndex] = payload;
-                return next;
-              }
-              const next = [...prev, payload];
-              if (next.length > 40) {
-                return next.slice(next.length - 40);
-              }
-              return next;
-            });
-          } else if (payload.type === 'web_state') {
-            appendDebug(`web state url=${payload.url || 'none'} updated_ts_ms=${payload.updated_ts_ms}`);
-            setWebState(payload);
-            setRoomState((prev) => {
-              if (!prev) return prev;
-              return { ...prev, members: payload.members };
-            });
-          } else if (payload.type === 'create_state') {
-            appendDebug(
-              `create state tool=${payload.active_tool} doc=${payload.document_name} updated_ts_ms=${payload.updated_ts_ms}`,
-            );
-            setCreateState(payload);
-            setRoomState((prev) => {
-              if (!prev) return prev;
-              return { ...prev, members: payload.members };
-            });
-          } else if (payload.type === 'youtube_state' || payload.type === 'you_tube_state') {
-            appendDebug(
-              `youtube state video_id=${payload.video_id || 'none'} playing=${payload.playing} position_ms=${payload.position_ms}`,
-            );
-            setYoutubeState({
-              ...payload,
-              type: 'youtube_state',
-            });
-          } else if (payload.type === 'room_reconfigured') {
-            appendDebug(
-              `room reconfigured mode=${payload.room_mode} audio_source=${payload.audio_source || 'library'} item_id=${payload.item_id || 'none'} audio_library_id=${payload.audio_library_id || 'none'} youtube_video_id=${payload.youtube_video_id || 'none'} web_url=${payload.web_url || 'none'} create_tool=${payload.create_tool || 'none'} create_document_name=${payload.create_document_name || 'none'}`,
-            );
-            setInfo('Room configuration changed. Refreshing room mode…');
-            setReconfigureDirty(false);
-            setReconfigureVideoItem(null);
-            setReconfigureAudioLibraryId(payload.audio_library_id || '');
-            setReconfigureCreateTool(payload.create_tool === 'canvas' ? 'canvas' : 'text');
-            setDescriptor(null);
-            setRoomState(null);
-            setAudioState(null);
-            setOnlineAudioStatusEvents([]);
-            setWebState(null);
-            setYoutubeState(null);
-            setCreateState(null);
-            destroyHls();
-            if (sessionIdRef.current) {
-              void stopSession(sessionIdRef.current);
-              sessionIdRef.current = null;
-            }
-            void loadRoom();
-            setWsEpoch((prev) => prev + 1);
-          } else if (payload.type === 'presence') {
-            setRoomState((prev) => applyPresenceToState(prev, payload));
-            setAudioState((prev) => applyPresenceToState(prev, payload));
-            setYoutubeState((prev) => applyPresenceToState(prev, payload));
-            setWebState((prev) => applyPresenceToState(prev, payload));
-            setCreateState((prev) => applyPresenceToState(prev, payload));
-          } else if (payload.type === 'error') {
-            setError(payload.message);
-            appendDebug(`ws server_error message=${payload.message}`);
-            const normalized = payload.message.toLowerCase();
-            if (normalized.includes('not joined')) {
-              setJoinedRole(null);
-              void refreshRoom();
-            }
-          } else if (payload.type === 'room_ended') {
-            appendDebug('ws room ended notification received');
-            router.push('/rooms');
+    setError('');
+    realtime.setCreateState((prev) =>
+      prev
+        ? {
+            ...prev,
+            active_tool: target,
           }
-        } catch (err) {
-          setError('Invalid websocket message received');
-          const snippet = String(event.data).slice(0, 180).replace(/\s+/g, ' ');
-          appendDebug(
-            `ws message parse failed error=${String((err as any)?.message || err)} payload="${snippet}"`,
-          );
-        }
-      };
+        : prev,
+    );
+    sendWs({
+      type: 'create_set_tool',
+      tool: target,
+    });
+  }
 
-      socket.onerror = () => {
-        appendDebug('ws error event fired');
-      };
-
-      socket.onclose = (event) => {
-        if (cancelled) return;
-        setWsConnected(false);
-        appendDebug(
-          `ws closed code=${event.code} reason=${event.reason || 'none'} clean=${event.wasClean}`,
-        );
-        if (joinedRole) {
-          reconnectTimer = window.setTimeout(() => {
-            if (cancelled) return;
-            appendDebug('ws reconnect scheduled after close');
-            setWsEpoch((prev) => prev + 1);
-          }, 1200);
-        }
-      };
-    };
-
-    const attemptConnect = async () => {
-      const candidates: string[] = [wsUrlForOrigin(window.location.origin, roomId)];
-      const pageIsSecure = window.location.protocol === 'https:';
-      appendDebug(
-        `ws connect start role=${joinedRole} page_origin=${window.location.origin} secure=${window.isSecureContext}`,
-      );
-
-      try {
-        const runtimeConfig = await fetch('/runtime-config', { cache: 'no-store' });
-        if (runtimeConfig.ok) {
-          const payload = (await runtimeConfig.json()) as RuntimeConfig;
-          if (payload.backend_origin) {
-            const directBackendWs = wsUrlForOrigin(payload.backend_origin, roomId);
-            const insecureFromSecurePage =
-              pageIsSecure && directBackendWs.toLowerCase().startsWith('ws://');
-            if (insecureFromSecurePage) {
-              appendDebug(
-                `ws fallback candidate skipped (mixed content blocked on https page): ${directBackendWs}`,
-              );
-            }
-            if (!insecureFromSecurePage && !candidates.includes(directBackendWs)) {
-              candidates.push(directBackendWs);
-            }
-          }
-        }
-      } catch (err) {
-        appendDebug(
-          `runtime-config lookup failed error=${String((err as any)?.message || err)}`,
-        );
-      }
-
-      for (let index = 0; index < candidates.length; index += 1) {
-        if (cancelled) return;
-
-        const candidate = candidates[index];
-        appendDebug(`ws attempting candidate[${index}] ${candidate}`);
-        const socket = await new Promise<WebSocket | null>((resolve) => {
-          let settled = false;
-          let ws: WebSocket;
-          try {
-            ws = new WebSocket(candidate);
-          } catch {
-            appendDebug(`ws candidate threw during constructor: ${candidate}`);
-            resolve(null);
-            return;
-          }
-
-          const finish = (result: WebSocket | null) => {
-            if (settled) return;
-            settled = true;
-            resolve(result);
-          };
-
-          ws.onopen = () => finish(ws);
-          ws.onerror = () => {
-            if (!settled) {
-              appendDebug(`ws candidate error before open: ${candidate}`);
-            }
-          };
-          ws.onclose = (event) => {
-            if (!settled) {
-              appendDebug(
-                `ws candidate closed before open code=${event.code} reason=${event.reason || 'none'}`,
-              );
-            }
-            finish(null);
-          };
-
-          window.setTimeout(() => {
-            if (settled) return;
-            try {
-              ws.close();
-            } catch {
-              // no-op
-            }
-            appendDebug(`ws candidate timeout after 4000ms: ${candidate}`);
-            finish(null);
-          }, 4_000);
-        });
-
-        if (!socket) {
-          continue;
-        }
-
-        if (cancelled) {
-          socket.close();
-          return;
-        }
-
-        bindOpenSocket(socket, index);
-        return;
-      }
-
-      if (!cancelled) {
-        setWsConnected(false);
-        setError(
-          'Watch-party websocket connection failed. Restart with ./scripts/start.sh and retry.',
-        );
-        appendDebug('ws connection failed for all candidates');
-        reconnectTimer = window.setTimeout(() => {
-          if (cancelled) return;
-          appendDebug('ws reconnect scheduled after candidate failure');
-          setWsEpoch((prev) => prev + 1);
-        }, 1500);
-      }
-    };
-
-    void attemptConnect();
-
-    return () => {
-      cancelled = true;
-      if (reconnectTimer) {
-        window.clearTimeout(reconnectTimer);
-      }
-      if (activeSocket) {
-        activeSocket.close();
-      }
-      wsRef.current = null;
-      setWsConnected(false);
-    };
-  }, [
-    roomId,
-    joinedRole,
-    applyRemoteState,
-    appendDebug,
-    destroyHls,
-    loadRoom,
-    stopSession,
-    wsEpoch,
-    refreshRoom,
-    router,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      destroyHls();
-      if (sessionIdRef.current) {
-        void stopSession(sessionIdRef.current);
-        sessionIdRef.current = null;
-      }
-    };
-  }, [destroyHls, stopSession]);
-
-  const startDirect = useCallback(async (options: StartPlaybackOptions = {}): Promise<boolean> => {
-    if (!descriptor) {
-      if (!options.silent) {
-        setError('Playback descriptor is not ready yet');
-      }
-      return false;
-    }
-
-    setStartingDirect(true);
-    if (!options.silent) {
-      setError('');
-    }
-
-    try {
-      destroyHls();
-      if (sessionIdRef.current) {
-        await stopSession(sessionIdRef.current);
-        sessionIdRef.current = null;
-      }
-
-      const video = videoRef.current;
-      if (!video) throw new Error('Video element is not ready');
-
-      setMode('direct');
-      video.src = descriptor.direct_url;
-      video.load();
-      await waitForVideoMetadata(video);
-
-      if (roomState) {
-        await applyRemoteState(roomState);
-      } else if (options.autoplayWhenNoState ?? true) {
-        await video.play().catch(() => {});
-      } else {
-        video.pause();
-        try {
-          if (video.currentTime !== 0) {
-            video.currentTime = 0;
-          }
-        } catch {
-          // Some browsers may block programmatic seek before enough data is ready.
-        }
-      }
-      return true;
-    } catch (err: any) {
-      if (!options.silent) {
-        setError(err?.message || 'Failed to start direct playback');
-      }
-      return false;
-    } finally {
-      setStartingDirect(false);
-    }
-  }, [descriptor, destroyHls, stopSession, roomState, applyRemoteState]);
-
-  const startHls = useCallback(async (options: StartPlaybackOptions = {}): Promise<boolean> => {
-    if (!descriptor) {
-      if (!options.silent) {
-        setError('Playback descriptor is not ready yet');
-      }
-      return false;
-    }
-
-    setStartingHls(true);
-    if (!options.silent) {
-      setError('');
-      setInfo('Preparing transcoded stream…');
-    }
-
-    try {
-      const video = videoRef.current;
-      if (!video) throw new Error('Video element is not ready');
-
-      destroyHls();
-      if (sessionIdRef.current) {
-        await stopSession(sessionIdRef.current);
-        sessionIdRef.current = null;
-      }
-
-      const session = await apiJson<PlaybackSession>(descriptor.hls_start_url, {
-        method: 'POST',
-        body: JSON.stringify({ file_id: descriptor.file_id }),
-      });
-
-      sessionIdRef.current = session.session_id;
-      setMode('hls');
-
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = session.hls_url;
-        video.load();
-        await waitForVideoMetadata(video);
-        if (roomState) {
-          await applyRemoteState(roomState);
-        } else if (options.autoplayWhenNoState ?? true) {
-          await video.play().catch(() => {});
-        } else {
-          video.pause();
-          try {
-            if (video.currentTime !== 0) {
-              video.currentTime = 0;
-            }
-          } catch {
-            // Some browsers may block programmatic seek before enough data is ready.
-          }
-        }
-      } else {
-        const Hls = (await import('hls.js')).default;
-        if (!Hls.isSupported()) {
-          throw new Error('HLS is not supported in this browser');
-        }
-        const hls = new Hls();
-        hlsRef.current = hls;
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (roomState) {
-            void applyRemoteState(roomState);
-          } else if (options.autoplayWhenNoState ?? true) {
-            void video.play().catch(() => {});
-          } else {
-            video.pause();
-            try {
-              if (video.currentTime !== 0) {
-                video.currentTime = 0;
-              }
-            } catch {
-              // Some browsers may block programmatic seek before enough data is ready.
-            }
-          }
-        });
-        hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
-          if (data?.fatal) {
-            setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
-          }
-        });
-        hls.attachMedia(video);
-        hls.loadSource(session.hls_url);
-      }
-      return true;
-    } catch (err: any) {
-      if (!options.silent) {
-        setError(err?.message || 'Failed to start HLS playback');
-      }
-      return false;
-    } finally {
-      setStartingHls(false);
-    }
-  }, [descriptor, destroyHls, stopSession, roomState, applyRemoteState]);
-
-  useEffect(() => {
-    // Reset one-time preload guard when room item or mode changes.
-    autoPreloadedItemRef.current = null;
-  }, [room?.item_id, room?.room_mode]);
-
-  useEffect(() => {
-    if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || !descriptor) return;
-    if (!room.item_id || room.item_id.trim().length === 0) return;
-    if (startingDirect || startingHls) return;
-    if (autoPreloadedItemRef.current === room.item_id) return;
-
-    autoPreloadedItemRef.current = room.item_id;
-    appendDebug(`auto preload requested item_id=${room.item_id} preferred=direct`);
-
-    void (async () => {
-      const directOk = await startDirect({
-        autoplayWhenNoState: false,
-        silent: true,
-      });
-      if (directOk) {
-        appendDebug(`auto preload succeeded mode=direct item_id=${room.item_id}`);
-        return;
-      }
-
-      appendDebug(`auto preload direct failed; falling back to hls item_id=${room.item_id}`);
-      const hlsOk = await startHls({
-        autoplayWhenNoState: false,
-        silent: true,
-      });
-
-      if (hlsOk) {
-        setInfo('Direct play could not be preloaded automatically. Using HLS preload.');
-      } else {
-        setInfo('Automatic preload failed. Use Direct Play or Transcode (HLS).');
-      }
-    })();
-  }, [
-    room,
-    joinedRole,
-    isAudioRoom,
-    isYoutubeRoom,
-    isWebRoom,
-    descriptor,
-    startingDirect,
-    startingHls,
-    startDirect,
-    startHls,
-    appendDebug,
-  ]);
+  const handleReconfigureRoom = reconfigure.handleReconfigureRoom;
+  const handleSwitchWatchSource = reconfigure.handleSwitchWatchSource;
+  const handleApplyLocalMedia = reconfigure.handleApplyLocalMedia;
+  const handleConfigureAudioLibrary = reconfigure.handleConfigureAudioLibrary;
 
   async function handleJoin() {
     setJoining(true);
@@ -1061,9 +304,10 @@ export default function WatchPartyRoomPage() {
       setInfo('Joined watch-party room.');
       appendDebug(`room join succeeded role=${result.role}`);
       await loadRoom();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to join room');
-      appendDebug(`room join failed error=${String(err?.message || err)}`);
+    } catch (err: unknown) {
+      const message = clientErrorMessage(err, 'Failed to join room');
+      setError(message);
+      appendDebug(`room join failed error=${message}`);
     } finally {
       setJoining(false);
     }
@@ -1075,8 +319,8 @@ export default function WatchPartyRoomPage() {
     try {
       await leaveWatchPartyRoom(roomId);
       router.push('/rooms');
-    } catch (err: any) {
-      setError(err?.message || 'Failed to leave room');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to leave room'));
     } finally {
       setLeaving(false);
     }
@@ -1088,8 +332,8 @@ export default function WatchPartyRoomPage() {
     try {
       await endWatchPartyRoom(roomId);
       router.push('/rooms');
-    } catch (err: any) {
-      setError(err?.message || 'Failed to end room');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to end room'));
       setEnding(false);
     }
   }
@@ -1120,136 +364,10 @@ export default function WatchPartyRoomPage() {
       } else {
         setInfo(`Invited ${response.invited} user${response.invited === 1 ? '' : 's'}.`);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to send invites');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to send invites'));
     } finally {
       setSendingInvites(false);
-    }
-  }
-
-  async function handleReconfigureRoom() {
-    if (joinedRole !== 'host') {
-      setError('Only the room host can reconfigure mode.');
-      return;
-    }
-
-    let payload: ReconfigureWatchPartyRoomRequest;
-    if (reconfigureMode === 'audio') {
-      payload = {
-        room_mode: 'audio',
-      };
-    } else if (reconfigureMode === 'create') {
-      payload = {
-        room_mode: 'create',
-        create_tool: reconfigureCreateTool,
-      };
-    } else {
-      payload = {
-        // Watch Together reconfigure now switches to the base watch mode only.
-        // Source selection (Local Media / YouTube / Web) happens in-room via tabs.
-        room_mode: 'video',
-      };
-    }
-
-    setReconfiguring(true);
-    setReconfigureDirty(true);
-    setError('');
-    setInfo('');
-    try {
-      await reconfigureWatchPartyRoom(roomId, payload);
-      setReconfigureModalOpen(false);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to reconfigure room');
-    } finally {
-      setReconfiguring(false);
-    }
-  }
-
-  async function handleSwitchWatchSource(target: 'video' | 'youtube' | 'web') {
-    if (joinedRole !== 'host') {
-      setError('Only the room host can change watch source.');
-      return;
-    }
-    if (!room || target === activeWatchSource) {
-      return;
-    }
-
-    let payload: ReconfigureWatchPartyRoomRequest;
-    if (target === 'video') {
-      // Switching to local media should land in the in-room local picker flow.
-      // We intentionally clear current item selection so host can choose media inline.
-      setReconfigureVideoItem(null);
-      payload = { room_mode: 'video' };
-    } else if (target === 'youtube') {
-      payload = { room_mode: 'youtube' };
-    } else {
-      payload = { room_mode: 'web', web_url: (room.web_url || '').trim() || undefined };
-    }
-
-    setReconfiguring(true);
-    setReconfigureDirty(true);
-    setError('');
-    setInfo('');
-    try {
-      await reconfigureWatchPartyRoom(roomId, payload);
-    } catch (err: any) {
-      setError(err?.message || 'Failed to switch watch source');
-    } finally {
-      setReconfiguring(false);
-    }
-  }
-
-  async function handleApplyLocalMedia() {
-    if (joinedRole !== 'host') {
-      setError('Only the room host can select local media.');
-      return;
-    }
-    if (!reconfigureVideoItem) {
-      setError('Select a movie or episode first.');
-      return;
-    }
-
-    setReconfiguring(true);
-    setReconfigureDirty(true);
-    setError('');
-    setInfo('');
-    try {
-      await reconfigureWatchPartyRoom(roomId, {
-        room_mode: 'video',
-        item_id: reconfigureVideoItem.id,
-      });
-    } catch (err: any) {
-      setError(err?.message || 'Failed to apply local media');
-    } finally {
-      setReconfiguring(false);
-    }
-  }
-
-  async function handleConfigureAudioLibrary(libraryId: string) {
-    if (joinedRole !== 'host') {
-      setError('Only the room host can configure offline library search.');
-      return;
-    }
-
-    setReconfigureAudioLibraryId(libraryId);
-    setReconfiguring(true);
-    setReconfigureDirty(true);
-    setError('');
-    try {
-      await reconfigureWatchPartyRoom(roomId, {
-        room_mode: 'audio',
-        audio_library_id: libraryId || undefined,
-      });
-      setInfoForDuration(
-        libraryId
-          ? 'Offline library updated for this room.'
-          : 'Offline library cleared. Room is now online-only.',
-        5000,
-      );
-    } catch (err: any) {
-      setError(err?.message || 'Failed to configure offline library');
-    } finally {
-      setReconfiguring(false);
     }
   }
 
@@ -1322,7 +440,7 @@ export default function WatchPartyRoomPage() {
             <button
               type="button"
               className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={() => setReconfigureModalOpen(true)}
+              onClick={() => reconfigure.setReconfigureModalOpen(true)}
               disabled={!joinedRole}
               title={!joinedRole ? 'Join the room to reconfigure' : undefined}
             >
@@ -1364,7 +482,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel space-y-4 p-5 sm:p-6">
           <h2 className="text-xl font-semibold">Join Room</h2>
           <p className="text-sm muted">
-            You must join this room before {isAudioRoom ? 'listening' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : isCreateRoom ? 'creating together' : 'opening synchronized playback'}.
+            You must join this room before {isAudioRoom ? 'listening together' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : isCreateRoom ? 'creating together' : isPlayRoom ? 'playing together' : 'opening synchronized playback'}.
           </p>
 
           {room.password_required && (
@@ -1391,28 +509,28 @@ export default function WatchPartyRoomPage() {
         </section>
       )}
 
-      {joinedRole && isAudioRoom && audioState && (
+      {joinedRole && isAudioRoom && realtime.audioState && (
         <AudioPlayer
-          audioState={audioState}
-          onlineStatusEvents={onlineAudioStatusEvents}
+          audioState={realtime.audioState}
+          onlineStatusEvents={realtime.onlineAudioStatusEvents}
           canControl={canPlayPause}
           canSeek={canSeek}
           roomId={roomId}
           sendWs={sendWs}
-          musicLibraries={reconfigureMusicLibraries.map((library) => ({
+          musicLibraries={reconfigure.reconfigureMusicLibraries.map((library) => ({
             id: library.id,
             name: library.name,
           }))}
-          currentAudioLibraryId={reconfigureAudioLibraryId}
+          currentAudioLibraryId={reconfigure.reconfigureAudioLibraryId}
           canConfigureLocalLibrary={joinedRole === 'host'}
-          configuringLocalLibrary={reconfiguring}
+          configuringLocalLibrary={reconfigure.reconfiguring}
           onConfigureLocalLibrary={(libraryId) => {
             void handleConfigureAudioLibrary(libraryId);
           }}
         />
       )}
 
-      {joinedRole && isAudioRoom && !audioState && (
+      {joinedRole && isAudioRoom && !realtime.audioState && (
         <section className="panel p-5 sm:p-6">
           <p className="text-sm muted">
             Connecting to music party…
@@ -1427,7 +545,7 @@ export default function WatchPartyRoomPage() {
               className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
-              switchingDisabled={reconfiguring || joinedRole !== 'host'}
+              switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
               badges={[
                 `Role: ${joinedRoleDisplay}`,
                 `Controls: ${canPlayPause ? 'allowed' : 'host-only'}`,
@@ -1436,10 +554,10 @@ export default function WatchPartyRoomPage() {
           )}
           <YouTubePlayer
             roomId={roomId}
-            ytState={youtubeState}
+            ytState={realtime.youtubeState}
             canControl={canPlayPause}
             canQueue={!!joinedRole}
-            wsConnected={wsConnected}
+            wsConnected={realtime.wsConnected}
             sendWs={sendWs}
           />
         </section>
@@ -1452,7 +570,7 @@ export default function WatchPartyRoomPage() {
               className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
-              switchingDisabled={reconfiguring || joinedRole !== 'host'}
+              switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
               badges={[
                 `Role: ${joinedRoleDisplay}`,
                 `Navigation: ${canPlayPause ? 'allowed' : 'admin-only'}`,
@@ -1461,34 +579,51 @@ export default function WatchPartyRoomPage() {
           )}
           <WebPlayer
             roomId={roomId}
-            webState={webState}
+            webState={realtime.webState}
             canControl={canPlayPause}
-            wsConnected={wsConnected}
+            wsConnected={realtime.wsConnected}
             sendWs={sendWs}
           />
         </section>
       )}
 
       {joinedRole && isCreateRoom && (
-        <section className="panel space-y-4 p-5 sm:p-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip">Role: {joinedRoleDisplay}</span>
-            <span className="chip">Edit Access: {canPlayPause ? 'allowed' : 'admin-only'}</span>
-          </div>
+        <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
+          <CreateToolTabsBar
+            className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
+            activeTool={activeCreateTool}
+            onSwitchTool={handleSwitchCreateTool}
+            switchingDisabled={false}
+            badges={[
+              `Role: ${joinedRoleDisplay}`,
+              `Edit Access: ${canPlayPause ? 'allowed' : 'admin-only'}`,
+            ]}
+          />
           <CreateTogetherEditor
-            createState={createState}
+            createState={realtime.createState}
             canEdit={canPlayPause}
             sendWs={sendWs}
+            activeToolOverride={activeCreateTool}
           />
         </section>
       )}
 
-      {reconfigureModalOpen &&
+      {joinedRole && isPlayRoom && (
+        <PlayTogetherChess
+          playState={realtime.playState}
+          members={activeMembers}
+          currentUserId={me.id}
+          canControl={canPlayPause}
+          sendWs={sendWs}
+        />
+      )}
+
+      {reconfigure.reconfigureModalOpen &&
         portalMounted &&
         createPortal(
           <div
             className="fixed inset-0 z-40 flex items-start justify-center bg-black/45 p-4 pt-[30vh] backdrop-blur-[2px]"
-            onClick={() => setReconfigureModalOpen(false)}
+            onClick={() => reconfigure.setReconfigureModalOpen(false)}
           >
             <div
               role="dialog"
@@ -1501,13 +636,13 @@ export default function WatchPartyRoomPage() {
                 <div className="space-y-1">
                   <h2 className="text-xl font-semibold">Reconfigure Room</h2>
                   <p className="text-sm muted">
-                    Switch between Watch Together, Listen Together, and Create Together without creating a new room.
+                    Pick a room type and use its tools with everyone in this room.
                   </p>
                 </div>
                 <button
                   type="button"
                   className="btn-secondary px-3 py-1.5 text-xs"
-                  onClick={() => setReconfigureModalOpen(false)}
+                  onClick={() => reconfigure.setReconfigureModalOpen(false)}
                 >
                   Close
                 </button>
@@ -1519,33 +654,31 @@ export default function WatchPartyRoomPage() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${isWatchReconfigureMode ? 'btn-primary' : 'btn-secondary'}`}
-                        onClick={() => {
-                          setReconfigureDirty(true);
-                          setReconfigureMode('video');
-                        }}
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.isWatchReconfigureMode ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => reconfigure.selectReconfigureMode('video')}
                       >
                         Watch Together
                       </button>
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
-                        onClick={() => {
-                          setReconfigureDirty(true);
-                          setReconfigureMode('audio');
-                        }}
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => reconfigure.selectReconfigureMode('audio')}
                       >
                         Listen Together
                       </button>
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigureMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
-                        onClick={() => {
-                          setReconfigureDirty(true);
-                          setReconfigureMode('create');
-                        }}
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => reconfigure.selectReconfigureMode('create')}
                       >
                         Create Together
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'play' ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => reconfigure.selectReconfigureMode('play')}
+                      >
+                        Play Together
                       </button>
                     </div>
                     <div className="flex w-full justify-end sm:w-auto">
@@ -1553,39 +686,42 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
                         onClick={handleReconfigureRoom}
-                        disabled={reconfiguring}
+                        disabled={reconfigure.reconfiguring}
                       >
-                        {reconfiguring ? 'Reconfiguring…' : 'Apply Room Mode'}
+                        {reconfigure.reconfiguring ? 'Reconfiguring…' : 'Apply Room Mode'}
                       </button>
                     </div>
                   </div>
 
-                  {reconfigureMode === 'audio' ? (
+                  {reconfigure.reconfigureMode === 'audio' ? (
                     <div className="space-y-3">
                       <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                        Listen Together now uses one unified room mode. Members can search and queue
-                        both online (YouTube download) and offline (local library) tracks in the
-                        same queue.
-                      </div>
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                        Reconfiguring to Listen Together no longer requires choosing a music library
-                        first. Configure offline local-library search inside the room after switching.
+                        Listen together with one shared queue. Search online tracks, browse local
+                        library tracks, and control playback together.
                       </div>
                     </div>
-                  ) : reconfigureMode === 'create' ? (
+                  ) : reconfigure.reconfigureMode === 'create' ? (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Create Together</p>
                       <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                        Create Together uses one unified room mode. Document and canvas workspaces are
-                        available inside the room.
+                        Collaborate in shared documents and a shared canvas in real time. Edit, draw,
+                        and export your work directly from the room.
+                      </div>
+                    </div>
+                  ) : reconfigure.reconfigureMode === 'play' ? (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-wide muted">Play Together</p>
+                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                        Play shared games in real time with room members. Start with Chess, assign players,
+                        and take turns on the same board.
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Watch Together</p>
                       <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                        Apply this mode first, then choose Local Media, YouTube, or Web from the
-                        source tabs above the embedded viewer in the room.
+                        Watch videos together using Local Media, YouTube, or Web sources. Use shared
+                        controls for play, pause, seek, and queueing.
                       </div>
                     </div>
                   )}
@@ -1635,27 +771,27 @@ export default function WatchPartyRoomPage() {
           document.body,
         )}
 
-      {joinedRole && !isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && (
+      {joinedRole && isVideoRoom && (
         <>
           <section className="panel relative space-y-4 p-5 pt-12 sm:p-6 sm:pt-12">
             {isWatchRoom && (
               <WatchSourceTabsBar
-                className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
-                activeSource={activeWatchSource}
-                onSwitchSource={handleSwitchWatchSource}
-                switchingDisabled={reconfiguring || joinedRole !== 'host'}
-                badges={[
-                  `Role: ${joinedRoleDisplay}`,
-                  `Play/Pause: ${canPlayPause ? 'allowed' : 'host-only'}`,
-                  `Seek: ${canSeek ? 'allowed' : 'host-only'}`,
-                ]}
+              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
+              activeSource={activeWatchSource}
+              onSwitchSource={handleSwitchWatchSource}
+              switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
+              badges={[
+                `Role: ${joinedRoleDisplay}`,
+                `Play/Pause: ${canPlayPause ? 'allowed' : 'host-only'}`,
+                `Seek: ${canSeek ? 'allowed' : 'host-only'}`,
+              ]}
               />
             )}
 
             {!room.item_id || room.item_id.trim().length === 0 ? (
               joinedRole === 'host' ? (
                 <div className="space-y-3">
-                  {reconfigureVideoLibraries.length === 0 ? (
+                  {reconfigure.reconfigureVideoLibraries.length === 0 ? (
                     <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
                       No shared local video libraries are available for current room participants.
                     </div>
@@ -1665,23 +801,23 @@ export default function WatchPartyRoomPage() {
                         Select local media to load into this room.
                       </p>
                       <MediaPicker
-                        libraries={allLibraries}
-                        eligibleLibraryIds={eligibleLibraryIds}
-                        selectedLibraryId={reconfigureVideoLibraryId}
-                        selectedItem={reconfigureVideoItem}
+                        libraries={reconfigure.allLibraries}
+                        eligibleLibraryIds={reconfigure.eligibleLibraryIds}
+                        selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
+                        selectedItem={reconfigure.reconfigureVideoItem}
                         layout="stacked"
                         surfaceClassName="panel-soft"
                         noShadow
-                        onLibraryChange={setReconfigureVideoLibraryId}
-                        onSelectItem={setReconfigureVideoItem}
+                        onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
+                        onSelectItem={reconfigure.setReconfigureVideoItem}
                       />
                       <button
                         type="button"
                         className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
                         onClick={() => void handleApplyLocalMedia()}
-                        disabled={reconfiguring || !reconfigureVideoItem}
+                        disabled={reconfigure.reconfiguring || !reconfigure.reconfigureVideoItem}
                       >
-                        {reconfiguring ? 'Applying…' : 'Apply Local Media'}
+                        {reconfigure.reconfiguring ? 'Applying…' : 'Apply Local Media'}
                       </button>
                     </>
                   )}
@@ -1695,36 +831,36 @@ export default function WatchPartyRoomPage() {
               <>
                 <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
                   <video
-                    ref={videoRef}
+                    ref={playback.videoRef}
                     controls={controlsEnabled}
                     preload="auto"
                     playsInline
                     className="w-full max-h-[70vh]"
                     onPlay={(event) => {
-                      if (applyingRemoteRef.current || !canPlayPause) return;
+                      if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'play',
                         position_ms: Math.floor(event.currentTarget.currentTime * 1000),
                       });
                     }}
                     onPause={(event) => {
-                      if (applyingRemoteRef.current || !canPlayPause) return;
+                      if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'pause',
                         position_ms: Math.floor(event.currentTarget.currentTime * 1000),
                       });
                     }}
                     onSeeked={(event) => {
-                      if (applyingRemoteRef.current || !canSeek) return;
+                      if (playback.applyingRemoteRef.current || !canSeek) return;
                       sendWs({
                         type: 'seek',
                         position_ms: Math.floor(event.currentTarget.currentTime * 1000),
                       });
                     }}
                     onError={() => {
-                      if (mode !== 'direct') return;
+                      if (playback.mode !== 'direct') return;
                       setInfo('Direct playback failed. Switching to HLS…');
-                      void startHls();
+                      void playback.startHls();
                     }}
                   />
                 </div>
@@ -1732,19 +868,19 @@ export default function WatchPartyRoomPage() {
                 <div className="panel-soft flex flex-wrap items-center gap-2 rounded-xl px-3 py-3">
                   <button
                     type="button"
-                    className={`px-4 py-2 text-sm ${mode === 'direct' ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => void startDirect()}
-                    disabled={startingDirect || startingHls || !descriptor}
+                    className={`px-4 py-2 text-sm ${playback.mode === 'direct' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => void playback.startDirect()}
+                    disabled={playback.startingDirect || playback.startingHls || !playback.descriptor}
                   >
-                    {startingDirect ? 'Starting…' : 'Direct Play'}
+                    {playback.startingDirect ? 'Starting…' : 'Direct Play'}
                   </button>
                   <button
                     type="button"
-                    className={`px-4 py-2 text-sm ${mode === 'hls' ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => void startHls()}
-                    disabled={startingDirect || startingHls || !descriptor}
+                    className={`px-4 py-2 text-sm ${playback.mode === 'hls' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => void playback.startHls()}
+                    disabled={playback.startingDirect || playback.startingHls || !playback.descriptor}
                   >
-                    {startingHls ? 'Starting…' : 'Transcode (HLS)'}
+                    {playback.startingHls ? 'Starting…' : 'Transcode (HLS)'}
                   </button>
                   {!controlsEnabled && (
                     <span className="text-xs muted">Playback controls are host-only in this room.</span>

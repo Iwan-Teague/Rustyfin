@@ -28,7 +28,7 @@ export function findDataDeleteTarget(
 
 export async function playTelegramDeleteAnimation(
   element: HTMLElement | null | undefined,
-  durationMs = 1000,
+  durationMs = 540,
 ): Promise<void> {
   if (!element) return;
   if (isReducedMotionPreferred()) return;

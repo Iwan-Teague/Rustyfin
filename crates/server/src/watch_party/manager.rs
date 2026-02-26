@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use chess::{Board, BoardStatus, ChessMove, Color, MoveGen, Piece, Square};
 use tokio::sync::{RwLock, broadcast};
 
 use super::protocol::{AudioRepeatMode, CreateCanvasStroke, ServerMessage, YouTubeSearchEntry};
@@ -89,6 +91,56 @@ impl Default for CreateState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ChessLastMove {
+    pub from: String,
+    pub to: String,
+    pub promotion: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChessState {
+    pub fen: String,
+    pub status: String,
+    pub winner_color: Option<String>,
+    pub white_user_id: Option<String>,
+    pub black_user_id: Option<String>,
+    pub last_move: Option<ChessLastMove>,
+    pub updated_ts_ms: i64,
+}
+
+impl Default for ChessState {
+    fn default() -> Self {
+        Self {
+            fen: Board::default().to_string(),
+            status: "active".to_string(),
+            winner_color: None,
+            white_user_id: None,
+            black_user_id: None,
+            last_move: None,
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayState {
+    pub active_game: String,
+    pub chess: ChessState,
+    pub updated_ts_ms: i64,
+}
+
+impl Default for PlayState {
+    fn default() -> Self {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self {
+            active_game: "chess".to_string(),
+            chess: ChessState::default(),
+            updated_ts_ms: now_ms,
+        }
+    }
+}
+
 pub struct RoomRuntime {
     pub room_id: String,
     pub item_id: String,
@@ -104,6 +156,7 @@ pub struct RoomRuntime {
     pub web_url: RwLock<String>,
     pub web_updated_ts_ms: RwLock<i64>,
     pub create_state: Option<RwLock<CreateState>>,
+    pub play_state: Option<RwLock<PlayState>>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -139,6 +192,7 @@ impl RoomRuntime {
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
+            play_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -171,6 +225,7 @@ impl RoomRuntime {
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
+            play_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -194,6 +249,7 @@ impl RoomRuntime {
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
+            play_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -218,6 +274,7 @@ impl RoomRuntime {
             web_url: RwLock::new(initial_url),
             web_updated_ts_ms: RwLock::new(now_ms),
             create_state: None,
+            play_state: None,
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -242,6 +299,32 @@ impl RoomRuntime {
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(now_ms),
             create_state: Some(RwLock::new(initial_state)),
+            play_state: None,
+            connected_user_ids: RwLock::new(HashSet::new()),
+            tx,
+            last_activity_ts_ms: RwLock::new(now_ms),
+        }
+    }
+
+    pub fn new_play(room_id: String) -> Self {
+        let (tx, _) = broadcast::channel(256);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self {
+            room_id,
+            item_id: String::new(),
+            room_mode: "play".to_string(),
+            audio_source: None,
+            audio_library_id: None,
+            state: RwLock::new(PlaybackState::default()),
+            audio_queue: None,
+            youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(now_ms),
+            create_state: None,
+            play_state: Some(RwLock::new(PlayState::default())),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -356,6 +439,153 @@ impl RoomRuntime {
         drop(guard);
         self.touch_activity().await;
         Some(snapshot)
+    }
+
+    pub async fn snapshot_play_state(&self) -> Option<PlayState> {
+        let state = self.play_state.as_ref()?;
+        Some(state.read().await.clone())
+    }
+
+    pub async fn set_play_game(&self, game: String) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let normalized = game.trim().to_ascii_lowercase();
+        if normalized != "chess" {
+            return Err("only chess is currently supported in play-together rooms".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.active_game = normalized;
+        guard.updated_ts_ms = now_ms;
+        guard.chess.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn set_chess_players(
+        &self,
+        white_user_id: Option<String>,
+        black_user_id: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let white = white_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let black = black_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if white.is_some() && white == black {
+            return Err("white and black seats must be assigned to different users".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.chess.white_user_id = white;
+        guard.chess.black_user_id = black;
+        guard.updated_ts_ms = now_ms;
+        guard.chess.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn reset_chess(&self) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        let white_user_id = guard.chess.white_user_id.clone();
+        let black_user_id = guard.chess.black_user_id.clone();
+        let mut next_chess = ChessState::default();
+        next_chess.white_user_id = white_user_id;
+        next_chess.black_user_id = black_user_id;
+        next_chess.updated_ts_ms = now_ms;
+        guard.active_game = "chess".to_string();
+        guard.chess = next_chess;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn apply_chess_move(
+        &self,
+        user_id: &str,
+        from: &str,
+        to: &str,
+        promotion: Option<&str>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "chess" {
+            return Err("active play game is not chess".to_string());
+        }
+
+        let board = Board::from_str(&guard.chess.fen)
+            .map_err(|_| "failed to load chess board state".to_string())?;
+        let side_to_move = board.side_to_move();
+
+        let assigned_user = match side_to_move {
+            Color::White => guard.chess.white_user_id.as_deref(),
+            Color::Black => guard.chess.black_user_id.as_deref(),
+        };
+        if let Some(assigned_user_id) = assigned_user {
+            if assigned_user_id != user_id {
+                return Err(format!(
+                    "only the assigned {} player may move right now",
+                    color_name(side_to_move)
+                ));
+            }
+        }
+
+        let from_square = parse_square(from)?;
+        let to_square = parse_square(to)?;
+        let promotion_piece = parse_promotion_piece(promotion)?;
+        let mv = ChessMove::new(from_square, to_square, promotion_piece);
+
+        if !MoveGen::new_legal(&board).any(|candidate| candidate == mv) {
+            return Err("illegal chess move".to_string());
+        }
+
+        let next_board = board.make_move_new(mv);
+        let (status, winner_color) = chess_status(&next_board);
+
+        guard.chess.fen = next_board.to_string();
+        guard.chess.status = status;
+        guard.chess.winner_color = winner_color;
+        guard.chess.last_move = Some(ChessLastMove {
+            from: square_to_string(from_square),
+            to: square_to_string(to_square),
+            promotion: promotion_piece.map(piece_to_promotion),
+        });
+        guard.chess.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
     }
 
     pub async fn set_youtube_search_state(
@@ -716,6 +946,65 @@ impl RoomRuntime {
     }
 }
 
+fn color_name(color: Color) -> &'static str {
+    match color {
+        Color::White => "white",
+        Color::Black => "black",
+    }
+}
+
+fn chess_status(board: &Board) -> (String, Option<String>) {
+    match board.status() {
+        BoardStatus::Ongoing => ("active".to_string(), None),
+        BoardStatus::Stalemate => ("stalemate".to_string(), None),
+        BoardStatus::Checkmate => {
+            let winner = match board.side_to_move() {
+                Color::White => "black",
+                Color::Black => "white",
+            };
+            ("checkmate".to_string(), Some(winner.to_string()))
+        }
+    }
+}
+
+fn parse_square(raw: &str) -> Result<Square, String> {
+    Square::from_str(raw.trim().to_ascii_lowercase().as_str())
+        .map_err(|_| format!("invalid square '{raw}'"))
+}
+
+fn parse_promotion_piece(raw: Option<&str>) -> Result<Option<Piece>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let piece = match raw.to_ascii_lowercase().as_str() {
+        "q" | "queen" => Piece::Queen,
+        "r" | "rook" => Piece::Rook,
+        "b" | "bishop" => Piece::Bishop,
+        "n" | "knight" => Piece::Knight,
+        _ => {
+            return Err(format!(
+                "invalid promotion piece '{raw}', expected one of: q, r, b, n"
+            ));
+        }
+    };
+    Ok(Some(piece))
+}
+
+fn piece_to_promotion(piece: Piece) -> String {
+    match piece {
+        Piece::Queen => "q",
+        Piece::Rook => "r",
+        Piece::Bishop => "b",
+        Piece::Knight => "n",
+        _ => "q",
+    }
+    .to_string()
+}
+
+fn square_to_string(square: Square) -> String {
+    square.to_string().to_ascii_lowercase()
+}
+
 #[derive(Default)]
 pub struct WatchPartyManager {
     rooms: RwLock<HashMap<String, Arc<RoomRuntime>>>,
@@ -782,6 +1071,8 @@ impl WatchPartyManager {
                     )
                 } else if room_mode == "create" {
                     RoomRuntime::new_create(room_id.to_string(), create_state.unwrap_or_default())
+                } else if room_mode == "play" {
+                    RoomRuntime::new_play(room_id.to_string())
                 } else {
                     RoomRuntime::new_video(room_id.to_string(), item_id.to_string())
                 };

@@ -14,6 +14,7 @@ import {
   completeSetup,
   type SetupError,
 } from '@/lib/setupApi';
+import { parseResponseBody } from '@/lib/api';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 
@@ -199,8 +200,10 @@ export default function SetupWizard() {
         body: JSON.stringify({ username: adminUsername, password: adminPassword }),
       });
       if (res.ok) {
-        const data = await res.json();
-        localStorage.setItem('token', data.token);
+        const body = await parseResponseBody(res);
+        if (body && typeof body === 'object' && typeof (body as { token?: unknown }).token === 'string') {
+          localStorage.setItem('token', (body as { token: string }).token);
+        }
         await refreshMe();
       }
       router.replace('/');

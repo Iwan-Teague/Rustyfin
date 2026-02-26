@@ -35,7 +35,7 @@ Rustyfin is a Docker-first local media platform with:
 - Delete actions:
   - Use the shared delete animation helper `playTelegramDeleteAnimation` from `ui/src/lib/deleteAnimation.ts`.
   - Use `findDataDeleteTarget` (or a direct equivalent target lookup) so the element being removed visibly animates before deletion.
-  - Keep the shared simmer-then-pop motion in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` and its keyframes) as the canonical delete animation style.
+  - Keep the shared fade-out motion in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` and `tg-delete-fade-out`) as the canonical delete animation style.
   - Apply this consistently to all delete surfaces (messages, channels, transcripts, queue items, calendar/admin records, etc.).
 
 ## Runtime and Scripts
