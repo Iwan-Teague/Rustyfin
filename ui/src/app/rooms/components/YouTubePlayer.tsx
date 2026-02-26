@@ -7,6 +7,7 @@ import {
   lookupYouTubeVideos,
 } from '@/lib/watchPartyApi';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import ClearSearchButton from './ClearSearchButton';
 
 // Minimal YouTube IFrame API type declarations
 declare global {
@@ -871,23 +872,10 @@ export default function YouTubePlayer({
                 className="input w-full px-3 py-2 pr-10 text-sm"
               />
               {searchInput.trim().length > 0 && (
-                <button
-                  type="button"
+                <ClearSearchButton
                   onClick={clearSearchInput}
-                  className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
-                  aria-label="Clear search"
-                  title="Clear search"
-                >
-                  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
-                    <path
-                      d="M9 9l6 6M15 9l-6 6"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
+                  className="absolute right-2 top-1/2 -translate-y-1/2"
+                />
               )}
             </div>
             <button

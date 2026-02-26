@@ -6,6 +6,8 @@ import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
+const DELETE_AFTER_CONFIRM_DELAY_MS = 1000;
+
 interface Props {
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
@@ -424,13 +426,18 @@ export default function ChannelSidebar({
               </button>
               <button
                 onClick={async () => {
-                  const target = findDataDeleteTarget('data-channel-row-id', pendingDeleteChannel.id);
-                  await playTelegramDeleteAnimation(target);
-                  onDeleteChannel(pendingDeleteChannel.id);
+                  const channelToDelete = pendingDeleteChannel;
+                  if (!channelToDelete) return;
                   setPendingDeleteChannel(null);
-                  if (menuOpen?.channelId === pendingDeleteChannel.id) {
+                  if (menuOpen?.channelId === channelToDelete.id) {
                     setMenuOpen(null);
                   }
+                  await new Promise<void>((resolve) => {
+                    window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
+                  });
+                  const target = findDataDeleteTarget('data-channel-row-id', channelToDelete.id);
+                  await playTelegramDeleteAnimation(target);
+                  onDeleteChannel(channelToDelete.id);
                 }}
                 className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
               >

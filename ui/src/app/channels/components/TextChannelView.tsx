@@ -11,6 +11,8 @@ import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/chann
 import { apiFetch } from '@/lib/api';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
+const DELETE_AFTER_CONFIRM_DELAY_MS = 1000;
+
 interface Props {
   channel: ChannelInfo;
   newMessages: ChannelMessage[];
@@ -189,6 +191,10 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
   }, [wsEvents, channel.id]);
 
   const handleDeleteMessage = useCallback(async (messageId: string) => {
+    setPendingDeleteId(null);
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
+    });
     try {
       const target = findDataDeleteTarget('data-delete-message-id', messageId);
       await playTelegramDeleteAnimation(target);
@@ -196,8 +202,6 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       setMessages((prev) => prev.filter((m) => m.id !== messageId));
     } catch {
       // Silently ignore — the button simply won't work if permissions mismatch
-    } finally {
-      setPendingDeleteId(null);
     }
   }, [channel.id]);
 

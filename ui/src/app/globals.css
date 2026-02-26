@@ -154,12 +154,17 @@ a {
 
 .btn-primary {
   position: relative;
-  overflow: visible;
+  overflow: hidden;
   isolation: isolate;
   background: linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%);
   color: #fff;
   border: 1px solid rgba(255, 255, 255, 0.25);
   box-shadow: 0 12px 24px rgba(116, 84, 198, 0.4);
+}
+
+.btn-primary > * {
+  position: relative;
+  z-index: 2;
 }
 
 .btn-primary:hover {
@@ -180,48 +185,47 @@ a {
 }
 
 .btn-primary::before {
-  inset: -6px;
+  inset: 0;
   border-radius: inherit;
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 145, 77, 0.42) 0%,
-    rgba(255, 117, 136, 0.22) 42%,
-    rgba(157, 116, 255, 0) 72%
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.08) 48%,
+    rgba(255, 255, 255, 0) 100%
   );
-  filter: blur(1px);
-  z-index: -1;
+  z-index: 0;
 }
 
 .btn-primary::after {
-  left: -9px;
-  right: -9px;
-  top: -9px;
-  bottom: -9px;
+  width: 170%;
+  aspect-ratio: 1 / 1;
+  left: 50%;
+  top: 50%;
   border-radius: 999px;
-  background:
-    linear-gradient(90deg, transparent 8%, rgba(255, 145, 77, 0.95) 8% 12%, transparent 12% 18%),
-    linear-gradient(132deg, transparent 11%, rgba(255, 117, 136, 0.9) 11% 14%, transparent 14% 22%),
-    linear-gradient(168deg, transparent 16%, rgba(157, 116, 255, 0.95) 16% 19%, transparent 19% 28%),
-    linear-gradient(210deg, transparent 10%, rgba(255, 145, 77, 0.92) 10% 13%, transparent 13% 20%),
-    linear-gradient(248deg, transparent 13%, rgba(255, 117, 136, 0.92) 13% 16%, transparent 16% 24%),
-    linear-gradient(286deg, transparent 9%, rgba(157, 116, 255, 0.95) 9% 12%, transparent 12% 20%),
-    linear-gradient(324deg, transparent 11%, rgba(255, 145, 77, 0.95) 11% 14%, transparent 14% 21%),
-    linear-gradient(0deg, transparent 13%, rgba(255, 117, 136, 0.9) 13% 16%, transparent 16% 23%);
-  mask: radial-gradient(closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
-  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - 5px), #000 calc(100% - 5px));
+  background: radial-gradient(
+    circle at center,
+    rgba(255, 255, 255, 0.34) 0%,
+    rgba(255, 255, 255, 0.15) 32%,
+    rgba(255, 255, 255, 0) 68%
+  );
+  transform: translate(-50%, -50%) scale(0.16);
   z-index: 1;
 }
 
+.btn-primary:not(.btn-click-burst)::before {
+  opacity: 0.12;
+}
+
 .btn-primary.btn-click-burst {
-  animation: btn-click-pop 260ms cubic-bezier(0.2, 0.9, 0.32, 1);
+  animation: btn-click-pop 220ms cubic-bezier(0.2, 0.9, 0.32, 1);
 }
 
 .btn-primary.btn-click-burst::before {
-  animation: btn-click-aura 500ms ease-out forwards;
+  animation: btn-click-aura 280ms ease-out forwards;
 }
 
 .btn-primary.btn-click-burst::after {
-  animation: btn-click-streaks 500ms ease-out forwards;
+  animation: btn-click-streaks 420ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
 .btn-secondary {
@@ -507,35 +511,33 @@ input[type="checkbox"]:disabled {
 
 @keyframes btn-click-pop {
   0% {
-    transform: translateY(-1px) scale(1);
+    transform: scale(1);
   }
-  40% {
-    transform: translateY(0) scale(0.972);
+  38% {
+    transform: scale(0.968);
   }
   100% {
-    transform: translateY(-1px) scale(1);
+    transform: scale(1);
   }
 }
 
 @keyframes btn-click-aura {
   0% {
-    opacity: 0.78;
-    transform: scale(0.88);
+    opacity: 0.34;
   }
   100% {
     opacity: 0;
-    transform: scale(1.22);
   }
 }
 
 @keyframes btn-click-streaks {
   0% {
-    opacity: 0.95;
-    transform: scale(0.8);
+    opacity: 0.34;
+    transform: translate(-50%, -50%) scale(0.14);
   }
   100% {
     opacity: 0;
-    transform: scale(1.26);
+    transform: translate(-50%, -50%) scale(1.12);
   }
 }
 

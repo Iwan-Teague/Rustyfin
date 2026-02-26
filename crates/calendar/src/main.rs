@@ -3,11 +3,11 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
     routing::{get, patch},
 };
 use chrono::{Datelike, NaiveDate};
-use rustfin_core::error::{ApiError, ErrorEnvelope};
+use rustfin_core::axum_error::AppError;
+use rustfin_core::error::ApiError;
 use rustfin_db::repo::calendar::{
     CalendarEventRow, NewCalendarEvent, UpdateCalendarEvent, create_event as db_create_event,
     delete_event as db_delete_event, get_event as db_get_event, list_personal_events,
@@ -23,23 +23,6 @@ struct AppState {
     db: SqlitePool,
     auth_base_url: String,
     http_client: reqwest::Client,
-}
-
-struct AppError(ApiError);
-
-impl From<ApiError> for AppError {
-    fn from(value: ApiError) -> Self {
-        Self(value)
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let envelope = ErrorEnvelope::from(&self.0);
-        (status, Json(envelope)).into_response()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

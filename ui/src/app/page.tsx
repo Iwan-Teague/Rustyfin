@@ -158,17 +158,6 @@ export default function HomePage() {
   return (
     <div className="space-y-7 animate-rise">
       <header className="panel space-y-3 p-6 sm:p-8">
-        <div className="flex flex-wrap items-center gap-2">
-          {voiceSession && (
-            <Link
-              href="/channels"
-              className="chip flex items-center gap-1.5 text-xs border-green-500/50 text-green-400"
-            >
-              <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-              Connected · {voiceSession.channelName}
-            </Link>
-          )}
-        </div>
         <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
         <p className="text-sm muted sm:text-base">
           Browse your libraries, jump into what&apos;s next, or join something live.

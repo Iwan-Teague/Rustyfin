@@ -2,11 +2,12 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, header},
     routing::{get, post},
 };
-use rustfin_core::error::{ApiError, ErrorEnvelope};
+use rustfin_core::agent_auth::{normalize_secret, verify_agent_token};
+use rustfin_core::axum_error::AppError;
+use rustfin_core::error::ApiError;
 use rustfin_metadata::provider::{MetadataProvider, SearchResult};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -22,23 +23,6 @@ struct AppState {
     tmdb_key_env: Option<String>,
     agent_token: Option<String>,
     http: reqwest::Client,
-}
-
-struct AppError(ApiError);
-
-impl From<ApiError> for AppError {
-    fn from(value: ApiError) -> Self {
-        Self(value)
-    }
-}
-
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let status =
-            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let envelope = ErrorEnvelope::from(&self.0);
-        (status, Json(envelope)).into_response()
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -90,31 +74,6 @@ impl ImageSlot {
     }
 }
 
-fn normalized_secret(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn verify_agent_token(headers: &HeaderMap, expected: Option<&str>) -> Result<(), AppError> {
-    let Some(expected_token) = expected.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(());
-    };
-
-    let supplied = headers
-        .get("x-agent-token")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .unwrap_or_default();
-
-    if supplied != expected_token {
-        return Err(ApiError::Unauthorized("missing or invalid tmdb-agent token".into()).into());
-    }
-
-    Ok(())
-}
-
 fn normalize_title_for_match(title: &str) -> String {
     title
         .chars()
@@ -162,7 +121,7 @@ async fn resolve_tmdb_key(state: &AppState) -> Result<Option<String>, AppError> 
     let db_key = rustfin_db::repo::settings::get(&state.db, "tmdb_api_key")
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .and_then(|value| normalized_secret(Some(&value)));
+        .and_then(|value| normalize_secret(Some(&value)));
 
     if db_key.is_some() {
         return Ok(db_key);
@@ -532,7 +491,7 @@ async fn enrich_library(
     Path(library_id): Path<String>,
     Query(query): Query<EnrichQuery>,
 ) -> Result<Json<EnrichLibraryResponse>, AppError> {
-    verify_agent_token(&headers, state.agent_token.as_deref())?;
+    verify_agent_token(&headers, state.agent_token.as_deref(), "tmdb-agent")?;
 
     let started = Instant::now();
     let force = query.force.unwrap_or(false);
@@ -706,8 +665,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to run db migrations")?;
 
-    let agent_token = normalized_secret(std::env::var("RUSTFIN_TMDB_AGENT_TOKEN").ok().as_deref());
-    let tmdb_key_env = normalized_secret(std::env::var("RUSTFIN_TMDB_KEY").ok().as_deref());
+    let agent_token = normalize_secret(std::env::var("RUSTFIN_TMDB_AGENT_TOKEN").ok().as_deref());
+    let tmdb_key_env = normalize_secret(std::env::var("RUSTFIN_TMDB_KEY").ok().as_deref());
 
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

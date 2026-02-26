@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 
 const BURST_CLASS = 'btn-click-burst';
-const BURST_DURATION_MS = 520;
+const BURST_DURATION_MS = 420;
 
 function isDisabledTarget(element: HTMLElement): boolean {
   if (element.getAttribute('aria-disabled') === 'true') return true;

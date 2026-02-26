@@ -16,7 +16,6 @@ type Props = {
 
 type Point = { x: number; y: number };
 type CanvasViewport = { scale: number; offsetX: number; offsetY: number };
-type CanvasWorldBounds = { minX: number; minY: number; maxX: number; maxY: number };
 
 type ActiveTool = 'text' | 'canvas';
 type TextFormat = 'plain' | 'markdown' | 'pdf_text';
@@ -54,9 +53,8 @@ const CANVAS_HEIGHT = 560;
 const CANVAS_MIN_ZOOM = 0.4;
 const CANVAS_MAX_ZOOM = 6;
 const CANVAS_MAX_BYTES = 30 * 1024 * 1024;
+const CANVAS_MAX_PAN_OFFSET = 2_000_000;
 const CANVAS_WHEEL_ZOOM_SENSITIVITY = 0.0022;
-const CANVAS_WORLD_RENDER_PADDING = 220;
-const CANVAS_WORLD_PAN_PADDING = 360;
 
 const FONT_OPTIONS = [
   { label: 'Arial', css: 'Arial, sans-serif', command: 'Arial' },
@@ -86,7 +84,7 @@ const PAGE_SIZES: Record<PageSize, { label: string; widthPx: number; heightPx: n
   tabloid: { label: 'Tabloid', widthPx: 1056, heightPx: 1632 },
 };
 
-const PAGE_SIZE_ORDER: PageSize[] = ['a4', 'letter', 'legal', 'a5', 'tabloid'];
+const FIXED_PAGE_SIZE: PageSize = 'a4';
 const DEFAULT_TOOLBAR_STATE: TextToolbarState = {
   bold: false,
   italic: false,
@@ -94,10 +92,6 @@ const DEFAULT_TOOLBAR_STATE: TextToolbarState = {
   unorderedList: false,
   orderedList: false,
 };
-
-function isPageSize(value: string): value is PageSize {
-  return PAGE_SIZE_ORDER.includes(value as PageSize);
-}
 
 function isPageOrientation(value: string): value is PageOrientation {
   return value === 'portrait' || value === 'landscape';
@@ -363,7 +357,7 @@ function decodeRichDocument(raw: string): {
   if (trimmed.length === 0) {
     return {
       pages: [makeEmptyPage()],
-      pageSize: 'a4',
+      pageSize: FIXED_PAGE_SIZE,
       pageOrientation: 'portrait',
     };
   }
@@ -371,10 +365,8 @@ function decodeRichDocument(raw: string): {
   try {
     const parsed = JSON.parse(trimmed) as Partial<RichDocument>;
     if (parsed.type === 'rich_doc' && Array.isArray(parsed.pages)) {
-      const rawPageSize = typeof parsed.page_size === 'string' ? parsed.page_size : '';
       const rawPageOrientation =
         typeof parsed.page_orientation === 'string' ? parsed.page_orientation : '';
-      const pageSize: PageSize = isPageSize(rawPageSize) ? rawPageSize : 'a4';
       const pageOrientation: PageOrientation = isPageOrientation(rawPageOrientation)
         ? rawPageOrientation
         : 'portrait';
@@ -384,7 +376,7 @@ function decodeRichDocument(raw: string): {
           html: page.html || '',
         })),
       );
-      return { pages, pageSize, pageOrientation };
+      return { pages, pageSize: FIXED_PAGE_SIZE, pageOrientation };
     }
   } catch {
     // Fallback to legacy plain-text content.
@@ -397,7 +389,7 @@ function decodeRichDocument(raw: string): {
         html: plainTextToPageHtml(raw),
       },
     ],
-    pageSize: 'a4',
+    pageSize: FIXED_PAGE_SIZE,
     pageOrientation: 'portrait',
   };
 }
@@ -572,55 +564,11 @@ function estimateCanvasBytes(strokes: WsCreateCanvasStroke[]): number {
   }
 }
 
-function initialCanvasWorldBounds(): CanvasWorldBounds {
-  return {
-    minX: 0,
-    minY: 0,
-    maxX: CANVAS_WIDTH,
-    maxY: CANVAS_HEIGHT,
-  };
-}
-
-function withCanvasPadding(bounds: CanvasWorldBounds, padding: number): CanvasWorldBounds {
-  return {
-    minX: bounds.minX - padding,
-    minY: bounds.minY - padding,
-    maxX: bounds.maxX + padding,
-    maxY: bounds.maxY + padding,
-  };
-}
-
-function computeCanvasWorldBounds(
-  strokes: WsCreateCanvasStroke[],
-  pending?: WsCreateCanvasStroke | null,
-): CanvasWorldBounds {
-  const next = initialCanvasWorldBounds();
-  const includePoint = (point: Point) => {
-    next.minX = Math.min(next.minX, point.x);
-    next.minY = Math.min(next.minY, point.y);
-    next.maxX = Math.max(next.maxX, point.x);
-    next.maxY = Math.max(next.maxY, point.y);
-  };
-
-  for (const stroke of strokes) {
-    for (const point of stroke.points || []) {
-      includePoint(point);
-    }
-  }
-  if (pending?.points) {
-    for (const point of pending.points) {
-      includePoint(point);
-    }
-  }
-
-  return next;
-}
-
 export default function CreateTogetherEditor({ createState, canEdit, sendWs }: Props) {
   const [activeTool, setActiveTool] = useState<ActiveTool>('text');
   const [documentName, setDocumentName] = useState('Untitled Document');
   const [pages, setPages] = useState<RichDocPage[]>([makeEmptyPage()]);
-  const [pageSize, setPageSize] = useState<PageSize>('a4');
+  const [pageSize, setPageSize] = useState<PageSize>(FIXED_PAGE_SIZE);
   const [pageOrientation, setPageOrientation] = useState<PageOrientation>('portrait');
   const [selectedFontFamily, setSelectedFontFamily] = useState<string>(FONT_OPTIONS[0].css);
   const [selectedFontSizePx, setSelectedFontSizePx] = useState<number>(15);
@@ -746,9 +694,9 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       const normalized = normalizePages(nextPages);
       pagesRef.current = normalized;
       setPages(normalized);
-      setPageSize(nextPageSize);
+      setPageSize(FIXED_PAGE_SIZE);
       setPageOrientation(nextPageOrientation);
-      scheduleDocumentSync(normalized, nextPageSize, nextPageOrientation, immediate);
+      scheduleDocumentSync(normalized, FIXED_PAGE_SIZE, nextPageOrientation, immediate);
     },
     [scheduleDocumentSync],
   );
@@ -762,7 +710,7 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     setDocumentName(sanitizeDocumentName(createState.document_name || 'Untitled Document'));
 
     const decoded = decodeRichDocument(createState.text_content || '');
-    setPageSize(decoded.pageSize);
+    setPageSize(FIXED_PAGE_SIZE);
     setPageOrientation(decoded.pageOrientation);
     pagesRef.current = decoded.pages;
     setPages(decoded.pages);
@@ -800,37 +748,15 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   }, [canEdit, canvasViewport.scale]);
 
   const clampCanvasViewport = useCallback((next: CanvasViewport): CanvasViewport => {
-    const canvas = canvasRef.current;
-    const viewportWidth = canvas?.width ?? CANVAS_WIDTH;
-    const viewportHeight = canvas?.height ?? CANVAS_HEIGHT;
     const scale = clamp(next.scale, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
-    const worldBounds = withCanvasPadding(
-      computeCanvasWorldBounds(canvasStrokes, pendingStrokeRef.current),
-      CANVAS_WORLD_PAN_PADDING,
-    );
-
-    let minOffsetX = viewportWidth - worldBounds.maxX * scale;
-    let maxOffsetX = -worldBounds.minX * scale;
-    if (minOffsetX > maxOffsetX) {
-      const centeredX = (minOffsetX + maxOffsetX) / 2;
-      minOffsetX = centeredX;
-      maxOffsetX = centeredX;
-    }
-
-    let minOffsetY = viewportHeight - worldBounds.maxY * scale;
-    let maxOffsetY = -worldBounds.minY * scale;
-    if (minOffsetY > maxOffsetY) {
-      const centeredY = (minOffsetY + maxOffsetY) / 2;
-      minOffsetY = centeredY;
-      maxOffsetY = centeredY;
-    }
 
     return {
       scale,
-      offsetX: clamp(next.offsetX, minOffsetX, maxOffsetX),
-      offsetY: clamp(next.offsetY, minOffsetY, maxOffsetY),
+      // Keep panning effectively unlimited while preventing runaway numeric drift.
+      offsetX: clamp(next.offsetX, -CANVAS_MAX_PAN_OFFSET, CANVAS_MAX_PAN_OFFSET),
+      offsetY: clamp(next.offsetY, -CANVAS_MAX_PAN_OFFSET, CANVAS_MAX_PAN_OFFSET),
     };
-  }, [canvasStrokes]);
+  }, []);
 
   const applyCanvasViewport = useCallback(
     (next: CanvasViewport) => {
@@ -863,7 +789,8 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#050914';
+      // Single surface color so there is no visible moving border as content grows.
+      ctx.fillStyle = '#0a0f1f';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       ctx.setTransform(
@@ -873,23 +800,6 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
         viewport.scale,
         viewport.offsetX,
         viewport.offsetY,
-      );
-      const worldBounds = computeCanvasWorldBounds(strokes, pending);
-      const renderBounds = withCanvasPadding(worldBounds, CANVAS_WORLD_RENDER_PADDING);
-      ctx.fillStyle = '#0a0f1f';
-      ctx.fillRect(
-        renderBounds.minX,
-        renderBounds.minY,
-        renderBounds.maxX - renderBounds.minX,
-        renderBounds.maxY - renderBounds.minY,
-      );
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth = 1 / viewport.scale;
-      ctx.strokeRect(
-        worldBounds.minX,
-        worldBounds.minY,
-        Math.max(1, worldBounds.maxX - worldBounds.minX),
-        Math.max(1, worldBounds.maxY - worldBounds.minY),
       );
 
       const drawStroke = (stroke: WsCreateCanvasStroke) => {
@@ -995,9 +905,17 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       }
     };
 
-    let align: TextToolbarState['align'] = 'left';
+    const commandAlign = (() => {
+      if (queryState('justifyCenter')) return 'center' as const;
+      if (queryState('justifyRight')) return 'right' as const;
+      if (queryState('justifyFull')) return 'justify' as const;
+      if (queryState('justifyLeft')) return 'left' as const;
+      return null;
+    })();
+
+    let align: TextToolbarState['align'] = commandAlign ?? 'left';
     let cursor: Node | null = selection.anchorNode;
-    while (cursor && cursor !== node) {
+    while (!commandAlign && cursor && cursor !== node) {
       if (cursor.nodeType === Node.ELEMENT_NODE) {
         const el = cursor as HTMLElement;
         const inlineAlign = el.style.textAlign.toLowerCase();
@@ -1171,11 +1089,6 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     if (activePageId === pageId) {
       setActivePageId(next[0]?.id ?? null);
     }
-  };
-
-  const handlePageSizeChange = (nextPageSize: PageSize) => {
-    setPageSize(nextPageSize);
-    scheduleDocumentSync(pagesRef.current, nextPageSize, pageOrientation, true);
   };
 
   const handlePageOrientationChange = (nextPageOrientation: PageOrientation) => {
@@ -1441,24 +1354,6 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       {activeTool === 'text' ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-xs uppercase tracking-wide muted">Page Size</label>
-            <select
-              className="select px-3 py-2 text-sm"
-              value={pageSize}
-              onChange={(event) => {
-                const next = event.target.value;
-                if (!isPageSize(next)) return;
-                handlePageSizeChange(next);
-              }}
-              disabled={!canEdit}
-            >
-              {PAGE_SIZE_ORDER.map((size) => (
-                <option key={size} value={size}>
-                  {PAGE_SIZES[size].label}
-                </option>
-              ))}
-            </select>
-
             <label className="text-xs uppercase tracking-wide muted">Orientation</label>
             <select
               className="select px-3 py-2 text-sm"
@@ -1561,7 +1456,12 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
               title="Bold"
               aria-label="Bold"
             >
-              <span className="text-sm font-black">B</span>
+              <span
+                className="text-[15px] font-bold leading-none"
+                style={{ fontFamily: 'Georgia, "Times New Roman", serif' }}
+              >
+                B
+              </span>
             </button>
             <button
               type="button"

@@ -41,6 +41,26 @@ function hashColor(userId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
+function sanitizeFileStem(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  return cleaned || 'voice-channel';
+}
+
+function formatDateForFile(timestampSeconds?: number | null): string {
+  const date = typeof timestampSeconds === 'number'
+    ? new Date(timestampSeconds * 1000)
+    : new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function ParticipantCard({
   userInfo,
   isSpeaking,
@@ -337,14 +357,14 @@ export default function VoiceChannelView({
     }
   }
 
-  async function handleDownloadTranscription(sessionId: string) {
-    if (!sessionId) {
+  async function handleDownloadTranscription(session: VoiceTranscriptionSessionSummary) {
+    if (!session.session_id) {
       return;
     }
     setTranscriptionBusy(true);
     setTranscriptionError(null);
     try {
-      const path = `/channels/${channel.id}/transcription/sessions/${sessionId}/download`;
+      const path = `/channels/${channel.id}/transcription/sessions/${session.session_id}/download`;
       const response = await apiFetch(path, { method: 'GET' });
       if (!response.ok) {
         throw new Error('failed to download transcript');
@@ -353,7 +373,7 @@ export default function VoiceChannelView({
       const downloadUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = `voice-transcript-${sessionId}.md`;
+      link.download = `${sanitizeFileStem(channel.name)}-${formatDateForFile(session.started_ts)}.md`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -543,7 +563,7 @@ export default function VoiceChannelView({
                       <button
                         type="button"
                         className="btn-secondary w-full px-2 py-1 text-xs"
-                        onClick={() => void handleDownloadTranscription(session.session_id)}
+                        onClick={() => void handleDownloadTranscription(session)}
                         disabled={transcriptionBusy}
                       >
                         Download
