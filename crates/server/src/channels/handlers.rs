@@ -6,6 +6,7 @@ use axum::response::Response;
 use chrono::{DateTime, Utc};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path as StdPath;
 use tokio::fs;
@@ -49,6 +50,7 @@ pub struct ChannelResponse {
 pub struct MessagesQuery {
     pub before: Option<i64>,
     pub limit: Option<i64>,
+    pub before_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,16 +149,6 @@ fn attachment_to_info(
         size_bytes: attachment.size_bytes,
         download_path: format!("/api/v1/channels/attachments/{}", attachment.id),
     }
-}
-
-async fn list_message_attachment_responses(
-    state: &AppState,
-    message_id: &str,
-) -> Result<Vec<MessageAttachmentResponse>, AppError> {
-    let attachments = rustfin_db::repo::channels::list_message_attachments(&state.db, message_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    Ok(attachments.iter().map(attachment_to_response).collect())
 }
 
 fn sanitize_file_name(raw: &str) -> String {
@@ -474,14 +466,33 @@ pub async fn get_messages(
         .before
         .unwrap_or_else(|| chrono::Utc::now().timestamp() + 1);
 
-    let messages =
-        rustfin_db::repo::channels::list_messages(&state.db, &channel_id, limit, before_ts)
+    let messages = rustfin_db::repo::channels::list_messages(
+        &state.db,
+        &channel_id,
+        limit,
+        before_ts,
+        params.before_id.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let message_ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();
+    let attachment_rows =
+        rustfin_db::repo::channels::list_message_attachments_for_messages(&state.db, &message_ids)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let mut attachments_by_message: HashMap<String, Vec<MessageAttachmentResponse>> =
+        HashMap::new();
+    for attachment in attachment_rows {
+        attachments_by_message
+            .entry(attachment.message_id.clone())
+            .or_default()
+            .push(attachment_to_response(&attachment));
+    }
 
     let mut response: Vec<MessageResponse> = Vec::with_capacity(messages.len());
     for m in messages {
-        let attachments = list_message_attachment_responses(&state, &m.id).await?;
+        let attachments = attachments_by_message.remove(&m.id).unwrap_or_default();
         response.push(MessageResponse {
             id: m.id,
             channel_id: m.channel_id,
@@ -991,9 +1002,22 @@ pub async fn get_transcription_status(
     };
 
     let entry_count = if let Some(ref s) = session {
-        rustfin_db::repo::channel_transcripts::count_entries_for_session(&state.db, &s.id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        let counts = rustfin_db::repo::channel_transcripts::count_entries_for_sessions(
+            &state.db,
+            std::slice::from_ref(&s.id),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        counts
+            .into_iter()
+            .find_map(|(session_id, count)| {
+                if session_id == s.id {
+                    Some(count)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
     } else {
         0
     };
@@ -1048,14 +1072,16 @@ pub async fn list_transcription_sessions(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    let session_ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
+    let counts =
+        rustfin_db::repo::channel_transcripts::count_entries_for_sessions(&state.db, &session_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let counts_by_session_id: HashMap<String, i64> = counts.into_iter().collect();
+
     let mut out = Vec::with_capacity(sessions.len());
     for session in sessions {
-        let entry_count = rustfin_db::repo::channel_transcripts::count_entries_for_session(
-            &state.db,
-            &session.id,
-        )
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let entry_count = *counts_by_session_id.get(&session.id).unwrap_or(&0);
         let output_download_path = if session.output_path.is_some() {
             Some(format!(
                 "/api/v1/channels/{}/transcription/sessions/{}/download",
@@ -1119,12 +1145,21 @@ pub async fn start_transcription(
             output_available: existing.output_path.is_some(),
             output_download_path: None,
             message: Some("transcription is already running".to_string()),
-            entry_count: rustfin_db::repo::channel_transcripts::count_entries_for_session(
+            entry_count: rustfin_db::repo::channel_transcripts::count_entries_for_sessions(
                 &state.db,
-                &existing.id,
+                std::slice::from_ref(&existing.id),
             )
             .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?,
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .into_iter()
+            .find_map(|(session_id, count)| {
+                if session_id == existing.id {
+                    Some(count)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0),
         }));
     }
 
@@ -1404,10 +1439,7 @@ pub async fn stop_transcription(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::Internal("completed transcript session disappeared".into()))?;
-    let entry_count =
-        rustfin_db::repo::channel_transcripts::count_entries_for_session(&state.db, &running.id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let entry_count = entries.len() as i64;
 
     state
         .channel_manager

@@ -250,10 +250,10 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore || messages.length === 0) return;
-    const oldest = messages[0].created_ts;
+    const oldest = messages[0];
     setLoadingMore(true);
     try {
-      const older = await getMessages(channel.id, oldest, 50);
+      const older = await getMessages(channel.id, oldest.created_ts, oldest.id, 50);
       setHasMore(older.length >= 50);
       if (older.length > 0) {
         setMessages((prev) => [...older, ...prev]);

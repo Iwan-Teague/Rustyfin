@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -37,6 +37,9 @@ const WEB_URL_MAX_LEN: usize = 2048;
 const ROOM_NAME_MAX_LEN: usize = 120;
 const ONLINE_AUDIO_SEARCH_MAX_LIMIT: usize = 20;
 const ONLINE_AUDIO_SEARCH_DEFAULT_LIMIT: usize = 12;
+const AUDIO_TRACKS_DEFAULT_LIMIT: usize = 80;
+const AUDIO_TRACKS_MAX_LIMIT: usize = 400;
+const AUDIO_TRACKS_MAX_OFFSET: usize = 20_000;
 const YOUTUBE_AGENT_DOWNLOAD_TIMEOUT_SECONDS: u64 = 240;
 const DEFAULT_WEB_ROOM_URL: &str = "https://www.mozilla.org/";
 const DEFAULT_CREATE_DOCUMENT_NAME: &str = "Untitled Document";
@@ -213,6 +216,10 @@ pub struct AudioTracksQuery {
     pub q: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1356,14 +1363,17 @@ async fn ensure_library_access_for_user(
     Ok(())
 }
 
-fn room_member_username<'a>(
-    usernames: &'a std::collections::HashMap<String, String>,
-    user_id: &str,
-) -> &'a str {
-    usernames
-        .get(user_id)
-        .map(String::as_str)
-        .unwrap_or("unknown")
+async fn load_users_by_ids(
+    state: &AppState,
+    user_ids: &[String],
+) -> Result<HashMap<String, rustfin_db::repo::users::UserRow>, AppError> {
+    let users = rustfin_db::repo::users::list_users_by_ids(&state.db, user_ids)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(users
+        .into_iter()
+        .map(|user| (user.id.clone(), user))
+        .collect())
 }
 
 fn is_password_required(hash: Option<&str>) -> bool {
@@ -1719,23 +1729,41 @@ pub async fn eligible_libraries(
         .into_iter()
         .map(|lib| lib.id)
         .collect();
+    let all_library_set: HashSet<String> = all_library_ids.iter().cloned().collect();
+
+    let users_by_id = load_users_by_ids(&state, &requested_user_ids).await?;
+    if users_by_id.len() != requested_user_ids.len() {
+        return Err(ApiError::NotFound("user not found".into()).into());
+    }
+
+    let non_admin_user_ids: Vec<String> = requested_user_ids
+        .iter()
+        .filter_map(|user_id| users_by_id.get(user_id))
+        .filter(|user| user.role != "admin")
+        .map(|user| user.id.clone())
+        .collect();
+    let access_rows =
+        rustfin_db::repo::users::list_library_access_for_users(&state.db, &non_admin_user_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let mut access_by_user: HashMap<String, HashSet<String>> = HashMap::new();
+    for (user_id, library_id) in access_rows {
+        access_by_user
+            .entry(user_id)
+            .or_default()
+            .insert(library_id);
+    }
 
     let mut intersection: Option<HashSet<String>> = None;
 
     for user_id in requested_user_ids {
-        let user = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        let user = users_by_id
+            .get(&user_id)
             .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
-
         let current: HashSet<String> = if user.role == "admin" {
-            all_library_ids.iter().cloned().collect()
+            all_library_set.clone()
         } else {
-            rustfin_db::repo::users::get_library_access(&state.db, &user.id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .into_iter()
-                .collect()
+            access_by_user.remove(&user.id).unwrap_or_default()
         };
 
         intersection = match intersection {
@@ -1958,21 +1986,40 @@ pub async fn create_room(
         joined_ts: Some(now),
     });
 
+    let invite_user_ids: Vec<String> = deduped_invites
+        .iter()
+        .map(|(user_id, _)| user_id.clone())
+        .collect();
+    let invite_users_by_id = load_users_by_ids(&state, &invite_user_ids).await?;
+    if invite_users_by_id.len() != invite_user_ids.len() {
+        return Err(ApiError::NotFound("invited user not found".into()).into());
+    }
+
+    let video_library_id_for_invites = if room_mode == "video" {
+        if let Some(video_item_id) = item_id.as_deref() {
+            Some(
+                rustfin_db::repo::items::get_item(&state.db, video_item_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| ApiError::NotFound("item not found".into()))?
+                    .library_id,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Validate invitees for video rooms (check library access per invitee)
     for (user_id, role) in &deduped_invites {
-        let user = rustfin_db::repo::users::find_by_id(&state.db, user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        let user = invite_users_by_id
+            .get(user_id)
             .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
 
         if room_mode == "video" {
-            if let Some(video_item_id) = item_id.as_deref() {
-                // For local video rooms with a selected item, all invitees must be able to access it.
-                let item = rustfin_db::repo::items::get_item(&state.db, video_item_id)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                    .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
-                ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id)
+            if let Some(video_library_id) = video_library_id_for_invites.as_deref() {
+                ensure_library_access_for_user(&state, &user.id, &user.role, video_library_id)
                     .await?;
             }
         } else if room_mode == "audio" {
@@ -2079,16 +2126,18 @@ pub async fn reconfigure_room(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    let active_member_ids: Vec<String> = members
+        .iter()
+        .filter(|member| member.status != "left" && member.status != "declined")
+        .map(|member| member.user_id.clone())
+        .collect();
+    let users_by_id = load_users_by_ids(&state, &active_member_ids).await?;
     let mut active_users = Vec::new();
-    for member in members
-        .into_iter()
-        .filter(|m| m.status != "left" && m.status != "declined")
-    {
-        if let Some(user) = rustfin_db::repo::users::find_by_id(&state.db, &member.user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        {
-            active_users.push(user);
+    for member in members {
+        if member.status != "left" && member.status != "declined" {
+            if let Some(user) = users_by_id.get(&member.user_id) {
+                active_users.push(user.clone());
+            }
         }
     }
 
@@ -2435,23 +2484,15 @@ pub async fn get_room(
         .into());
     }
 
-    let members = rustfin_db::repo::watch_party::list_members(&state.db, &room_id)
+    let members = rustfin_db::repo::watch_party::list_members_with_usernames(&state.db, &room_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: std::collections::HashMap<String, String> =
-        rustfin_db::repo::users::list_users(&state.db)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .into_iter()
-            .map(|u| (u.id, u.username))
-            .collect();
 
     let members = members
         .into_iter()
         .filter(|member| member.status != "left" && member.status != "declined")
         .map(|member| RoomMemberResponse {
-            username: room_member_username(&usernames, &member.user_id).to_string(),
+            username: member.username,
             user_id: member.user_id,
             role: member.role,
             status: member.status,
@@ -2772,6 +2813,36 @@ pub async fn invite_members(
     let now = chrono::Utc::now().timestamp();
     let mut count: u32 = 0;
     let mut cooldown_blocked_users: Vec<String> = Vec::new();
+    let existing_members: HashMap<String, rustfin_db::repo::watch_party::WatchPartyMemberRow> =
+        rustfin_db::repo::watch_party::list_members(&state.db, &room_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .into_iter()
+            .map(|member| (member.user_id.clone(), member))
+            .collect();
+
+    let invite_user_ids: Vec<String> = body
+        .invites
+        .iter()
+        .map(|invite| invite.user_id.trim().to_string())
+        .filter(|user_id| !user_id.is_empty() && *user_id != auth.user_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let users_by_id = load_users_by_ids(&state, &invite_user_ids).await?;
+
+    let video_library_id_for_invites =
+        if room.room_mode == "video" && !room.item_id.trim().is_empty() {
+            Some(
+                rustfin_db::repo::items::get_item(&state.db, &room.item_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| ApiError::NotFound("item not found".into()))?
+                    .library_id,
+            )
+        } else {
+            None
+        };
 
     for invite in body.invites {
         let user_id = invite.user_id.trim().to_string();
@@ -2784,22 +2855,15 @@ pub async fn invite_members(
             return Err(ApiError::BadRequest("invite role cannot be host".into()).into());
         }
 
-        if let Some(existing_member) =
-            rustfin_db::repo::watch_party::get_member(&state.db, &room_id, &user_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        {
+        if let Some(existing_member) = existing_members.get(&user_id) {
             if existing_member.status == "joined" {
                 continue;
             }
 
             if let Some(last_invited_ts) = existing_member.invited_ts {
                 if now - last_invited_ts < INVITE_RESEND_COOLDOWN_SECONDS {
-                    if let Some(user) = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
-                        .await
-                        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                    {
-                        cooldown_blocked_users.push(user.username);
+                    if let Some(user) = users_by_id.get(&user_id) {
+                        cooldown_blocked_users.push(user.username.clone());
                     } else {
                         cooldown_blocked_users.push(user_id.clone());
                     }
@@ -2808,17 +2872,16 @@ pub async fn invite_members(
             }
         }
 
-        let user = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        let user = users_by_id
+            .get(&user_id)
+            .cloned()
             .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
 
         if room.room_mode == "video" && !room.item_id.trim().is_empty() {
-            let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            let video_library_id = video_library_id_for_invites
+                .as_deref()
                 .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
-            ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
+            ensure_library_access_for_user(&state, &user.id, &user.role, video_library_id).await?;
         } else if room.room_mode == "audio" {
             let Some(ref lib_id) = room.audio_library_id else {
                 // Audio rooms can run without a configured local music library.
@@ -2992,12 +3055,19 @@ pub async fn list_audio_tracks(
         .filter(|s| !s.is_empty())
         .unwrap_or("local")
         .to_ascii_lowercase();
+    let limit = params
+        .limit
+        .unwrap_or(AUDIO_TRACKS_DEFAULT_LIMIT)
+        .clamp(1, AUDIO_TRACKS_MAX_LIMIT);
+    let offset = params.offset.unwrap_or(0).min(AUDIO_TRACKS_MAX_OFFSET);
 
     if source == "online" {
         let tracks = rustfin_db::repo::watch_party::list_online_audio_tracks(
             &state.db,
             &room_id,
             params.q.as_deref(),
+            limit,
+            offset,
         )
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -3032,6 +3102,8 @@ pub async fn list_audio_tracks(
         &state.db,
         audio_lib_id,
         params.q.as_deref(),
+        limit,
+        offset,
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;

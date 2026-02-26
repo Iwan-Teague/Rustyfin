@@ -180,7 +180,9 @@ export default function AdminPage() {
 
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [libraryEdits, setLibraryEdits] = useState<Record<string, LibraryEditState>>({});
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [logJobs, setLogJobs] = useState<Job[]>([]);
+  const [tmdbJobs, setTmdbJobs] = useState<Job[]>([]);
+  const [activeJobs, setActiveJobs] = useState<Job[]>([]);
   const [users, setUsers] = useState<UserAccount[]>([]);
   const [userEdits, setUserEdits] = useState<Record<string, UserEditState>>({});
   const [channels, setChannels] = useState<ChannelRecord[]>([]);
@@ -302,10 +304,24 @@ export default function AdminPage() {
   }, [authLoading, me, router]);
 
   const loadData = useCallback(async () => {
+    const logJobParams = new URLSearchParams();
+    logJobParams.set('status', logFilterTab);
+    logJobParams.set('limit', '300');
+
+    const tmdbJobParams = new URLSearchParams();
+    tmdbJobParams.set('kind', 'library_tmdb_sync');
+    tmdbJobParams.set('limit', '1000');
+
+    const activeJobParams = new URLSearchParams();
+    activeJobParams.set('status', 'in_progress');
+    activeJobParams.set('limit', '100');
+
     try {
-      const [libs, jobList, userList, tmdb, channelList, roomList] = await Promise.all([
+      const [libs, logJobList, tmdbJobList, activeJobList, userList, tmdb, channelList, roomList] = await Promise.all([
         apiJson<Library[]>('/libraries'),
-        apiJson<Job[]>('/jobs'),
+        apiJson<Job[]>(`/jobs?${logJobParams.toString()}`),
+        apiJson<Job[]>(`/jobs?${tmdbJobParams.toString()}`),
+        apiJson<Job[]>(`/jobs?${activeJobParams.toString()}`),
         apiJson<UserAccount[]>('/users'),
         apiJson<TmdbConfig>('/system/tmdb'),
         apiJson<ChannelRecord[]>('/channels'),
@@ -331,7 +347,9 @@ export default function AdminPage() {
         return nextLibEdits;
       });
 
-      setJobs(jobList);
+      setLogJobs(logJobList);
+      setTmdbJobs(tmdbJobList);
+      setActiveJobs(activeJobList);
       setUsers(userList);
       setUserEdits((prev) => {
         const currentUsersById = new Map(usersRef.current.map((user) => [user.id, user]));
@@ -399,7 +417,7 @@ export default function AdminPage() {
       setMsgType('error');
       setMsg(err.message || 'Failed to load admin data');
     }
-  }, []);
+  }, [logFilterTab]);
 
   useEffect(() => {
     if (me?.role === 'admin') {
@@ -424,8 +442,8 @@ export default function AdminPage() {
   }, [rooms]);
 
   const hasActiveJobs = useMemo(
-    () => jobs.some((job) => job.status === 'queued' || job.status === 'running'),
-    [jobs],
+    () => activeJobs.length > 0,
+    [activeJobs],
   );
 
   useEffect(() => {
@@ -442,24 +460,14 @@ export default function AdminPage() {
   }, [users]);
 
   const filteredLogJobs = useMemo(() => {
-    switch (logFilterTab) {
-      case 'complete':
-        return jobs.filter((job) => job.status === 'completed');
-      case 'failed':
-        return jobs.filter((job) => job.status === 'failed');
-      case 'in_progress':
-        return jobs.filter((job) => job.status === 'queued' || job.status === 'running');
-      case 'all':
-      default:
-        return jobs;
-    }
-  }, [jobs, logFilterTab]);
+    return logJobs;
+  }, [logJobs]);
 
   const tmdbSyncStatusRows = useMemo<TmdbSyncStatusRow[]>(() => {
     const nowTs = Math.floor(Date.now() / 1000);
     const jobsByLibraryId = new Map<string, Job[]>();
 
-    for (const job of jobs) {
+    for (const job of tmdbJobs) {
       if (job.kind !== 'library_tmdb_sync') continue;
       const payload = job.payload;
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
@@ -527,7 +535,7 @@ export default function AdminPage() {
         };
       })
       .sort((a, b) => a.library_name.localeCompare(b.library_name));
-  }, [jobs, libraries]);
+  }, [tmdbJobs, libraries]);
 
   function setOk(message: string) {
     setMsgType('ok');

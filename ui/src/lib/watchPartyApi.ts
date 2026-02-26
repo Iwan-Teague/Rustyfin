@@ -421,12 +421,16 @@ export async function listAudioTracks(
   roomId: string,
   q?: string,
   source: 'local' | 'online' = 'local',
+  limit = 80,
+  offset = 0,
 ): Promise<AudioTrack[]> {
   const params = new URLSearchParams();
   if (q && q.trim()) {
     params.set('q', q.trim());
   }
   params.set('source', source);
+  params.set('limit', String(Math.max(1, limit)));
+  params.set('offset', String(Math.max(0, offset)));
   const query = params.toString() ? `?${params.toString()}` : '';
   return apiJson<AudioTrack[]>(`/watch-party/rooms/${roomId}/audio/tracks${query}`);
 }

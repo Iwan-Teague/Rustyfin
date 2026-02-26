@@ -4,7 +4,7 @@ use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::auth::{
     AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
@@ -357,26 +357,37 @@ async fn list_users_route(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    Ok(Json({
-        let mut out = Vec::with_capacity(users.len());
-        for u in users {
-            let library_ids = if u.role == "user" {
-                rustfin_db::repo::users::get_library_access(&state.db, &u.id)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    let user_ids: Vec<String> = users
+        .iter()
+        .filter(|user| user.role == "user")
+        .map(|user| user.id.clone())
+        .collect();
+    let mut library_ids_by_user: HashMap<String, Vec<String>> = HashMap::new();
+    let access_rows = rustfin_db::repo::users::list_library_access_for_users(&state.db, &user_ids)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    for (user_id, library_id) in access_rows {
+        library_ids_by_user
+            .entry(user_id)
+            .or_default()
+            .push(library_id);
+    }
+
+    let out = users
+        .into_iter()
+        .map(|user| UserListItem {
+            library_ids: if user.role == "user" {
+                library_ids_by_user.remove(&user.id).unwrap_or_default()
             } else {
                 vec![]
-            };
-            out.push(UserListItem {
-                id: u.id,
-                username: u.username,
-                role: u.role,
-                created_ts: u.created_ts,
-                library_ids,
-            });
-        }
-        out
-    }))
+            },
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            created_ts: user.created_ts,
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -627,14 +638,10 @@ fn normalize_tmdb_sync_schedule(raw: &str) -> Option<&'static str> {
     }
 }
 
-async fn load_library_settings_response(
-    state: &AppState,
+fn default_library_settings_row(
     library_id: &str,
-) -> Result<LibrarySettingsResponse, AppError> {
-    let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, library_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    let settings = settings.unwrap_or(rustfin_db::repo::libraries::LibrarySettingsRow {
+) -> rustfin_db::repo::libraries::LibrarySettingsRow {
+    rustfin_db::repo::libraries::LibrarySettingsRow {
         library_id: library_id.to_string(),
         show_images: true,
         prefer_local_artwork: true,
@@ -648,21 +655,36 @@ async fn load_library_settings_response(
         tmdb_fetch_metadata: true,
         tmdb_fetch_reviews: false,
         updated_ts: chrono::Utc::now().timestamp(),
-    });
+    }
+}
 
-    Ok(LibrarySettingsResponse {
+fn library_settings_row_to_response(
+    settings: &rustfin_db::repo::libraries::LibrarySettingsRow,
+) -> LibrarySettingsResponse {
+    LibrarySettingsResponse {
         show_images: settings.show_images,
         prefer_local_artwork: settings.prefer_local_artwork,
         fetch_online_artwork: settings.fetch_online_artwork,
         tmdb_store_in_media_dir: settings.tmdb_store_in_media_dir,
         tmdb_sync_on_new_media: settings.tmdb_sync_on_new_media,
-        tmdb_sync_schedule: settings.tmdb_sync_schedule,
+        tmdb_sync_schedule: settings.tmdb_sync_schedule.clone(),
         tmdb_last_sync_ts: settings.tmdb_last_sync_ts,
         tmdb_fetch_posters: settings.tmdb_fetch_posters,
         tmdb_fetch_backdrops: settings.tmdb_fetch_backdrops,
         tmdb_fetch_metadata: settings.tmdb_fetch_metadata,
         tmdb_fetch_reviews: settings.tmdb_fetch_reviews,
-    })
+    }
+}
+
+async fn load_library_settings_response(
+    state: &AppState,
+    library_id: &str,
+) -> Result<LibrarySettingsResponse, AppError> {
+    let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, library_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .unwrap_or_else(|| default_library_settings_row(library_id));
+    Ok(library_settings_row_to_response(&settings))
 }
 
 async fn library_row_to_response(
@@ -784,14 +806,72 @@ async fn list_libraries(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
+    let libs: Vec<rustfin_db::repo::libraries::LibraryRow> = libs
+        .into_iter()
+        .filter(|lib| {
+            allowed_library_ids
+                .as_ref()
+                .map(|allowed| allowed.contains(&lib.id))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    if libs.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let library_ids: Vec<String> = libs.iter().map(|lib| lib.id.clone()).collect();
+    let paths =
+        rustfin_db::repo::libraries::get_library_paths_for_libraries(&state.db, &library_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let counts =
+        rustfin_db::repo::libraries::count_library_items_for_libraries(&state.db, &library_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let settings_rows =
+        rustfin_db::repo::libraries::get_library_settings_for_libraries(&state.db, &library_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let mut paths_by_library: HashMap<String, Vec<LibraryPathResponse>> = HashMap::new();
+    for path in paths {
+        paths_by_library
+            .entry(path.library_id)
+            .or_default()
+            .push(LibraryPathResponse {
+                id: path.id,
+                path: path.path,
+                is_read_only: path.is_read_only,
+            });
+    }
+    let item_count_by_library: HashMap<String, i64> = counts.into_iter().collect();
+    let mut settings_by_library: HashMap<String, LibrarySettingsResponse> = settings_rows
+        .into_iter()
+        .map(|settings| {
+            (
+                settings.library_id.clone(),
+                library_settings_row_to_response(&settings),
+            )
+        })
+        .collect();
+
     let mut result = Vec::with_capacity(libs.len());
     for lib in libs {
-        if let Some(allowed) = &allowed_library_ids {
-            if !allowed.contains(&lib.id) {
-                continue;
-            }
-        }
-        result.push(library_row_to_response(&state, lib).await?);
+        let lib_id = lib.id.clone();
+        let settings = settings_by_library.remove(&lib_id).unwrap_or_else(|| {
+            library_settings_row_to_response(&default_library_settings_row(&lib_id))
+        });
+        result.push(LibraryResponse {
+            paths: paths_by_library.remove(&lib_id).unwrap_or_default(),
+            item_count: item_count_by_library.get(&lib_id).copied().unwrap_or(0),
+            settings,
+            id: lib.id,
+            name: lib.name,
+            kind: lib.kind,
+            created_ts: lib.created_ts,
+            updated_ts: lib.updated_ts,
+        });
     }
 
     Ok(Json(result))
@@ -1010,6 +1090,50 @@ struct JobResponse {
     updated_ts: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct JobsQuery {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+}
+
+fn parse_job_status_filter(raw: Option<&str>) -> Result<Option<Vec<&'static str>>, AppError> {
+    let value = raw.map(str::trim).unwrap_or_default();
+    if value.is_empty() || value.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+
+    if value.eq_ignore_ascii_case("complete") || value.eq_ignore_ascii_case("completed") {
+        return Ok(Some(vec!["completed"]));
+    }
+
+    if value.eq_ignore_ascii_case("failed") {
+        return Ok(Some(vec!["failed"]));
+    }
+
+    if value.eq_ignore_ascii_case("in_progress") {
+        return Ok(Some(vec!["queued", "running"]));
+    }
+
+    let normalized = value.to_ascii_lowercase();
+    match normalized.as_str() {
+        "queued" => Ok(Some(vec!["queued"])),
+        "running" => Ok(Some(vec!["running"])),
+        "cancelled" => Ok(Some(vec!["cancelled"])),
+        "error" => Ok(Some(vec!["error"])),
+        _ => Err(ApiError::BadRequest(
+            "status must be one of: all, complete, failed, in_progress, queued, running, cancelled, error"
+                .into(),
+        )
+        .into()),
+    }
+}
+
 fn job_to_response(job: rustfin_db::repo::jobs::JobRow) -> JobResponse {
     let payload = job
         .payload_json
@@ -1030,10 +1154,26 @@ fn job_to_response(job: rustfin_db::repo::jobs::JobRow) -> JobResponse {
 async fn list_jobs(
     _auth: AuthUser,
     State(state): State<AppState>,
+    Query(params): Query<JobsQuery>,
 ) -> Result<Json<Vec<JobResponse>>, AppError> {
-    let jobs = rustfin_db::repo::jobs::list_jobs(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let statuses = parse_job_status_filter(params.status.as_deref())?;
+    let kind = params
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let limit = params.limit.map(|value| value.clamp(1, 1000));
+    let offset = params.offset.map(|value| value.clamp(0, 1_000_000));
+
+    let jobs = rustfin_db::repo::jobs::list_jobs_filtered(
+        &state.db,
+        statuses.as_deref().unwrap_or(&[]),
+        kind,
+        limit,
+        offset,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     Ok(Json(jobs.into_iter().map(job_to_response).collect()))
 }

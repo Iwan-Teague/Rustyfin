@@ -173,10 +173,12 @@ export async function deleteChannel(id: string): Promise<void> {
 export async function getMessages(
   channelId: string,
   before?: number,
+  beforeId?: string,
   limit = 50,
 ): Promise<ChannelMessage[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) params.set('before', String(before));
+  if (beforeId && beforeId.trim()) params.set('before_id', beforeId.trim());
   const messages = await apiJson<ChannelMessage[]>(`/channels/${channelId}/messages?${params}`);
   return messages.map((message) => ({
     ...message,

@@ -33,6 +33,19 @@ pub struct WatchPartyMemberRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct WatchPartyMemberWithUsernameRow {
+    pub room_id: String,
+    pub user_id: String,
+    pub role: String,
+    pub status: String,
+    pub invited_by: Option<String>,
+    pub invited_ts: Option<i64>,
+    pub joined_ts: Option<i64>,
+    pub last_seen_ts: Option<i64>,
+    pub username: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct WatchPartyCreateStateRow {
     pub room_id: String,
     pub active_tool: String,
@@ -260,6 +273,59 @@ pub async fn list_members(
                     joined_ts,
                     last_seen_ts,
                 }
+            },
+        )
+        .collect())
+}
+
+pub async fn list_members_with_usernames(
+    pool: &SqlitePool,
+    room_id: &str,
+) -> Result<Vec<WatchPartyMemberWithUsernameRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        String,
+    )> = sqlx::query_as(
+        "SELECT m.room_id, m.user_id, m.role, m.status, m.invited_by, m.invited_ts, m.joined_ts, m.last_seen_ts, u.username \
+         FROM watch_party_member m \
+         JOIN user u ON u.id = m.user_id \
+         WHERE m.room_id = ? \
+         ORDER BY m.invited_ts ASC, m.user_id ASC",
+    )
+    .bind(room_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                room_id,
+                user_id,
+                role,
+                status,
+                invited_by,
+                invited_ts,
+                joined_ts,
+                last_seen_ts,
+                username,
+            )| WatchPartyMemberWithUsernameRow {
+                room_id,
+                user_id,
+                role,
+                status,
+                invited_by,
+                invited_ts,
+                joined_ts,
+                last_seen_ts,
+                username,
             },
         )
         .collect())
@@ -673,6 +739,11 @@ pub async fn update_room_name(
 }
 
 pub async fn delete_room(pool: &SqlitePool, room_id: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query("DELETE FROM watch_party_online_audio_track_fts WHERE room_id = ?")
+        .bind(room_id)
+        .execute(pool)
+        .await?;
+
     let result = sqlx::query("DELETE FROM watch_party_room WHERE id = ?")
         .bind(room_id)
         .execute(pool)
@@ -729,33 +800,74 @@ pub async fn get_library_tracks(
     pool: &SqlitePool,
     library_id: &str,
     query: Option<&str>,
+    limit: usize,
+    offset: usize,
 ) -> Result<Vec<AudioTrackRow>, sqlx::Error> {
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-    )> = sqlx::query_as(
+    let search = query
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|q| format!("%{}%", q.to_lowercase()));
+    let limit = limit.max(1);
+
+    let mut sql = String::from(
         "SELECT t.id, t.title, \
                     album.title, \
                     artist.title, \
                     album.poster_url, \
-                    mf.duration_ms \
+                    ( \
+                        SELECT mf.duration_ms \
+                        FROM episode_file_map efm \
+                        JOIN media_file mf ON mf.id = efm.file_id \
+                        WHERE efm.episode_item_id = t.id \
+                        ORDER BY efm.created_ts ASC \
+                        LIMIT 1 \
+                    ) AS duration_ms \
              FROM item t \
              LEFT JOIN item album ON album.id = t.parent_id \
              LEFT JOIN item artist ON artist.id = album.parent_id \
-             LEFT JOIN episode_file_map efm ON efm.episode_item_id = t.id \
-             LEFT JOIN media_file mf ON mf.id = efm.file_id \
-             WHERE t.library_id = ? AND t.kind = 'track' \
-             ORDER BY artist.title NULLS LAST, album.title NULLS LAST, t.title",
-    )
-    .bind(library_id)
-    .fetch_all(pool)
-    .await?;
+             WHERE t.library_id = ? AND t.kind = 'track'",
+    );
+    if search.is_some() {
+        sql.push_str(
+            " AND ( \
+                 LOWER(t.title) LIKE ? \
+              OR LOWER(COALESCE(artist.title, '')) LIKE ? \
+              OR LOWER(COALESCE(album.title, '')) LIKE ? \
+            )",
+        );
+    }
+    sql.push_str(
+        " ORDER BY artist.title NULLS LAST, album.title NULLS LAST, t.title \
+          LIMIT ? OFFSET ?",
+    );
 
-    let tracks: Vec<AudioTrackRow> = rows
+    let mut query_builder = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ),
+    >(&sql)
+    .bind(library_id);
+
+    if let Some(search) = search {
+        query_builder = query_builder
+            .bind(search.clone())
+            .bind(search.clone())
+            .bind(search);
+    }
+
+    let rows = query_builder
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
         .into_iter()
         .map(
             |(id, title, album, artist, album_art_url, duration_ms)| AudioTrackRow {
@@ -767,21 +879,72 @@ pub async fn get_library_tracks(
                 duration_ms: duration_ms.map(|ms| ms as u64),
             },
         )
-        .collect();
+        .collect())
+}
 
-    if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
-        let lower = q.to_ascii_lowercase();
-        Ok(tracks
-            .into_iter()
-            .filter(|t| {
-                t.title.to_ascii_lowercase().contains(&lower)
-                    || t.artist.to_ascii_lowercase().contains(&lower)
-                    || t.album.to_ascii_lowercase().contains(&lower)
-            })
-            .collect())
-    } else {
-        Ok(tracks)
+/// Get selected track items from a music library by item IDs.
+pub async fn get_library_tracks_by_item_ids(
+    pool: &SqlitePool,
+    library_id: &str,
+    item_ids: &[String],
+) -> Result<Vec<AudioTrackRow>, sqlx::Error> {
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
     }
+
+    let placeholders = std::iter::repeat("?")
+        .take(item_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT t.id, t.title, \
+                    album.title, \
+                    artist.title, \
+                    album.poster_url, \
+                    ( \
+                        SELECT mf.duration_ms \
+                        FROM episode_file_map efm \
+                        JOIN media_file mf ON mf.id = efm.file_id \
+                        WHERE efm.episode_item_id = t.id \
+                        ORDER BY efm.created_ts ASC \
+                        LIMIT 1 \
+                    ) AS duration_ms \
+             FROM item t \
+             LEFT JOIN item album ON album.id = t.parent_id \
+             LEFT JOIN item artist ON artist.id = album.parent_id \
+             WHERE t.library_id = ? AND t.kind = 'track' AND t.id IN ({placeholders})"
+    );
+
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ),
+    >(&sql)
+    .bind(library_id);
+    for item_id in item_ids {
+        query = query.bind(item_id);
+    }
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, title, album, artist, album_art_url, duration_ms)| AudioTrackRow {
+                id,
+                title,
+                album: album.unwrap_or_default(),
+                artist: artist.unwrap_or_default(),
+                album_art_url,
+                duration_ms: duration_ms.map(|ms| ms as u64),
+            },
+        )
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -806,6 +969,72 @@ pub struct OnlineAudioTrackRow {
     pub duration_ms: Option<u64>,
     pub created_ts: i64,
     pub updated_ts: i64,
+}
+
+type OnlineAudioTrackTuple = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<i64>,
+    i64,
+    i64,
+);
+
+fn map_online_audio_tuple(
+    (
+        id,
+        room_id,
+        video_id,
+        title,
+        channel,
+        thumbnail_url,
+        file_path,
+        duration_ms,
+        created_ts,
+        updated_ts,
+    ): OnlineAudioTrackTuple,
+) -> OnlineAudioTrackRow {
+    OnlineAudioTrackRow {
+        id,
+        room_id,
+        video_id,
+        title,
+        channel,
+        thumbnail_url,
+        file_path,
+        duration_ms: duration_ms.map(|v| v as u64),
+        created_ts,
+        updated_ts,
+    }
+}
+
+fn build_fts_prefix_query(raw: &str) -> Option<String> {
+    let tokens: Vec<String> = raw
+        .split_whitespace()
+        .map(|term| {
+            term.chars()
+                .filter(|ch| ch.is_alphanumeric() || *ch == '_')
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|term| !term.is_empty())
+        .collect();
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    Some(
+        tokens
+            .into_iter()
+            .map(|term| format!("{term}*"))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -846,6 +1075,26 @@ pub async fn upsert_online_audio_track(
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "DELETE FROM watch_party_online_audio_track_fts \
+         WHERE track_id = ? AND room_id = ?",
+    )
+    .bind(track_id)
+    .bind(room_id)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO watch_party_online_audio_track_fts \
+         (track_id, room_id, title, channel) VALUES (?, ?, ?, ?)",
+    )
+    .bind(track_id)
+    .bind(room_id)
+    .bind(title)
+    .bind(channel)
+    .execute(pool)
+    .await?;
+
     get_online_audio_track_by_video_id(pool, room_id, video_id)
         .await?
         .ok_or(sqlx::Error::RowNotFound)
@@ -856,18 +1105,7 @@ pub async fn get_online_audio_track_by_video_id(
     room_id: &str,
     video_id: &str,
 ) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<i64>,
-        i64,
-        i64,
-    )> = sqlx::query_as(
+    let row: Option<OnlineAudioTrackTuple> = sqlx::query_as(
         "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
          FROM watch_party_online_audio_track \
          WHERE room_id = ? AND video_id = ?",
@@ -877,31 +1115,7 @@ pub async fn get_online_audio_track_by_video_id(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(
-        |(
-            id,
-            room_id,
-            video_id,
-            title,
-            channel,
-            thumbnail_url,
-            file_path,
-            duration_ms,
-            created_ts,
-            updated_ts,
-        )| OnlineAudioTrackRow {
-            id,
-            room_id,
-            video_id,
-            title,
-            channel,
-            thumbnail_url,
-            file_path,
-            duration_ms: duration_ms.map(|v| v as u64),
-            created_ts,
-            updated_ts,
-        },
-    ))
+    Ok(row.map(map_online_audio_tuple))
 }
 
 pub async fn get_online_audio_track(
@@ -909,18 +1123,7 @@ pub async fn get_online_audio_track(
     room_id: &str,
     track_id: &str,
 ) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<i64>,
-        i64,
-        i64,
-    )> = sqlx::query_as(
+    let row: Option<OnlineAudioTrackTuple> = sqlx::query_as(
         "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
          FROM watch_party_online_audio_track \
          WHERE room_id = ? AND id = ?",
@@ -930,106 +1133,94 @@ pub async fn get_online_audio_track(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(
-        |(
-            id,
-            room_id,
-            video_id,
-            title,
-            channel,
-            thumbnail_url,
-            file_path,
-            duration_ms,
-            created_ts,
-            updated_ts,
-        )| OnlineAudioTrackRow {
-            id,
-            room_id,
-            video_id,
-            title,
-            channel,
-            thumbnail_url,
-            file_path,
-            duration_ms: duration_ms.map(|v| v as u64),
-            created_ts,
-            updated_ts,
-        },
-    ))
+    Ok(row.map(map_online_audio_tuple))
 }
 
 pub async fn list_online_audio_tracks(
     pool: &SqlitePool,
     room_id: &str,
     query: Option<&str>,
+    limit: usize,
+    offset: usize,
 ) -> Result<Vec<OnlineAudioTrackRow>, sqlx::Error> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<i64>,
-        i64,
-        i64,
-    )> = sqlx::query_as(
+    let limit = limit.max(1);
+    let search = query.map(str::trim).filter(|s| !s.is_empty());
+
+    let rows: Vec<OnlineAudioTrackTuple> = if let Some(search) = search {
+        if let Some(fts_query) = build_fts_prefix_query(search) {
+            sqlx::query_as(
+                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
+                 FROM watch_party_online_audio_track t \
+                 JOIN watch_party_online_audio_track_fts \
+                   ON watch_party_online_audio_track_fts.track_id = t.id \
+                  AND watch_party_online_audio_track_fts.room_id = t.room_id \
+                 WHERE t.room_id = ? \
+                   AND watch_party_online_audio_track_fts MATCH ? \
+                 ORDER BY t.created_ts DESC, t.updated_ts DESC \
+                 LIMIT ? OFFSET ?",
+            )
+            .bind(room_id)
+            .bind(fts_query)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
+        } else {
+            Vec::new()
+        }
+    } else {
+        sqlx::query_as(
+            "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+             FROM watch_party_online_audio_track \
+             WHERE room_id = ? \
+             ORDER BY created_ts DESC, updated_ts DESC \
+             LIMIT ? OFFSET ?",
+        )
+        .bind(room_id)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(rows.into_iter().map(map_online_audio_tuple).collect())
+}
+
+pub async fn list_online_audio_tracks_by_ids(
+    pool: &SqlitePool,
+    room_id: &str,
+    track_ids: &[String],
+) -> Result<Vec<OnlineAudioTrackRow>, sqlx::Error> {
+    if track_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(track_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
         "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
          FROM watch_party_online_audio_track \
-         WHERE room_id = ? \
-         ORDER BY created_ts DESC, updated_ts DESC",
-    )
-    .bind(room_id)
-    .fetch_all(pool)
-    .await?;
+         WHERE room_id = ? AND id IN ({placeholders})"
+    );
 
-    let tracks: Vec<OnlineAudioTrackRow> = rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                room_id,
-                video_id,
-                title,
-                channel,
-                thumbnail_url,
-                file_path,
-                duration_ms,
-                created_ts,
-                updated_ts,
-            )| OnlineAudioTrackRow {
-                id,
-                room_id,
-                video_id,
-                title,
-                channel,
-                thumbnail_url,
-                file_path,
-                duration_ms: duration_ms.map(|v| v as u64),
-                created_ts,
-                updated_ts,
-            },
-        )
-        .collect();
-
-    if let Some(q) = query.filter(|s| !s.trim().is_empty()) {
-        let lower = q.to_ascii_lowercase();
-        Ok(tracks
-            .into_iter()
-            .filter(|track| {
-                track.title.to_ascii_lowercase().contains(&lower)
-                    || track.channel.to_ascii_lowercase().contains(&lower)
-            })
-            .collect())
-    } else {
-        Ok(tracks)
+    let mut query = sqlx::query_as::<_, OnlineAudioTrackTuple>(&sql).bind(room_id);
+    for track_id in track_ids {
+        query = query.bind(track_id);
     }
+    let rows = query.fetch_all(pool).await?;
+    Ok(rows.into_iter().map(map_online_audio_tuple).collect())
 }
 
 pub async fn clear_online_audio_tracks(
     pool: &SqlitePool,
     room_id: &str,
 ) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM watch_party_online_audio_track_fts WHERE room_id = ?")
+        .bind(room_id)
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM watch_party_online_audio_track WHERE room_id = ?")
         .bind(room_id)
         .execute(pool)

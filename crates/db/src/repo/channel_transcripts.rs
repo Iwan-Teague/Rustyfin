@@ -346,6 +346,32 @@ pub async fn count_entries_for_session(
     Ok(count)
 }
 
+pub async fn count_entries_for_sessions(
+    pool: &SqlitePool,
+    session_ids: &[String],
+) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    if session_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(session_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT session_id, COUNT(*) \
+         FROM channel_transcript_entry \
+         WHERE session_id IN ({placeholders}) \
+         GROUP BY session_id"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
+    for session_id in session_ids {
+        query = query.bind(session_id);
+    }
+    query.fetch_all(pool).await
+}
+
 pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM channel_transcript_session WHERE id = ?")
         .bind(session_id)

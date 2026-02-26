@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -1802,6 +1802,27 @@ async fn send_current_state(
     send_server_message(socket, &message).await
 }
 
+async fn build_presence_members(
+    state: &AppState,
+    room_id: &str,
+    connected: &HashSet<String>,
+) -> Result<Vec<PresenceMember>, AppError> {
+    let members = rustfin_db::repo::watch_party::list_members_with_usernames(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(members
+        .into_iter()
+        .filter(|member| member.status != "declined" && member.status != "left")
+        .map(|member| PresenceMember {
+            connected: connected.contains(&member.user_id) && member.status == "joined",
+            user_id: member.user_id,
+            username: member.username,
+            role: member.role,
+        })
+        .collect())
+}
+
 async fn build_state_message(
     state: &AppState,
     runtime: &RoomRuntime,
@@ -1833,30 +1854,7 @@ async fn build_state_message(
         (snapshot.position_ms, snapshot.updated_ts_ms)
     };
 
-    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .into_iter()
-        .map(|u| (u.id, u.username))
-        .collect();
-
-    let member_summaries = members
-        .into_iter()
-        .filter(|m| m.status != "declined" && m.status != "left")
-        .map(|member| PresenceMember {
-            user_id: member.user_id.clone(),
-            username: usernames
-                .get(&member.user_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            role: member.role,
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-        })
-        .collect();
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
     Ok(ServerMessage::State {
         room_id: room_id.to_string(),
@@ -1878,30 +1876,7 @@ async fn build_web_state_message(
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .into_iter()
-        .map(|u| (u.id, u.username))
-        .collect();
-
-    let member_summaries = members
-        .into_iter()
-        .filter(|m| m.status != "declined" && m.status != "left")
-        .map(|member| PresenceMember {
-            user_id: member.user_id.clone(),
-            username: usernames
-                .get(&member.user_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            role: member.role,
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-        })
-        .collect();
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
     Ok(ServerMessage::WebState {
         room_id: room_id.to_string(),
@@ -1924,30 +1899,7 @@ async fn build_create_state_message(
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .into_iter()
-        .map(|u| (u.id, u.username))
-        .collect();
-
-    let member_summaries = members
-        .into_iter()
-        .filter(|m| m.status != "declined" && m.status != "left")
-        .map(|member| PresenceMember {
-            user_id: member.user_id.clone(),
-            username: usernames
-                .get(&member.user_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            role: member.role,
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-        })
-        .collect();
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
     Ok(ServerMessage::CreateState {
         room_id: room_id.to_string(),
@@ -2022,41 +1974,94 @@ async fn build_audio_state_message(
         .unwrap_or("online")
         .to_string();
 
-    let local_track_metadata: HashMap<String, LocalTrackMetadata> =
-        if let Some(audio_library_id) = runtime.audio_library_id.as_deref() {
-            rustfin_db::repo::watch_party::get_library_tracks(&state.db, audio_library_id, None)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .into_iter()
-                .map(|t| {
-                    (
-                        t.id,
-                        (t.title, t.album, t.artist, t.album_art_url, t.duration_ms),
-                    )
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+    let mut local_item_ids: Vec<String> = Vec::new();
+    let mut online_track_ids: Vec<String> = Vec::new();
+    let mut legacy_track_ids: Vec<String> = Vec::new();
+    let mut local_seen: HashSet<String> = HashSet::new();
+    let mut online_seen: HashSet<String> = HashSet::new();
+    let mut legacy_seen: HashSet<String> = HashSet::new();
+
+    for raw_track_id in &queue_snapshot.track_ids {
+        if let Some(item_id) = raw_track_id.strip_prefix(AUDIO_QUEUE_LOCAL_PREFIX) {
+            if !item_id.is_empty() && local_seen.insert(item_id.to_string()) {
+                local_item_ids.push(item_id.to_string());
+            }
+            continue;
+        }
+        if let Some(track_id) = raw_track_id.strip_prefix(AUDIO_QUEUE_ONLINE_PREFIX) {
+            if !track_id.is_empty() && online_seen.insert(track_id.to_string()) {
+                online_track_ids.push(track_id.to_string());
+            }
+            continue;
+        }
+        if !raw_track_id.is_empty() && legacy_seen.insert(raw_track_id.clone()) {
+            legacy_track_ids.push(raw_track_id.clone());
+        }
+    }
+
+    for legacy_track_id in &legacy_track_ids {
+        if online_seen.insert(legacy_track_id.clone()) {
+            online_track_ids.push(legacy_track_id.clone());
+        }
+    }
 
     let online_track_metadata: HashMap<String, OnlineTrackMetadata> =
-        rustfin_db::repo::watch_party::list_online_audio_tracks(&state.db, room_id, None)
+        rustfin_db::repo::watch_party::list_online_audio_tracks_by_ids(
+            &state.db,
+            room_id,
+            &online_track_ids,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .into_iter()
+        .map(|track| {
+            (
+                track.id,
+                (
+                    track.title,
+                    track.channel,
+                    track.thumbnail_url,
+                    track.duration_ms,
+                    track.video_id,
+                ),
+            )
+        })
+        .collect();
+
+    for legacy_track_id in &legacy_track_ids {
+        if !online_track_metadata.contains_key(legacy_track_id)
+            && local_seen.insert(legacy_track_id.clone())
+        {
+            local_item_ids.push(legacy_track_id.clone());
+        }
+    }
+
+    let local_track_metadata: HashMap<String, LocalTrackMetadata> =
+        if let Some(audio_library_id) = runtime.audio_library_id.as_deref() {
+            rustfin_db::repo::watch_party::get_library_tracks_by_item_ids(
+                &state.db,
+                audio_library_id,
+                &local_item_ids,
+            )
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .into_iter()
-            .map(|t| {
+            .map(|track| {
                 (
-                    t.id,
+                    track.id,
                     (
-                        t.title,
-                        t.channel,
-                        t.thumbnail_url,
-                        t.duration_ms,
-                        t.video_id,
+                        track.title,
+                        track.album,
+                        track.artist,
+                        track.album_art_url,
+                        track.duration_ms,
                     ),
                 )
             })
-            .collect();
+            .collect()
+        } else {
+            HashMap::new()
+        };
 
     let resolve_queue_track_ref = |raw_id: &str| -> QueueTrackRef {
         if let Some(item_id) = raw_id.strip_prefix(AUDIO_QUEUE_LOCAL_PREFIX) {
@@ -2187,30 +2192,7 @@ async fn build_audio_state_message(
 
     let connected = runtime.connected_user_ids.read().await.clone();
 
-    let members_db = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .into_iter()
-        .map(|u| (u.id, u.username))
-        .collect();
-
-    let member_summaries = members_db
-        .into_iter()
-        .filter(|m| m.status != "declined" && m.status != "left")
-        .map(|member| PresenceMember {
-            user_id: member.user_id.clone(),
-            username: usernames
-                .get(&member.user_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            role: member.role,
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-        })
-        .collect();
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
     Ok(ServerMessage::AudioState {
         room_id: room_id.to_string(),
@@ -2253,30 +2235,7 @@ async fn build_youtube_state_message(
         (snapshot.position_ms, snapshot.updated_ts_ms)
     };
 
-    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-    let usernames: HashMap<String, String> = rustfin_db::repo::users::list_users(&state.db)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .into_iter()
-        .map(|u| (u.id, u.username))
-        .collect();
-
-    let member_summaries = members
-        .into_iter()
-        .filter(|m| m.status != "declined" && m.status != "left")
-        .map(|member| PresenceMember {
-            user_id: member.user_id.clone(),
-            username: usernames
-                .get(&member.user_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string()),
-            role: member.role,
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-        })
-        .collect();
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
     Ok(ServerMessage::YouTubeState {
         room_id: room_id.to_string(),
