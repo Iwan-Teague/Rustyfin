@@ -1412,7 +1412,11 @@ fn room_title_for_listing(
     if room_mode == "create" {
         return "Create Together".to_string();
     }
-    item_title.to_string()
+    if item_title.trim().is_empty() {
+        "Watch Together".to_string()
+    } else {
+        item_title.to_string()
+    }
 }
 
 async fn log_admin_room_action(
@@ -1900,31 +1904,40 @@ pub async fn create_room(
             None,
         )
     } else {
-        // Video room
-        let item_id = body
+        // Video room (optionally without a preselected item when explicitly requested).
+        let explicit_video_mode = requested_mode.as_deref() == Some("video");
+        let maybe_item_id = body
             .item_id
             .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| ApiError::BadRequest("item_id is required for video rooms".into()))?;
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
-        let item = rustfin_db::repo::items::get_item(&state.db, item_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+        let resolved_item_id = if let Some(item_id) = maybe_item_id {
+            let item = rustfin_db::repo::items::get_item(&state.db, item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
 
-        if item.kind != "movie" && item.kind != "episode" {
-            return Err(ApiError::BadRequest(
-                "watch parties currently support movie and episode items only".into(),
-            )
-            .into());
-        }
+            if item.kind != "movie" && item.kind != "episode" {
+                return Err(ApiError::BadRequest(
+                    "watch parties currently support movie and episode items only".into(),
+                )
+                .into());
+            }
 
-        ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id).await?;
+            ensure_library_access_for_user(&state, &auth.user_id, &auth.role, &item.library_id)
+                .await?;
+            Some(item.id)
+        } else if explicit_video_mode {
+            None
+        } else {
+            return Err(ApiError::BadRequest("item_id is required for video rooms".into()).into());
+        };
 
         (
             "video".to_string(),
             "library".to_string(),
-            Some(item.id.clone()),
+            resolved_item_id,
             None,
             None,
             None,
@@ -1953,16 +1966,15 @@ pub async fn create_room(
             .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
 
         if room_mode == "video" {
-            // For video rooms, we already have the item's library_id baked in item above.
-            // Re-fetch item to get library_id.
-            let item = rustfin_db::repo::items::get_item(
-                &state.db,
-                item_id.as_deref().unwrap_or_default(),
-            )
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
-            ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id).await?;
+            if let Some(video_item_id) = item_id.as_deref() {
+                // For local video rooms with a selected item, all invitees must be able to access it.
+                let item = rustfin_db::repo::items::get_item(&state.db, video_item_id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                    .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
+                ensure_library_access_for_user(&state, &user.id, &user.role, &item.library_id)
+                    .await?;
+            }
         } else if room_mode == "audio" {
             let Some(lib_id) = audio_library_id.as_ref() else {
                 continue;
@@ -2159,7 +2171,8 @@ pub async fn reconfigure_room(
                 (Vec::new(), 0)
             };
 
-            let requested_audio_library_id = body.audio_library_id.as_ref().map(|value| value.trim());
+            let requested_audio_library_id =
+                body.audio_library_id.as_ref().map(|value| value.trim());
             let resolved_audio_library_id = match requested_audio_library_id {
                 Some(value) if value.is_empty() => None, // explicit clear
                 Some(value) => Some(value.to_string()),
@@ -2392,7 +2405,7 @@ pub async fn get_room(
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
     // For video rooms only: verify item and library access
-    if room.room_mode == "video" {
+    if room.room_mode == "video" && !room.item_id.trim().is_empty() {
         let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2536,7 +2549,7 @@ pub async fn join_room(
         .map_err(|e| ApiError::Internal(format!("invalid room policy JSON: {e}")))?;
 
     // For video rooms only: verify item and library access
-    if room.room_mode == "video" {
+    if room.room_mode == "video" && !room.item_id.trim().is_empty() {
         let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2604,7 +2617,7 @@ pub async fn leave_room(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
-    if room.room_mode == "video" {
+    if room.room_mode == "video" && !room.item_id.trim().is_empty() {
         let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2792,7 +2805,7 @@ pub async fn invite_members(
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
             .ok_or_else(|| ApiError::NotFound("invited user not found".into()))?;
 
-        if room.room_mode == "video" {
+        if room.room_mode == "video" && !room.item_id.trim().is_empty() {
             let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2995,7 +3008,9 @@ pub async fn list_audio_tracks(
     }
 
     if source != "local" {
-        return Err(ApiError::BadRequest("audio track source must be 'local' or 'online'".into()).into());
+        return Err(
+            ApiError::BadRequest("audio track source must be 'local' or 'online'".into()).into(),
+        );
     }
 
     let Some(audio_lib_id) = room.audio_library_id.as_deref() else {

@@ -57,5 +57,9 @@ pub fn channels_router() -> Router<AppState> {
             "/{id}/transcription/sessions/{session_id}/download",
             get(super::handlers::download_transcription),
         )
+        .route(
+            "/{id}/transcription/sessions/{session_id}",
+            delete(super::handlers::delete_transcription_session),
+        )
         .route("/ws", get(super::ws::ws_handler))
 }

@@ -604,7 +604,7 @@ async fn authorize_ws_connection(
         .ok_or_else(|| ApiError::NotFound("watch party room not found".into()))?;
 
     // For video rooms only: verify library access
-    if room.room_mode == "video" {
+    if room.room_mode == "video" && !room.item_id.trim().is_empty() {
         let item = rustfin_db::repo::items::get_item(&state.db, &room.item_id)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -2047,7 +2047,13 @@ async fn build_audio_state_message(
             .map(|t| {
                 (
                     t.id,
-                    (t.title, t.channel, t.thumbnail_url, t.duration_ms, t.video_id),
+                    (
+                        t.title,
+                        t.channel,
+                        t.thumbnail_url,
+                        t.duration_ms,
+                        t.video_id,
+                    ),
                 )
             })
             .collect();
@@ -2084,7 +2090,15 @@ async fn build_audio_state_message(
             Some(QueueTrackRef::Local { item_id }) => local_track_metadata
                 .get(item_id)
                 .cloned()
-                .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None)),
+                .unwrap_or_else(|| {
+                    (
+                        "Unknown".to_string(),
+                        String::new(),
+                        String::new(),
+                        None,
+                        None,
+                    )
+                }),
             Some(QueueTrackRef::Online { track_id }) => online_track_metadata
                 .get(track_id)
                 .map(|(title, channel, thumbnail, duration_ms, _)| {
@@ -2096,14 +2110,31 @@ async fn build_audio_state_message(
                         *duration_ms,
                     )
                 })
-                .unwrap_or_else(|| ("Unknown".to_string(), String::new(), String::new(), None, None)),
-            None => ("Unknown".to_string(), String::new(), String::new(), None, None),
+                .unwrap_or_else(|| {
+                    (
+                        "Unknown".to_string(),
+                        String::new(),
+                        String::new(),
+                        None,
+                        None,
+                    )
+                }),
+            None => (
+                "Unknown".to_string(),
+                String::new(),
+                String::new(),
+                None,
+                None,
+            ),
         };
 
     let stream_url = match current_track_ref.as_ref() {
         Some(QueueTrackRef::Online { track_id }) => {
-            let token = issue_room_track_stream_token(room_id, track_id, 60 * 60, &state.jwt_secret)
-                .map_err(|_| ApiError::Internal("failed to issue room-track stream token".to_string()))?;
+            let token =
+                issue_room_track_stream_token(room_id, track_id, 60 * 60, &state.jwt_secret)
+                    .map_err(|_| {
+                        ApiError::Internal("failed to issue room-track stream token".to_string())
+                    })?;
             Some(format!(
                 "/api/v1/watch-party/rooms/{room_id}/audio/online/tracks/{track_id}/stream?st={token}"
             ))
@@ -2119,15 +2150,7 @@ async fn build_audio_state_message(
                 let (title, album, artist, art, dur) = local_track_metadata
                     .get(&item_id)
                     .cloned()
-                    .unwrap_or_else(|| {
-                        (
-                            item_id.clone(),
-                            String::new(),
-                            String::new(),
-                            None,
-                            None,
-                        )
-                    });
+                    .unwrap_or_else(|| (item_id.clone(), String::new(), String::new(), None, None));
                 QueueEntry {
                     track_id: raw_track_id.clone(),
                     title,
@@ -2143,13 +2166,7 @@ async fn build_audio_state_message(
                     .get(&track_id)
                     .cloned()
                     .unwrap_or_else(|| {
-                        (
-                            track_id.clone(),
-                            String::new(),
-                            None,
-                            None,
-                            String::new(),
-                        )
+                        (track_id.clone(), String::new(), None, None, String::new())
                     });
                 QueueEntry {
                     track_id: raw_track_id.clone(),

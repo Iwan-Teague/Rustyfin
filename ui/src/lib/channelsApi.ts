@@ -231,6 +231,15 @@ export async function listVoiceTranscriptionSessions(
   return apiJson<VoiceTranscriptionSessionsResponse>(`/channels/${channelId}/transcription/sessions`);
 }
 
+export async function deleteVoiceTranscriptionSession(
+  channelId: string,
+  sessionId: string,
+): Promise<void> {
+  await apiJson<void>(`/channels/${channelId}/transcription/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function startVoiceTranscription(
   channelId: string,
 ): Promise<VoiceTranscriptionStatus> {

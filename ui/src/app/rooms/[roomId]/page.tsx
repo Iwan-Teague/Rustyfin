@@ -216,6 +216,12 @@ export default function WatchPartyRoomPage() {
   const isWebRoom = room?.room_mode === 'web';
   const isYoutubeRoom = room?.room_mode === 'youtube';
   const isCreateRoom = room?.room_mode === 'create';
+  const isWatchRoom = !isAudioRoom && !isCreateRoom;
+  const activeWatchSource: 'video' | 'youtube' | 'web' = isYoutubeRoom
+    ? 'youtube'
+    : isWebRoom
+      ? 'web'
+      : 'video';
   const effectiveRoomMode = room?.room_mode ?? 'video';
   const memberRoleDisplay = nonAdminRoleLabel(effectiveRoomMode);
   const joinedRoleDisplay = joinedRole ? roleLabel(joinedRole, effectiveRoomMode) : '';
@@ -473,6 +479,10 @@ export default function WatchPartyRoomPage() {
 
   useEffect(() => {
     if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || isCreateRoom) return;
+    if (!room.item_id || room.item_id.trim().length === 0) {
+      setDescriptor(null);
+      return;
+    }
 
     let cancelled = false;
 
@@ -1027,6 +1037,7 @@ export default function WatchPartyRoomPage() {
 
   useEffect(() => {
     if (!room || !joinedRole || isAudioRoom || isWebRoom || isYoutubeRoom || !descriptor) return;
+    if (!room.item_id || room.item_id.trim().length === 0) return;
     if (startingDirect || startingHls) return;
     if (autoPreloadedItemRef.current === room.item_id) return;
 
@@ -1198,6 +1209,75 @@ export default function WatchPartyRoomPage() {
     }
   }
 
+  async function handleSwitchWatchSource(target: 'video' | 'youtube' | 'web') {
+    if (joinedRole !== 'host') {
+      setError('Only the room host can change watch source.');
+      return;
+    }
+    if (!room || target === activeWatchSource) {
+      return;
+    }
+
+    let payload: ReconfigureWatchPartyRoomRequest;
+    if (target === 'video') {
+      const fallbackItemId = room.item_id?.trim() || '';
+      const selectedItemId = reconfigureVideoItem?.id?.trim() || '';
+      const nextItemId = selectedItemId || fallbackItemId;
+      if (!nextItemId) {
+        setInfo('Select local media below and click "Apply Local Media" first.');
+        if (activeWatchSource !== 'video') {
+          setReconfigureModalOpen(true);
+        }
+        return;
+      }
+      payload = { room_mode: 'video', item_id: nextItemId };
+    } else if (target === 'youtube') {
+      payload = { room_mode: 'youtube' };
+    } else {
+      payload = { room_mode: 'web', web_url: (room.web_url || '').trim() || undefined };
+    }
+
+    setReconfiguring(true);
+    setReconfigureDirty(true);
+    setError('');
+    setInfo('');
+    try {
+      await reconfigureWatchPartyRoom(roomId, payload);
+      setInfoForDuration('Reconfiguring room for all participants…', 10_000);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to switch watch source');
+    } finally {
+      setReconfiguring(false);
+    }
+  }
+
+  async function handleApplyLocalMedia() {
+    if (joinedRole !== 'host') {
+      setError('Only the room host can select local media.');
+      return;
+    }
+    if (!reconfigureVideoItem) {
+      setError('Select a movie or episode first.');
+      return;
+    }
+
+    setReconfiguring(true);
+    setReconfigureDirty(true);
+    setError('');
+    setInfo('');
+    try {
+      await reconfigureWatchPartyRoom(roomId, {
+        room_mode: 'video',
+        item_id: reconfigureVideoItem.id,
+      });
+      setInfoForDuration('Reconfiguring room for all participants…', 10_000);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to apply local media');
+    } finally {
+      setReconfiguring(false);
+    }
+  }
+
   if (authLoading || loadingRoom) {
     return (
       <div className="panel-soft animate-rise px-5 py-4">
@@ -1361,6 +1441,29 @@ export default function WatchPartyRoomPage() {
             <span className="chip">Role: {joinedRoleDisplay}</span>
             <span className="chip">Controls: {canPlayPause ? 'allowed' : 'host-only'}</span>
           </div>
+          {isWatchRoom && (
+            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+              {([
+                ['video', 'Local Media'],
+                ['youtube', 'YouTube'],
+                ['web', 'Web'],
+              ] as const).map(([source, label]) => (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => void handleSwitchWatchSource(source)}
+                  disabled={reconfiguring || joinedRole !== 'host' || activeWatchSource === source}
+                  className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors disabled:opacity-60 ${
+                    activeWatchSource === source
+                      ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                      : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <YouTubePlayer
             roomId={roomId}
             ytState={youtubeState}
@@ -1378,6 +1481,29 @@ export default function WatchPartyRoomPage() {
             <span className="chip">Role: {joinedRoleDisplay}</span>
             <span className="chip">Navigation: {canPlayPause ? 'allowed' : 'admin-only'}</span>
           </div>
+          {isWatchRoom && (
+            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+              {([
+                ['video', 'Local Media'],
+                ['youtube', 'YouTube'],
+                ['web', 'Web'],
+              ] as const).map(([source, label]) => (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => void handleSwitchWatchSource(source)}
+                  disabled={reconfiguring || joinedRole !== 'host' || activeWatchSource === source}
+                  className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors disabled:opacity-60 ${
+                    activeWatchSource === source
+                      ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                      : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <WebPlayer
             roomId={roomId}
             webState={webState}
@@ -1720,63 +1846,130 @@ export default function WatchPartyRoomPage() {
               <span className="chip">Seek: {canSeek ? 'allowed' : 'host-only'}</span>
             </div>
 
-            <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
-              <video
-                ref={videoRef}
-                controls={controlsEnabled}
-                preload="auto"
-                playsInline
-                className="w-full max-h-[70vh]"
-                onPlay={(event) => {
-                  if (applyingRemoteRef.current || !canPlayPause) return;
-                  sendWs({
-                    type: 'play',
-                    position_ms: Math.floor(event.currentTarget.currentTime * 1000),
-                  });
-                }}
-                onPause={(event) => {
-                  if (applyingRemoteRef.current || !canPlayPause) return;
-                  sendWs({
-                    type: 'pause',
-                    position_ms: Math.floor(event.currentTarget.currentTime * 1000),
-                  });
-                }}
-                onSeeked={(event) => {
-                  if (applyingRemoteRef.current || !canSeek) return;
-                  sendWs({
-                    type: 'seek',
-                    position_ms: Math.floor(event.currentTarget.currentTime * 1000),
-                  });
-                }}
-                onError={() => {
-                  if (mode !== 'direct') return;
-                  setInfo('Direct playback failed. Switching to HLS…');
-                  void startHls();
-                }}
-              />
-            </div>
+            {isWatchRoom && (
+              <div className="flex gap-2 border-b border-[var(--border)] pb-0">
+                {([
+                  ['video', 'Local Media'],
+                  ['youtube', 'YouTube'],
+                  ['web', 'Web'],
+                ] as const).map(([source, label]) => (
+                  <button
+                    key={source}
+                    type="button"
+                    onClick={() => void handleSwitchWatchSource(source)}
+                    disabled={reconfiguring || joinedRole !== 'host' || activeWatchSource === source}
+                    className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors disabled:opacity-60 ${
+                      activeWatchSource === source
+                        ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+                        : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
 
-            <div className="panel-soft flex flex-wrap items-center gap-2 rounded-xl px-3 py-3">
-              <button
-                type="button"
-                className={`px-4 py-2 text-sm ${mode === 'direct' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => void startDirect()}
-                disabled={startingDirect || startingHls || !descriptor}
-              >
-                {startingDirect ? 'Starting…' : 'Direct Play'}
-              </button>
-              <button
-                type="button"
-                className={`px-4 py-2 text-sm ${mode === 'hls' ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => void startHls()}
-                disabled={startingDirect || startingHls || !descriptor}
-              >
-                {startingHls ? 'Starting…' : 'Transcode (HLS)'}
-              </button>
-              {!controlsEnabled && (
-                <span className="text-xs muted">Playback controls are host-only in this room.</span>
-              )}
-            </div>
+            {!room.item_id || room.item_id.trim().length === 0 ? (
+              joinedRole === 'host' ? (
+                <div className="space-y-3">
+                  {reconfigureVideoLibraries.length === 0 ? (
+                    <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      No shared local video libraries are available for current room participants.
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm muted">
+                        Select local media to load into this room.
+                      </p>
+                      <MediaPicker
+                        libraries={allLibraries}
+                        eligibleLibraryIds={eligibleLibraryIds}
+                        selectedLibraryId={reconfigureVideoLibraryId}
+                        selectedItem={reconfigureVideoItem}
+                        layout="stacked"
+                        surfaceClassName="panel-soft"
+                        noShadow
+                        onLibraryChange={setReconfigureVideoLibraryId}
+                        onSelectItem={setReconfigureVideoItem}
+                      />
+                      <button
+                        type="button"
+                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                        onClick={() => void handleApplyLocalMedia()}
+                        disabled={reconfiguring || !reconfigureVideoItem}
+                      >
+                        {reconfiguring ? 'Applying…' : 'Apply Local Media'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                  Waiting for a room admin to load local media.
+                </div>
+              )
+            ) : (
+              <>
+                <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
+                  <video
+                    ref={videoRef}
+                    controls={controlsEnabled}
+                    preload="auto"
+                    playsInline
+                    className="w-full max-h-[70vh]"
+                    onPlay={(event) => {
+                      if (applyingRemoteRef.current || !canPlayPause) return;
+                      sendWs({
+                        type: 'play',
+                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
+                      });
+                    }}
+                    onPause={(event) => {
+                      if (applyingRemoteRef.current || !canPlayPause) return;
+                      sendWs({
+                        type: 'pause',
+                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
+                      });
+                    }}
+                    onSeeked={(event) => {
+                      if (applyingRemoteRef.current || !canSeek) return;
+                      sendWs({
+                        type: 'seek',
+                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
+                      });
+                    }}
+                    onError={() => {
+                      if (mode !== 'direct') return;
+                      setInfo('Direct playback failed. Switching to HLS…');
+                      void startHls();
+                    }}
+                  />
+                </div>
+
+                <div className="panel-soft flex flex-wrap items-center gap-2 rounded-xl px-3 py-3">
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm ${mode === 'direct' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => void startDirect()}
+                    disabled={startingDirect || startingHls || !descriptor}
+                  >
+                    {startingDirect ? 'Starting…' : 'Direct Play'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm ${mode === 'hls' ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => void startHls()}
+                    disabled={startingDirect || startingHls || !descriptor}
+                  >
+                    {startingHls ? 'Starting…' : 'Transcode (HLS)'}
+                  </button>
+                  {!controlsEnabled && (
+                    <span className="text-xs muted">Playback controls are host-only in this room.</span>
+                  )}
+                </div>
+              </>
+            )}
           </section>
         </>
       )}

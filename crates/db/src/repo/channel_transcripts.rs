@@ -346,6 +346,14 @@ pub async fn count_entries_for_session(
     Ok(count)
 }
 
+pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel_transcript_session WHERE id = ?")
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn complete_session(
     pool: &SqlitePool,
     session_id: &str,
