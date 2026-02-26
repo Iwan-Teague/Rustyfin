@@ -4,6 +4,13 @@ Rustyfin is a local-first home server platform for media playback, live rooms, c
 
 It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first runtime that works on one device or across your LAN.
 
+## Recommended Host OS
+
+The intended server host for Rustyfin is **Debian 12 (headless/minimal install)**.
+
+- Recommended for stability, low overhead, and predictable Docker runtime behavior.
+- A desktop environment is not required for normal server operation.
+
 ## Current Product Surface
 
 - Libraries

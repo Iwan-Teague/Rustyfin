@@ -441,6 +441,49 @@ impl RoomRuntime {
         Some(snapshot)
     }
 
+    pub async fn append_create_canvas_stroke(
+        &self,
+        canvas_stroke: CreateCanvasStroke,
+    ) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        guard.canvas_strokes.push(canvas_stroke);
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn remove_create_canvas_stroke(&self, stroke_id: &str) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        let before_len = guard.canvas_strokes.len();
+        guard.canvas_strokes.retain(|stroke| stroke.id != stroke_id);
+        if guard.canvas_strokes.len() == before_len {
+            return Some(guard.clone());
+        }
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn clear_create_canvas(&self) -> Option<CreateState> {
+        let state = self.create_state.as_ref()?;
+        let mut guard = state.write().await;
+        if guard.canvas_strokes.is_empty() {
+            return Some(guard.clone());
+        }
+        guard.canvas_strokes.clear();
+        guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
     pub async fn snapshot_play_state(&self) -> Option<PlayState> {
         let state = self.play_state.as_ref()?;
         Some(state.read().await.clone())

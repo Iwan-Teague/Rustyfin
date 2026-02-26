@@ -617,8 +617,9 @@ export default function CreateTogetherEditor({
     offsetX: 0,
     offsetY: 0,
   });
-  const textDebounceRef = useRef<number | null>(null);
+  const pagePatchDebounceRef = useRef<number | null>(null);
   const nameDebounceRef = useRef<number | null>(null);
+  const pendingPagePatchRef = useRef<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const latestUpdateRef = useRef<number>(0);
 
@@ -628,7 +629,7 @@ export default function CreateTogetherEditor({
 
   useEffect(() => {
     return () => {
-      if (textDebounceRef.current) window.clearTimeout(textDebounceRef.current);
+      if (pagePatchDebounceRef.current) window.clearTimeout(pagePatchDebounceRef.current);
       if (nameDebounceRef.current) window.clearTimeout(nameDebounceRef.current);
       activeCanvasPointerIdRef.current = null;
       pendingStrokeRef.current = null;
@@ -655,16 +656,32 @@ export default function CreateTogetherEditor({
     [canEdit, sendWs],
   );
 
-  const pushCanvasState = useCallback(
-    (nextStrokes: WsCreateCanvasStroke[]) => {
+  const pushCanvasStroke = useCallback(
+    (stroke: WsCreateCanvasStroke) => {
       if (!canEdit) return;
       sendWs({
-        type: 'create_set_canvas',
-        canvas_strokes: nextStrokes,
+        type: 'create_canvas_append_stroke',
+        canvas_stroke: stroke,
       });
     },
     [canEdit, sendWs],
   );
+
+  const removeCanvasStroke = useCallback(
+    (strokeId: string) => {
+      if (!canEdit) return;
+      sendWs({
+        type: 'create_canvas_remove_stroke',
+        stroke_id: strokeId,
+      });
+    },
+    [canEdit, sendWs],
+  );
+
+  const clearCanvasState = useCallback(() => {
+    if (!canEdit) return;
+    sendWs({ type: 'create_canvas_clear' });
+  }, [canEdit, sendWs]);
 
   const pushDocumentName = useCallback(
     (nextName: string) => {
@@ -677,50 +694,49 @@ export default function CreateTogetherEditor({
     [canEdit, sendWs],
   );
 
-  const scheduleDocumentSync = useCallback(
-    (
-      nextPages: RichDocPage[],
-      nextPageSize: PageSize,
-      nextPageOrientation: PageOrientation,
-      immediate = false,
-    ) => {
-      if (!canEdit) return;
-      const normalized = normalizePages(nextPages);
-      const payload = serializeRichDocument(normalized, nextPageSize, nextPageOrientation);
+  const flushPagePatches = useCallback(() => {
+    if (!canEdit) return;
+    const entries = Object.entries(pendingPagePatchRef.current);
+    if (entries.length === 0) return;
+    pendingPagePatchRef.current = {};
+    for (const [pageId, pageHtml] of entries) {
+      sendWs({
+        type: 'create_upsert_text_page',
+        page_id: pageId,
+        page_html: pageHtml,
+      });
+    }
+  }, [canEdit, sendWs]);
 
-      if (textDebounceRef.current) {
-        window.clearTimeout(textDebounceRef.current);
-        textDebounceRef.current = null;
+  const clearQueuedPagePatches = useCallback(() => {
+    pendingPagePatchRef.current = {};
+    if (pagePatchDebounceRef.current) {
+      window.clearTimeout(pagePatchDebounceRef.current);
+      pagePatchDebounceRef.current = null;
+    }
+  }, []);
+
+  const schedulePagePatch = useCallback(
+    (pageId: string, pageHtml: string, immediate = false) => {
+      if (!canEdit) return;
+      pendingPagePatchRef.current[pageId] = pageHtml;
+
+      if (pagePatchDebounceRef.current) {
+        window.clearTimeout(pagePatchDebounceRef.current);
+        pagePatchDebounceRef.current = null;
       }
 
       if (immediate) {
-        pushTextState(payload, 'plain');
+        flushPagePatches();
         return;
       }
 
-      textDebounceRef.current = window.setTimeout(() => {
-        pushTextState(payload, 'plain');
-        textDebounceRef.current = null;
+      pagePatchDebounceRef.current = window.setTimeout(() => {
+        flushPagePatches();
+        pagePatchDebounceRef.current = null;
       }, 220);
     },
-    [canEdit, pushTextState],
-  );
-
-  const commitDocument = useCallback(
-    (
-      nextPages: RichDocPage[],
-      nextPageSize: PageSize,
-      nextPageOrientation: PageOrientation,
-      immediate = false,
-    ) => {
-      const normalized = normalizePages(nextPages);
-      pagesRef.current = normalized;
-      setPages(normalized);
-      setPageSize(FIXED_PAGE_SIZE);
-      setPageOrientation(nextPageOrientation);
-      scheduleDocumentSync(normalized, FIXED_PAGE_SIZE, nextPageOrientation, immediate);
-    },
-    [scheduleDocumentSync],
+    [canEdit, flushPagePatches],
   );
 
   useEffect(() => {
@@ -875,9 +891,9 @@ export default function CreateTogetherEditor({
       );
       pagesRef.current = next;
       setPages(next);
-      scheduleDocumentSync(next, pageSize, pageOrientation, immediate);
+      schedulePagePatch(pageId, sanitized, immediate);
     },
-    [pageOrientation, pageSize, pages, scheduleDocumentSync],
+    [pages, schedulePagePatch],
   );
 
   const snapshotPagesFromDom = useCallback((): RichDocPage[] => {
@@ -1098,10 +1114,23 @@ export default function CreateTogetherEditor({
   };
 
   const handleAddPage = () => {
+    flushPagePatches();
     const page = makeEmptyPage();
-    const next = [...pages, page];
-    commitDocument(next, pageSize, pageOrientation, true);
+    const base = pagesRef.current.length > 0 ? pagesRef.current : pages;
+    const next = normalizePages([...base, page]);
+    pagesRef.current = next;
+    setPages(next);
+    setPageSize(FIXED_PAGE_SIZE);
     setActivePageId(page.id);
+    if (canEdit) {
+      const previousPageId = base.length > 0 ? base[base.length - 1].id : null;
+      sendWs({
+        type: 'create_insert_text_page',
+        page_id: page.id,
+        page_html: page.html,
+        after_page_id: previousPageId,
+      });
+    }
     window.setTimeout(() => {
       pageRefs.current[page.id]?.focus();
     }, 0);
@@ -1111,16 +1140,26 @@ export default function CreateTogetherEditor({
     if (!canEdit) return;
     if (pages.length <= 1) return;
 
+    flushPagePatches();
     const next = pages.filter((page) => page.id !== pageId);
-    commitDocument(next, pageSize, pageOrientation, true);
+    pagesRef.current = next;
+    setPages(next);
     if (activePageId === pageId) {
       setActivePageId(next[0]?.id ?? null);
     }
+    sendWs({
+      type: 'create_delete_text_page',
+      page_id: pageId,
+    });
   };
 
   const handlePageOrientationChange = (nextPageOrientation: PageOrientation) => {
     setPageOrientation(nextPageOrientation);
-    scheduleDocumentSync(pagesRef.current, pageSize, nextPageOrientation, true);
+    if (!canEdit) return;
+    sendWs({
+      type: 'create_set_text_page_orientation',
+      page_orientation: nextPageOrientation,
+    });
   };
 
   const getCanvasPixelPoint = useCallback((clientX: number, clientY: number): Point => {
@@ -1229,7 +1268,7 @@ export default function CreateTogetherEditor({
     }
     setCanvasStrokes(next);
     setLocalMessage('');
-    pushCanvasState(next);
+    pushCanvasStroke(finalized);
   };
 
   const handleCanvasWheel = useCallback((event: CanvasWheelEventLike) => {
@@ -1293,15 +1332,16 @@ export default function CreateTogetherEditor({
 
   const handleCanvasUndo = () => {
     if (!canEdit || canvasStrokes.length === 0) return;
+    const removed = canvasStrokes[canvasStrokes.length - 1];
     const next = canvasStrokes.slice(0, -1);
     setCanvasStrokes(next);
-    pushCanvasState(next);
+    removeCanvasStroke(removed.id);
   };
 
   const handleCanvasClear = () => {
     if (!canEdit) return;
     setCanvasStrokes([]);
-    pushCanvasState([]);
+    clearCanvasState();
   };
 
   const handleDownloadText = (format: 'txt' | 'md') => {
@@ -1365,8 +1405,16 @@ export default function CreateTogetherEditor({
         id: createPageId(),
         html: plainTextToPageHtml(importedText),
       };
-
-      commitDocument([page], pageSize, pageOrientation, true);
+      const importedPages = [page];
+      clearQueuedPagePatches();
+      pagesRef.current = importedPages;
+      setPages(importedPages);
+      setPageSize(FIXED_PAGE_SIZE);
+      setPageOrientation(pageOrientation);
+      if (canEdit) {
+        const payload = serializeRichDocument(importedPages, FIXED_PAGE_SIZE, pageOrientation);
+        pushTextState(payload, 'plain');
+      }
       setActivePageId(page.id);
       setLocalMessage(`Loaded ${file.name}`);
     } catch (err: any) {
@@ -1650,7 +1698,7 @@ export default function CreateTogetherEditor({
                               : entry,
                           );
                           pagesRef.current = next;
-                          scheduleDocumentSync(next, pageSize, pageOrientation);
+                          schedulePagePatch(page.id, sanitized);
                           window.setTimeout(() => updateToolbarState(), 0);
                         }}
                         onMouseUp={() => updateToolbarState()}

@@ -68,9 +68,32 @@ pub enum ClientMessage {
         #[serde(default)]
         text_format: Option<String>,
     },
+    CreateUpsertTextPage {
+        page_id: String,
+        page_html: String,
+    },
+    CreateInsertTextPage {
+        page_id: String,
+        page_html: String,
+        #[serde(default)]
+        after_page_id: Option<String>,
+    },
+    CreateDeleteTextPage {
+        page_id: String,
+    },
+    CreateSetTextPageOrientation {
+        page_orientation: String,
+    },
     CreateSetCanvas {
         canvas_strokes: Vec<CreateCanvasStroke>,
     },
+    CreateCanvasAppendStroke {
+        canvas_stroke: CreateCanvasStroke,
+    },
+    CreateCanvasRemoveStroke {
+        stroke_id: String,
+    },
+    CreateCanvasClear,
     PlaySetGame {
         game: String,
     },

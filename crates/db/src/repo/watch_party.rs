@@ -86,6 +86,7 @@ pub async fn create_room_with_members(
     room_name: Option<&str>,
     item_id: Option<&str>,
     policy_json: &str,
+    invite_only: bool,
     join_password_hash: Option<&str>,
     members: &[NewWatchPartyMember],
     room_mode: Option<&str>,
@@ -107,14 +108,15 @@ pub async fn create_room_with_members(
 
     sqlx::query(
         "INSERT INTO watch_party_room \
-         (id, room_name, host_user_id, item_id, status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, audio_source, audio_library_id, web_url, create_tool, create_document_name) \
-         VALUES (?, ?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, room_name, host_user_id, item_id, status, policy_json, invite_only, join_password_hash, created_ts, updated_ts, room_mode, audio_source, audio_library_id, web_url, create_tool, create_document_name) \
+         VALUES (?, ?, ?, ?, 'lobby', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&room_id)
     .bind(name)
     .bind(host_user_id)
     .bind(item_id)
     .bind(policy_json)
+    .bind(if invite_only { 1_i64 } else { 0_i64 })
     .bind(join_password_hash)
     .bind(now)
     .bind(now)
@@ -598,8 +600,7 @@ pub async fn list_public_rooms(pool: &SqlitePool) -> Result<Vec<PublicRoomRow>, 
              LEFT JOIN library lib ON lib.id = r.audio_library_id \
              LEFT JOIN watch_party_member m ON m.room_id = r.id \
              WHERE r.status = 'lobby' \
-               AND (json_extract(r.policy_json, '$.invite_only') = 0 \
-                    OR json_extract(r.policy_json, '$.invite_only') IS NULL) \
+               AND r.invite_only = 0 \
              GROUP BY r.id \
              ORDER BY r.created_ts DESC",
         )
@@ -666,7 +667,7 @@ pub async fn list_admin_rooms(pool: &SqlitePool) -> Result<Vec<AdminRoomRow>, sq
         "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                 COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                 CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
-                CASE WHEN json_extract(r.policy_json, '$.invite_only') = 1 THEN 1 ELSE 0 END, \
+                r.invite_only, \
                 COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                 r.status, r.created_ts, r.updated_ts \
          FROM watch_party_room r \
