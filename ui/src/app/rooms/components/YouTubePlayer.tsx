@@ -6,6 +6,7 @@ import {
   YouTubeSearchResult,
   lookupYouTubeVideos,
 } from '@/lib/watchPartyApi';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
 // Minimal YouTube IFrame API type declarations
 declare global {
@@ -673,7 +674,7 @@ export default function YouTubePlayer({
     logDebug(`play_queued_video sent queue_index=${queueIndex}`);
   }, [canControl, wsConnected, sendWs, logDebug]);
 
-  const requestQueueRemove = useCallback((queueIndex: number) => {
+  const requestQueueRemove = useCallback(async (queueIndex: number) => {
     if (!canQueue) {
       setPlayerError('You must join the room to edit queue.');
       return;
@@ -682,6 +683,8 @@ export default function YouTubePlayer({
       setPlayerError('Cannot edit queue while realtime connection is offline.');
       return;
     }
+    const target = findDataDeleteTarget('data-youtube-queue-index', String(queueIndex));
+    await playTelegramDeleteAnimation(target);
     const sent = sendWs({ type: 'remove_queued_video', queue_index: queueIndex });
     if (!sent) {
       setPlayerError('Failed to remove queued video. Reconnect and retry.');
@@ -984,7 +987,11 @@ export default function YouTubePlayer({
           </p>
           <ul className="space-y-1 text-xs">
             {queue.map((videoId, idx) => (
-              <li key={`${videoId}-${idx}`} className="tile rounded-lg px-2 py-1.5">
+              <li
+                key={`${videoId}-${idx}`}
+                data-youtube-queue-index={idx}
+                className="tile rounded-lg px-2 py-1.5"
+              >
                 <div className="flex items-start gap-2">
                   {queueMetaById[videoId] ? (
                     <div className="min-w-0 flex-1 space-y-0.5">

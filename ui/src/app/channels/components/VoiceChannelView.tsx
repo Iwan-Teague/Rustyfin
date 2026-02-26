@@ -10,6 +10,7 @@ import {
   startVoiceTranscription,
   stopVoiceTranscription,
 } from '@/lib/channelsApi';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { useChannels } from '@/lib/channelsContext';
 import type {
   ChannelEvent,
@@ -108,7 +109,7 @@ function ParticipantCard({
           value={volumePercent}
           disabled={sliderDisabled}
           onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
-          className="w-full accent-[var(--orange-soft)] disabled:opacity-40 disabled:cursor-not-allowed"
+          className="rf-gradient-slider w-full disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label={sliderLabel}
         />
       </div>
@@ -371,6 +372,8 @@ export default function VoiceChannelView({
     setTranscriptionBusy(true);
     setTranscriptionError(null);
     try {
+      const target = findDataDeleteTarget('data-transcript-session-id', sessionId);
+      await playTelegramDeleteAnimation(target);
       await deleteVoiceTranscriptionSession(channel.id, sessionId);
       const status = await getVoiceTranscriptionStatus(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
@@ -517,7 +520,11 @@ export default function VoiceChannelView({
           ) : (
             <ul className="space-y-2">
               {transcriptSessions.map((session) => (
-                <li key={session.session_id} className="tile rounded-xl p-2.5 space-y-2">
+                <li
+                  key={session.session_id}
+                  data-transcript-session-id={session.session_id}
+                  className="tile rounded-xl p-2.5 space-y-2"
+                >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <p className="truncate text-xs font-medium">

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
 interface Library {
   id: string;
@@ -731,6 +732,8 @@ export default function AdminPage() {
       return;
     }
     try {
+      const targetEl = findDataDeleteTarget('data-admin-library-card-id', libId);
+      await playTelegramDeleteAnimation(targetEl);
       const res = await apiFetch(`/libraries/${libId}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -835,6 +838,8 @@ export default function AdminPage() {
 
   async function deleteUser(userId: string) {
     try {
+      const targetEl = findDataDeleteTarget('data-admin-user-card-id', userId);
+      await playTelegramDeleteAnimation(targetEl);
       const res = await apiFetch(`/users/${userId}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -927,6 +932,8 @@ export default function AdminPage() {
       return;
     }
     try {
+      const targetEl = findDataDeleteTarget('data-admin-channel-card-id', channelId);
+      await playTelegramDeleteAnimation(targetEl);
       const res = await apiFetch(`/channels/${channelId}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1003,6 +1010,8 @@ export default function AdminPage() {
 
   async function deleteRoom(roomId: string) {
     try {
+      const targetEl = findDataDeleteTarget('data-admin-room-card-id', roomId);
+      await playTelegramDeleteAnimation(targetEl);
       const res = await apiFetch(`/watch-party/admin/rooms/${roomId}`, {
         method: 'DELETE',
       });
@@ -1062,6 +1071,8 @@ export default function AdminPage() {
 
   async function deleteJob(jobId: string) {
     try {
+      const targetEl = findDataDeleteTarget('data-admin-job-id', jobId);
+      await playTelegramDeleteAnimation(targetEl);
       const res = await apiFetch(`/jobs/${jobId}`, { method: 'DELETE' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1215,7 +1226,7 @@ export default function AdminPage() {
                           library_ids: user.library_ids || [],
                         };
                         return (
-                          <div key={user.id} className="tile space-y-3 p-4">
+                          <div key={user.id} data-admin-user-card-id={user.id} className="tile space-y-3 p-4">
                             <div>
                               <p className="font-medium">{user.username}</p>
                               <p className="text-xs muted">
@@ -1266,7 +1277,7 @@ export default function AdminPage() {
                           library_ids: user.library_ids || [],
                         };
                         return (
-                          <div key={user.id} className="tile space-y-3 p-4">
+                          <div key={user.id} data-admin-user-card-id={user.id} className="tile space-y-3 p-4">
                             <div>
                               <p className="font-medium">{user.username}</p>
                               <p className="text-xs muted">
@@ -1507,7 +1518,7 @@ export default function AdminPage() {
             ) : (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {libraries.map((lib) => (
-                  <div key={lib.id} className="tile space-y-3 p-4">
+                  <div key={lib.id} data-admin-library-card-id={lib.id} className="tile space-y-3 p-4">
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -1785,7 +1796,7 @@ export default function AdminPage() {
                   const edit = channelEdits[channel.id] || toChannelEditState(channel);
                   const creatorName = usersById.get(channel.created_by)?.username || channel.created_by;
                   return (
-                    <div key={channel.id} className="tile space-y-3 p-4">
+                    <div key={channel.id} data-admin-channel-card-id={channel.id} className="tile space-y-3 p-4">
                       <div className="flex flex-wrap items-start justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <span className="chip">{channel.kind}</span>
@@ -1850,7 +1861,7 @@ export default function AdminPage() {
               {rooms.map((room) => {
                 const edit = roomEdits[room.room_id] || toRoomEditState(room);
                 return (
-                  <div key={room.room_id} className="tile space-y-3 p-4">
+                  <div key={room.room_id} data-admin-room-card-id={room.room_id} className="tile space-y-3 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="font-semibold">{room.title}</p>
                       <div className="flex items-center gap-2">
@@ -1930,7 +1941,7 @@ export default function AdminPage() {
             filteredLogJobs.map((job) => {
               const isTerminal = !['queued', 'running'].includes(job.status);
               return (
-                <div key={job.id} className="tile space-y-2 p-3">
+                <div key={job.id} data-admin-job-id={job.id} className="tile space-y-2 p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-medium">{job.kind}</p>
