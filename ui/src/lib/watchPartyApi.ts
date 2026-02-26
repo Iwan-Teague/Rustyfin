@@ -24,6 +24,16 @@ export type WatchPartyInviteInput = {
 export type CreateWatchPartyRoomRequest =
   | {
       room_name?: string;
+      room_mode: 'video';
+      item_id?: string;
+      audio_library_id?: never;
+      web_url?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    }
+  | {
+      room_name?: string;
       item_id: string;
       audio_library_id?: never;
       room_mode?: never;

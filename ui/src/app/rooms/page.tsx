@@ -17,10 +17,6 @@ import {
   listWatchPartyInvites,
   listWatchPartyUsers,
 } from '@/lib/watchPartyApi';
-import MediaPicker, {
-  MediaItemNode,
-  MediaLibrary,
-} from './components/MediaPicker';
 import UserInvitePicker, { SelectedInvite } from './components/UserInvitePicker';
 import RoomOptions from './components/RoomOptions';
 import InvitesPanel from './components/InvitesPanel';
@@ -33,7 +29,6 @@ type LibrarySummary = {
 };
 
 type RoomMode = 'watch' | 'audio' | 'play' | 'create';
-type WatchSource = 'local' | 'youtube' | 'web';
 type RightPanelTab = 'invites' | 'options';
 
 const DEFAULT_POLICY: WatchPartyPolicy = {
@@ -48,18 +43,13 @@ export default function WatchPartyPage() {
   const { me, loading: authLoading } = useAuth();
 
   const [users, setUsers] = useState<WatchPartyUser[]>([]);
-  const [libraries, setLibraries] = useState<MediaLibrary[]>([]);
   const [allLibraries, setAllLibraries] = useState<LibrarySummary[]>([]);
   const [invites, setInvites] = useState<WatchPartyInvite[]>([]);
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
-  const [watchSource, setWatchSource] = useState<WatchSource>('local');
-  const [webStartUrl, setWebStartUrl] = useState('');
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('invites');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
   const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
-  const [selectedLibraryId, setSelectedLibraryId] = useState('');
-  const [selectedItem, setSelectedItem] = useState<MediaItemNode | null>(null);
   const [selectedAudioLibraryId, setSelectedAudioLibraryId] = useState('');
   const [roomName, setRoomName] = useState('');
   const [policy, setPolicy] = useState<WatchPartyPolicy>(DEFAULT_POLICY);
@@ -80,10 +70,6 @@ export default function WatchPartyPage() {
     ? 'audio'
     : roomMode === 'create'
       ? 'create'
-    : watchSource === 'youtube'
-      ? 'youtube'
-      : watchSource === 'web'
-        ? 'web'
       : 'video';
 
   const musicLibraries = useMemo(
@@ -120,7 +106,6 @@ export default function WatchPartyPage() {
 
         setUsers(userList);
         setAllLibraries(libraryList);
-        setLibraries(libraryList);
         setInvites(inviteList);
         setPublicRooms(publicRoomList);
 
@@ -128,11 +113,6 @@ export default function WatchPartyPage() {
         if (cancelled) return;
 
         setEligibleLibraryIds(initialEligible);
-
-        const videoLib = libraryList.find(
-          (lib) => lib.kind !== 'music' && initialEligible.includes(lib.id),
-        );
-        setSelectedLibraryId(videoLib?.id || '');
 
         const musicLib = libraryList.find(
           (lib) => lib.kind === 'music' && initialEligible.includes(lib.id),
@@ -167,18 +147,10 @@ export default function WatchPartyPage() {
 
         setEligibleLibraryIds(eligible);
 
-        if (!eligible.includes(selectedLibraryId)) {
-          const nextVideoLib = allLibraries.find(
-            (lib) => lib.kind !== 'music' && eligible.includes(lib.id),
-          );
-          setSelectedLibraryId(nextVideoLib?.id || '');
-          setSelectedItem(null);
-        }
-
         if (!eligible.includes(selectedAudioLibraryId)) {
           const nextMusicLib = allLibraries.find(
             (lib) => lib.kind === 'music' && eligible.includes(lib.id),
-          );
+            );
           setSelectedAudioLibraryId(nextMusicLib?.id || '');
         }
       } catch (err: any) {
@@ -191,7 +163,7 @@ export default function WatchPartyPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedInviteIds, me, selectedLibraryId, selectedAudioLibraryId, allLibraries]);
+  }, [selectedInviteIds, me, selectedAudioLibraryId, allLibraries]);
 
   useEffect(() => {
     if (publicRooms.length === 0) return;
@@ -315,23 +287,10 @@ export default function WatchPartyPage() {
         const created = await createWatchPartyRoom(payload);
         setMessage(`Room created: ${created.room_id}`);
         router.push(created.join_path);
-      } else if (watchSource === 'web') {
+      } else if (roomMode === 'watch') {
         const payload = {
           room_name: normalizedRoomName || undefined,
-          room_mode: 'web' as const,
-          web_url: webStartUrl.trim() || undefined,
-          invites: invitesPayload,
-          password: password.trim() ? password.trim() : undefined,
-          policy,
-        };
-
-        const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
-        router.push(created.join_path);
-      } else if (watchSource === 'youtube') {
-        const payload = {
-          room_name: normalizedRoomName || undefined,
-          room_mode: 'youtube' as const,
+          room_mode: 'video' as const,
           invites: invitesPayload,
           password: password.trim() ? password.trim() : undefined,
           policy,
@@ -341,27 +300,8 @@ export default function WatchPartyPage() {
         setMessage(`Room created: ${created.room_id}`);
         router.push(created.join_path);
       } else {
-        if (!selectedItem) {
-          setError('Select a movie or episode first.');
-          return;
-        }
-
-        if (!eligibleLibraryIds.includes(selectedItem.library_id)) {
-          setError('The selected media is not accessible to all selected invitees.');
-          return;
-        }
-
-        const payload = {
-          room_name: normalizedRoomName || undefined,
-          item_id: selectedItem.id,
-          invites: invitesPayload,
-          password: password.trim() ? password.trim() : undefined,
-          policy,
-        };
-
-        const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
-        router.push(created.join_path);
+        setError('Unsupported room mode.');
+        return;
       }
     } catch (err: any) {
       setError(err?.message || 'Failed to create watch party room');
@@ -387,11 +327,7 @@ export default function WatchPartyPage() {
       ? false
       : roomMode === 'create'
         ? true
-      : roomMode === 'audio'
-        ? true
-        : watchSource === 'youtube' || watchSource === 'web'
-          ? true
-          : !!selectedItem;
+        : true;
   const fixedColumnHeightStyle = fixedColumnHeightPx
     ? { height: `${fixedColumnHeightPx}px` }
     : { minHeight: '30rem' };
@@ -501,74 +437,21 @@ export default function WatchPartyPage() {
 
       <div className="mt-3 grid gap-5 xl:grid-cols-2">
         <section className="space-y-4">
-          {roomMode === 'watch' && (
-            <div className="flex gap-2 border-b border-[var(--border)] pb-0">
-              {(['local', 'youtube', 'web'] as const).map((source) => (
-                <button
-                  key={source}
-                  type="button"
-                  onClick={() => setWatchSource(source)}
-                  className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                    watchSource === source
-                      ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                      : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
-                  }`}
-                >
-                  {source === 'local' ? 'Local Media' : source === 'youtube' ? 'YouTube' : 'Web'}
-                </button>
-              ))}
-            </div>
-          )}
-
           <div className="overflow-hidden" style={fixedColumnHeightStyle}>
             <div className="h-full overflow-y-auto pr-1">
               {roomMode === 'watch' ? (
-                watchSource === 'local' ? (
-                  <MediaPicker
-                    libraries={libraries}
-                    eligibleLibraryIds={eligibleLibraryIds}
-                    selectedLibraryId={selectedLibraryId}
-                    selectedItem={selectedItem}
-                    noShadow
-                    onLibraryChange={setSelectedLibraryId}
-                    onSelectItem={setSelectedItem}
-                  />
-                ) : watchSource === 'web' ? (
-                  <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
-                    <div className="space-y-2">
-                      <h2 className="text-xl font-semibold">Watch Together (Web)</h2>
-                      <p className="text-sm muted">
-                        Enter a URL to open for everyone in a shared web room.
-                      </p>
-                    </div>
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-xs uppercase tracking-wide muted">Initial URL</span>
-                      <input
-                        type="text"
-                        value={webStartUrl}
-                        onChange={(e) => setWebStartUrl(e.target.value)}
-                        className="input px-3 py-2 text-sm"
-                        placeholder="https://www.mozilla.org/"
-                        maxLength={2048}
-                      />
-                    </label>
-                    <p className="text-xs muted">
-                      Hosts/admins can change the URL live inside the room. Some websites block iframe embedding.
+                <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
+                  <div className="space-y-2">
+                    <h2 className="text-xl font-semibold">Watch Together</h2>
+                    <p className="text-sm muted">
+                      Create the room first, then switch between Local Media, YouTube, and Web
+                      using source tabs above the embedded viewer inside the room.
                     </p>
-                  </section>
-                ) : (
-                  <section className="panel space-y-4 p-5 sm:p-6" style={{ boxShadow: 'none' }}>
-                    <div className="space-y-2">
-                      <h2 className="text-xl font-semibold">Watch Together (YouTube)</h2>
-                      <p className="text-sm muted">
-                        Create the room first, then use shared YouTube search in the lobby to choose and queue videos.
-                      </p>
-                    </div>
-                    <div className="notice-ok rounded-xl px-3 py-3 text-sm">
-                      No local media library is required for YouTube watch-together rooms.
-                    </div>
-                  </section>
-                )
+                  </div>
+                  <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                    Local library/media selection is now handled in-room.
+                  </div>
+                </section>
               ) : roomMode === 'audio' ? (
                 <div className="space-y-3">
                   <p className="text-sm muted">

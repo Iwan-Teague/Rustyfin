@@ -1538,3 +1538,50 @@ pub async fn download_transcription(
     }
     Ok(response)
 }
+
+pub async fn delete_transcription_session(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((channel_id, session_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+
+    let session = rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("transcript session not found".into()))?;
+    if session.channel_id != channel_id {
+        return Err(ApiError::NotFound("transcript session not found for channel".into()).into());
+    }
+    if session.status == "running" {
+        return Err(ApiError::BadRequest(
+            "stop or cancel the active transcript before deleting it".into(),
+        )
+        .into());
+    }
+
+    if let Some(path) = &session.output_path {
+        if let Err(err) = fs::remove_file(path).await {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    session_id = %session.id,
+                    output_path = %path,
+                    error = %err,
+                    "failed deleting transcript output file"
+                );
+            }
+        }
+    }
+
+    rustfin_db::repo::channel_transcripts::delete_session(&state.db, &session.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}

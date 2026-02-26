@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import {
   cancelVoiceTranscription,
+  deleteVoiceTranscriptionSession,
   getVoiceTranscriptionStatus,
   listVoiceTranscriptionSessions,
   startVoiceTranscription,
@@ -363,6 +364,24 @@ export default function VoiceChannelView({
     }
   }
 
+  async function handleDeleteTranscription(sessionId: string) {
+    if (!sessionId) {
+      return;
+    }
+    setTranscriptionBusy(true);
+    setTranscriptionError(null);
+    try {
+      await deleteVoiceTranscriptionSession(channel.id, sessionId);
+      const status = await getVoiceTranscriptionStatus(channel.id);
+      setVoiceTranscriptionState(channel.id, mapStatusToState(status));
+      await loadTranscriptSessions(false);
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : 'Failed to delete transcript');
+    } finally {
+      setTranscriptionBusy(false);
+    }
+  }
+
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* Header — channel name, member count, and controls all inline */}
@@ -508,22 +527,41 @@ export default function VoiceChannelView({
                         by {session.started_by_username}
                       </p>
                     </div>
-                    <span className="chip text-[10px]">{session.status}</span>
                   </div>
                   <p className="text-[11px] muted">
                     {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
                   </p>
                   {session.output_available ? (
-                    <button
-                      type="button"
-                      className="btn-secondary w-full px-2 py-1 text-xs"
-                      onClick={() => void handleDownloadTranscription(session.session_id)}
-                      disabled={transcriptionBusy}
-                    >
-                      Download
-                    </button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        className="btn-secondary w-full px-2 py-1 text-xs"
+                        onClick={() => void handleDownloadTranscription(session.session_id)}
+                        disabled={transcriptionBusy}
+                      >
+                        Download
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
+                        onClick={() => void handleDeleteTranscription(session.session_id)}
+                        disabled={transcriptionBusy}
+                      >
+                        Delete
+                      </button>
+                    </div>
                   ) : (
-                    <p className="text-[11px] muted">No downloadable output yet</p>
+                    <>
+                      <p className="text-[11px] muted">No downloadable output yet</p>
+                      <button
+                        type="button"
+                        className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
+                        onClick={() => void handleDeleteTranscription(session.session_id)}
+                        disabled={transcriptionBusy}
+                      >
+                        Delete
+                      </button>
+                    </>
                   )}
                 </li>
               ))}

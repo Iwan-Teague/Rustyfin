@@ -36,12 +36,34 @@ type RichDocument = {
 const MAX_DOC_NAME = 120;
 const MAX_DOC_PAGES = 80;
 const EMPTY_PAGE_HTML = '<p><br></p>';
+const MIN_FONT_SIZE_PX = 8;
+const MAX_FONT_SIZE_PX = 72;
 const CANVAS_WIDTH = 1000;
 const CANVAS_HEIGHT = 560;
 const CANVAS_MIN_ZOOM = 0.4;
 const CANVAS_MAX_ZOOM = 6;
 const CANVAS_MAX_BYTES = 30 * 1024 * 1024;
 const CANVAS_WHEEL_ZOOM_SENSITIVITY = 0.0022;
+
+const FONT_OPTIONS = [
+  { label: 'Arial', css: 'Arial, sans-serif', command: 'Arial' },
+  { label: 'Calibri', css: 'Calibri, Arial, sans-serif', command: 'Calibri' },
+  {
+    label: 'Times New Roman',
+    css: '"Times New Roman", Times, serif',
+    command: 'Times New Roman',
+  },
+  { label: 'Georgia', css: 'Georgia, serif', command: 'Georgia' },
+  { label: 'Verdana', css: 'Verdana, Geneva, sans-serif', command: 'Verdana' },
+  {
+    label: 'Trebuchet MS',
+    css: '"Trebuchet MS", Helvetica, sans-serif',
+    command: 'Trebuchet MS',
+  },
+  { label: 'Courier New', css: '"Courier New", Courier, monospace', command: 'Courier New' },
+] as const;
+
+const FONT_SIZE_OPTIONS = [9, 10, 11, 12, 14, 15, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72] as const;
 
 const PAGE_SIZES: Record<PageSize, { label: string; widthPx: number; heightPx: number }> = {
   a4: { label: 'A4', widthPx: 794, heightPx: 1123 },
@@ -108,10 +130,78 @@ function plainTextToPageHtml(value: string): string {
   return html || EMPTY_PAGE_HTML;
 }
 
+function normalizeFontFamilyKey(value: string): string {
+  return value
+    .replace(/["']/g, '')
+    .replace(/\s*,\s*/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function coerceFontFamily(value: string): string | null {
+  const normalized = normalizeFontFamilyKey(value);
+  if (!normalized) return null;
+
+  for (const option of FONT_OPTIONS) {
+    const optionKey = normalizeFontFamilyKey(option.css);
+    const labelKey = normalizeFontFamilyKey(option.label);
+    const commandKey = normalizeFontFamilyKey(option.command);
+    if (
+      normalized === optionKey ||
+      normalized === labelKey ||
+      normalized === commandKey ||
+      normalized.startsWith(`${commandKey},`)
+    ) {
+      return option.css;
+    }
+  }
+
+  return null;
+}
+
 function sanitizeStyleValue(styleValue: string): string | null {
-  const match = styleValue.match(/text-align\s*:\s*(left|center|right|justify)/i);
-  if (!match) return null;
-  return `text-align:${match[1].toLowerCase()};`;
+  const parts = styleValue
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  const next: string[] = [];
+  for (const part of parts) {
+    const [rawProp, ...rawValueParts] = part.split(':');
+    if (!rawProp || rawValueParts.length === 0) continue;
+    const property = rawProp.trim().toLowerCase();
+    const value = rawValueParts.join(':').trim();
+
+    if (property === 'text-align') {
+      const normalizedAlign = value.toLowerCase();
+      if (['left', 'center', 'right', 'justify'].includes(normalizedAlign)) {
+        next.push(`text-align:${normalizedAlign};`);
+      }
+      continue;
+    }
+
+    if (property === 'font-family') {
+      const family = coerceFontFamily(value);
+      if (family) {
+        next.push(`font-family:${family};`);
+      }
+      continue;
+    }
+
+    if (property === 'font-size') {
+      const match = value.match(/^(\d+(?:\.\d+)?)px$/i);
+      if (!match) continue;
+      const px = Number.parseFloat(match[1]);
+      if (!Number.isFinite(px)) continue;
+      const clamped = Math.round(clamp(px, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX));
+      next.push(`font-size:${clamped}px;`);
+      continue;
+    }
+  }
+
+  if (next.length === 0) return null;
+  return next.join('');
 }
 
 function sanitizePageHtml(rawHtml: string): string {
@@ -433,6 +523,8 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
   const [documentName, setDocumentName] = useState('Untitled Document');
   const [pages, setPages] = useState<RichDocPage[]>([makeEmptyPage()]);
   const [pageSize, setPageSize] = useState<PageSize>('a4');
+  const [selectedFontFamily, setSelectedFontFamily] = useState<string>(FONT_OPTIONS[0].css);
+  const [selectedFontSizePx, setSelectedFontSizePx] = useState<number>(15);
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [canvasStrokes, setCanvasStrokes] = useState<WsCreateCanvasStroke[]>([]);
   const [canvasViewport, setCanvasViewport] = useState<CanvasViewport>({
@@ -728,20 +820,110 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     return next;
   }, [pages]);
 
+  const getActiveEditableTarget = useCallback((): { pageId: string; node: HTMLDivElement } | null => {
+    const fallbackPageId = pagesRef.current[0]?.id ?? pages[0]?.id ?? null;
+    const targetPageId = activePageId ?? fallbackPageId;
+    if (!targetPageId) return null;
+    const node = pageRefs.current[targetPageId];
+    if (!node) return null;
+    return { pageId: targetPageId, node };
+  }, [activePageId, pages]);
+
   const applyCommandToSelection = useCallback(
     (command: 'bold' | 'italic' | 'justifyLeft' | 'justifyCenter' | 'justifyRight' | 'insertUnorderedList' | 'insertOrderedList') => {
       if (!canEdit) return;
-      const targetPageId = activePageId ?? pages[0]?.id;
-      if (!targetPageId) return;
-      const node = pageRefs.current[targetPageId];
-      if (!node) return;
+      const target = getActiveEditableTarget();
+      if (!target) return;
+      const { pageId, node } = target;
 
       node.focus();
       document.execCommand(command, false);
-      syncPageFromDom(targetPageId);
+      syncPageFromDom(pageId);
     },
-    [canEdit, activePageId, pages, syncPageFromDom],
+    [canEdit, getActiveEditableTarget, syncPageFromDom],
   );
+
+  const applyInlineStyleToSelection = useCallback(
+    (stylePatch: { fontFamily?: string; fontSizePx?: number }) => {
+      if (!canEdit) return;
+      const target = getActiveEditableTarget();
+      if (!target) return;
+      const { pageId, node } = target;
+      node.focus();
+
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      if (!node.contains(range.startContainer) || !node.contains(range.endContainer)) return;
+
+      if (range.collapsed) {
+        let targetEl: HTMLElement | null = null;
+        let cursorNode: Node | null = selection.anchorNode;
+        while (cursorNode && cursorNode !== node) {
+          if (cursorNode.nodeType === Node.ELEMENT_NODE) {
+            targetEl = cursorNode as HTMLElement;
+            break;
+          }
+          cursorNode = cursorNode.parentNode;
+        }
+
+        if (!targetEl || targetEl === node) {
+          targetEl = document.createElement('span');
+          range.insertNode(targetEl);
+          const nextRange = document.createRange();
+          nextRange.selectNodeContents(targetEl);
+          nextRange.collapse(false);
+          selection.removeAllRanges();
+          selection.addRange(nextRange);
+        }
+
+        if (stylePatch.fontFamily) {
+          targetEl.style.fontFamily = stylePatch.fontFamily;
+        }
+        if (stylePatch.fontSizePx) {
+          targetEl.style.fontSize = `${Math.round(
+            clamp(stylePatch.fontSizePx, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX),
+          )}px`;
+        }
+      } else {
+        const span = document.createElement('span');
+        if (stylePatch.fontFamily) {
+          span.style.fontFamily = stylePatch.fontFamily;
+        }
+        if (stylePatch.fontSizePx) {
+          span.style.fontSize = `${Math.round(
+            clamp(stylePatch.fontSizePx, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX),
+          )}px`;
+        }
+        const extracted = range.extractContents();
+        span.appendChild(extracted);
+        range.insertNode(span);
+        const nextRange = document.createRange();
+        nextRange.selectNodeContents(span);
+        nextRange.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(nextRange);
+      }
+
+      syncPageFromDom(pageId);
+    },
+    [canEdit, getActiveEditableTarget, syncPageFromDom],
+  );
+
+  const handleFontFamilyChange = (nextCss: string) => {
+    const safeCss = coerceFontFamily(nextCss);
+    if (!safeCss) return;
+    setSelectedFontFamily(safeCss);
+    applyInlineStyleToSelection({ fontFamily: safeCss });
+  };
+
+  const handleFontSizeChange = (nextSizeRaw: string) => {
+    const parsed = Number(nextSizeRaw);
+    if (!Number.isFinite(parsed)) return;
+    const sizePx = Math.round(clamp(parsed, MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX));
+    setSelectedFontSizePx(sizePx);
+    applyInlineStyleToSelection({ fontSizePx: sizePx });
+  };
 
   const onNameChange = (next: string) => {
     setDocumentName(next.slice(0, MAX_DOC_NAME));
@@ -1087,6 +1269,34 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs uppercase tracking-wide muted">Format</span>
+            <select
+              className="select h-8 min-w-[9.5rem] px-2 text-xs"
+              value={selectedFontFamily}
+              onChange={(event) => handleFontFamilyChange(event.target.value)}
+              disabled={!canEdit}
+              aria-label="Font family"
+              title="Font family"
+            >
+              {FONT_OPTIONS.map((option) => (
+                <option key={option.css} value={option.css}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select h-8 w-[4.5rem] px-2 text-xs"
+              value={selectedFontSizePx}
+              onChange={(event) => handleFontSizeChange(event.target.value)}
+              disabled={!canEdit}
+              aria-label="Font size"
+              title="Font size"
+            >
+              {FONT_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               className={commandButtonClass(false)}
