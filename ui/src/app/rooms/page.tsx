@@ -436,7 +436,7 @@ export default function WatchPartyPage() {
       </div>
 
       <div className="mt-0 space-y-3">
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
           <section className="space-y-4">
             <div style={fixedColumnHeightStyle}>
               <RoomOptions
