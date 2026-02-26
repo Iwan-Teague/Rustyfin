@@ -27,6 +27,17 @@ Rustyfin is a Docker-first local media platform with:
 - Do not break: setup flow, libraries/scanning, playback, channels, rooms, calendar, admin, start/stop/clean scripts.
 - Favor additive, backward-compatible changes.
 
+4. UI Animation Consistency (mandatory)
+- Save/Create/primary actions:
+  - Use `.btn-primary` for primary action buttons.
+  - Keep click feedback centralized through `ui/src/app/components/PrimaryButtonEffects.tsx` and `.btn-click-burst` styles in `ui/src/app/globals.css`.
+  - Do not introduce page-specific one-off save/click animations when the shared primary button animation can be used.
+- Delete actions:
+  - Use the shared delete animation helper `playTelegramDeleteAnimation` from `ui/src/lib/deleteAnimation.ts`.
+  - Use `findDataDeleteTarget` (or a direct equivalent target lookup) so the element being removed visibly animates before deletion.
+  - Keep the shared simmer-then-pop motion in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` and its keyframes) as the canonical delete animation style.
+  - Apply this consistently to all delete surfaces (messages, channels, transcripts, queue items, calendar/admin records, etc.).
+
 ## Runtime and Scripts
 
 - Start stack: `./scripts/start.sh`
@@ -62,3 +73,4 @@ Run before finalizing substantial changes:
 - Keep code pragmatic and production-oriented.
 - Reuse existing repo patterns before adding new abstractions.
 - Keep changes scoped and readable; avoid unrelated refactors.
+- When architecture, runtime behavior, or developer conventions change, update `README.md` and this `AGENTS.md` in the same change.
