@@ -28,7 +28,7 @@ export function findDataDeleteTarget(
 
 export async function playTelegramDeleteAnimation(
   element: HTMLElement | null | undefined,
-  durationMs = 360,
+  durationMs = 1000,
 ): Promise<void> {
   if (!element) return;
   if (isReducedMotionPreferred()) return;
@@ -56,6 +56,6 @@ export async function playTelegramDeleteAnimation(
 
     element.addEventListener('animationend', onAnimationEnd);
     element.classList.add(DELETE_ANIM_CLASS);
-    window.setTimeout(done, durationMs + 120);
+    window.setTimeout(done, durationMs + 180);
   });
 }

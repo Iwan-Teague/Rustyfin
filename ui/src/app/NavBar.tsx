@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
 import { usePathname } from 'next/navigation';
+import { createPortal } from 'react-dom';
 
 export default function NavBar() {
   const { me, loading, logout } = useAuth();
@@ -12,6 +13,12 @@ export default function NavBar() {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
+  const [portalMounted, setPortalMounted] = useState(false);
+
+  useEffect(() => {
+    setPortalMounted(true);
+    return () => setPortalMounted(false);
+  }, []);
 
   useEffect(() => {
     if (!voiceSession && confirmLeaveVoiceOpen) {
@@ -292,35 +299,39 @@ export default function NavBar() {
         </div>
       )}
 
-      {voiceSession && confirmLeaveVoiceOpen && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 backdrop-blur-[2px] p-4">
-          <div className="panel w-full max-w-sm rounded-2xl border border-[var(--border)] p-6 space-y-4">
-            <h2 className="text-lg font-semibold">Leave Voice Channel?</h2>
-            <p className="text-sm muted">
-              Leave <span className="font-medium text-[var(--text-main)]">{voiceSession.channelName}</span> and disconnect from the audio call?
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmLeaveVoiceOpen(false)}
-                className="btn-ghost px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmLeaveVoiceOpen(false);
-                  leaveVoice();
-                }}
-                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
-              >
-                Leave
-              </button>
+      {voiceSession &&
+        confirmLeaveVoiceOpen &&
+        portalMounted &&
+        createPortal(
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]">
+            <div className="panel w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] p-6">
+              <h2 className="text-lg font-semibold">Leave Voice Channel?</h2>
+              <p className="text-sm muted">
+                Leave <span className="font-medium text-[var(--text-main)]">{voiceSession.channelName}</span> and disconnect from the audio call?
+              </p>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmLeaveVoiceOpen(false)}
+                  className="btn-ghost px-4 py-2 text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmLeaveVoiceOpen(false);
+                    leaveVoice();
+                  }}
+                  className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
+                >
+                  Leave
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </nav>
   );
 }

@@ -21,6 +21,8 @@ import type {
   VoiceTranscriptionStatus,
 } from '@/lib/channelsApi';
 
+const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
+
 interface Props {
   channel: ChannelInfo;
   voicePresence: Record<string, UserInfo[]>;
@@ -392,6 +394,9 @@ export default function VoiceChannelView({
     setTranscriptionBusy(true);
     setTranscriptionError(null);
     try {
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
+      });
       const target = findDataDeleteTarget('data-transcript-session-id', sessionId);
       await playTelegramDeleteAnimation(target);
       await deleteVoiceTranscriptionSession(channel.id, sessionId);

@@ -31,6 +31,8 @@ Options:
   --foreground       Run compose in foreground (default is detached).
   --no-health-check  Skip backend health wait loop.
   --youtube-cookie   Set/persist RUSTFIN_YOUTUBE_COOKIE for online listen-together.
+  RUSTFIN_RUST_BUILD_PROFILE
+                     Rust Docker build profile (default: dev). Set to release for optimized builds.
   -f, --file         Compose file path (default: docker-compose.yml).
   -h, --help         Show this help.
 EOF
@@ -45,6 +47,7 @@ DETACH=true
 HEALTH_CHECK=true
 COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 CLI_YOUTUBE_COOKIE=""
+RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -274,6 +277,13 @@ if [[ -n "$user_youtube_cookie" ]]; then
 elif [[ -n "${RUSTFIN_YOUTUBE_COOKIE:-}" && "$youtube_cookie_source" == "unset" ]]; then
   youtube_cookie_source="loaded env"
 fi
+
+case "$RUSTFIN_RUST_BUILD_PROFILE" in
+  ''|*[!A-Za-z0-9_-]*)
+    die "Invalid RUSTFIN_RUST_BUILD_PROFILE='$RUSTFIN_RUST_BUILD_PROFILE' (allowed: letters, numbers, _, -)"
+    ;;
+esac
+export RUSTFIN_RUST_BUILD_PROFILE
 
 # Migrate legacy repo-local default media root from older starts so Browse can
 # map typical user-selected folders without extra configuration.
@@ -663,6 +673,7 @@ info "Browser backend origin: $RUSTYFIN_BROWSER_BACKEND_ORIGIN"
 info "WebSocket allowed origins: $RUSTFIN_WS_ALLOWED_ORIGINS"
 info "UI transport: HTTPS (secure context for microphone/WebRTC on LAN)"
 info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
+info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
 if [[ "$BUILD" == "true" ]]; then
   if [[ "$NO_CACHE_BUILD" == "true" ]]; then
     info "Build mode: full rebuild (no Docker cache)"
@@ -693,7 +704,7 @@ if [[ "$BUILD" == "true" ]]; then
       fi
     fi
 
-    current_rustfin_fp="$(compute_scope_fingerprint \
+    current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
@@ -703,14 +714,14 @@ if [[ "$BUILD" == "true" ]]; then
       "$REPO_ROOT/crates/scanner" \
       "$REPO_ROOT/crates/metadata" \
       "$REPO_ROOT/crates/transcoder")"
-    current_calendar_fp="$(compute_scope_fingerprint \
+    current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/calendar/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
       "$REPO_ROOT/crates/calendar" \
       "$REPO_ROOT/crates/core" \
       "$REPO_ROOT/crates/db")"
-    current_tmdb_agent_fp="$(compute_scope_fingerprint \
+    current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
@@ -718,13 +729,13 @@ if [[ "$BUILD" == "true" ]]; then
       "$REPO_ROOT/crates/core" \
       "$REPO_ROOT/crates/db" \
       "$REPO_ROOT/crates/metadata")"
-    current_transcription_agent_fp="$(compute_scope_fingerprint \
+    current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
       "$REPO_ROOT/crates/transcription-agent" \
       "$REPO_ROOT/crates/core")"
-    current_youtube_agent_fp="$(compute_scope_fingerprint \
+    current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
@@ -758,7 +769,7 @@ if [[ "$BUILD" == "true" ]]; then
       prev_ui_fp="${UI_FP:-}"
     fi
 
-    current_rustfin_fp="$(compute_scope_fingerprint \
+    current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
@@ -768,14 +779,14 @@ if [[ "$BUILD" == "true" ]]; then
       "$REPO_ROOT/crates/scanner" \
       "$REPO_ROOT/crates/metadata" \
       "$REPO_ROOT/crates/transcoder")"
-    current_calendar_fp="$(compute_scope_fingerprint \
+    current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/calendar/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
       "$REPO_ROOT/crates/calendar" \
       "$REPO_ROOT/crates/core" \
       "$REPO_ROOT/crates/db")"
-    current_tmdb_agent_fp="$(compute_scope_fingerprint \
+    current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
@@ -783,13 +794,13 @@ if [[ "$BUILD" == "true" ]]; then
       "$REPO_ROOT/crates/core" \
       "$REPO_ROOT/crates/db" \
       "$REPO_ROOT/crates/metadata")"
-    current_transcription_agent_fp="$(compute_scope_fingerprint \
+    current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \
       "$REPO_ROOT/crates/transcription-agent" \
       "$REPO_ROOT/crates/core")"
-    current_youtube_agent_fp="$(compute_scope_fingerprint \
+    current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:$(compute_scope_fingerprint \
       "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
       "$REPO_ROOT/Cargo.toml" \
       "$REPO_ROOT/Cargo.lock" \

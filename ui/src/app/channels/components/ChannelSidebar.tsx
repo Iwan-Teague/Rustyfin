@@ -6,7 +6,7 @@ import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 
-const DELETE_AFTER_CONFIRM_DELAY_MS = 1000;
+const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
 interface Props {
   channels: ChannelInfo[];

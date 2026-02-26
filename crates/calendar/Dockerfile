@@ -1,12 +1,26 @@
 FROM rustlang/rust:nightly-bookworm AS builder
 WORKDIR /app
+ARG RUST_BUILD_PROFILE=dev
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
 RUN set -eu; \
+    out_dir="/tmp/rustfin-out"; \
+    mkdir -p "$out_dir"; \
+    profile="${RUST_BUILD_PROFILE:-dev}"; \
     for attempt in 1 2 3; do \
-      if cargo build --release --bin rustfin-calendar; then \
+      if [ "$profile" = "release" ]; then \
+        cmd="cargo build --release --bin rustfin-calendar"; \
+        built="/app/target/release/rustfin-calendar"; \
+      elif [ "$profile" = "dev" ] || [ "$profile" = "debug" ]; then \
+        cmd="cargo build --bin rustfin-calendar"; \
+        built="/app/target/debug/rustfin-calendar"; \
+      else \
+        cmd="cargo build --profile $profile --bin rustfin-calendar"; \
+        built="/app/target/$profile/rustfin-calendar"; \
+      fi; \
+      if sh -c "$cmd" && [ -f "$built" ] && cp "$built" "$out_dir/rustfin-calendar"; then \
         exit 0; \
       fi; \
       echo "cargo build failed (attempt ${attempt}/3); retrying..."; \
@@ -22,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN useradd -m -u 1000 rustfin
 RUN mkdir -p /config && chown -R rustfin:rustfin /config
 
-COPY --from=builder /app/target/release/rustfin-calendar /usr/local/bin/rustfin-calendar
+COPY --from=builder /tmp/rustfin-out/rustfin-calendar /usr/local/bin/rustfin-calendar
 
 USER rustfin
 EXPOSE 8099

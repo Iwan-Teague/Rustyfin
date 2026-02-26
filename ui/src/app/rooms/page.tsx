@@ -306,9 +306,9 @@ export default function WatchPartyPage() {
       : roomMode === 'create'
         ? true
         : true;
-  const fixedColumnHeightStyle = fixedColumnHeightPx
-    ? { height: `${fixedColumnHeightPx}px` }
-    : { minHeight: '24rem' };
+  const fixedColumnHeightStyle = {
+    height: fixedColumnHeightPx ? `${fixedColumnHeightPx}px` : '24rem',
+  };
 
   return (
     <div className="space-y-6 animate-rise">
@@ -438,39 +438,37 @@ export default function WatchPartyPage() {
       <div className="mt-0 space-y-3">
         <div className="grid gap-5 xl:grid-cols-2">
           <section className="space-y-4">
-            <div className="overflow-hidden" style={fixedColumnHeightStyle}>
-              <div className="h-full overflow-y-auto pr-1">
-                <RoomOptions
-                  roomMode={effectivePolicyRoomMode}
-                  password={password}
-                  allowPlayPause={policy.allow_non_host_play_pause}
-                  allowSeek={policy.allow_non_host_seek}
-                  inviteOnly={policy.invite_only}
-                  defaultJoinRole={policy.default_join_role}
-                  noShadow
-                  onPasswordChange={setPassword}
-                  onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
-                  onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
-                  onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
-                  onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
-                />
-              </div>
+            <div style={fixedColumnHeightStyle}>
+              <RoomOptions
+                roomMode={effectivePolicyRoomMode}
+                password={password}
+                allowPlayPause={policy.allow_non_host_play_pause}
+                allowSeek={policy.allow_non_host_seek}
+                inviteOnly={policy.invite_only}
+                defaultJoinRole={policy.default_join_role}
+                noShadow
+                fillHeight
+                onPasswordChange={setPassword}
+                onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
+                onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
+                onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
+                onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
+              />
             </div>
           </section>
 
           <section className="space-y-4">
-            <div className="overflow-hidden" style={fixedColumnHeightStyle}>
-              <div className="h-full overflow-y-auto pr-1">
-                <UserInvitePicker
-                  users={users}
-                  currentUserId={me.id}
-                  roomMode={effectivePolicyRoomMode}
-                  selected={selectedInvites}
-                  noShadow
-                  onToggle={toggleInvite}
-                  onRoleChange={setInviteRole}
-                />
-              </div>
+            <div style={fixedColumnHeightStyle}>
+              <UserInvitePicker
+                users={users}
+                currentUserId={me.id}
+                roomMode={effectivePolicyRoomMode}
+                selected={selectedInvites}
+                noShadow
+                fillHeight
+                onToggle={toggleInvite}
+                onRoleChange={setInviteRole}
+              />
             </div>
           </section>
         </div>

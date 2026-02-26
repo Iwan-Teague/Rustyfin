@@ -549,232 +549,233 @@ export default function AudioPlayer({
           );
         }}
       />
-      {/* Now Playing */}
-      <section className="panel p-5 sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
-          {/* Album Art */}
-          <div className="mx-auto flex-shrink-0 sm:mx-0">
-            {audioState.album_art_url ? (
-              <img
-                src={audioState.album_art_url}
-                alt={audioState.album || 'Album art'}
-                className="h-40 w-40 rounded-xl object-cover shadow-md sm:h-48 sm:w-48"
-              />
-            ) : (
-              <div className="flex h-40 w-40 items-center justify-center rounded-xl bg-white/5 sm:h-48 sm:w-48">
-                <span className="text-lg opacity-50">No artwork</span>
+      <section className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
+        <div className="space-y-4 lg:col-span-2">
+          {/* Now Playing */}
+          <section className="panel p-5 sm:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
+              {/* Album Art */}
+              <div className="mx-auto flex-shrink-0 sm:mx-0">
+                {audioState.album_art_url ? (
+                  <img
+                    src={audioState.album_art_url}
+                    alt={audioState.album || 'Album art'}
+                    className="h-40 w-40 rounded-xl object-cover shadow-md sm:h-48 sm:w-48"
+                  />
+                ) : (
+                  <div className="flex h-40 w-40 items-center justify-center rounded-xl bg-white/5 sm:h-48 sm:w-48">
+                    <span className="text-lg opacity-50">No artwork</span>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Track info + controls */}
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            <div>
-              <p className="truncate text-xl font-semibold">{audioState.title || 'Unknown Track'}</p>
-              <p className="truncate text-sm muted">
-                {audioState.artist || 'Unknown Artist'}
-                {audioState.album ? ` • ${audioState.album}` : ''}
-              </p>
-            </div>
+              {/* Track info + controls */}
+              <div className="flex min-w-0 flex-1 flex-col gap-3">
+                <div>
+                  <p className="truncate text-xl font-semibold">{audioState.title || 'Unknown Track'}</p>
+                  <p className="truncate text-sm muted">
+                    {audioState.artist || 'Unknown Artist'}
+                    {audioState.album ? ` • ${audioState.album}` : ''}
+                  </p>
+                </div>
 
-            {/* Timeline */}
-            <div className="space-y-1">
-              <input
-                type="range"
-                min={0}
-                max={duration > 0 ? duration : 0}
-                step={500}
-                value={duration > 0 ? effectivePosition : 0}
-                onMouseDown={handleSeekStart}
-                onTouchStart={handleSeekStart}
-                onChange={(e) => handleSeekChange(e.target.value)}
-                onMouseUp={(e) => handleSeekCommit(e.currentTarget.value)}
-                onTouchEnd={(e) => handleSeekCommit(e.currentTarget.value)}
-                onKeyUp={(e) => handleSeekCommit((e.currentTarget as HTMLInputElement).value)}
-                onBlur={(e) => {
-                  if (!isScrubbing) return;
-                  handleSeekCommit(e.currentTarget.value);
-                }}
-                disabled={!canSeek || duration <= 0}
-                className="w-full accent-[var(--orange-soft)] disabled:opacity-40"
-                aria-label="Seek timeline"
-              />
-              <div className="flex justify-between text-xs muted">
-                <span>{formatMs(effectivePosition)}</span>
-                <span>{duration > 0 ? formatMs(duration) : '--:--'}</span>
-              </div>
-              {!canSeek && (
-                <div className="text-xs muted">Seeking is host-only in this room.</div>
-              )}
-            </div>
-
-            {/* Playback controls */}
-            <div className="flex flex-col items-center gap-2">
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleSkipPrev}
-                  disabled={!canControl}
-                  className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                  title="Previous"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4"
-                    fill="currentColor"
-                    aria-hidden="true"
-                  >
-                    <path d="M11.8 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
-                    <path d="M18.2 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePlayPause}
-                  disabled={!canControl}
-                  className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                  title={audioState.playing ? 'Pause' : 'Play'}
-                >
-                  {audioState.playing ? (
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="h-4 w-4"
-                      fill="currentColor"
-                      aria-hidden="true"
-                    >
-                      <rect x="6.5" y="5.5" width="4" height="13" rx="1" />
-                      <rect x="13.5" y="5.5" width="4" height="13" rx="1" />
-                    </svg>
-                  ) : (
-                    <svg
-                      viewBox="0 0 24 24"
-                      className="h-4 w-4"
-                      fill="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path d="M8 5.8c0-.9 1-1.5 1.8-1l8.6 5.3c.8.5.8 1.6 0 2.1l-8.6 5.3c-.8.5-1.8-.1-1.8-1V5.8z" />
-                    </svg>
+                {/* Timeline */}
+                <div className="space-y-1">
+                  <input
+                    type="range"
+                    min={0}
+                    max={duration > 0 ? duration : 0}
+                    step={500}
+                    value={duration > 0 ? effectivePosition : 0}
+                    onMouseDown={handleSeekStart}
+                    onTouchStart={handleSeekStart}
+                    onChange={(e) => handleSeekChange(e.target.value)}
+                    onMouseUp={(e) => handleSeekCommit(e.currentTarget.value)}
+                    onTouchEnd={(e) => handleSeekCommit(e.currentTarget.value)}
+                    onKeyUp={(e) => handleSeekCommit((e.currentTarget as HTMLInputElement).value)}
+                    onBlur={(e) => {
+                      if (!isScrubbing) return;
+                      handleSeekCommit(e.currentTarget.value);
+                    }}
+                    disabled={!canSeek || duration <= 0}
+                    className="w-full accent-[var(--orange-soft)] disabled:opacity-40"
+                    aria-label="Seek timeline"
+                  />
+                  <div className="flex justify-between text-xs muted">
+                    <span>{formatMs(effectivePosition)}</span>
+                    <span>{duration > 0 ? formatMs(duration) : '--:--'}</span>
+                  </div>
+                  {!canSeek && (
+                    <div className="text-xs muted">Seeking is host-only in this room.</div>
                   )}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSkipNext}
-                  disabled={!canControl}
-                  className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
-                  title="Next"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4"
-                    fill="currentColor"
-                    aria-hidden="true"
-                  >
-                    <path d="M12.2 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
-                    <path d="M5.8 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
-                  </svg>
-                </button>
-              </div>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleToggleShuffle}
-                  disabled={!canControl}
-                  className={`inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
-                  title={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
-                  aria-label={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-[18px] w-[18px]"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    shapeRendering="geometricPrecision"
-                    aria-hidden="true"
-                  >
-                    <path d="M4 7h2.5c1.7 0 2.6.6 3.8 2.2l4 5.6c1.2 1.6 2.1 2.2 3.8 2.2H20" />
-                    <path d="M4 17h2.5c1.7 0 2.6-.6 3.8-2.2l1-1.4" />
-                    <path d="M17 4l3 3-3 3" />
-                    <path d="M17 14l3 3-3 3" />
-                    {!shuffleEnabled && (
-                      <path d="M4.5 4.5l15 15" />
-                    )}
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCycleRepeat}
-                  disabled={!canControl}
-                  className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
-                  title={`Repeat mode: ${repeatLabel}. Click to cycle (Off → Song → Queue)`}
-                  aria-label={`Repeat mode: ${repeatLabel}`}
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="h-[18px] w-[18px]"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    shapeRendering="geometricPrecision"
-                    aria-hidden="true"
-                  >
-                    <path d="M7 7h9a3 3 0 0 1 3 3v1" />
-                    <path d="M16 5l4 3-4 3" />
-                    <path d="M17 17H8a3 3 0 0 1-3-3v-1" />
-                    <path d="M8 15l-4 3 4 3" />
-                    {repeatMode === 'none' && (
-                      <path d="M4.5 4.5l15 15" />
-                    )}
-                  </svg>
-                  {repeatMode === 'track' && (
-                    <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75 px-1 text-[10px] font-semibold leading-none">
-                      1
-                    </span>
-                  )}
-                  {repeatMode === 'queue' && (
-                    <span className="absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75">
-                      <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" aria-hidden="true">
-                        <path d="M2 3h8M2 6h8M2 9h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </div>
+
+                {/* Playback controls */}
+                <div className="flex flex-col items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleSkipPrev}
+                      disabled={!canControl}
+                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      title="Previous"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M11.8 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
+                        <path d="M18.2 6.2c.7-.5 1.7 0 1.7.9V17c0 .9-1 1.4-1.7.9l-6-4.9a1.1 1.1 0 0 1 0-1.7l6-5.1Z" />
                       </svg>
-                    </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePlayPause}
+                      disabled={!canControl}
+                      className="btn-primary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      title={audioState.playing ? 'Pause' : 'Play'}
+                    >
+                      {audioState.playing ? (
+                        <svg
+                          viewBox="0 0 24 24"
+                          className="h-4 w-4"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <rect x="6.5" y="5.5" width="4" height="13" rx="1" />
+                          <rect x="13.5" y="5.5" width="4" height="13" rx="1" />
+                        </svg>
+                      ) : (
+                        <svg
+                          viewBox="0 0 24 24"
+                          className="h-4 w-4"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        >
+                          <path d="M8 5.8c0-.9 1-1.5 1.8-1l8.6 5.3c.8.5.8 1.6 0 2.1l-8.6 5.3c-.8.5-1.8-.1-1.8-1V5.8z" />
+                        </svg>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSkipNext}
+                      disabled={!canControl}
+                      className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40"
+                      title="Next"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M12.2 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
+                        <path d="M5.8 6.2c-.7-.5-1.7 0-1.7.9V17c0 .9 1 1.4 1.7.9l6-4.9a1.1 1.1 0 0 0 0-1.7l-6-5.1Z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleToggleShuffle}
+                      disabled={!canControl}
+                      className={`inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${shuffleEnabled ? 'btn-primary' : 'btn-secondary'}`}
+                      title={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
+                      aria-label={`Shuffle ${shuffleEnabled ? 'on' : 'off'}`}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        shapeRendering="geometricPrecision"
+                        aria-hidden="true"
+                      >
+                        <path d="M4 7h2.5c1.7 0 2.6.6 3.8 2.2l4 5.6c1.2 1.6 2.1 2.2 3.8 2.2H20" />
+                        <path d="M4 17h2.5c1.7 0 2.6-.6 3.8-2.2l1-1.4" />
+                        <path d="M17 4l3 3-3 3" />
+                        <path d="M17 14l3 3-3 3" />
+                        {!shuffleEnabled && (
+                          <path d="M4.5 4.5l15 15" />
+                        )}
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCycleRepeat}
+                      disabled={!canControl}
+                      className={`relative inline-flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:opacity-40 ${repeatMode === 'none' ? 'btn-secondary' : 'btn-primary'}`}
+                      title={`Repeat mode: ${repeatLabel}. Click to cycle (Off → Song → Queue)`}
+                      aria-label={`Repeat mode: ${repeatLabel}`}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className="h-[18px] w-[18px]"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        shapeRendering="geometricPrecision"
+                        aria-hidden="true"
+                      >
+                        <path d="M7 7h9a3 3 0 0 1 3 3v1" />
+                        <path d="M16 5l4 3-4 3" />
+                        <path d="M17 17H8a3 3 0 0 1-3-3v-1" />
+                        <path d="M8 15l-4 3 4 3" />
+                        {repeatMode === 'none' && (
+                          <path d="M4.5 4.5l15 15" />
+                        )}
+                      </svg>
+                      {repeatMode === 'track' && (
+                        <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75 px-1 text-[10px] font-semibold leading-none">
+                          1
+                        </span>
+                      )}
+                      {repeatMode === 'queue' && (
+                        <span className="absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75">
+                          <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" aria-hidden="true">
+                            <path d="M2 3h8M2 6h8M2 9h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  {!canControl && (
+                    <span className="text-center text-xs muted">Controls are host-only in this room.</span>
                   )}
-                </button>
+                </div>
+
+                {autoplayBlocked && (
+                  <div className="notice-error rounded-xl px-3 py-2 text-xs">
+                    Browser autoplay blocked audio output. Click Enable Audio to continue listening.
+                    <button
+                      type="button"
+                      className="btn-secondary ml-3 px-3 py-1 text-xs"
+                      onClick={handleEnableAudio}
+                    >
+                      Enable Audio
+                    </button>
+                  </div>
+                )}
+                {streamError && (
+                  <div className="notice-error rounded-xl px-3 py-2 text-xs">{streamError}</div>
+                )}
+                {actionInfo && (
+                  <div className="notice-ok rounded-xl px-3 py-2 text-xs">{actionInfo}</div>
+                )}
               </div>
-              {!canControl && (
-                <span className="text-center text-xs muted">Controls are host-only in this room.</span>
-              )}
             </div>
+          </section>
 
-            {autoplayBlocked && (
-              <div className="notice-error rounded-xl px-3 py-2 text-xs">
-                Browser autoplay blocked audio output. Click Enable Audio to continue listening.
-                <button
-                  type="button"
-                  className="btn-secondary ml-3 px-3 py-1 text-xs"
-                  onClick={handleEnableAudio}
-                >
-                  Enable Audio
-                </button>
-              </div>
-            )}
-            {streamError && (
-              <div className="notice-error rounded-xl px-3 py-2 text-xs">{streamError}</div>
-            )}
-            {actionInfo && (
-              <div className="notice-ok rounded-xl px-3 py-2 text-xs">{actionInfo}</div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Queue & Search */}
-      <section className="grid gap-4 lg:grid-cols-3 lg:items-start">
-        <section className="panel space-y-3 p-5 sm:p-6">
-          <p className="text-xs uppercase tracking-wide muted">Online Search</p>
+          <section className="grid gap-4 md:grid-cols-2">
+            <section className="panel flex h-[24rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
+              <p className="text-xs uppercase tracking-wide muted">Online Search</p>
 
           <div className="panel-soft space-y-2 rounded-xl px-3 py-3">
             <div className="flex items-center justify-between gap-3">
@@ -831,181 +832,187 @@ export default function AudioPlayer({
             </button>
           </div>
 
-          {searchingOnline && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
-          )}
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {searchingOnline && (
+                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
+                )}
 
-          {!searchingOnline && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
-          )}
+                {!searchingOnline && onlineSearchResults !== null && onlineSearchResults.length === 0 && (
+                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">No online tracks found.</div>
+                )}
 
-          {!searchingOnline &&
-            showOnlineSearchResults &&
-            onlineSearchResults !== null &&
-            onlineSearchResults.length > 0 && (
-              <ul className="max-h-56 space-y-2 overflow-y-auto">
-                {onlineSearchResults.map((result) => {
-                  const queueKey = `${result.video_id}:queue`;
-                  const playKey = `${result.video_id}:play`;
-                  const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
-                  return (
-                    <li key={result.video_id} className="tile rounded-xl px-3 py-2">
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={result.thumbnail_url}
-                          alt={result.title}
-                          className="h-12 w-20 rounded-md object-cover"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">{result.title}</p>
-                          <p className="truncate text-xs muted">{result.channel}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
-                            disabled={busy}
-                            onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
-                          >
-                            Queue
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
-                            disabled={busy || !canControl}
-                            onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
-                          >
-                            Play now
-                          </button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-        </section>
+                {!searchingOnline &&
+                  showOnlineSearchResults &&
+                  onlineSearchResults !== null &&
+                  onlineSearchResults.length > 0 && (
+                    <ul className="space-y-2">
+                      {onlineSearchResults.map((result) => {
+                        const queueKey = `${result.video_id}:queue`;
+                        const playKey = `${result.video_id}:play`;
+                        const busy = queueingVideoId === queueKey || queueingVideoId === playKey;
+                        return (
+                          <li key={result.video_id} className="tile rounded-xl px-3 py-2">
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={result.thumbnail_url}
+                                alt={result.title}
+                                className="h-12 w-20 rounded-md object-cover"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium">{result.title}</p>
+                                <p className="truncate text-xs muted">{result.channel}</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                                  disabled={busy}
+                                  onClick={() => void handleQueueOnlineTrack(result.video_id, false)}
+                                >
+                                  Queue
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                                  disabled={busy || !canControl}
+                                  onClick={() => void handleQueueOnlineTrack(result.video_id, true)}
+                                >
+                                  Play now
+                                </button>
+                              </div>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+              </div>
+            </section>
 
-        <section className="panel space-y-3 p-5 sm:p-6">
-          <p className="text-xs uppercase tracking-wide muted">Offline Search</p>
-          {canConfigureLocalLibrary && (
-            <div className="space-y-2">
-              <label
-                htmlFor="offline-audio-library"
-                className="block text-xs uppercase tracking-wide muted"
-              >
-                Offline Library
-              </label>
-              <select
-                id="offline-audio-library"
-                className="select px-3 py-1.5 text-sm"
-                value={currentAudioLibraryId}
-                onChange={(event) => onConfigureLocalLibrary?.(event.target.value)}
-                disabled={configuringLocalLibrary}
-              >
-                <option value="">No local library (online only)</option>
-                {musicLibraries.map((library) => (
-                  <option key={library.id} value={library.id}>
-                    {library.name}
-                  </option>
-                ))}
-              </select>
-              {configuringLocalLibrary && (
-                <p className="text-xs muted">Applying offline library…</p>
+            <section className="panel flex h-[24rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
+              <p className="text-xs uppercase tracking-wide muted">Offline Search</p>
+              {canConfigureLocalLibrary && (
+                <div className="space-y-2">
+                  <label
+                    htmlFor="offline-audio-library"
+                    className="block text-xs uppercase tracking-wide muted"
+                  >
+                    Offline Library
+                  </label>
+                  <select
+                    id="offline-audio-library"
+                    className="select px-3 py-1.5 text-sm"
+                    value={currentAudioLibraryId}
+                    onChange={(event) => onConfigureLocalLibrary?.(event.target.value)}
+                    disabled={configuringLocalLibrary}
+                  >
+                    <option value="">No local library (online only)</option>
+                    {musicLibraries.map((library) => (
+                      <option key={library.id} value={library.id}>
+                        {library.name}
+                      </option>
+                    ))}
+                  </select>
+                  {configuringLocalLibrary && (
+                    <p className="text-xs muted">Applying offline library…</p>
+                  )}
+                </div>
               )}
-            </div>
-          )}
-          {!canConfigureLocalLibrary && hasOfflineLibrary && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
-              Offline library active in this room.
-            </div>
-          )}
-          {!canConfigureLocalLibrary && !hasOfflineLibrary && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
-              No offline library configured for this room.
-            </div>
-          )}
-          <div className="relative">
-            <input
-              value={localSearchQuery}
-              onChange={(e) => handleLocalSearch(e.target.value)}
-              className="input w-full px-3 py-1.5 pr-10 text-sm"
-              placeholder={
-                hasOfflineLibrary
-                  ? 'Search local tracks…'
-                  : 'Select an offline library to search local tracks…'
-              }
-              aria-label="Search local tracks"
-              disabled={!hasOfflineLibrary}
-            />
-            {localSearchQuery.trim().length > 0 && (
-              <ClearSearchButton
-                onClick={clearLocalSearch}
-                className="absolute right-2 top-1/2 -translate-y-1/2"
-              />
-            )}
-          </div>
+              {!canConfigureLocalLibrary && hasOfflineLibrary && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
+                  Offline library active in this room.
+                </div>
+              )}
+              {!canConfigureLocalLibrary && !hasOfflineLibrary && (
+                <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
+                  No offline library configured for this room.
+                </div>
+              )}
+              <div className="relative">
+                <input
+                  value={localSearchQuery}
+                  onChange={(e) => handleLocalSearch(e.target.value)}
+                  className="input w-full px-3 py-1.5 pr-10 text-sm"
+                  placeholder={
+                    hasOfflineLibrary
+                      ? 'Search local tracks…'
+                      : 'Select an offline library to search local tracks…'
+                  }
+                  aria-label="Search local tracks"
+                  disabled={!hasOfflineLibrary}
+                />
+                {localSearchQuery.trim().length > 0 && (
+                  <ClearSearchButton
+                    onClick={clearLocalSearch}
+                    className="absolute right-2 top-1/2 -translate-y-1/2"
+                  />
+                )}
+              </div>
 
-          {searchingLocal && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
-          )}
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                {searchingLocal && (
+                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">Searching…</div>
+                )}
 
-          {!searchingLocal && librarySearchResults !== null && librarySearchResults.length === 0 && (
-            <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
-              {hasOfflineLibrary
-                ? 'No local tracks found.'
-                : 'No local library configured for this room.'}
-            </div>
-          )}
+                {!searchingLocal && librarySearchResults !== null && librarySearchResults.length === 0 && (
+                  <div className="panel-soft rounded-xl px-3 py-2 text-sm muted">
+                    {hasOfflineLibrary
+                      ? 'No local tracks found.'
+                      : 'No local library configured for this room.'}
+                  </div>
+                )}
 
-          {!searchingLocal && librarySearchResults !== null && librarySearchResults.length > 0 && (
-            <ul className="max-h-56 space-y-2 overflow-y-auto">
-              {librarySearchResults.map((track) => {
-                const queueKey = `${track.id}:queue`;
-                const playKey = `${track.id}:play`;
-                const busy =
-                  queueingLocalTrackId === queueKey || queueingLocalTrackId === playKey;
-                return (
-                  <li key={track.id} className="tile rounded-xl px-3 py-2">
-                    <div className="flex items-center gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{track.title}</p>
-                        <p className="truncate text-xs muted">
-                          {track.artist}
-                          {track.album ? ` • ${track.album}` : ''}
-                          {track.duration_ms ? ` • ${formatMs(track.duration_ms)}` : ''}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
-                          disabled={busy}
-                          onClick={() => void handleQueueLocalTrack(track.id, false)}
-                        >
-                          Queue
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
-                          disabled={busy || !canControl}
-                          onClick={() => void handleQueueLocalTrack(track.id, true)}
-                        >
-                          Play now
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+                {!searchingLocal && librarySearchResults !== null && librarySearchResults.length > 0 && (
+                  <ul className="space-y-2">
+                    {librarySearchResults.map((track) => {
+                      const queueKey = `${track.id}:queue`;
+                      const playKey = `${track.id}:play`;
+                      const busy =
+                        queueingLocalTrackId === queueKey || queueingLocalTrackId === playKey;
+                      return (
+                        <li key={track.id} className="tile rounded-xl px-3 py-2">
+                          <div className="flex items-center gap-3">
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">{track.title}</p>
+                              <p className="truncate text-xs muted">
+                                {track.artist}
+                                {track.album ? ` • ${track.album}` : ''}
+                                {track.duration_ms ? ` • ${formatMs(track.duration_ms)}` : ''}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+                                disabled={busy}
+                                onClick={() => void handleQueueLocalTrack(track.id, false)}
+                              >
+                                Queue
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-primary px-3 py-1 text-xs disabled:opacity-50"
+                                disabled={busy || !canControl}
+                                onClick={() => void handleQueueLocalTrack(track.id, true)}
+                              >
+                                Play now
+                              </button>
+                            </div>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </section>
+        </div>
 
-        <section className="panel space-y-3 p-5 sm:p-6">
+        <section className="panel flex h-full min-h-0 flex-col gap-3 p-5 sm:p-6">
           <p className="text-xs uppercase tracking-wide muted">Room Queue</p>
           {audioState.queue.length > 0 ? (
-            <ul ref={queueRef} className="max-h-[34rem] space-y-1 overflow-y-auto">
+            <ul ref={queueRef} className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
               {audioState.queue.map((entry, idx) => {
                 const isActive = idx === audioState.queue_index;
                 return (

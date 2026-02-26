@@ -37,11 +37,48 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   return res;
 }
 
+async function parseResponseBody(res: Response): Promise<unknown> {
+  if (res.status === 204 || res.status === 205 || res.status === 304) {
+    return undefined;
+  }
+
+  const raw = await res.text();
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  const looksJson =
+    contentType.includes('application/json') ||
+    contentType.includes('+json') ||
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[');
+
+  if (!looksJson) {
+    return trimmed;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
 export async function apiJson<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await apiFetch(path, options);
+  const body = await parseResponseBody(res);
+
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body?.error?.message || `API error: ${res.status}`);
+    const message =
+      (body && typeof body === 'object'
+        ? (body as any)?.error?.message || (body as any)?.message
+        : null) ||
+      (typeof body === 'string' && body.length > 0 ? body : null) ||
+      `API error: ${res.status}`;
+    throw new Error(message);
   }
-  return res.json();
+
+  return body as T;
 }
