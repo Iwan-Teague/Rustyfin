@@ -21,6 +21,7 @@ import UserInvitePicker, { SelectedInvite } from './components/UserInvitePicker'
 import RoomOptions from './components/RoomOptions';
 import InvitesPanel from './components/InvitesPanel';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
+import { clientErrorMessage } from '@/lib/errors';
 
 type LibrarySummary = {
   id: string;
@@ -103,9 +104,9 @@ export default function WatchPartyPage() {
 
         setEligibleLibraryIds(initialEligible);
 
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to load watch-party data');
+          setError(clientErrorMessage(err, 'Failed to load watch-party data'));
         }
       } finally {
         if (!cancelled) {
@@ -132,9 +133,9 @@ export default function WatchPartyPage() {
 
         setEligibleLibraryIds(eligible);
 
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to update shared library intersection');
+          setError(clientErrorMessage(err, 'Failed to update shared library intersection'));
         }
       }
     })();
@@ -216,8 +217,8 @@ export default function WatchPartyPage() {
     try {
       await declineWatchPartyInvite(roomId);
       await refreshInvites();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to decline invite');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to decline invite'));
     } finally {
       setDecliningRoomId(null);
     }
@@ -229,11 +230,6 @@ export default function WatchPartyPage() {
     setMessage('');
 
     try {
-      if (roomMode === 'play') {
-        setError('Play Together rooms are coming soon.');
-        return;
-      }
-
       const invitesPayload = Object.entries(selectedInvites).map(([user_id, config]) => ({
         user_id,
         role: config.role,
@@ -265,6 +261,17 @@ export default function WatchPartyPage() {
         const created = await createWatchPartyRoom(payload);
         setMessage(`Room created: ${created.room_id}`);
         router.push(created.join_path);
+      } else if (roomMode === 'play') {
+        const payload = {
+          room_name: normalizedRoomName || undefined,
+          room_mode: 'play' as const,
+          invites: invitesPayload,
+          password: password.trim() ? password.trim() : undefined,
+          policy,
+        };
+        const created = await createWatchPartyRoom(payload);
+        setMessage(`Room created: ${created.room_id}`);
+        router.push(created.join_path);
       } else if (roomMode === 'watch') {
         const payload = {
           room_name: normalizedRoomName || undefined,
@@ -281,8 +288,8 @@ export default function WatchPartyPage() {
         setError('Unsupported room mode.');
         return;
       }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to create watch party room');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to create watch party room'));
     } finally {
       setCreating(false);
     }
@@ -300,12 +307,7 @@ export default function WatchPartyPage() {
     return null;
   }
 
-  const canCreate =
-    roomMode === 'play'
-      ? false
-      : roomMode === 'create'
-        ? true
-        : true;
+  const canCreate = true;
   const fixedColumnHeightStyle = {
     height: fixedColumnHeightPx ? `${fixedColumnHeightPx}px` : '24rem',
   };

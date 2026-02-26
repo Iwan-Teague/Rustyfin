@@ -205,7 +205,7 @@ To keep interaction behavior consistent across pages:
 - Delete actions (messages, channels, transcripts, queues, admin records, calendar events):
   - Use `playTelegramDeleteAnimation` from `ui/src/lib/deleteAnimation.ts`.
   - Resolve DOM targets with `findDataDeleteTarget` (or equivalent explicit delete target node lookup).
-  - Keep the shared simmer-then-pop animation defined in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` + keyframes) as the single delete animation style.
+  - Keep the shared delete animation defined in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` + `tg-delete-fade-out`) as the single delete animation style.
 
 E2E harness:
 

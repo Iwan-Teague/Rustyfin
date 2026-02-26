@@ -11,6 +11,7 @@ type Props = {
   createState: WsCreateStateMessage | null;
   canEdit: boolean;
   sendWs: (payload: Record<string, unknown>) => boolean;
+  activeToolOverride?: ActiveTool;
 };
 
 type Point = { x: number; y: number };
@@ -573,7 +574,12 @@ function estimateCanvasBytes(strokes: WsCreateCanvasStroke[]): number {
   }
 }
 
-export default function CreateTogetherEditor({ createState, canEdit, sendWs }: Props) {
+export default function CreateTogetherEditor({
+  createState,
+  canEdit,
+  sendWs,
+  activeToolOverride,
+}: Props) {
   const [activeTool, setActiveTool] = useState<ActiveTool>('text');
   const [canvasPointerMode, setCanvasPointerMode] = useState<'draw' | 'pan'>('draw');
   const [canvasDragging, setCanvasDragging] = useState(false);
@@ -671,15 +677,6 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
     [canEdit, sendWs],
   );
 
-  const setToolAndBroadcast = useCallback(
-    (next: ActiveTool) => {
-      setActiveTool(next);
-      if (!canEdit) return;
-      sendWs({ type: 'create_set_tool', tool: next });
-    },
-    [canEdit, sendWs],
-  );
-
   const scheduleDocumentSync = useCallback(
     (
       nextPages: RichDocPage[],
@@ -754,6 +751,11 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
 
     setCanvasStrokes(incomingStrokes);
   }, [createState]);
+
+  useEffect(() => {
+    if (!activeToolOverride) return;
+    setActiveTool(activeToolOverride);
+  }, [activeToolOverride]);
 
   useEffect(() => {
     const known = new Set(pages.map((page) => page.id));
@@ -1344,7 +1346,10 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
       const name = fileBaseName(file.name);
       setDocumentName(name);
       pushDocumentName(name);
-      setToolAndBroadcast('text');
+      setActiveTool('text');
+      if (canEdit) {
+        sendWs({ type: 'create_set_tool', tool: 'text' });
+      }
 
       const lower = file.name.toLowerCase();
       let importedText = '';
@@ -1386,29 +1391,12 @@ export default function CreateTogetherEditor({ createState, canEdit, sendWs }: P
         };
 
   return (
-    <section className="panel space-y-4 p-5 sm:p-6">
+    <section className="space-y-4">
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Create Together</h2>
         <p className="text-sm muted">
           Collaborative paged documents + shared canvas. Use rich text controls and add pages like a standard document editor.
         </p>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          className={`px-4 py-2 text-sm rounded-lg ${activeTool === 'text' ? 'btn-primary' : 'btn-secondary'}`}
-          onClick={() => setToolAndBroadcast('text')}
-        >
-          Document
-        </button>
-        <button
-          type="button"
-          className={`px-4 py-2 text-sm rounded-lg ${activeTool === 'canvas' ? 'btn-primary' : 'btn-secondary'}`}
-          onClick={() => setToolAndBroadcast('canvas')}
-        >
-          Canvas
-        </button>
       </div>
 
       <label className="block text-sm">

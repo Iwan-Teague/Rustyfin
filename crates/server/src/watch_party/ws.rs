@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::str::FromStr;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -15,12 +16,15 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::handlers::{normalize_web_room_url, perform_youtube_search};
 use super::manager::{AudioAction, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
-    ClientMessage, CreateCanvasStroke, PresenceMember, QueueEntry, ServerMessage,
-    YouTubeSearchEntry,
+    ChessState as ProtocolChessState, ClientMessage, CreateCanvasStroke, PresenceMember,
+    QueueEntry, ServerMessage, YouTubeSearchEntry,
+};
+use super::youtube::{
+    is_valid_youtube_video_id, normalize_web_room_url, perform_youtube_search,
+    youtube_embed_block_reason,
 };
 
 const MAX_WS_FRAME_BYTES: usize = 256 * 1024;
@@ -30,9 +34,6 @@ const IDLE_TIMEOUT_SECONDS: u64 = 120;
 const PING_INTERVAL_SECONDS: u64 = 20;
 const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
 const MAX_MESSAGES_PER_WINDOW: usize = 80;
-const YOUTUBE_VALIDATION_TIMEOUT_SECONDS: u64 = 6;
-const YOUTUBE_WATCH_URL: &str = "https://www.youtube.com/watch";
-const YOUTUBE_VALIDATION_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const MAX_CREATE_TEXT_LEN: usize = 100_000;
 const MAX_CREATE_DOCUMENT_NAME_LEN: usize = 120;
 const MAX_CANVAS_STROKES: usize = 512;
@@ -418,161 +419,6 @@ fn consume_message_budget(timestamps: &mut VecDeque<Instant>) -> bool {
     true
 }
 
-fn is_valid_youtube_video_id(value: &str) -> bool {
-    value.len() == 11
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-fn extract_json_object_after_marker(source: &str, marker: &str) -> Option<String> {
-    let marker_idx = source.find(marker)?;
-    let bytes = source.as_bytes();
-    let mut start = marker_idx + marker.len();
-
-    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
-        start += 1;
-    }
-    if start >= bytes.len() || bytes[start] != b'{' {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, ch) in source[start..].char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-            if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        if ch == '"' {
-            in_string = true;
-            continue;
-        }
-
-        if ch == '{' {
-            depth += 1;
-            continue;
-        }
-
-        if ch == '}' {
-            if depth == 0 {
-                return None;
-            }
-            depth -= 1;
-            if depth == 0 {
-                let end = start + offset + ch.len_utf8();
-                return Some(source[start..end].to_string());
-            }
-        }
-    }
-
-    None
-}
-
-fn youtube_playability_reason(playability: &serde_json::Value) -> String {
-    if let Some(reason) = playability
-        .get("reason")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return reason.to_string();
-    }
-
-    if let Some(reason) = playability
-        .pointer("/errorScreen/playerErrorMessageRenderer/reason/simpleText")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return reason.to_string();
-    }
-
-    if let Some(runs) = playability
-        .pointer("/errorScreen/playerErrorMessageRenderer/reason/runs")
-        .and_then(serde_json::Value::as_array)
-    {
-        let mut merged = String::new();
-        for run in runs {
-            if let Some(text) = run.get("text").and_then(serde_json::Value::as_str) {
-                merged.push_str(text);
-            }
-        }
-        let merged = merged.trim();
-        if !merged.is_empty() {
-            return merged.to_string();
-        }
-    }
-
-    "This YouTube video cannot be embedded by the uploader. Try another video.".to_string()
-}
-
-async fn youtube_embed_block_reason(video_id: &str) -> Option<String> {
-    let url = reqwest::Url::parse_with_params(
-        YOUTUBE_WATCH_URL,
-        &[("v", video_id), ("hl", "en"), ("persist_hl", "1")],
-    )
-    .ok()?;
-
-    let response = reqwest::Client::new()
-        .get(url)
-        .timeout(Duration::from_secs(YOUTUBE_VALIDATION_TIMEOUT_SECONDS))
-        .header(reqwest::header::USER_AGENT, YOUTUBE_VALIDATION_USER_AGENT)
-        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-        .send()
-        .await
-        .ok()?;
-
-    if response.url().as_str().contains("consent.youtube.com") {
-        return Some(
-            "YouTube validation was blocked by a consent/interstitial page on this network."
-                .to_string(),
-        );
-    }
-
-    if !response.status().is_success() {
-        return None;
-    }
-
-    let html = response.text().await.ok()?;
-    let initial_player_response =
-        extract_json_object_after_marker(&html, "var ytInitialPlayerResponse = ")
-            .or_else(|| extract_json_object_after_marker(&html, "ytInitialPlayerResponse = "))?;
-
-    let player_json: serde_json::Value = serde_json::from_str(&initial_player_response).ok()?;
-    let playability = player_json.get("playabilityStatus")?;
-
-    if playability
-        .get("playableInEmbed")
-        .and_then(serde_json::Value::as_bool)
-        == Some(false)
-    {
-        return Some(youtube_playability_reason(playability));
-    }
-
-    match playability
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-    {
-        "ERROR" | "UNPLAYABLE" | "LOGIN_REQUIRED" => Some(youtube_playability_reason(playability)),
-        _ => None,
-    }
-}
-
 fn decode_client_message(message: Message) -> Result<ClientMessage, AppError> {
     match message {
         Message::Text(payload) => {
@@ -864,7 +710,10 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" || context.room_mode == "create" {
+            if context.room_mode == "web"
+                || context.room_mode == "create"
+                || context.room_mode == "play"
+            {
                 send_error(socket, "play is not valid in this room mode").await?;
                 return Ok(());
             }
@@ -919,7 +768,10 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" || context.room_mode == "create" {
+            if context.room_mode == "web"
+                || context.room_mode == "create"
+                || context.room_mode == "play"
+            {
                 send_error(socket, "pause is not valid in this room mode").await?;
                 return Ok(());
             }
@@ -974,7 +826,10 @@ async fn handle_client_message(
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if context.room_mode == "web" || context.room_mode == "create" {
+            if context.room_mode == "web"
+                || context.room_mode == "create"
+                || context.room_mode == "play"
+            {
                 send_error(socket, "seek is not valid in this room mode").await?;
                 return Ok(());
             }
@@ -1692,6 +1547,163 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             Ok(())
         }
+        ClientMessage::PlaySetGame { game } => {
+            if context.room_mode != "play" {
+                send_error(socket, "play_set_game is only valid in play-together rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "changing game is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            runtime
+                .set_play_game(game)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ChessSetPlayers {
+            white_user_id,
+            black_user_id,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "chess_set_players is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(
+                    socket,
+                    "assigning chess players is not allowed for this user",
+                )
+                .await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            let members = rustfin_db::repo::watch_party::list_members(&state.db, &context.room_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+            let is_valid_member = |user_id: &str| {
+                members.iter().any(|member| {
+                    member.user_id == user_id
+                        && member.status != "left"
+                        && member.status != "declined"
+                })
+            };
+
+            let normalized_white = white_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized_black = black_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            if let Some(ref user_id) = normalized_white {
+                if !is_valid_member(user_id) {
+                    send_error(socket, "white player must be a current room member").await?;
+                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                    return Ok(());
+                }
+            }
+            if let Some(ref user_id) = normalized_black {
+                if !is_valid_member(user_id) {
+                    send_error(socket, "black player must be a current room member").await?;
+                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                    return Ok(());
+                }
+            }
+
+            runtime
+                .set_chess_players(normalized_white, normalized_black)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ChessMove {
+            from,
+            to,
+            promotion,
+        } => {
+            if context.room_mode != "play" {
+                send_error(socket, "chess_move is only valid in play-together rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "chess moves are not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            match runtime
+                .apply_chess_move(&context.user_id, &from, &to, promotion.as_deref())
+                .await
+            {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::ChessReset => {
+            if context.room_mode != "play" {
+                send_error(socket, "chess_reset is only valid in play-together rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "resetting chess is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            runtime.reset_chess().await.map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
         ClientMessage::SearchYouTube { query } => {
             if context.room_mode != "youtube" {
                 send_error(socket, "search_youtube is only valid in YouTube rooms").await?;
@@ -1840,6 +1852,9 @@ async fn build_state_message(
     if runtime.room_mode == "create" {
         return build_create_state_message(state, runtime, room_id).await;
     }
+    if runtime.room_mode == "play" {
+        return build_play_state_message(state, runtime, room_id).await;
+    }
 
     let snapshot = runtime.snapshot_state().await;
     let connected = runtime.connected_user_ids.read().await.clone();
@@ -1909,6 +1924,55 @@ async fn build_create_state_message(
         text_content: create_state.text_content,
         canvas_strokes: create_state.canvas_strokes,
         updated_ts_ms: create_state.updated_ts_ms,
+        server_ts_ms: now_ms,
+        members: member_summaries,
+    })
+}
+
+async fn build_play_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let play_state = runtime
+        .snapshot_play_state()
+        .await
+        .ok_or_else(|| ApiError::Internal("play state not initialized".into()))?;
+    let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let board = chess::Board::from_str(&play_state.chess.fen)
+        .map_err(|_| ApiError::Internal("invalid chess board state".into()))?;
+
+    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+
+    Ok(ServerMessage::PlayState {
+        room_id: room_id.to_string(),
+        active_game: play_state.active_game,
+        chess: ProtocolChessState {
+            fen: play_state.chess.fen,
+            turn: if board.side_to_move() == chess::Color::White {
+                "white".to_string()
+            } else {
+                "black".to_string()
+            },
+            status: play_state.chess.status,
+            winner_color: play_state.chess.winner_color,
+            white_user_id: play_state.chess.white_user_id,
+            black_user_id: play_state.chess.black_user_id,
+            last_move_from: play_state
+                .chess
+                .last_move
+                .as_ref()
+                .map(|mv| mv.from.clone()),
+            last_move_to: play_state.chess.last_move.as_ref().map(|mv| mv.to.clone()),
+            last_move_promotion: play_state
+                .chess
+                .last_move
+                .as_ref()
+                .and_then(|mv| mv.promotion.clone()),
+            updated_ts_ms: play_state.chess.updated_ts_ms,
+        },
+        updated_ts_ms: play_state.updated_ts_ms,
         server_ts_ms: now_ms,
         members: member_summaries,
     })

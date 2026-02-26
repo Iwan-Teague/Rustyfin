@@ -1,4 +1,4 @@
-import { apiFetch, apiJson } from './api';
+import { apiFetch, apiJson, extractErrorMessage, parseResponseBody } from './api';
 
 export type Channel = {
   id: string;
@@ -209,11 +209,14 @@ export async function uploadMessageAttachment(
     method: 'POST',
     body,
   });
+  const payload = await parseResponseBody(res);
   if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    throw new Error(payload?.error?.message || 'Failed to upload attachment');
+    throw new Error(extractErrorMessage(payload, 'Failed to upload attachment'));
   }
-  const message = (await res.json()) as ChannelMessage;
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Attachment upload response was empty');
+  }
+  const message = payload as ChannelMessage;
   return { ...message, attachments: message.attachments || [] };
 }
 

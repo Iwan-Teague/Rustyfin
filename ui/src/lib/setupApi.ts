@@ -3,6 +3,7 @@
  * Does NOT auto-redirect to /login on 401 (setup doesn't use JWT).
  * Injects X-Setup-Owner-Token from sessionStorage.
  */
+import { extractErrorMessage, parseResponseBody } from './api';
 
 const API_BASE = '/api/v1';
 
@@ -24,8 +25,16 @@ export async function getPublicSystemInfo(): Promise<{
   setup_state: string;
 }> {
   const res = await fetch(`${API_BASE}/system/info/public`);
-  if (!res.ok) throw new Error(`Failed to fetch system info: ${res.status}`);
-  return res.json();
+  const body = await parseResponseBody(res);
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(body, `Failed to fetch system info: ${res.status}`));
+  }
+  return body as {
+    server_name: string;
+    version: string;
+    setup_completed: boolean;
+    setup_state: string;
+  };
 }
 
 /** Get the stored owner token from sessionStorage. */
@@ -72,12 +81,19 @@ async function setupJson<T = unknown>(
   extraHeaders: Record<string, string> = {}
 ): Promise<T> {
   const res = await setupFetch(path, options, extraHeaders);
+  const body = await parseResponseBody(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: { code: 'unknown', message: `HTTP ${res.status}`, details: {} } }));
-    const err = body as ErrorEnvelope;
-    throw err.error || { code: 'unknown', message: `HTTP ${res.status}`, details: {} };
+    const envelope = body as ErrorEnvelope;
+    if (envelope?.error) {
+      throw envelope.error;
+    }
+    throw {
+      code: 'unknown',
+      message: extractErrorMessage(body, `HTTP ${res.status}`),
+      details: {},
+    } satisfies SetupError;
   }
-  return res.json();
+  return body as T;
 }
 
 // --- Session ---

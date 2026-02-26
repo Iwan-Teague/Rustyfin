@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { apiFetch, apiJson } from '@/lib/api';
+import { clientErrorMessage } from '@/lib/errors';
 
 type PlaybackDescriptor = {
   item_id: string;
@@ -229,8 +230,8 @@ export default function PlayerPage() {
         hls.attachMedia(video);
         hls.loadSource(data.hls_url);
       }
-    } catch (e: any) {
-      setError(e.message || 'Failed to start HLS playback.');
+    } catch (e: unknown) {
+      setError(clientErrorMessage(e, 'Failed to start HLS playback.'));
     } finally {
       setStartingHls(false);
     }
@@ -267,8 +268,8 @@ export default function PlayerPage() {
       setMode('direct');
       video.src = descriptor.direct_url;
       video.load();
-    } catch (e: any) {
-      setError(e.message || 'Direct Play failed; switching to HLS.');
+    } catch (e: unknown) {
+      setError(clientErrorMessage(e, 'Direct Play failed; switching to HLS.'));
       await startHls();
     } finally {
       setStartingDirect(false);
@@ -298,8 +299,8 @@ export default function PlayerPage() {
             // Media info improves decision quality, but playback should still proceed.
           });
       })
-      .catch((e: any) => {
-        if (!cancelled) setError(e.message || 'Failed to load playback descriptor.');
+      .catch((e: unknown) => {
+        if (!cancelled) setError(clientErrorMessage(e, 'Failed to load playback descriptor.'));
       })
       .finally(() => {
         if (!cancelled) setLoadingDescriptor(false);

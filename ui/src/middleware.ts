@@ -4,6 +4,35 @@ type PublicSystemInfo = {
   setup_completed: boolean;
 };
 
+async function parseResponseBody(res: Response): Promise<unknown> {
+  if (res.status === 204 || res.status === 205 || res.status === 304) {
+    return undefined;
+  }
+
+  const raw = await res.text();
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  const looksJson =
+    contentType.includes('application/json') ||
+    contentType.includes('+json') ||
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[');
+
+  if (!looksJson) {
+    return trimmed;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
 async function getSetupCompleted(request: NextRequest): Promise<boolean | null> {
   const url = new URL('/api/v1/system/info/public', request.url);
 
@@ -20,7 +49,10 @@ async function getSetupCompleted(request: NextRequest): Promise<boolean | null> 
       return null;
     }
 
-    const info = (await res.json()) as PublicSystemInfo;
+    const info = (await parseResponseBody(res)) as PublicSystemInfo;
+    if (!info || typeof info !== 'object' || typeof info.setup_completed !== 'boolean') {
+      return null;
+    }
     return info.setup_completed;
   } catch {
     return null;

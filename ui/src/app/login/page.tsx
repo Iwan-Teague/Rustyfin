@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
+import { extractErrorMessage, parseResponseBody } from '@/lib/api';
+import { toClientError } from '@/lib/errors';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -22,19 +24,23 @@ export default function LoginPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
+      const body = await parseResponseBody(res);
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError(body?.error?.message || 'Login failed');
+        setError(extractErrorMessage(body, 'Login failed'));
         return;
       }
 
-      const data = await res.json();
-      localStorage.setItem('token', data.token);
+      if (!body || typeof body !== 'object' || typeof (body as { token?: unknown }).token !== 'string') {
+        setError('Login failed');
+        return;
+      }
+
+      localStorage.setItem('token', (body as { token: string }).token);
       await refreshMe();
       router.push('/');
-    } catch {
-      setError('Network error');
+    } catch (err: unknown) {
+      setError(toClientError(err).message || 'Network error');
     }
   }
 

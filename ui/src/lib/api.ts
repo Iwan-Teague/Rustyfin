@@ -1,5 +1,9 @@
 const API_BASE = '/api/v1';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function resolveApiPath(path: string): string {
   if (/^https?:\/\//.test(path)) {
     return path;
@@ -37,7 +41,7 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
   return res;
 }
 
-async function parseResponseBody(res: Response): Promise<unknown> {
+export async function parseResponseBody(res: Response): Promise<unknown> {
   if (res.status === 204 || res.status === 205 || res.status === 304) {
     return undefined;
   }
@@ -66,18 +70,35 @@ async function parseResponseBody(res: Response): Promise<unknown> {
   }
 }
 
+export function extractErrorMessage(body: unknown, fallback: string): string {
+  if (isRecord(body)) {
+    const errorValue = body.error;
+    if (isRecord(errorValue)) {
+      const nestedMessage = errorValue.message;
+      if (typeof nestedMessage === 'string' && nestedMessage.trim().length > 0) {
+        return nestedMessage;
+      }
+    }
+
+    const directMessage = body.message;
+    if (typeof directMessage === 'string' && directMessage.trim().length > 0) {
+      return directMessage;
+    }
+  }
+
+  if (typeof body === 'string' && body.trim().length > 0) {
+    return body;
+  }
+
+  return fallback;
+}
+
 export async function apiJson<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await apiFetch(path, options);
   const body = await parseResponseBody(res);
 
   if (!res.ok) {
-    const message =
-      (body && typeof body === 'object'
-        ? (body as any)?.error?.message || (body as any)?.message
-        : null) ||
-      (typeof body === 'string' && body.length > 0 ? body : null) ||
-      `API error: ${res.status}`;
-    throw new Error(message);
+    throw new Error(extractErrorMessage(body, `API error: ${res.status}`));
   }
 
   return body as T;

@@ -690,19 +690,16 @@ export default function AudioPlayer({
                         className="h-[18px] w-[18px]"
                         fill="none"
                         stroke="currentColor"
-                        strokeWidth="2"
+                        strokeWidth="1.9"
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         shapeRendering="geometricPrecision"
                         aria-hidden="true"
                       >
-                        <path d="M4 7h2.5c1.7 0 2.6.6 3.8 2.2l4 5.6c1.2 1.6 2.1 2.2 3.8 2.2H20" />
-                        <path d="M4 17h2.5c1.7 0 2.6-.6 3.8-2.2l1-1.4" />
-                        <path d="M17 4l3 3-3 3" />
-                        <path d="M17 14l3 3-3 3" />
-                        {!shuffleEnabled && (
-                          <path d="M4.5 4.5l15 15" />
-                        )}
+                        <path d="M18 4l3 3-3 3" />
+                        <path d="M18 20l3-3-3-3" />
+                        <path d="M3 7h2a5 5 0 0 1 5 5a5 5 0 0 0 5 5h6" />
+                        <path d="M3 17h2a5 5 0 0 0 5-5a5 5 0 0 1 5-5h6" />
                       </svg>
                     </button>
                     <button
@@ -733,15 +730,13 @@ export default function AudioPlayer({
                         )}
                       </svg>
                       {repeatMode === 'track' && (
-                        <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75 px-1 text-[10px] font-semibold leading-none">
+                        <span className="absolute right-1 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-white/35 bg-black/75 px-[2px] text-[10px] font-semibold leading-none text-white">
                           1
                         </span>
                       )}
                       {repeatMode === 'queue' && (
-                        <span className="absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-[var(--border)] bg-black/75">
-                          <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" aria-hidden="true">
-                            <path d="M2 3h8M2 6h8M2 9h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                          </svg>
+                        <span className="absolute right-1 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-white/35 bg-black/75 px-[2px] text-[10px] font-semibold leading-none text-white">
+                          ∞
                         </span>
                       )}
                     </button>
