@@ -22,6 +22,7 @@ interface Props {
   onCreateText: () => void;
   onCreateVoice: () => void;
   onDeleteChannel: (id: string) => void;
+  bottomContent?: ReactNode;
 }
 
 // ── Channel context menu ──────────────────────────────────────────────────────
@@ -271,6 +272,7 @@ export default function ChannelSidebar({
   onCreateText,
   onCreateVoice,
   onDeleteChannel,
+  bottomContent,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState<MenuState | null>(null);
   const [pendingRenameChannel, setPendingRenameChannel] = useState<ChannelInfo | null>(null);
@@ -327,7 +329,7 @@ export default function ChannelSidebar({
   };
 
   return (
-    <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-y-auto">
+    <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-hidden">
       {/* Server header */}
       <div className="h-14 px-4 border-b border-[var(--border)] font-semibold text-sm tracking-wide flex items-center">
         Rustyfin
@@ -426,6 +428,8 @@ export default function ChannelSidebar({
           )}
         </section>
       </div>
+
+      {bottomContent}
 
       {pendingRenameChannel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
