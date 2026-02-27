@@ -93,6 +93,7 @@ function getWsUrl(): string {
 
 const VOICE_SESSION_KEY = 'channels_voice_session_v1';
 const AUDIO_DEVICE_PREFS_KEY = 'channels_audio_device_prefs_v1';
+const SYNTHETIC_INPUT_PREFIX = 'synthetic-audioinput-';
 
 function loadPersistedVoiceSession(): PersistedVoiceSession | null {
   try {
@@ -187,6 +188,35 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const voiceSessionRef = useRef<VoiceSession | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+
+  const resolvePreferredInputDeviceId = useCallback(
+    async (selectedId: string | null): Promise<string | null> => {
+      if (!selectedId) return null;
+      const trimmed = selectedId.trim();
+      if (!trimmed) return null;
+      if (!trimmed.startsWith(SYNTHETIC_INPUT_PREFIX)) {
+        return trimmed;
+      }
+      const indexPart = trimmed.slice(SYNTHETIC_INPUT_PREFIX.length);
+      const oneBasedIndex = Number.parseInt(indexPart, 10);
+      if (!Number.isFinite(oneBasedIndex) || oneBasedIndex < 1) {
+        return null;
+      }
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        return null;
+      }
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter((device) => device.kind === 'audioinput');
+        const target = inputs[oneBasedIndex - 1];
+        const realId = target?.deviceId?.trim();
+        return realId || null;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -517,10 +547,10 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           'Microphone API is unavailable in this browser context. Joined as listener.';
       } else {
         try {
-          const preferredConstraint =
-            preferredInputDeviceId && preferredInputDeviceId.trim()
-              ? { deviceId: { exact: preferredInputDeviceId.trim() } }
-              : true;
+          const resolvedInputId = await resolvePreferredInputDeviceId(preferredInputDeviceId);
+          const preferredConstraint = resolvedInputId
+            ? { deviceId: { exact: resolvedInputId } }
+            : true;
           stream = await navigator.mediaDevices.getUserMedia({ audio: preferredConstraint });
         } catch (error) {
           const name = error instanceof DOMException ? error.name : '';
@@ -556,7 +586,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       sendWs({ type: 'join_voice', channel_id: channelId });
       return micStatusMessage;
     },
-    [voiceSession, sendWs, preferredInputDeviceId],
+    [voiceSession, sendWs, preferredInputDeviceId, resolvePreferredInputDeviceId],
   );
 
   const leaveVoice = useCallback(() => {
