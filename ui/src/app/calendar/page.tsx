@@ -98,9 +98,9 @@ function rangeForView(view: CalendarView, anchorDate: Date): { from: Date; to: D
   return { from, to, days: enumerateDays(from, to) };
 }
 
-function formatHeader(view: CalendarView, from: Date, to: Date): string {
+function formatHeader(view: CalendarView, from: Date, to: Date, anchor: Date): string {
   if (view === 'month') {
-    return from.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    return anchor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }
   if (view === 'events_30') {
     return 'Events in the Next 30 Days';
@@ -225,6 +225,12 @@ export default function CalendarPage() {
     void reload();
   }, [reload]);
 
+  useEffect(() => {
+    if (view === 'week' || view === 'next_week' || view === 'next_7_days') {
+      setAnchorDate(withNoon(new Date()));
+    }
+  }, [view]);
+
   const resetForm = useCallback(() => {
     setEditingEventId(null);
     setTitle('');
@@ -333,7 +339,11 @@ export default function CalendarPage() {
         </div>
       </header>
 
-      <div className={`grid grid-cols-1 gap-4 min-h-[40rem] lg:h-[calc(100dvh-11.5rem)] ${eventPanelOpen ? 'xl:grid-cols-[2fr_1fr]' : ''}`}>
+      <div
+        className={`grid grid-cols-1 gap-4 min-h-[40rem] lg:h-[calc(100dvh-11.5rem)] ${
+          eventPanelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
+        }`}
+      >
         <section className="panel rounded-2xl p-4 sm:p-5 space-y-4 flex flex-col lg:h-full lg:min-h-0">
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex items-center gap-2">
@@ -374,7 +384,7 @@ export default function CalendarPage() {
           </div>
 
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">{formatHeader(view, from, to)}</h2>
+            <h2 className="text-lg font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
             <span className="chip">
               {events.length} events
             </span>

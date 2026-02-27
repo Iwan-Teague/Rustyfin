@@ -196,7 +196,7 @@ export default function VoiceEngine({
     const chunk = samples.splice(0, chunkSize);
     if (chunk.length === 0) return;
     const raw = Int16Array.from(chunk);
-    if (measurePeak(raw) < 0.003) {
+    if (measurePeak(raw) < 0.001) {
       return;
     }
     const normalized = normalizeChunk(raw);
@@ -304,6 +304,14 @@ export default function VoiceEngine({
     const inputTrack = localStream.getAudioTracks()[0];
     if (!inputTrack) return null;
 
+    // Default to raw mic stream for reliability. This avoids browsers that
+    // suspend WebAudio graphs before first user interaction, which can result
+    // in silent outbound audio.
+    if (Math.abs(localMicGain - 1) < 0.001) {
+      teardownLocalMicPipeline();
+      return localStream;
+    }
+
     const hasValidPipeline =
       localMicProcessedStreamRef.current &&
       localMicInputTrackIdRef.current === inputTrack.id &&
@@ -358,6 +366,30 @@ export default function VoiceEngine({
       return;
     }
     audioTracks.forEach((track) => pc.addTrack(track, outboundStream));
+  }
+
+  function syncOutboundAudioTrack() {
+    const outboundStream = getOutboundStream();
+    const outboundTrack = outboundStream?.getAudioTracks()[0] ?? null;
+
+    peersRef.current.forEach((pc) => {
+      const sender = pc.getSenders().find((candidate) => candidate.track?.kind === 'audio');
+      if (!sender) {
+        if (outboundTrack && outboundStream) {
+          pc.addTrack(outboundTrack, outboundStream);
+        } else {
+          ensureReceiveAudio(pc);
+        }
+        return;
+      }
+
+      if ((sender.track?.id ?? null) === (outboundTrack?.id ?? null)) {
+        return;
+      }
+      void sender.replaceTrack(outboundTrack).catch((err) => {
+        console.warn('VoiceEngine: failed to replace outbound audio track', err);
+      });
+    });
   }
 
   function getPeerVolume(userId: string): number {
@@ -514,7 +546,14 @@ export default function VoiceEngine({
     if (localMicGainNodeRef.current) {
       localMicGainNodeRef.current.gain.value = localMicGain;
     }
+    syncOutboundAudioTrack();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localMicGain]);
+
+  useEffect(() => {
+    syncOutboundAudioTrack();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localStream]);
 
   useEffect(() => {
     const sessionId =

@@ -539,7 +539,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
+        <section className="panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
           {isWatchRoom && (
             <WatchSourceTabsBar
               className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
@@ -564,7 +564,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
+        <section className="panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
           {isWatchRoom && (
             <WatchSourceTabsBar
               className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
@@ -695,7 +695,8 @@ export default function WatchPartyRoomPage() {
 
                   {reconfigure.reconfigureMode === 'audio' ? (
                     <div className="space-y-3">
-                      <div className="notice-ok rounded-xl px-3 py-3 text-sm">
+                      <p className="text-xs uppercase tracking-wide muted">Listen Together</p>
+                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
                         Listen together with one shared queue. Search online tracks, browse local
                         library tracks, and control playback together.
                       </div>
@@ -773,7 +774,7 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && isVideoRoom && (
         <>
-          <section className="panel relative space-y-4 p-5 pt-12 sm:p-6 sm:pt-12">
+          <section className="panel relative space-y-4 p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
             {isWatchRoom && (
               <WatchSourceTabsBar
               className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
