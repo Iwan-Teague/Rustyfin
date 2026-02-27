@@ -57,6 +57,7 @@ COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 CLI_YOUTUBE_COOKIE=""
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
+NATIVE_RUST_BUILD_STRICT="${RUSTFIN_NATIVE_RUST_BUILD_STRICT:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -454,6 +455,11 @@ case "$NATIVE_RUST_BUILD" in
   *) die "Invalid native build toggle '$NATIVE_RUST_BUILD' (expected 0 or 1)" ;;
 esac
 
+case "$NATIVE_RUST_BUILD_STRICT" in
+  0|1) ;;
+  *) die "Invalid strict native build toggle '$NATIVE_RUST_BUILD_STRICT' (expected 0 or 1)" ;;
+esac
+
 RUSTFIN_NATIVE_TARGET=""
 RUSTFIN_NATIVE_BIN_DIR=""
 RUSTFIN_NATIVE_BIN_DIR_ABS=""
@@ -470,6 +476,43 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   export RUSTFIN_TMDB_AGENT_DOCKERFILE="docker/native/rustfin-tmdb-agent.Dockerfile"
   export RUSTFIN_YOUTUBE_AGENT_DOCKERFILE="docker/native/rustfin-youtube-agent.Dockerfile"
   export RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE="docker/native/rustfin-transcription-agent.Dockerfile"
+
+  # Native Linux cross-build requirements:
+  # - Linux host building for its own Linux host triple: plain cargo build works.
+  # - Any other host/target combo: requires zig + cargo-zigbuild.
+  native_host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  native_host_triple="$(rustc -vV | awk '/^host: / {print $2}')"
+  native_needs_zig=true
+  if [[ "$native_host_os" == "linux" && "$native_host_triple" == "$RUSTFIN_NATIVE_TARGET" ]]; then
+    native_needs_zig=false
+  fi
+
+  native_fallback_reason=""
+  if [[ "$native_needs_zig" == "true" ]]; then
+    if ! command -v zig >/dev/null 2>&1; then
+      native_fallback_reason="missing zig"
+    elif ! cargo zigbuild --version >/dev/null 2>&1; then
+      native_fallback_reason="missing cargo-zigbuild"
+    fi
+  fi
+
+  if [[ -n "$native_fallback_reason" ]]; then
+    if [[ "$NATIVE_RUST_BUILD_STRICT" == "1" ]]; then
+      die "Native Rust Linux build prerequisites are not met (${native_fallback_reason}). Install zig + cargo-zigbuild or use --docker-rust-build."
+    fi
+
+    warn "Native Rust Linux build prerequisites are not met (${native_fallback_reason}); falling back to Docker Rust build."
+    warn "Install prerequisites to re-enable native mode: brew install zig && cargo install cargo-zigbuild --locked"
+
+    NATIVE_RUST_BUILD=0
+    RUSTFIN_RUST_BUILD_MODE_KEY="docker-build"
+    unset RUSTFIN_NATIVE_BIN_DIR
+    unset RUSTFIN_SERVER_DOCKERFILE
+    unset RUSTFIN_CALENDAR_DOCKERFILE
+    unset RUSTFIN_TMDB_AGENT_DOCKERFILE
+    unset RUSTFIN_YOUTUBE_AGENT_DOCKERFILE
+    unset RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE
+  fi
 fi
 
 # Migrate legacy repo-local default media root from older starts so Browse can
