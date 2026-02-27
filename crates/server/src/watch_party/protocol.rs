@@ -163,6 +163,13 @@ pub struct CreateCanvasStroke {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ChessLegalMove {
+    pub from: String,
+    pub to: String,
+    pub promotion: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChessState {
     pub fen: String,
     pub turn: String,
@@ -173,6 +180,7 @@ pub struct ChessState {
     pub last_move_from: Option<String>,
     pub last_move_to: Option<String>,
     pub last_move_promotion: Option<String>,
+    pub legal_moves: Vec<ChessLegalMove>,
     pub updated_ts_ms: i64,
 }
 

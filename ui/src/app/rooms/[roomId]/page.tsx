@@ -90,6 +90,8 @@ export default function WatchPartyRoomPage() {
     : isWebRoom
       ? 'web'
       : 'video';
+  const watchWindowShiftClass = isWatchRoom ? 'mt-[35px]' : '';
+  const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
@@ -539,10 +541,10 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className="panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
+        <section className={`panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
-              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
+              className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
               switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
@@ -564,10 +566,10 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className="panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
+        <section className={`panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
-              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
+              className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
               activeSource={activeWatchSource}
               onSwitchSource={handleSwitchWatchSource}
               switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
@@ -774,18 +776,20 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && isVideoRoom && (
         <>
-          <section className="panel relative space-y-4 p-5 pt-[68px] sm:p-6 sm:pt-[72px]">
+          <section
+            className={`panel relative space-y-4 p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}
+          >
             {isWatchRoom && (
               <WatchSourceTabsBar
-              className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
-              activeSource={activeWatchSource}
-              onSwitchSource={handleSwitchWatchSource}
-              switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
-              badges={[
-                `Role: ${joinedRoleDisplay}`,
-                `Play/Pause: ${canPlayPause ? 'allowed' : 'host-only'}`,
-                `Seek: ${canSeek ? 'allowed' : 'host-only'}`,
-              ]}
+                className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
+                activeSource={activeWatchSource}
+                onSwitchSource={handleSwitchWatchSource}
+                switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
+                badges={[
+                  `Role: ${joinedRoleDisplay}`,
+                  `Play/Pause: ${canPlayPause ? 'allowed' : 'host-only'}`,
+                  `Seek: ${canSeek ? 'allowed' : 'host-only'}`,
+                ]}
               />
             )}
 
