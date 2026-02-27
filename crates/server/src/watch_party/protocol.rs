@@ -101,6 +101,13 @@ pub enum ClientMessage {
         white_user_id: Option<String>,
         black_user_id: Option<String>,
     },
+    ChessConfigureAi {
+        enabled: bool,
+        #[serde(default)]
+        difficulty: Option<String>,
+        #[serde(default)]
+        human_color: Option<String>,
+    },
     ChessMove {
         from: String,
         to: String,
@@ -180,6 +187,11 @@ pub struct ChessState {
     pub last_move_from: Option<String>,
     pub last_move_to: Option<String>,
     pub last_move_promotion: Option<String>,
+    pub reset_requested_white: bool,
+    pub reset_requested_black: bool,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub legal_moves: Vec<ChessLegalMove>,
     pub updated_ts_ms: i64,
 }

@@ -106,6 +106,11 @@ pub struct ChessState {
     pub white_user_id: Option<String>,
     pub black_user_id: Option<String>,
     pub last_move: Option<ChessLastMove>,
+    pub reset_requested_white: bool,
+    pub reset_requested_black: bool,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub updated_ts_ms: i64,
 }
 
@@ -118,6 +123,11 @@ impl Default for ChessState {
             white_user_id: None,
             black_user_id: None,
             last_move: None,
+            reset_requested_white: false,
+            reset_requested_black: false,
+            ai_enabled: false,
+            ai_difficulty: "medium".to_string(),
+            ai_color: None,
             updated_ts_ms: chrono::Utc::now().timestamp_millis(),
         }
     }
@@ -128,6 +138,12 @@ pub struct PlayState {
     pub active_game: String,
     pub chess: ChessState,
     pub updated_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChessResetOutcome {
+    Applied,
+    AwaitingOtherPlayer,
 }
 
 impl Default for PlayState {
@@ -513,6 +529,7 @@ impl RoomRuntime {
 
     pub async fn set_chess_players(
         &self,
+        actor_user_id: &str,
         white_user_id: Option<String>,
         black_user_id: Option<String>,
     ) -> Result<Option<PlayState>, String> {
@@ -534,8 +551,29 @@ impl RoomRuntime {
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut guard = state.write().await;
+
+        let current_white = guard.chess.white_user_id.clone();
+        let current_black = guard.chess.black_user_id.clone();
+
+        validate_chess_seat_change(
+            "white",
+            current_white.as_deref(),
+            white.as_deref(),
+            actor_user_id,
+        )?;
+        validate_chess_seat_change(
+            "black",
+            current_black.as_deref(),
+            black.as_deref(),
+            actor_user_id,
+        )?;
+
+        // Explicit player assignment means local (non-AI) control.
+        guard.chess.ai_enabled = false;
+        guard.chess.ai_color = None;
         guard.chess.white_user_id = white;
         guard.chess.black_user_id = black;
+        clear_chess_reset_requests(&mut guard.chess);
         guard.updated_ts_ms = now_ms;
         guard.chess.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -554,9 +592,15 @@ impl RoomRuntime {
         let mut guard = state.write().await;
         let white_user_id = guard.chess.white_user_id.clone();
         let black_user_id = guard.chess.black_user_id.clone();
+        let ai_enabled = guard.chess.ai_enabled;
+        let ai_difficulty = guard.chess.ai_difficulty.clone();
+        let ai_color = guard.chess.ai_color.clone();
         let mut next_chess = ChessState::default();
         next_chess.white_user_id = white_user_id;
         next_chess.black_user_id = black_user_id;
+        next_chess.ai_enabled = ai_enabled;
+        next_chess.ai_difficulty = ai_difficulty;
+        next_chess.ai_color = ai_color;
         next_chess.updated_ts_ms = now_ms;
         guard.active_game = "chess".to_string();
         guard.chess = next_chess;
@@ -565,6 +609,94 @@ impl RoomRuntime {
         drop(guard);
         self.touch_activity().await;
         Ok(Some(snapshot))
+    }
+
+    pub async fn request_chess_reset(
+        &self,
+        requester_user_id: &str,
+    ) -> Result<(Option<PlayState>, ChessResetOutcome), String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok((None, ChessResetOutcome::Applied)),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "chess" {
+            return Err("active play game is not chess".to_string());
+        }
+
+        let white = guard.chess.white_user_id.clone();
+        let black = guard.chess.black_user_id.clone();
+        let has_white = white.is_some();
+        let has_black = black.is_some();
+
+        if !has_white && !has_black {
+            let white_user_id = guard.chess.white_user_id.clone();
+            let black_user_id = guard.chess.black_user_id.clone();
+            let ai_enabled = guard.chess.ai_enabled;
+            let ai_difficulty = guard.chess.ai_difficulty.clone();
+            let ai_color = guard.chess.ai_color.clone();
+            let mut next_chess = ChessState::default();
+            next_chess.white_user_id = white_user_id;
+            next_chess.black_user_id = black_user_id;
+            next_chess.ai_enabled = ai_enabled;
+            next_chess.ai_difficulty = ai_difficulty;
+            next_chess.ai_color = ai_color;
+            next_chess.updated_ts_ms = now_ms;
+            guard.active_game = "chess".to_string();
+            guard.chess = next_chess;
+            guard.updated_ts_ms = now_ms;
+            let snapshot = guard.clone();
+            drop(guard);
+            self.touch_activity().await;
+            return Ok((Some(snapshot), ChessResetOutcome::Applied));
+        }
+
+        let requester_is_white = white.as_deref() == Some(requester_user_id);
+        let requester_is_black = black.as_deref() == Some(requester_user_id);
+        if !requester_is_white && !requester_is_black {
+            return Err("only active players can request a board reset".to_string());
+        }
+
+        let two_players_assigned = has_white && has_black && white != black;
+        if two_players_assigned {
+            if requester_is_white {
+                guard.chess.reset_requested_white = true;
+            }
+            if requester_is_black {
+                guard.chess.reset_requested_black = true;
+            }
+
+            if !(guard.chess.reset_requested_white && guard.chess.reset_requested_black) {
+                guard.chess.updated_ts_ms = now_ms;
+                guard.updated_ts_ms = now_ms;
+                let snapshot = guard.clone();
+                drop(guard);
+                self.touch_activity().await;
+                return Ok((Some(snapshot), ChessResetOutcome::AwaitingOtherPlayer));
+            }
+        }
+
+        let white_user_id = guard.chess.white_user_id.clone();
+        let black_user_id = guard.chess.black_user_id.clone();
+        let ai_enabled = guard.chess.ai_enabled;
+        let ai_difficulty = guard.chess.ai_difficulty.clone();
+        let ai_color = guard.chess.ai_color.clone();
+        let mut next_chess = ChessState::default();
+        next_chess.white_user_id = white_user_id;
+        next_chess.black_user_id = black_user_id;
+        next_chess.ai_enabled = ai_enabled;
+        next_chess.ai_difficulty = ai_difficulty;
+        next_chess.ai_color = ai_color;
+        next_chess.updated_ts_ms = now_ms;
+        guard.active_game = "chess".to_string();
+        guard.chess = next_chess;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok((Some(snapshot), ChessResetOutcome::Applied))
     }
 
     pub async fn apply_chess_move(
@@ -588,6 +720,12 @@ impl RoomRuntime {
         let board = Board::from_str(&guard.chess.fen)
             .map_err(|_| "failed to load chess board state".to_string())?;
         let side_to_move = board.side_to_move();
+
+        if guard.chess.ai_enabled
+            && guard.chess.ai_color.as_deref().and_then(parse_color_name) == Some(side_to_move)
+        {
+            return Err("it is AI's turn".to_string());
+        }
 
         let assigned_user = match side_to_move {
             Color::White => guard.chess.white_user_id.as_deref(),
@@ -622,6 +760,7 @@ impl RoomRuntime {
             to: square_to_string(to_square),
             promotion: promotion_piece.map(piece_to_promotion),
         });
+        clear_chess_reset_requests(&mut guard.chess);
         guard.chess.updated_ts_ms = now_ms;
         guard.updated_ts_ms = now_ms;
 
@@ -629,6 +768,122 @@ impl RoomRuntime {
         drop(guard);
         self.touch_activity().await;
         Ok(Some(snapshot))
+    }
+
+    pub async fn configure_chess_ai(
+        &self,
+        configured_by_user_id: &str,
+        enabled: bool,
+        difficulty: Option<String>,
+        human_color: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "chess" {
+            return Err("active play game is not chess".to_string());
+        }
+
+        if enabled {
+            let difficulty = normalize_ai_difficulty(
+                difficulty
+                    .as_deref()
+                    .unwrap_or(guard.chess.ai_difficulty.as_str()),
+            )?;
+            let preferred_human_color = human_color
+                .as_deref()
+                .and_then(parse_color_name)
+                .or_else(|| {
+                    if guard.chess.white_user_id.as_deref() == Some(configured_by_user_id) {
+                        Some(Color::White)
+                    } else if guard.chess.black_user_id.as_deref() == Some(configured_by_user_id) {
+                        Some(Color::Black)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(Color::White);
+
+            let ai_color = opposite_color(preferred_human_color);
+            guard.chess.ai_enabled = true;
+            guard.chess.ai_difficulty = difficulty.to_string();
+            guard.chess.ai_color = Some(color_name(ai_color).to_string());
+
+            match preferred_human_color {
+                Color::White => {
+                    guard.chess.white_user_id = Some(configured_by_user_id.to_string());
+                    guard.chess.black_user_id = None;
+                }
+                Color::Black => {
+                    guard.chess.black_user_id = Some(configured_by_user_id.to_string());
+                    guard.chess.white_user_id = None;
+                }
+            }
+        } else {
+            guard.chess.ai_enabled = false;
+            guard.chess.ai_color = None;
+        }
+
+        clear_chess_reset_requests(&mut guard.chess);
+        guard.updated_ts_ms = now_ms;
+        guard.chess.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn apply_chess_ai_move_if_needed(&self) -> Result<bool, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(false),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "chess" || !guard.chess.ai_enabled || guard.chess.status != "active"
+        {
+            return Ok(false);
+        }
+
+        let board = Board::from_str(&guard.chess.fen)
+            .map_err(|_| "failed to load chess board state".to_string())?;
+        let ai_color = match guard.chess.ai_color.as_deref().and_then(parse_color_name) {
+            Some(color) => color,
+            None => return Ok(false),
+        };
+        if board.side_to_move() != ai_color {
+            return Ok(false);
+        }
+
+        let legal_moves: Vec<ChessMove> = MoveGen::new_legal(&board).collect();
+        if legal_moves.is_empty() {
+            return Ok(false);
+        }
+
+        let selected_move =
+            select_ai_move(&board, &legal_moves, ai_color, &guard.chess.ai_difficulty);
+        let next_board = board.make_move_new(selected_move);
+        let (status, winner_color) = chess_status(&next_board);
+
+        guard.chess.fen = next_board.to_string();
+        guard.chess.status = status;
+        guard.chess.winner_color = winner_color;
+        guard.chess.last_move = Some(ChessLastMove {
+            from: square_to_string(selected_move.get_source()),
+            to: square_to_string(selected_move.get_dest()),
+            promotion: selected_move.get_promotion().map(piece_to_promotion),
+        });
+        clear_chess_reset_requests(&mut guard.chess);
+        guard.chess.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        drop(guard);
+        self.touch_activity().await;
+        Ok(true)
     }
 
     pub async fn set_youtube_search_state(
@@ -994,6 +1249,187 @@ fn color_name(color: Color) -> &'static str {
         Color::White => "white",
         Color::Black => "black",
     }
+}
+
+fn opposite_color(color: Color) -> Color {
+    match color {
+        Color::White => Color::Black,
+        Color::Black => Color::White,
+    }
+}
+
+fn parse_color_name(raw: &str) -> Option<Color> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "white" => Some(Color::White),
+        "black" => Some(Color::Black),
+        _ => None,
+    }
+}
+
+fn normalize_ai_difficulty(raw: &str) -> Result<&'static str, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "easy" => Ok("easy"),
+        "medium" => Ok("medium"),
+        "hard" => Ok("hard"),
+        _ => Err("invalid AI difficulty; expected easy, medium, or hard".to_string()),
+    }
+}
+
+fn select_ai_move(
+    board: &Board,
+    legal_moves: &[ChessMove],
+    ai_color: Color,
+    difficulty: &str,
+) -> ChessMove {
+    match difficulty.trim().to_ascii_lowercase().as_str() {
+        "easy" => {
+            let seed = chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or_default()
+                .unsigned_abs() as usize;
+            legal_moves[seed % legal_moves.len()]
+        }
+        "hard" => {
+            let mut best_move = legal_moves[0];
+            let mut best_score = i32::MIN;
+            for mv in legal_moves {
+                let next = board.make_move_new(*mv);
+                let score = minimax_score(&next, 2, ai_color, i32::MIN / 2, i32::MAX / 2);
+                if score > best_score {
+                    best_score = score;
+                    best_move = *mv;
+                }
+            }
+            best_move
+        }
+        _ => {
+            // Medium: evaluate immediate material outcome and prefer strongest one-ply move.
+            let mut best_move = legal_moves[0];
+            let mut best_score = i32::MIN;
+            for mv in legal_moves {
+                let next = board.make_move_new(*mv);
+                let score = evaluate_board_material(&next, ai_color);
+                if score > best_score {
+                    best_score = score;
+                    best_move = *mv;
+                }
+            }
+            best_move
+        }
+    }
+}
+
+fn minimax_score(board: &Board, depth: u8, ai_color: Color, mut alpha: i32, mut beta: i32) -> i32 {
+    if depth == 0 || board.status() != BoardStatus::Ongoing {
+        return evaluate_board_material(board, ai_color);
+    }
+
+    let moves: Vec<ChessMove> = MoveGen::new_legal(board).collect();
+    if moves.is_empty() {
+        return evaluate_board_material(board, ai_color);
+    }
+
+    let maximizing = board.side_to_move() == ai_color;
+    if maximizing {
+        let mut best = i32::MIN;
+        for mv in moves {
+            let next = board.make_move_new(mv);
+            let score = minimax_score(&next, depth.saturating_sub(1), ai_color, alpha, beta);
+            best = best.max(score);
+            alpha = alpha.max(best);
+            if beta <= alpha {
+                break;
+            }
+        }
+        best
+    } else {
+        let mut best = i32::MAX;
+        for mv in moves {
+            let next = board.make_move_new(mv);
+            let score = minimax_score(&next, depth.saturating_sub(1), ai_color, alpha, beta);
+            best = best.min(score);
+            beta = beta.min(best);
+            if beta <= alpha {
+                break;
+            }
+        }
+        best
+    }
+}
+
+fn evaluate_board_material(board: &Board, ai_color: Color) -> i32 {
+    match board.status() {
+        BoardStatus::Checkmate => {
+            return if board.side_to_move() == ai_color {
+                -100_000
+            } else {
+                100_000
+            };
+        }
+        BoardStatus::Stalemate => return 0,
+        BoardStatus::Ongoing => {}
+    }
+
+    let opponent = opposite_color(ai_color);
+    let mut score = 0_i32;
+    for piece in [
+        Piece::Pawn,
+        Piece::Knight,
+        Piece::Bishop,
+        Piece::Rook,
+        Piece::Queen,
+    ] {
+        let value = piece_value(piece);
+        let ai_count = (board.pieces(piece) & board.color_combined(ai_color)).popcnt() as i32;
+        let opp_count = (board.pieces(piece) & board.color_combined(opponent)).popcnt() as i32;
+        score += (ai_count - opp_count) * value;
+    }
+    score
+}
+
+fn piece_value(piece: Piece) -> i32 {
+    match piece {
+        Piece::Pawn => 100,
+        Piece::Knight => 320,
+        Piece::Bishop => 330,
+        Piece::Rook => 500,
+        Piece::Queen => 900,
+        Piece::King => 0,
+    }
+}
+
+fn clear_chess_reset_requests(chess: &mut ChessState) {
+    chess.reset_requested_white = false;
+    chess.reset_requested_black = false;
+}
+
+fn validate_chess_seat_change(
+    seat_name: &str,
+    current: Option<&str>,
+    next: Option<&str>,
+    actor_user_id: &str,
+) -> Result<(), String> {
+    if current == next {
+        return Ok(());
+    }
+
+    let Some(current_player_id) = current else {
+        return Ok(());
+    };
+
+    if current_player_id != actor_user_id {
+        return Err(format!(
+            "only the current {seat_name} player can leave that color"
+        ));
+    }
+
+    if next.is_some() {
+        return Err(format!(
+            "{seat_name} seat is occupied; current player must clear it before reassignment"
+        ));
+    }
+
+    Ok(())
 }
 
 fn chess_status(board: &Board) -> (String, Option<String>) {

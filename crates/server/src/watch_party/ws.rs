@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::manager::{AudioAction, CreateState, PlaybackAction, RoomRuntime};
+use super::manager::{AudioAction, ChessResetOutcome, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
     ChessLegalMove as ProtocolChessLegalMove, ChessState as ProtocolChessState, ClientMessage,
@@ -43,6 +43,7 @@ const MAX_CANVAS_STROKES: usize = 512;
 const MAX_CANVAS_POINTS_PER_STROKE: usize = 1024;
 const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
 const MAX_CANVAS_BYTES: usize = 30 * 1024 * 1024;
+const CHESS_AI_MOVE_DELAY_SECONDS: u64 = 3;
 const EMPTY_RICH_PAGE_HTML: &str = "<p><br></p>";
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
@@ -2035,6 +2036,7 @@ async fn handle_client_message(
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
             Ok(())
         }
         ClientMessage::ChessSetPlayers {
@@ -2105,10 +2107,45 @@ async fn handle_client_message(
             }
 
             runtime
-                .set_chess_players(normalized_white, normalized_black)
+                .set_chess_players(&context.user_id, normalized_white, normalized_black)
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
+            Ok(())
+        }
+        ClientMessage::ChessConfigureAi {
+            enabled,
+            difficulty,
+            human_color,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "chess_configure_ai is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "configuring chess AI is not allowed for this user").await?;
+                send_current_state(socket, state, runtime, &context.room_id).await?;
+                return Ok(());
+            }
+
+            runtime
+                .configure_chess_ai(&context.user_id, enabled, difficulty, human_color)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
             Ok(())
         }
         ClientMessage::ChessMove {
@@ -2139,6 +2176,7 @@ async fn handle_client_message(
             {
                 Ok(_) => {
                     broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
@@ -2153,20 +2191,21 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            let (room_status, policy, role) =
+            let (room_status, _policy, _role) =
                 refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
             if room_status != "lobby" {
                 send_error(socket, "room is not active").await?;
                 return Ok(());
             }
-            if !can_play_pause(&role, &policy) {
-                send_error(socket, "resetting chess is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
-                return Ok(());
-            }
 
-            runtime.reset_chess().await.map_err(ApiError::BadRequest)?;
+            let (_, reset_outcome) = runtime
+                .request_chess_reset(&context.user_id)
+                .await
+                .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            if matches!(reset_outcome, ChessResetOutcome::Applied) {
+                schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
+            }
             Ok(())
         }
         ClientMessage::SearchYouTube { query } => {
@@ -2442,6 +2481,11 @@ async fn build_play_state_message(
                 .last_move
                 .as_ref()
                 .and_then(|mv| mv.promotion.clone()),
+            reset_requested_white: play_state.chess.reset_requested_white,
+            reset_requested_black: play_state.chess.reset_requested_black,
+            ai_enabled: play_state.chess.ai_enabled,
+            ai_difficulty: play_state.chess.ai_difficulty,
+            ai_color: play_state.chess.ai_color,
             legal_moves,
             updated_ts_ms: play_state.chess.updated_ts_ms,
         },
@@ -2449,6 +2493,36 @@ async fn build_play_state_message(
         server_ts_ms: now_ms,
         members: member_summaries,
     })
+}
+
+fn schedule_delayed_chess_ai_move(state: AppState, room_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(CHESS_AI_MOVE_DELAY_SECONDS)).await;
+
+        let Some(runtime) = state.watch_party.get_runtime(&room_id).await else {
+            return;
+        };
+
+        match runtime.apply_chess_ai_move_if_needed().await {
+            Ok(true) => {
+                if let Err(err) = broadcast_current_state(&state, &runtime, &room_id).await {
+                    warn!(
+                        room_id = %room_id,
+                        error = %err.0,
+                        "failed to broadcast delayed chess ai move"
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!(
+                    room_id = %room_id,
+                    error = %err,
+                    "failed to apply delayed chess ai move"
+                );
+            }
+        }
+    });
 }
 
 fn chess_promotion_piece_to_code(piece: chess::Piece) -> String {

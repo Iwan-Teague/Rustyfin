@@ -1,10 +1,16 @@
-use axum::extract::{Path, Query, State};
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::path::Path as StdPath;
+use tokio::fs;
+use tracing::warn;
 
 use crate::auth::{
     AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
@@ -15,6 +21,8 @@ use crate::state::AppState;
 use crate::user_pipeline;
 
 const STREAM_TOKEN_TTL_SECONDS: i64 = 90;
+const MAX_AVATAR_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
+const USER_AVATAR_DIR: &str = "user_avatars";
 
 #[derive(Debug, Clone)]
 struct StreamRequestIdentity {
@@ -91,6 +99,15 @@ fn api_router() -> Router<AppState> {
             axum::routing::delete(delete_user_route).patch(update_user_route),
         )
         .route("/users/me", get(users_me))
+        .route(
+            "/users/me/profile",
+            get(get_my_profile).patch(update_my_profile),
+        )
+        .route(
+            "/users/me/avatar",
+            post(upload_my_avatar).delete(delete_my_avatar),
+        )
+        .route("/users/avatar/{id}", get(download_user_avatar))
         .route("/users/me/preferences", get(get_prefs).patch(update_prefs))
         // Libraries
         .route("/libraries", post(create_library).get(list_libraries))
@@ -251,15 +268,296 @@ async fn auth_login(
 struct UserMeResponse {
     id: String,
     username: String,
+    login_username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    avatar_url: Option<String>,
     role: String,
 }
 
-async fn users_me(auth: AuthUser) -> Json<UserMeResponse> {
-    Json(UserMeResponse {
-        id: auth.user_id,
-        username: auth.username,
-        role: auth.role,
-    })
+#[derive(Serialize)]
+struct MyProfileResponse {
+    id: String,
+    username: String,
+    login_username: String,
+    role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    avatar_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateMyProfileRequest {
+    display_name: String,
+}
+
+fn avatar_url_for_user(user_id: &str, avatar_path: Option<&str>) -> Option<String> {
+    avatar_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|_| format!("/api/v1/users/avatar/{user_id}"))
+}
+
+fn normalize_display_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() < 2 || collapsed.chars().count() > 40 {
+        return None;
+    }
+    Some(collapsed)
+}
+
+fn avatar_kind_from(
+    file_name: Option<&str>,
+    content_type: Option<&str>,
+) -> Option<(&'static str, &'static str)> {
+    let normalized_ct = content_type
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match normalized_ct.as_str() {
+        "image/jpeg" | "image/jpg" => return Some(("jpg", "image/jpeg")),
+        "image/png" => return Some(("png", "image/png")),
+        "image/webp" => return Some(("webp", "image/webp")),
+        "image/gif" => return Some(("gif", "image/gif")),
+        _ => {}
+    }
+
+    let ext = file_name
+        .and_then(|value| StdPath::new(value).extension().and_then(|v| v.to_str()))
+        .map(|value| value.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some(("jpg", "image/jpeg")),
+        "png" => Some(("png", "image/png")),
+        "webp" => Some(("webp", "image/webp")),
+        "gif" => Some(("gif", "image/gif")),
+        _ => None,
+    }
+}
+
+fn profile_to_response(row: &rustfin_db::repo::users::UserRow) -> MyProfileResponse {
+    MyProfileResponse {
+        id: row.id.clone(),
+        username: row.display_name.clone(),
+        login_username: row.username.clone(),
+        role: row.role.clone(),
+        avatar_url: avatar_url_for_user(&row.id, row.avatar_path.as_deref()),
+    }
+}
+
+async fn users_me(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<UserMeResponse>, AppError> {
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(UserMeResponse {
+        id: user.id.clone(),
+        username: user.display_name,
+        login_username: user.username,
+        avatar_url: avatar_url_for_user(&user.id, user.avatar_path.as_deref()),
+        role: user.role,
+    }))
+}
+
+async fn get_my_profile(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<MyProfileResponse>, AppError> {
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(profile_to_response(&user)))
+}
+
+async fn update_my_profile(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<UpdateMyProfileRequest>,
+) -> Result<Json<MyProfileResponse>, AppError> {
+    let display_name = normalize_display_name(&body.display_name).ok_or_else(|| {
+        ApiError::BadRequest("display_name must be between 2 and 40 characters".into())
+    })?;
+    rustfin_db::repo::users::update_display_name(&state.db, &auth.user_id, &display_name)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(profile_to_response(&user)))
+}
+
+async fn upload_my_avatar(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<MyProfileResponse>, AppError> {
+    let mut file_name: Option<String> = None;
+    let mut content_type: Option<String> = None;
+    let mut bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("invalid multipart form: {e}")))?
+    {
+        if field.name().unwrap_or_default() != "file" || bytes.is_some() {
+            continue;
+        }
+        file_name = field.file_name().map(|value| value.to_string());
+        content_type = field.content_type().map(|value| value.to_string());
+        let payload = field
+            .bytes()
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("invalid avatar upload: {e}")))?;
+        if payload.is_empty() {
+            return Err(ApiError::BadRequest("uploaded avatar is empty".into()).into());
+        }
+        if payload.len() > MAX_AVATAR_UPLOAD_BYTES {
+            return Err(ApiError::BadRequest("avatar exceeds 5MB size limit".into()).into());
+        }
+        bytes = Some(payload.to_vec());
+    }
+
+    let payload =
+        bytes.ok_or_else(|| ApiError::BadRequest("multipart form requires file".into()))?;
+    let (ext, normalized_content_type) =
+        avatar_kind_from(file_name.as_deref(), content_type.as_deref()).ok_or_else(|| {
+            ApiError::BadRequest("avatar must be a jpg, png, webp, or gif image".into())
+        })?;
+    let avatar_dir = state.cache_dir.join(USER_AVATAR_DIR);
+    fs::create_dir_all(&avatar_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create avatar directory: {e}")))?;
+
+    let target_path = avatar_dir.join(format!("{}.{}", auth.user_id, ext));
+    fs::write(&target_path, payload)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to save avatar: {e}")))?;
+
+    let existing = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    if let Some(old_path) = existing
+        .avatar_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        let old = std::path::PathBuf::from(old_path);
+        if old != target_path && old.starts_with(&avatar_dir) {
+            if let Err(err) = fs::remove_file(&old).await {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    warn!(path = %old.display(), error = %err, "failed removing old avatar file");
+                }
+            }
+        }
+    }
+
+    rustfin_db::repo::users::update_avatar(
+        &state.db,
+        &auth.user_id,
+        Some(target_path.to_string_lossy().as_ref()),
+        Some(normalized_content_type),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(profile_to_response(&user)))
+}
+
+async fn delete_my_avatar(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<MyProfileResponse>, AppError> {
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    if let Some(path) = user
+        .avatar_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let avatar_dir = state.cache_dir.join(USER_AVATAR_DIR);
+        let target = std::path::PathBuf::from(path);
+        if target.starts_with(&avatar_dir) {
+            if let Err(err) = fs::remove_file(&target).await {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    warn!(path = %target.display(), error = %err, "failed removing avatar file");
+                }
+            }
+        }
+    }
+    rustfin_db::repo::users::update_avatar(&state.db, &auth.user_id, None, None)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let updated = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(profile_to_response(&updated)))
+}
+
+async fn download_user_avatar(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+) -> Result<Response, AppError> {
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+    let avatar_path = user
+        .avatar_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::NotFound("avatar not found".into()))?;
+    let avatar_dir = state.cache_dir.join(USER_AVATAR_DIR);
+    let avatar_path_buf = std::path::PathBuf::from(avatar_path);
+    if !avatar_path_buf.starts_with(&avatar_dir) {
+        return Err(ApiError::Forbidden("avatar path is outside allowed scope".into()).into());
+    }
+    let data = fs::read(&avatar_path_buf).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ApiError::NotFound("avatar not found".into())
+        } else {
+            ApiError::Internal(format!("failed reading avatar: {e}"))
+        }
+    })?;
+    let content_type = user
+        .avatar_content_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("application/octet-stream");
+
+    let mut response = Response::new(Body::from(data));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '@/lib/api';
 import {
   cancelVoiceTranscription,
@@ -110,12 +110,21 @@ function ParticipantCard({
               : undefined
           }
         >
-          <div
-            className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
-            style={{ backgroundColor: color }}
-          >
-            {initials}
-          </div>
+          {userInfo.avatar_url ? (
+            <img
+              src={userInfo.avatar_url}
+              alt={userInfo.username}
+              className="w-28 h-28 rounded-full object-cover border border-[var(--border)] bg-black/20"
+              loading="lazy"
+            />
+          ) : (
+            <div
+              className="w-28 h-28 rounded-full flex items-center justify-center text-4xl font-bold text-white"
+              style={{ backgroundColor: color }}
+            >
+              {initials}
+            </div>
+          )}
         </div>
       </div>
       <span className="text-sm font-medium">{userInfo.username}</span>
@@ -234,6 +243,13 @@ export default function VoiceChannelView({
   const transcriptionState = voiceTranscriptions[channel.id] ?? null;
   const muted = isConnected ? (voiceSession?.muted ?? false) : false;
   const deafened = isConnected ? (voiceSession?.deafened ?? false) : false;
+  const downloadableTranscriptSessions = useMemo(
+    () =>
+      transcriptSessions.filter(
+        (session: VoiceTranscriptionSessionSummary) => session.output_available,
+      ),
+    [transcriptSessions],
+  );
 
   async function handleConnect() {
     setError(null);
@@ -536,15 +552,19 @@ export default function VoiceChannelView({
         <aside className="w-60 min-w-[200px] border-l border-[var(--border)] bg-[var(--surface)]/30 p-3 overflow-y-auto">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">Transcripts</h3>
-            <span className="chip text-[11px]">{transcriptSessions.length}</span>
+            <span className="chip text-[11px]">{downloadableTranscriptSessions.length}</span>
           </div>
           {loadingTranscriptSessions ? (
             <p className="text-xs muted">Loading transcripts…</p>
-          ) : transcriptSessions.length === 0 ? (
-            <p className="text-xs muted">No transcripts saved for this voice channel yet.</p>
+          ) : downloadableTranscriptSessions.length === 0 ? (
+            <p className="text-xs muted">
+              {transcriptionState?.status === 'running' || transcriptionState?.status === 'finalizing'
+                ? 'Transcript is still running. It will appear here after Stop & Save.'
+                : 'No transcripts saved for this voice channel yet.'}
+            </p>
           ) : (
             <ul className="space-y-2">
-              {transcriptSessions.map((session) => (
+              {downloadableTranscriptSessions.map((session) => (
                 <li
                   key={session.session_id}
                   data-transcript-session-id={session.session_id}
@@ -563,38 +583,24 @@ export default function VoiceChannelView({
                   <p className="text-[11px] muted">
                     {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
                   </p>
-                  {session.output_available ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        className="btn-secondary w-full px-2 py-1 text-xs"
-                        onClick={() => void handleDownloadTranscription(session)}
-                        disabled={transcriptionBusy}
-                      >
-                        Download
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
-                        onClick={() => void handleDeleteTranscription(session.session_id)}
-                        disabled={transcriptionBusy}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <p className="text-[11px] muted">No downloadable output yet</p>
-                      <button
-                        type="button"
-                        className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
-                        onClick={() => void handleDeleteTranscription(session.session_id)}
-                        disabled={transcriptionBusy}
-                      >
-                        Delete
-                      </button>
-                    </>
-                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary w-full px-2 py-1 text-xs"
+                      onClick={() => void handleDownloadTranscription(session)}
+                      disabled={transcriptionBusy}
+                    >
+                      Download
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
+                      onClick={() => void handleDeleteTranscription(session.session_id)}
+                      disabled={transcriptionBusy}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>

@@ -131,9 +131,27 @@ function AttachmentPreview({
   );
 }
 
-function Avatar({ userId, username }: { userId: string; username: string }) {
+function Avatar({
+  userId,
+  username,
+  avatarUrl,
+}: {
+  userId: string;
+  username: string;
+  avatarUrl?: string | null;
+}) {
   const color = hashColor(userId);
   const initials = username.slice(0, 2).toUpperCase();
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={username}
+        className="w-8 h-8 rounded-full object-cover shrink-0 border border-[var(--border)] bg-black/20"
+        loading="lazy"
+      />
+    );
+  }
   return (
     <div
       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
@@ -359,7 +377,11 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             >
               {showHeader ? (
                 <div className="flex items-start gap-3 pr-8">
-                  <Avatar userId={msg.user_id} username={msg.username} />
+                  <Avatar
+                    userId={msg.user_id}
+                    username={msg.username}
+                    avatarUrl={msg.avatar_url}
+                  />
                   <div className="min-w-0 space-y-1">
                     <div className="flex items-baseline gap-2">
                       <span className="font-semibold text-sm">{msg.username}</span>

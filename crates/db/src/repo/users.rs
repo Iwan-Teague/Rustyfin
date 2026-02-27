@@ -10,10 +10,52 @@ use password_hash::rand_core::OsRng;
 pub struct UserRow {
     pub id: String,
     pub username: String,
+    pub display_name: String,
+    pub avatar_path: Option<String>,
+    pub avatar_content_type: Option<String>,
     pub password_hash: String,
     pub role: String,
     pub created_ts: i64,
 }
+
+type UserTuple = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    i64,
+);
+
+fn map_user_row(
+    (
+        id,
+        username,
+        display_name,
+        avatar_path,
+        avatar_content_type,
+        password_hash,
+        role,
+        created_ts,
+    ): UserTuple,
+) -> UserRow {
+    UserRow {
+        id,
+        username,
+        display_name,
+        avatar_path,
+        avatar_content_type,
+        password_hash,
+        role,
+        created_ts,
+    }
+}
+
+const USER_SELECT_COLUMNS: &str = "id, username, COALESCE(NULLIF(display_name, ''), username) \
+                                   AS display_name, avatar_path, avatar_content_type, \
+                                   password_hash, role, created_ts";
 
 /// Create a new user. Returns the user ID.
 pub async fn create_user(
@@ -27,9 +69,11 @@ pub async fn create_user(
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
-        "INSERT INTO \"user\" (id, username, password_hash, role, created_ts) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO \"user\" (id, username, display_name, password_hash, role, created_ts) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&id)
+    .bind(username)
     .bind(username)
     .bind(&hash)
     .bind(role)
@@ -52,62 +96,32 @@ pub async fn find_by_username(
     pool: &DbPool,
     username: &str,
 ) -> Result<Option<UserRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM \"user\" WHERE username = $1",
-    )
-    .bind(username)
-    .fetch_optional(pool)
-    .await?;
+    let sql = format!("SELECT {USER_SELECT_COLUMNS} FROM \"user\" WHERE username = $1");
+    let row: Option<UserTuple> = sqlx::query_as(&sql)
+        .bind(username)
+        .fetch_optional(pool)
+        .await?;
 
-    Ok(
-        row.map(|(id, username, password_hash, role, created_ts)| UserRow {
-            id,
-            username,
-            password_hash,
-            role,
-            created_ts,
-        }),
-    )
+    Ok(row.map(map_user_row))
 }
 
 /// Find user by ID.
 pub async fn find_by_id(pool: &DbPool, user_id: &str) -> Result<Option<UserRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM \"user\" WHERE id = $1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await?;
+    let sql = format!("SELECT {USER_SELECT_COLUMNS} FROM \"user\" WHERE id = $1");
+    let row: Option<UserTuple> = sqlx::query_as(&sql)
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await?;
 
-    Ok(
-        row.map(|(id, username, password_hash, role, created_ts)| UserRow {
-            id,
-            username,
-            password_hash,
-            role,
-            created_ts,
-        }),
-    )
+    Ok(row.map(map_user_row))
 }
 
 /// List all users (admin).
 pub async fn list_users(pool: &DbPool) -> Result<Vec<UserRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM \"user\" ORDER BY created_ts",
-    )
-    .fetch_all(pool)
-    .await?;
+    let sql = format!("SELECT {USER_SELECT_COLUMNS} FROM \"user\" ORDER BY created_ts");
+    let rows: Vec<UserTuple> = sqlx::query_as(&sql).fetch_all(pool).await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(id, username, password_hash, role, created_ts)| UserRow {
-            id,
-            username,
-            password_hash,
-            role,
-            created_ts,
-        })
-        .collect())
+    Ok(rows.into_iter().map(map_user_row).collect())
 }
 
 /// List users by a set of IDs.
@@ -120,27 +134,15 @@ pub async fn list_users_by_ids(
     }
 
     let placeholders = crate::repo::dollar_placeholders(1, user_ids.len());
-    let sql = format!(
-        "SELECT id, username, password_hash, role, created_ts \
-         FROM \"user\" WHERE id IN ({placeholders})"
-    );
+    let sql = format!("SELECT {USER_SELECT_COLUMNS} FROM \"user\" WHERE id IN ({placeholders})");
 
-    let mut query = sqlx::query_as::<_, (String, String, String, String, i64)>(&sql);
+    let mut query = sqlx::query_as::<_, UserTuple>(&sql);
     for user_id in user_ids {
         query = query.bind(user_id);
     }
     let rows = query.fetch_all(pool).await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(id, username, password_hash, role, created_ts)| UserRow {
-            id,
-            username,
-            password_hash,
-            role,
-            created_ts,
-        })
-        .collect())
+    Ok(rows.into_iter().map(map_user_row).collect())
 }
 
 /// Delete a user by ID.
@@ -163,6 +165,37 @@ pub async fn update_user_role(
         .bind(user_id)
         .execute(pool)
         .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Update a user's display name.
+pub async fn update_display_name(
+    pool: &DbPool,
+    user_id: &str,
+    display_name: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE \"user\" SET display_name = $1 WHERE id = $2")
+        .bind(display_name)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Update avatar path/content type for a user (or clear with None).
+pub async fn update_avatar(
+    pool: &DbPool,
+    user_id: &str,
+    avatar_path: Option<&str>,
+    avatar_content_type: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("UPDATE \"user\" SET avatar_path = $1, avatar_content_type = $2 WHERE id = $3")
+            .bind(avatar_path)
+            .bind(avatar_content_type)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 

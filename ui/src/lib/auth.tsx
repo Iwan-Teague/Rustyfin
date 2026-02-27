@@ -11,7 +11,13 @@ import React, {
 import { useRouter } from 'next/navigation';
 import { apiJson } from './api';
 
-export type Me = { id: string; username: string; role: 'admin' | 'user' };
+export type Me = {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+  login_username?: string;
+  avatar_url?: string | null;
+};
 
 type AuthState = {
   me: Me | null;

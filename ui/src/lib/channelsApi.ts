@@ -15,6 +15,7 @@ export type ChannelMessage = {
   channel_id: string;
   user_id: string;
   username: string;
+  avatar_url?: string | null;
   content: string;
   attachments: ChannelMessageAttachment[];
   created_ts: number;
@@ -47,6 +48,7 @@ export type ChannelInfo = {
 export type UserInfo = {
   user_id: string;
   username: string;
+  avatar_url?: string | null;
 };
 
 export type MessageInfo = {
@@ -54,6 +56,7 @@ export type MessageInfo = {
   channel_id: string;
   user_id: string;
   username: string;
+  avatar_url?: string | null;
   content: string;
   attachments: ChannelMessageAttachment[];
   created_ts: number;
@@ -72,6 +75,7 @@ export type ChannelEvent =
       channel_id: string;
       user_id: string;
       username: string;
+      avatar_url?: string | null;
       joined: boolean;
       active_since_ts?: number | null;
     }

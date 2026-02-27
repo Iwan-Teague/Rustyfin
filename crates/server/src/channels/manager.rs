@@ -8,8 +8,8 @@ use super::protocol::{ChannelEvent, UserInfo};
 pub struct ChannelManager {
     broadcast: broadcast::Sender<Arc<ChannelEvent>>,
     user_senders: RwLock<HashMap<String, mpsc::UnboundedSender<Arc<ChannelEvent>>>>,
-    /// channel_id → Vec<(user_id, username)> in join order
-    voice: RwLock<HashMap<String, Vec<(String, String)>>>,
+    /// channel_id → Vec<(user_id, username, avatar_url)> in join order
+    voice: RwLock<HashMap<String, Vec<(String, String, Option<String>)>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
     voice_active_since_ts: RwLock<HashMap<String, i64>>,
 }
@@ -68,23 +68,29 @@ impl ChannelManager {
         channel_id: &str,
         user_id: &str,
         username: &str,
+        avatar_url: Option<&str>,
     ) -> JoinVoiceResult {
         let mut voice = self.voice.write().await;
         let members = voice.entry(channel_id.to_string()).or_default();
 
         let existing: Vec<UserInfo> = members
             .iter()
-            .filter(|(uid, _)| uid != user_id)
-            .map(|(uid, uname)| UserInfo {
+            .filter(|(uid, _, _)| uid != user_id)
+            .map(|(uid, uname, avatar)| UserInfo {
                 user_id: uid.clone(),
                 username: uname.clone(),
+                avatar_url: avatar.clone(),
             })
             .collect();
 
         // Remove if already present then re-add (handles re-join)
-        members.retain(|(uid, _)| uid != user_id);
+        members.retain(|(uid, _, _)| uid != user_id);
         let was_empty = members.is_empty();
-        members.push((user_id.to_string(), username.to_string()));
+        members.push((
+            user_id.to_string(),
+            username.to_string(),
+            avatar_url.map(str::to_string),
+        ));
 
         drop(voice);
 
@@ -110,7 +116,7 @@ impl ChannelManager {
         let mut voice = self.voice.write().await;
         let mut still_active = false;
         if let Some(members) = voice.get_mut(channel_id) {
-            members.retain(|(uid, _)| uid != user_id);
+            members.retain(|(uid, _, _)| uid != user_id);
             if members.is_empty() {
                 voice.remove(channel_id);
             } else {
@@ -139,7 +145,7 @@ impl ChannelManager {
         let mut still_active_channels = HashSet::new();
         for (channel_id, members) in voice.iter_mut() {
             let before = members.len();
-            members.retain(|(uid, _)| uid != user_id);
+            members.retain(|(uid, _, _)| uid != user_id);
             if members.len() < before {
                 left_channel_ids.push(channel_id.clone());
                 if !members.is_empty() {
@@ -185,9 +191,10 @@ impl ChannelManager {
                     channel_id.clone(),
                     members
                         .iter()
-                        .map(|(uid, uname)| UserInfo {
+                        .map(|(uid, uname, avatar)| UserInfo {
                             user_id: uid.clone(),
                             username: uname.clone(),
+                            avatar_url: avatar.clone(),
                         })
                         .collect(),
                 )

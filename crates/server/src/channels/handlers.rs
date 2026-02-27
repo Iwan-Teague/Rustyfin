@@ -59,6 +59,8 @@ pub struct MessageResponse {
     pub channel_id: String,
     pub user_id: String,
     pub username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentResponse>,
@@ -108,6 +110,38 @@ fn channel_to_info(row: &rustfin_db::repo::channels::ChannelRow) -> ChannelInfo 
         position: row.position,
         is_private: row.is_private,
     }
+}
+
+#[derive(Debug, Clone)]
+struct SenderProfile {
+    display_name: String,
+    avatar_url: Option<String>,
+}
+
+fn avatar_url_for_user(user_id: &str, avatar_path: Option<&str>) -> Option<String> {
+    avatar_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|_| format!("/api/v1/users/avatar/{user_id}"))
+}
+
+async fn resolve_sender_profile(
+    state: &AppState,
+    auth: &AuthUser,
+) -> Result<SenderProfile, AppError> {
+    let Some(user) = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Ok(SenderProfile {
+            display_name: auth.username.clone(),
+            avatar_url: None,
+        });
+    };
+    Ok(SenderProfile {
+        display_name: user.display_name,
+        avatar_url: avatar_url_for_user(&auth.user_id, user.avatar_path.as_deref()),
+    })
 }
 
 async fn get_accessible_channel(
@@ -493,11 +527,13 @@ pub async fn get_messages(
     let mut response: Vec<MessageResponse> = Vec::with_capacity(messages.len());
     for m in messages {
         let attachments = attachments_by_message.remove(&m.id).unwrap_or_default();
+        let avatar_url = avatar_url_for_user(&m.user_id, m.avatar_path.as_deref());
         response.push(MessageResponse {
             id: m.id,
             channel_id: m.channel_id,
             user_id: m.user_id,
             username: m.username,
+            avatar_url,
             content: m.content,
             attachments,
             created_ts: m.created_ts,
@@ -588,12 +624,13 @@ pub async fn send_message(
             ApiError::BadRequest("messages are only supported in text channels".into()).into(),
         );
     }
+    let sender = resolve_sender_profile(&state, &auth).await?;
 
     let row = rustfin_db::repo::channels::create_message(
         &state.db,
         &channel_id,
         &auth.user_id,
-        &auth.username,
+        &sender.display_name,
         &content,
     )
     .await
@@ -605,6 +642,7 @@ pub async fn send_message(
             channel_id: row.channel_id.clone(),
             user_id: row.user_id.clone(),
             username: row.username.clone(),
+            avatar_url: sender.avatar_url.clone(),
             content: row.content.clone(),
             attachments: vec![],
             created_ts: row.created_ts,
@@ -618,6 +656,7 @@ pub async fn send_message(
             channel_id: row.channel_id,
             user_id: row.user_id,
             username: row.username,
+            avatar_url: sender.avatar_url,
             content: row.content,
             attachments: vec![],
             created_ts: row.created_ts,
@@ -638,6 +677,7 @@ pub async fn upload_attachment_message(
             ApiError::BadRequest("attachments are only supported in text channels".into()).into(),
         );
     }
+    let sender = resolve_sender_profile(&state, &auth).await?;
 
     let mut maybe_content: Option<String> = None;
     let mut maybe_filename: Option<String> = None;
@@ -719,7 +759,7 @@ pub async fn upload_attachment_message(
         &state.db,
         &channel_id,
         &auth.user_id,
-        &auth.username,
+        &sender.display_name,
         &message_content,
     )
     .await
@@ -753,6 +793,7 @@ pub async fn upload_attachment_message(
             channel_id: row.channel_id.clone(),
             user_id: row.user_id.clone(),
             username: row.username.clone(),
+            avatar_url: sender.avatar_url.clone(),
             content: row.content.clone(),
             attachments: vec![attachment_info],
             created_ts: row.created_ts,
@@ -766,6 +807,7 @@ pub async fn upload_attachment_message(
             channel_id: row.channel_id,
             user_id: row.user_id,
             username: row.username,
+            avatar_url: sender.avatar_url,
             content: row.content,
             attachments: vec![attachment_response],
             created_ts: row.created_ts,

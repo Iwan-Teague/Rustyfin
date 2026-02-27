@@ -50,6 +50,8 @@ pub enum ChannelEvent {
         channel_id: String,
         user_id: String,
         username: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar_url: Option<String>,
         joined: bool,
         active_since_ts: Option<i64>,
     },
@@ -111,6 +113,8 @@ pub struct ChannelInfo {
 pub struct UserInfo {
     pub user_id: String,
     pub username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +123,8 @@ pub struct MessageInfo {
     pub channel_id: String,
     pub user_id: String,
     pub username: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub content: String,
     #[serde(default)]
     pub attachments: Vec<MessageAttachmentInfo>,

@@ -340,6 +340,11 @@ export type WsChessState = {
   last_move_from?: string | null;
   last_move_to?: string | null;
   last_move_promotion?: string | null;
+  reset_requested_white?: boolean;
+  reset_requested_black?: boolean;
+  ai_enabled?: boolean;
+  ai_difficulty?: 'easy' | 'medium' | 'hard' | string;
+  ai_color?: 'white' | 'black' | string | null;
   legal_moves?: Array<{
     from: string;
     to: string;

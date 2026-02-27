@@ -37,6 +37,11 @@ interface PersistedVoiceSession {
   wantMic: boolean;
 }
 
+interface PersistedAudioDevicePrefs {
+  inputDeviceId: string | null;
+  outputDeviceId: string | null;
+}
+
 export interface ChannelsContextValue {
   wsReady: boolean;
   sendWs: (msg: object) => void;
@@ -47,6 +52,8 @@ export interface ChannelsContextValue {
   voiceTranscriptions: Record<string, VoiceTranscriptionState>;
   remoteVolumes: Record<string, number>;
   localMicGain: number;
+  preferredInputDeviceId: string | null;
+  preferredOutputDeviceId: string | null;
   newMessages: ChannelMessage[];
   lastWsEvent: ChannelEvent | null;
   voiceSession: VoiceSession | null;
@@ -56,6 +63,7 @@ export interface ChannelsContextValue {
   toggleDeafen: () => void;
   setRemoteVolume: (userId: string, volume: number) => void;
   setLocalMicGain: (volume: number) => void;
+  setPreferredAudioDevices: (inputDeviceId: string | null, outputDeviceId: string | null) => void;
   setVoiceTranscriptionState: (
     channelId: string,
     next: VoiceTranscriptionState | null,
@@ -84,6 +92,7 @@ function getWsUrl(): string {
 }
 
 const VOICE_SESSION_KEY = 'channels_voice_session_v1';
+const AUDIO_DEVICE_PREFS_KEY = 'channels_audio_device_prefs_v1';
 
 function loadPersistedVoiceSession(): PersistedVoiceSession | null {
   try {
@@ -117,6 +126,34 @@ function clearPersistedVoiceSession() {
   }
 }
 
+function loadAudioDevicePrefs(): PersistedAudioDevicePrefs {
+  try {
+    const raw = localStorage.getItem(AUDIO_DEVICE_PREFS_KEY);
+    if (!raw) {
+      return { inputDeviceId: null, outputDeviceId: null };
+    }
+    const parsed = JSON.parse(raw) as PersistedAudioDevicePrefs;
+    return {
+      inputDeviceId: parsed?.inputDeviceId ?? null,
+      outputDeviceId: parsed?.outputDeviceId ?? null,
+    };
+  } catch {
+    return { inputDeviceId: null, outputDeviceId: null };
+  }
+}
+
+function saveAudioDevicePrefs(inputDeviceId: string | null, outputDeviceId: string | null) {
+  try {
+    const payload: PersistedAudioDevicePrefs = {
+      inputDeviceId: inputDeviceId || null,
+      outputDeviceId: outputDeviceId || null,
+    };
+    localStorage.setItem(AUDIO_DEVICE_PREFS_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function ChannelsProvider({ children }: { children: React.ReactNode }) {
@@ -132,6 +169,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   >({});
   const [remoteVolumes, setRemoteVolumes] = useState<Record<string, number>>({});
   const [localMicGain, setLocalMicGainState] = useState(1);
+  const [preferredInputDeviceId, setPreferredInputDeviceId] = useState<string | null>(null);
+  const [preferredOutputDeviceId, setPreferredOutputDeviceId] = useState<string | null>(null);
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
@@ -148,6 +187,13 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const voiceSessionRef = useRef<VoiceSession | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const prefs = loadAudioDevicePrefs();
+    setPreferredInputDeviceId(prefs.inputDeviceId);
+    setPreferredOutputDeviceId(prefs.outputDeviceId);
+  }, []);
 
   // Keep voiceSessionRef in sync so WS callbacks always see the latest session
   useEffect(() => {
@@ -276,7 +322,11 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
                 ...prev,
                 [event.channel_id]: [
                   ...current,
-                  { user_id: event.user_id, username: event.username },
+                  {
+                    user_id: event.user_id,
+                    username: event.username,
+                    avatar_url: event.avatar_url ?? null,
+                  },
                 ],
               };
             } else {
@@ -341,6 +391,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               channel_id: msg.channel_id,
               user_id: msg.user_id,
               username: msg.username,
+              avatar_url: msg.avatar_url ?? null,
               content: msg.content,
               attachments: msg.attachments || [],
               created_ts: msg.created_ts,
@@ -466,18 +517,38 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           'Microphone API is unavailable in this browser context. Joined as listener.';
       } else {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const preferredConstraint =
+            preferredInputDeviceId && preferredInputDeviceId.trim()
+              ? { deviceId: { exact: preferredInputDeviceId.trim() } }
+              : true;
+          stream = await navigator.mediaDevices.getUserMedia({ audio: preferredConstraint });
         } catch (error) {
           const name = error instanceof DOMException ? error.name : '';
-          if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+          const shouldRetryWithDefaultDevice =
+            name === 'OverconstrainedError' || name === 'NotFoundError';
+          if (shouldRetryWithDefaultDevice) {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (retryErr) {
+              const retryName = retryErr instanceof DOMException ? retryErr.name : '';
+              if (retryName === 'NotAllowedError' || retryName === 'PermissionDeniedError') {
+                micStatusMessage =
+                  'Microphone permission was denied. Joined as listener until mic access is allowed.';
+              } else if (retryName === 'NotFoundError') {
+                micStatusMessage = 'No microphone was found on this device. Joined as listener.';
+              } else {
+                micStatusMessage = 'Unable to access microphone. Joined as listener.';
+              }
+              stream = null;
+            }
+          } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
             micStatusMessage =
               'Microphone permission was denied. Joined as listener until mic access is allowed.';
-          } else if (name === 'NotFoundError') {
-            micStatusMessage = 'No microphone was found on this device. Joined as listener.';
+            stream = null;
           } else {
             micStatusMessage = 'Unable to access microphone. Joined as listener.';
+            stream = null;
           }
-          stream = null;
         }
       }
 
@@ -485,7 +556,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       sendWs({ type: 'join_voice', channel_id: channelId });
       return micStatusMessage;
     },
-    [voiceSession, sendWs],
+    [voiceSession, sendWs, preferredInputDeviceId],
   );
 
   const leaveVoice = useCallback(() => {
@@ -542,6 +613,14 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     const clamped = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
     const rounded = Math.round(clamped * 100) / 100;
     setLocalMicGainState((prev) => (prev === rounded ? prev : rounded));
+  }, []);
+
+  const setPreferredAudioDevices = useCallback((inputDeviceId: string | null, outputDeviceId: string | null) => {
+    const normalizedInput = inputDeviceId && inputDeviceId.trim() ? inputDeviceId.trim() : null;
+    const normalizedOutput = outputDeviceId && outputDeviceId.trim() ? outputDeviceId.trim() : null;
+    setPreferredInputDeviceId(normalizedInput);
+    setPreferredOutputDeviceId(normalizedOutput);
+    saveAudioDevicePrefs(normalizedInput, normalizedOutput);
   }, []);
 
   const setVoiceTranscriptionState = useCallback(
@@ -627,6 +706,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     voiceTranscriptions,
     remoteVolumes,
     localMicGain,
+    preferredInputDeviceId,
+    preferredOutputDeviceId,
     newMessages,
     lastWsEvent,
     voiceSession,
@@ -636,6 +717,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     toggleDeafen,
     setRemoteVolume,
     setLocalMicGain,
+    setPreferredAudioDevices,
     setVoiceTranscriptionState,
     sendTranscriptionChunk,
   };
@@ -656,6 +738,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           deafened={voiceSession.deafened}
           remoteVolumes={remoteVolumes}
           localMicGain={localMicGain}
+          preferredOutputDeviceId={preferredOutputDeviceId}
           onSpeakingChange={handleSpeakingChange}
           transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
           onTranscriptionChunk={sendTranscriptionChunk}

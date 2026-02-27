@@ -9,9 +9,10 @@ import { createChannel, deleteChannel } from '@/lib/channelsApi';
 import ChannelSidebar from './components/ChannelSidebar';
 import TextChannelView from './components/TextChannelView';
 import VoiceChannelView from './components/VoiceChannelView';
+import ChannelUserSettings from './components/ChannelUserSettings';
 
 export default function ChannelsPage() {
-  const { me, loading: authLoading } = useAuth();
+  const { me, loading: authLoading, refreshMe } = useAuth();
   const router = useRouter();
   const {
     wsReady,
@@ -20,10 +21,13 @@ export default function ChannelsPage() {
     voicePresence,
     voiceActiveSince,
     voiceSpeaking,
+    preferredInputDeviceId,
+    preferredOutputDeviceId,
     newMessages,
     lastWsEvent,
     voiceSession,
     joinVoice,
+    setPreferredAudioDevices,
   } = useChannels();
 
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
@@ -138,31 +142,41 @@ export default function ChannelsPage() {
           </div>
         )}
 
-        {!activeChannel ? (
-          <div className="flex flex-col items-center justify-center flex-1 gap-2 muted">
-            <span className="text-4xl">💬</span>
-            <p className="text-sm">Select a channel to get started</p>
-          </div>
-        ) : activeChannel.kind === 'text' ? (
-          <TextChannelView
-            key={activeChannel.id}
-            channel={activeChannel}
-            newMessages={newMessages}
-            currentUserId={me.id}
-            isAdmin={me.role === 'admin'}
-            wsEvents={lastWsEvent}
-            onSendMessage={handleSendMessage}
-          />
-        ) : (
-          <VoiceChannelView
-            key={activeChannel.id}
-            channel={activeChannel}
-            voicePresence={voicePresence}
-            currentUserId={me.id}
-            currentUsername={me.username}
-            wsEvents={lastWsEvent}
-          />
-        )}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {!activeChannel ? (
+            <div className="flex flex-col items-center justify-center h-full gap-2 muted">
+              <span className="text-4xl">💬</span>
+              <p className="text-sm">Select a channel to get started</p>
+            </div>
+          ) : activeChannel.kind === 'text' ? (
+            <TextChannelView
+              key={activeChannel.id}
+              channel={activeChannel}
+              newMessages={newMessages}
+              currentUserId={me.id}
+              isAdmin={me.role === 'admin'}
+              wsEvents={lastWsEvent}
+              onSendMessage={handleSendMessage}
+            />
+          ) : (
+            <VoiceChannelView
+              key={activeChannel.id}
+              channel={activeChannel}
+              voicePresence={voicePresence}
+              currentUserId={me.id}
+              currentUsername={me.username}
+              wsEvents={lastWsEvent}
+            />
+          )}
+        </div>
+
+        <ChannelUserSettings
+          me={me}
+          preferredInputDeviceId={preferredInputDeviceId}
+          preferredOutputDeviceId={preferredOutputDeviceId}
+          setPreferredAudioDevices={setPreferredAudioDevices}
+          onProfileSaved={refreshMe}
+        />
       </div>
 
       {/* Create channel modal */}
