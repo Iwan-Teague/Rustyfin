@@ -19,8 +19,8 @@ use crate::state::AppState;
 use super::manager::{AudioAction, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
-    ChessState as ProtocolChessState, ClientMessage, CreateCanvasStroke, PresenceMember,
-    QueueEntry, ServerMessage, YouTubeSearchEntry,
+    ChessLegalMove as ProtocolChessLegalMove, ChessState as ProtocolChessState, ClientMessage,
+    CreateCanvasStroke, PresenceMember, QueueEntry, ServerMessage, YouTubeSearchEntry,
 };
 use super::youtube::{
     is_valid_youtube_video_id, normalize_web_room_url, perform_youtube_search,
@@ -2407,6 +2407,13 @@ async fn build_play_state_message(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let board = chess::Board::from_str(&play_state.chess.fen)
         .map_err(|_| ApiError::Internal("invalid chess board state".into()))?;
+    let legal_moves = chess::MoveGen::new_legal(&board)
+        .map(|mv| ProtocolChessLegalMove {
+            from: mv.get_source().to_string().to_ascii_lowercase(),
+            to: mv.get_dest().to_string().to_ascii_lowercase(),
+            promotion: mv.get_promotion().map(chess_promotion_piece_to_code),
+        })
+        .collect();
 
     let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
@@ -2435,12 +2442,23 @@ async fn build_play_state_message(
                 .last_move
                 .as_ref()
                 .and_then(|mv| mv.promotion.clone()),
+            legal_moves,
             updated_ts_ms: play_state.chess.updated_ts_ms,
         },
         updated_ts_ms: play_state.updated_ts_ms,
         server_ts_ms: now_ms,
         members: member_summaries,
     })
+}
+
+fn chess_promotion_piece_to_code(piece: chess::Piece) -> String {
+    match piece {
+        chess::Piece::Queen => "q".to_string(),
+        chess::Piece::Rook => "r".to_string(),
+        chess::Piece::Bishop => "b".to_string(),
+        chess::Piece::Knight => "n".to_string(),
+        _ => "q".to_string(),
+    }
 }
 
 async fn build_audio_state_message(

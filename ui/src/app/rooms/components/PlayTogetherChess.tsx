@@ -131,6 +131,17 @@ export default function PlayTogetherChess({
     myAssignedColor === 'black' ? [...RANKS].reverse() : [...RANKS];
 
   const selectedPiece = selectedSquare ? board.get(selectedSquare) : undefined;
+  const selectedLegalTargets = useMemo(() => {
+    if (!selectedSquare) return new Set<string>();
+    const moves = chess?.legal_moves ?? [];
+    const destinations = new Set<string>();
+    for (const move of moves) {
+      if (move.from === selectedSquare) {
+        destinations.add(move.to);
+      }
+    }
+    return destinations;
+  }, [chess?.legal_moves, selectedSquare]);
 
   useEffect(() => {
     if (whiteUserId || blackUserId) {
@@ -269,10 +280,12 @@ export default function PlayTogetherChess({
               filesForDisplay.map((file, fileIndex) => {
                 const square = `${file}${rank}`;
                 const piece = board.get(square);
-                const isLight = (rankIndex + fileIndex) % 2 === 0;
+                // Invert square parity so white/black board colors render in the expected order.
+                const isLight = (rankIndex + fileIndex) % 2 !== 0;
                 const isSelected = selectedSquare === square;
                 const isLastMove =
                   chess.last_move_from === square || chess.last_move_to === square;
+                const isLegalDestination = !!selectedSquare && selectedLegalTargets.has(square);
                 return (
                   <button
                     key={square}
@@ -284,6 +297,12 @@ export default function PlayTogetherChess({
                       isLastMove ? 'outline outline-1 outline-[var(--purple)] outline-offset-[-1px]' : ''
                     }`}
                   >
+                    {isLegalDestination &&
+                      (piece ? (
+                        <span className="pointer-events-none absolute inset-[18%] rounded-full border-2 border-[var(--orange-soft)]/85" />
+                      ) : (
+                        <span className="pointer-events-none absolute h-3 w-3 rounded-full bg-[var(--orange-soft)]/80" />
+                      ))}
                     <span className={piece && piece === piece.toLowerCase() ? 'text-white/90' : 'text-white'}>
                       {piece ? PIECE_SYMBOLS[piece] : ''}
                     </span>

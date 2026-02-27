@@ -1,5 +1,9 @@
 use crate::DbPool;
 
+fn db_int_to_bool(v: i64) -> bool {
+    v != 0
+}
+
 /// We store playback sessions in memory for now (they're ephemeral).
 /// Progress is persisted via user_item_state.
 
@@ -43,7 +47,7 @@ pub async fn get_play_state(
     user_id: &str,
     item_id: &str,
 ) -> Result<Option<PlayStateRow>, sqlx::Error> {
-    let row: Option<(String, String, bool, i64, Option<i64>, bool)> = sqlx::query_as(
+    let row: Option<(String, String, i64, i64, Option<i64>, i64)> = sqlx::query_as(
         "SELECT user_id, item_id, played, progress_ms, last_played_ts, favorite \
          FROM user_item_state WHERE user_id = $1 AND item_id = $2",
     )
@@ -55,9 +59,9 @@ pub async fn get_play_state(
     Ok(row.map(|r| PlayStateRow {
         user_id: r.0,
         item_id: r.1,
-        played: r.2,
+        played: db_int_to_bool(r.2),
         progress_ms: r.3,
         last_played_ts: r.4,
-        favorite: r.5,
+        favorite: db_int_to_bool(r.5),
     }))
 }

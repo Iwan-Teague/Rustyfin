@@ -340,6 +340,11 @@ export type WsChessState = {
   last_move_from?: string | null;
   last_move_to?: string | null;
   last_move_promotion?: string | null;
+  legal_moves?: Array<{
+    from: string;
+    to: string;
+    promotion?: string | null;
+  }>;
   updated_ts_ms: number;
 };
 
