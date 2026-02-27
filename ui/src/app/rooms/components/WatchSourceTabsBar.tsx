@@ -34,6 +34,7 @@ export default function WatchSourceTabsBar({
         label: option.label,
       }))}
       badges={badges}
+      badgesClassName="-translate-y-[2px]"
     />
   );
 }

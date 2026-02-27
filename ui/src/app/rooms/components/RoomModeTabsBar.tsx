@@ -9,6 +9,7 @@ type Props<T extends string> = {
   disabled?: boolean;
   options: TabOption<T>[];
   badges?: string[];
+  badgesClassName?: string;
   className?: string;
 };
 
@@ -18,6 +19,7 @@ export default function RoomModeTabsBar<T extends string>({
   disabled = false,
   options,
   badges = [],
+  badgesClassName = '',
   className,
 }: Props<T>) {
   return (
@@ -40,7 +42,7 @@ export default function RoomModeTabsBar<T extends string>({
             </button>
           ))}
         </div>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        <div className={`ml-auto flex flex-wrap items-center justify-end gap-2 ${badgesClassName}`.trim()}>
           {badges.map((badge) => (
             <span key={badge} className="chip">
               {badge}

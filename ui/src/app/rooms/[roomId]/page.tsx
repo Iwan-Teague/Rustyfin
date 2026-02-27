@@ -90,7 +90,7 @@ export default function WatchPartyRoomPage() {
     : isWebRoom
       ? 'web'
       : 'video';
-  const watchWindowShiftClass = isWatchRoom ? 'mt-[35px]' : '';
+  const watchWindowShiftClass = isWatchRoom ? 'mt-[55px]' : '';
   const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -777,7 +777,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`panel relative space-y-4 p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}
+            className={`panel relative space-y-4 p-5 pt-[56px] sm:p-6 sm:pt-[60px] ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
