@@ -132,6 +132,7 @@ function ParticipantCard({
           disabled={sliderDisabled}
           onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
           className="rf-gradient-slider w-full disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ ['--rf-slider-value' as string]: `${volumePercent}%` }}
           aria-label={sliderLabel}
         />
       </div>

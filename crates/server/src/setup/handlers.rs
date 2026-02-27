@@ -522,6 +522,18 @@ pub async fn create_admin(
 
     info!(username = %body.username, "admin user created during setup");
 
+    crate::audit_log::record_event(
+        &state,
+        "admin.setup.create_admin",
+        serde_json::json!({
+            "scope": "setup",
+            "action": "create_admin",
+            "user_id": user_id,
+            "username": body.username,
+        }),
+    )
+    .await;
+
     (StatusCode::CREATED, Json(response)).into_response()
 }
 
@@ -694,10 +706,27 @@ pub async fn create_libraries(
                         "setup library created but auto-scan enqueue failed"
                     );
                 }
+                let row_id = row.id.clone();
+                let row_name = row.name.clone();
+                let row_kind = row.kind.clone();
                 created_libs.push(LibraryRef {
-                    id: row.id,
-                    name: row.name,
+                    id: row_id.clone(),
+                    name: row_name.clone(),
                 });
+
+                crate::audit_log::record_event(
+                    &state,
+                    "admin.setup.create_library",
+                    serde_json::json!({
+                        "scope": "setup",
+                        "action": "create_library",
+                        "library_id": row_id,
+                        "name": row_name,
+                        "kind": row_kind,
+                        "path_count": lib.paths.len(),
+                    }),
+                )
+                .await;
             }
             Err(e) => {
                 return AppError::from(ApiError::Internal(format!(

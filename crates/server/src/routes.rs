@@ -317,7 +317,7 @@ async fn ensure_library_access(
 }
 
 async fn create_user_route(
-    _admin: AdminUser,
+    admin: AdminUser,
     State(state): State<AppState>,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<Json<CreateUserResponse>, AppError> {
@@ -331,6 +331,21 @@ async fn create_user_route(
         &library_ids,
     )
     .await?;
+
+    crate::audit_log::record_event(
+        &state,
+        "admin.users.create",
+        serde_json::json!({
+            "scope": "users",
+            "action": "create",
+            "admin_user_id": admin.user_id,
+            "user_id": id,
+            "username": body.username,
+            "role": role,
+            "library_ids": if role == "user" { library_ids.clone() } else { Vec::<String>::new() },
+        }),
+    )
+    .await;
 
     Ok(Json(CreateUserResponse {
         id,
@@ -719,7 +734,7 @@ async fn library_row_to_response(
 }
 
 async fn create_library(
-    _admin: AdminUser,
+    admin: AdminUser,
     State(state): State<AppState>,
     Json(body): Json<CreateLibraryRequest>,
 ) -> Result<(axum::http::StatusCode, Json<LibraryResponse>), AppError> {
@@ -782,6 +797,21 @@ async fn create_library(
             "library created but auto-scan enqueue failed"
         );
     }
+
+    crate::audit_log::record_event(
+        &state,
+        "admin.libraries.create",
+        serde_json::json!({
+            "scope": "libraries",
+            "action": "create",
+            "admin_user_id": admin.user_id,
+            "library_id": response.id,
+            "name": response.name,
+            "kind": response.kind,
+            "path_count": response.paths.len(),
+        }),
+    )
+    .await;
 
     Ok((axum::http::StatusCode::CREATED, Json(response)))
 }

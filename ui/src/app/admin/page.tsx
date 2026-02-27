@@ -123,6 +123,13 @@ interface TmdbSyncStatusRow {
 
 type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'logs' | 'tmdb';
 type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
+type PendingDeleteKind = 'user' | 'library' | 'channel' | 'room';
+
+interface PendingDeleteAction {
+  kind: PendingDeleteKind;
+  id: string;
+  label: string;
+}
 
 const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'users', label: 'Users' },
@@ -190,7 +197,9 @@ export default function AdminPage() {
   const [channelEdits, setChannelEdits] = useState<Record<string, ChannelEditState>>({});
   const [rooms, setRooms] = useState<RoomRecord[]>([]);
   const [roomEdits, setRoomEdits] = useState<Record<string, RoomEditState>>({});
-  const [pendingDeleteRoom, setPendingDeleteRoom] = useState<RoomRecord | null>(null);
+  const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
+    null,
+  );
 
   const [newLib, setNewLib] = useState({
     name: '',
@@ -734,12 +743,13 @@ export default function AdminPage() {
     }
   }
 
-  async function deleteLibrary(libId: string) {
+  function requestDeleteLibrary(libId: string) {
     const target = libraries.find((l) => l.id === libId);
     const label = target ? `"${target.name}"` : 'this library';
-    if (!window.confirm(`Delete ${label}? This removes all indexed items for it.`)) {
-      return;
-    }
+    setPendingDeleteAction({ kind: 'library', id: libId, label });
+  }
+
+  async function deleteLibrary(libId: string) {
     try {
       const targetEl = findDataDeleteTarget('data-admin-library-card-id', libId);
       await playTelegramDeleteAnimation(targetEl);
@@ -853,6 +863,12 @@ export default function AdminPage() {
     }
   }
 
+  function requestDeleteUser(userId: string) {
+    const target = users.find((user) => user.id === userId);
+    const label = target ? `"${target.username}"` : 'this user';
+    setPendingDeleteAction({ kind: 'user', id: userId, label });
+  }
+
   async function createChannel(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -926,12 +942,13 @@ export default function AdminPage() {
     }
   }
 
-  async function deleteChannel(channelId: string) {
+  function requestDeleteChannel(channelId: string) {
     const target = channels.find((c) => c.id === channelId);
     const label = target ? `"${target.name}"` : 'this channel';
-    if (!window.confirm(`Delete ${label}?`)) {
-      return;
-    }
+    setPendingDeleteAction({ kind: 'channel', id: channelId, label });
+  }
+
+  async function deleteChannel(channelId: string) {
     try {
       const targetEl = findDataDeleteTarget('data-admin-channel-card-id', channelId);
       await playTelegramDeleteAnimation(targetEl);
@@ -1017,6 +1034,31 @@ export default function AdminPage() {
     } catch (err: unknown) {
       setErr(clientErrorMessage(err, 'Failed to delete room'));
     }
+  }
+
+  function requestDeleteRoom(roomId: string) {
+    const target = rooms.find((room) => room.room_id === roomId);
+    const label = target ? `"${target.title}"` : 'this room';
+    setPendingDeleteAction({ kind: 'room', id: roomId, label });
+  }
+
+  async function confirmPendingDelete() {
+    if (!pendingDeleteAction) return;
+    const pending = pendingDeleteAction;
+    setPendingDeleteAction(null);
+    if (pending.kind === 'user') {
+      await deleteUser(pending.id);
+      return;
+    }
+    if (pending.kind === 'library') {
+      await deleteLibrary(pending.id);
+      return;
+    }
+    if (pending.kind === 'channel') {
+      await deleteChannel(pending.id);
+      return;
+    }
+    await deleteRoom(pending.id);
   }
 
   async function saveTmdbKey(e: React.FormEvent) {
@@ -1239,7 +1281,7 @@ export default function AdminPage() {
                                 Save
                               </button>
                               <button
-                                onClick={() => deleteUser(user.id)}
+                                onClick={() => requestDeleteUser(user.id)}
                                 className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
                               >
                                 Delete
@@ -1311,7 +1353,7 @@ export default function AdminPage() {
                                 Save
                               </button>
                               <button
-                                onClick={() => deleteUser(user.id)}
+                                onClick={() => requestDeleteUser(user.id)}
                                 className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
                               >
                                 Delete
@@ -1719,7 +1761,7 @@ export default function AdminPage() {
                         {lib.kind} · {lib.item_count} items
                       </p>
                       <button
-                        onClick={() => deleteLibrary(lib.id)}
+                        onClick={() => requestDeleteLibrary(lib.id)}
                         className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
                       >
                         Delete
@@ -1822,7 +1864,7 @@ export default function AdminPage() {
                             Save
                           </button>
                           <button
-                            onClick={() => deleteChannel(channel.id)}
+                            onClick={() => requestDeleteChannel(channel.id)}
                             className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
                           >
                             Delete
@@ -1889,7 +1931,7 @@ export default function AdminPage() {
                           End
                         </button>
                         <button
-                          onClick={() => setPendingDeleteRoom(room)}
+                          onClick={() => requestDeleteRoom(room.room_id)}
                           className="btn-ghost px-3 py-1.5 text-sm text-[var(--danger)]"
                         >
                           Delete
@@ -2067,24 +2109,23 @@ export default function AdminPage() {
         </section>
       )}
 
-      {pendingDeleteRoom && (
+      {pendingDeleteAction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
           <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
-            <h2 className="font-semibold text-lg">Delete Room</h2>
+            <h2 className="font-semibold text-lg">Confirm Delete</h2>
             <p className="text-sm muted">
-              Delete &ldquo;{pendingDeleteRoom.title}&rdquo;? This removes the room and its history and cannot be undone.
+              Delete {pendingDeleteAction.label}? This action cannot be undone.
             </p>
             <div className="flex gap-2 justify-end">
               <button
-                onClick={() => setPendingDeleteRoom(null)}
+                onClick={() => setPendingDeleteAction(null)}
                 className="btn-ghost px-4 py-2 text-sm"
               >
                 Cancel
               </button>
               <button
                 onClick={() => {
-                  void deleteRoom(pendingDeleteRoom.room_id);
-                  setPendingDeleteRoom(null);
+                  void confirmPendingDelete();
                 }}
                 className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
               >

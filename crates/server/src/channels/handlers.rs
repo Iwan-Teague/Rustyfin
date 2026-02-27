@@ -1179,6 +1179,21 @@ pub async fn start_transcription(
         ApiError::Internal(format!("db error: {e}"))
     })?;
 
+    state
+        .channel_manager
+        .broadcast(ChannelEvent::VoiceTranscriptionState {
+            channel_id: channel_id.clone(),
+            state: VoiceTranscriptionStateInfo {
+                status: "running".to_string(),
+                session_id: Some(session.id.clone()),
+                started_by_username: Some(session.started_by_username.clone()),
+                started_ts: Some(session.started_ts),
+                ended_ts: None,
+                output_available: false,
+                message: Some("starting transcription model...".to_string()),
+            },
+        });
+
     if let Err(err) = transcription_agent::start_session(&state, &session.id).await {
         let _ = rustfin_db::repo::channel_transcripts::fail_session(
             &state.db,
