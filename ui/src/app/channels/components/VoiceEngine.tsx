@@ -32,6 +32,7 @@ const SPEAKING_HANG_MS = 300;
 const TRANSCRIPTION_SAMPLE_RATE = 16_000;
 const TRANSCRIPTION_CHUNK_SECONDS = 4;
 const TRANSCRIPTION_CHUNK_SAMPLES = TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
+const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
 
 type SpeakingMonitor = {
   source: MediaStreamAudioSourceNode;
@@ -411,6 +412,9 @@ export default function VoiceEngine({
     const nextSinkId = preferredOutputDeviceId && preferredOutputDeviceId.trim()
       ? preferredOutputDeviceId.trim()
       : '';
+    if (nextSinkId.startsWith(SYNTHETIC_OUTPUT_PREFIX)) {
+      return;
+    }
     const currentSinkId = sinkCapable.sinkId ?? '';
     if (currentSinkId === nextSinkId) {
       return;

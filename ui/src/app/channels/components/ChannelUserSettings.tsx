@@ -17,6 +17,14 @@ type AudioDeviceOption = {
   label: string;
 };
 
+const SYNTHETIC_INPUT_PREFIX = 'synthetic-audioinput-';
+const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
+
+function isSyntheticDeviceId(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return value.startsWith(SYNTHETIC_INPUT_PREFIX) || value.startsWith(SYNTHETIC_OUTPUT_PREFIX);
+}
+
 interface Props {
   me: Me;
   preferredInputDeviceId: string | null;
@@ -93,20 +101,28 @@ export default function ChannelUserSettings({
     }
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      let inputIndex = 1;
-      let outputIndex = 1;
+      let inputIndex = 0;
+      let outputIndex = 0;
       const nextInputs: AudioDeviceOption[] = [];
       const nextOutputs: AudioDeviceOption[] = [];
       for (const device of devices) {
         if (device.kind === 'audioinput') {
+          inputIndex += 1;
+          const normalizedDeviceId = device.deviceId?.trim() || '';
+          const stableId =
+            normalizedDeviceId || `${SYNTHETIC_INPUT_PREFIX}${inputIndex}`;
           nextInputs.push({
-            id: device.deviceId,
-            label: device.label || `Microphone ${inputIndex++}`,
+            id: stableId,
+            label: device.label || `Microphone ${inputIndex}`,
           });
         } else if (device.kind === 'audiooutput') {
+          outputIndex += 1;
+          const normalizedDeviceId = device.deviceId?.trim() || '';
+          const stableId =
+            normalizedDeviceId || `${SYNTHETIC_OUTPUT_PREFIX}${outputIndex}`;
           nextOutputs.push({
-            id: device.deviceId,
-            label: device.label || `Speaker ${outputIndex++}`,
+            id: stableId,
+            label: device.label || `Speaker ${outputIndex}`,
           });
         }
       }
@@ -265,7 +281,7 @@ export default function ChannelUserSettings({
                       <input
                         type="file"
                         accept="image/png,image/jpeg,image/webp,image/gif"
-                        className="text-xs w-full"
+                        className="w-full rounded-lg border border-[var(--border)] bg-black/20 px-3 py-2 text-xs text-white/85 file:mr-3 file:rounded-md file:border file:border-[var(--border)] file:bg-black/35 file:px-3 file:py-1 file:text-xs file:font-medium file:text-white hover:file:bg-black/45"
                         onChange={(event) => {
                           const file = event.target.files?.[0] ?? null;
                           setAvatarFile(file);
@@ -308,6 +324,11 @@ export default function ChannelUserSettings({
                       </option>
                     ))}
                   </select>
+                  {isSyntheticDeviceId(selectedInputDeviceId) && (
+                    <p className="text-xs muted">
+                      Browser privacy mode is hiding microphone IDs. Selection will be remembered as shown.
+                    </p>
+                  )}
 
                   <label className="text-xs muted">Output Device (Speaker/Headphones)</label>
                   <select
@@ -323,6 +344,11 @@ export default function ChannelUserSettings({
                       </option>
                     ))}
                   </select>
+                  {isSyntheticDeviceId(selectedOutputDeviceId) && supportsOutputDeviceSelection && (
+                    <p className="text-xs muted">
+                      Browser privacy mode is hiding speaker IDs. Selection will be remembered as shown.
+                    </p>
+                  )}
                   {!supportsOutputDeviceSelection && (
                     <p className="text-xs muted">
                       Your browser does not support speaker/output device selection in-app.
