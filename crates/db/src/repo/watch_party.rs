@@ -297,7 +297,7 @@ pub async fn list_members_with_usernames(
     )> = sqlx::query_as(
         "SELECT m.room_id, m.user_id, m.role, m.status, m.invited_by, m.invited_ts, m.joined_ts, m.last_seen_ts, u.username \
          FROM watch_party_member m \
-         JOIN user u ON u.id = m.user_id \
+         JOIN \"user\" u ON u.id = m.user_id \
          WHERE m.room_id = $1 \
          ORDER BY m.invited_ts ASC, m.user_id ASC",
     )
@@ -497,7 +497,7 @@ pub async fn list_invites_for_user(
          FROM watch_party_member m \
          JOIN watch_party_room r ON r.id = m.room_id \
          LEFT JOIN item i ON i.id = r.item_id \
-         JOIN user host ON host.id = r.host_user_id \
+         JOIN \"user\" host ON host.id = r.host_user_id \
          WHERE m.user_id = $1 AND m.status = 'invited' AND r.status = 'lobby' \
          ORDER BY r.created_ts DESC",
     )
@@ -596,13 +596,14 @@ pub async fn list_public_rooms(pool: &DbPool) -> Result<Vec<PublicRoomRow>, sqlx
                     COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                     r.created_ts \
              FROM watch_party_room r \
-             JOIN user host ON host.id = r.host_user_id \
+             JOIN \"user\" host ON host.id = r.host_user_id \
              LEFT JOIN item i ON i.id = r.item_id \
              LEFT JOIN library lib ON lib.id = r.audio_library_id \
              LEFT JOIN watch_party_member m ON m.room_id = r.id \
              WHERE r.status = 'lobby' \
                AND r.invite_only = 0 \
-             GROUP BY r.id \
+             GROUP BY r.id, r.room_name, r.host_user_id, host.username, r.item_id, i.title, \
+                      r.room_mode, r.audio_source, lib.name, r.web_url, r.join_password_hash, r.created_ts \
              ORDER BY r.created_ts DESC",
         )
         .fetch_all(pool)
@@ -672,11 +673,13 @@ pub async fn list_admin_rooms(pool: &DbPool) -> Result<Vec<AdminRoomRow>, sqlx::
                 COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                 r.status, r.created_ts, r.updated_ts \
          FROM watch_party_room r \
-         JOIN user host ON host.id = r.host_user_id \
+         JOIN \"user\" host ON host.id = r.host_user_id \
          LEFT JOIN item i ON i.id = r.item_id \
          LEFT JOIN library lib ON lib.id = r.audio_library_id \
          LEFT JOIN watch_party_member m ON m.room_id = r.id \
-         GROUP BY r.id \
+         GROUP BY r.id, r.room_name, r.host_user_id, host.username, r.item_id, i.title, \
+                  r.room_mode, r.audio_source, lib.name, r.web_url, r.join_password_hash, r.invite_only, \
+                  r.status, r.created_ts, r.updated_ts \
          ORDER BY CASE WHEN r.status = 'lobby' THEN 0 ELSE 1 END, r.updated_ts DESC, r.created_ts DESC",
     )
     .fetch_all(pool)

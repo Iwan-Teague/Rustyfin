@@ -27,7 +27,7 @@ pub async fn create_user(
     let now = chrono::Utc::now().timestamp();
 
     sqlx::query(
-        "INSERT INTO user (id, username, password_hash, role, created_ts) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO \"user\" (id, username, password_hash, role, created_ts) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&id)
     .bind(username)
@@ -53,7 +53,7 @@ pub async fn find_by_username(
     username: &str,
 ) -> Result<Option<UserRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM user WHERE username = $1",
+        "SELECT id, username, password_hash, role, created_ts FROM \"user\" WHERE username = $1",
     )
     .bind(username)
     .fetch_optional(pool)
@@ -73,7 +73,7 @@ pub async fn find_by_username(
 /// Find user by ID.
 pub async fn find_by_id(pool: &DbPool, user_id: &str) -> Result<Option<UserRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM user WHERE id = $1",
+        "SELECT id, username, password_hash, role, created_ts FROM \"user\" WHERE id = $1",
     )
     .bind(user_id)
     .fetch_optional(pool)
@@ -93,7 +93,7 @@ pub async fn find_by_id(pool: &DbPool, user_id: &str) -> Result<Option<UserRow>,
 /// List all users (admin).
 pub async fn list_users(pool: &DbPool) -> Result<Vec<UserRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, username, password_hash, role, created_ts FROM user ORDER BY created_ts",
+        "SELECT id, username, password_hash, role, created_ts FROM \"user\" ORDER BY created_ts",
     )
     .fetch_all(pool)
     .await?;
@@ -122,7 +122,7 @@ pub async fn list_users_by_ids(
     let placeholders = crate::repo::dollar_placeholders(1, user_ids.len());
     let sql = format!(
         "SELECT id, username, password_hash, role, created_ts \
-         FROM user WHERE id IN ({placeholders})"
+         FROM \"user\" WHERE id IN ({placeholders})"
     );
 
     let mut query = sqlx::query_as::<_, (String, String, String, String, i64)>(&sql);
@@ -145,7 +145,7 @@ pub async fn list_users_by_ids(
 
 /// Delete a user by ID.
 pub async fn delete_user(pool: &DbPool, user_id: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM user WHERE id = $1")
+    let result = sqlx::query("DELETE FROM \"user\" WHERE id = $1")
         .bind(user_id)
         .execute(pool)
         .await?;
@@ -158,7 +158,7 @@ pub async fn update_user_role(
     user_id: &str,
     role: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE user SET role = $1 WHERE id = $2")
+    let result = sqlx::query("UPDATE \"user\" SET role = $1 WHERE id = $2")
         .bind(role)
         .bind(user_id)
         .execute(pool)
@@ -248,7 +248,7 @@ pub async fn is_library_allowed(
 
 /// Check if any users exist (for admin bootstrap).
 pub async fn count_users(pool: &DbPool) -> Result<i64, sqlx::Error> {
-    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user")
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM \"user\"")
         .fetch_one(pool)
         .await?;
     Ok(count)

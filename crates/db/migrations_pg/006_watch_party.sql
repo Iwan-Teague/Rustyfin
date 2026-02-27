@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS watch_party_room (
     id TEXT PRIMARY KEY,
-    host_user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    host_user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
     status TEXT NOT NULL CHECK (status IN ('lobby', 'ended')),
     policy_json TEXT NOT NULL,
@@ -11,10 +11,10 @@ CREATE TABLE IF NOT EXISTS watch_party_room (
 
 CREATE TABLE IF NOT EXISTS watch_party_member (
     room_id TEXT NOT NULL REFERENCES watch_party_room(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('host', 'controller', 'viewer')),
     status TEXT NOT NULL CHECK (status IN ('invited', 'joined', 'declined', 'left')),
-    invited_by TEXT REFERENCES user(id) ON DELETE SET NULL,
+    invited_by TEXT REFERENCES "user"(id) ON DELETE SET NULL,
     invited_ts INTEGER,
     joined_ts INTEGER,
     last_seen_ts INTEGER,

@@ -153,8 +153,8 @@ pub async fn get_event(
                 e.event_date, e.event_type, e.recurrence, e.birthday_year, \
                 e.created_by_user_id, creator.username, e.created_ts, e.updated_ts \
          FROM calendar_event e \
-         LEFT JOIN user owner ON owner.id = e.owner_user_id \
-         LEFT JOIN user creator ON creator.id = e.created_by_user_id \
+         LEFT JOIN \"user\" owner ON owner.id = e.owner_user_id \
+         LEFT JOIN \"user\" creator ON creator.id = e.created_by_user_id \
          WHERE e.id = $1",
     )
     .bind(event_id)
@@ -227,8 +227,8 @@ pub async fn list_visible_events(
                 e.event_date, e.event_type, e.recurrence, e.birthday_year, \
                 e.created_by_user_id, creator.username, e.created_ts, e.updated_ts \
          FROM calendar_event e \
-         LEFT JOIN user owner ON owner.id = e.owner_user_id \
-         LEFT JOIN user creator ON creator.id = e.created_by_user_id \
+         LEFT JOIN \"user\" owner ON owner.id = e.owner_user_id \
+         LEFT JOIN \"user\" creator ON creator.id = e.created_by_user_id \
          WHERE (
              e.scope = 'global'
              OR ($1 = 1)
@@ -275,8 +275,8 @@ pub async fn list_personal_events(
                 e.event_date, e.event_type, e.recurrence, e.birthday_year, \
                 e.created_by_user_id, creator.username, e.created_ts, e.updated_ts \
          FROM calendar_event e \
-         LEFT JOIN user owner ON owner.id = e.owner_user_id \
-         LEFT JOIN user creator ON creator.id = e.created_by_user_id \
+         LEFT JOIN \"user\" owner ON owner.id = e.owner_user_id \
+         LEFT JOIN \"user\" creator ON creator.id = e.created_by_user_id \
          WHERE e.scope = 'personal'
            AND (
              (e.recurrence = 'none' AND e.event_date >= $1 AND e.event_date <= $2)

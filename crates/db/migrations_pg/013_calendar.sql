@@ -2,14 +2,14 @@
 CREATE TABLE IF NOT EXISTS calendar_event (
     id TEXT PRIMARY KEY,
     scope TEXT NOT NULL CHECK (scope IN ('global', 'personal')),
-    owner_user_id TEXT REFERENCES user(id) ON DELETE CASCADE,
+    owner_user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
     event_date TEXT NOT NULL,
     event_type TEXT NOT NULL DEFAULT 'event' CHECK (event_type IN ('event', 'birthday')),
     recurrence TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none', 'yearly')),
     birthday_year INTEGER,
-    created_by_user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    created_by_user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     created_ts INTEGER NOT NULL,
     updated_ts INTEGER NOT NULL,
     CHECK (

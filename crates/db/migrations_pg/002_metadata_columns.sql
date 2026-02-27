@@ -4,7 +4,7 @@ ALTER TABLE item ADD COLUMN tagline TEXT;
 ALTER TABLE item ADD COLUMN premiere_date TEXT;
 ALTER TABLE item ADD COLUMN end_date TEXT;
 ALTER TABLE item ADD COLUMN runtime_minutes INTEGER;
-ALTER TABLE item ADD COLUMN community_rating REAL;
+ALTER TABLE item ADD COLUMN community_rating DOUBLE PRECISION;
 ALTER TABLE item ADD COLUMN official_rating TEXT;
 ALTER TABLE item ADD COLUMN genres_json TEXT;
 ALTER TABLE item ADD COLUMN studios_json TEXT;
