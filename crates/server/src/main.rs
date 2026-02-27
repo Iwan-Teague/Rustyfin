@@ -1,6 +1,6 @@
 use anyhow::Context;
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn probe_binary(path: &Path, name: &str) {
@@ -36,19 +36,49 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    // DB path: use RUSTFIN_DB env or default
-    let db_path = std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "rustfin.db".to_string());
-    info!(db_path = %db_path, "connecting to database");
+    // Database target: prefer URL-based config, then fall back to legacy DB path.
+    let db_target = std::env::var("RUSTFIN_DATABASE_URL")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "rustfin.db".to_string())
+        });
+    let db_target_log =
+        if db_target.starts_with("postgres://") || db_target.starts_with("postgresql://") {
+            "postgres (credentials redacted)"
+        } else {
+            db_target.as_str()
+        };
+    info!(db_target = %db_target_log, "connecting to database");
 
-    let pool = rustfin_db::connect(&db_path)
+    let pool = rustfin_db::connect(&db_target)
         .await
         .context("failed to connect to database")?;
+    let db_backend = rustfin_db::detect_backend(&db_target);
+    let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true);
+    if db_backend == rustfin_db::DatabaseBackend::Postgres {
+        warn!(
+            "PostgreSQL backend is experimental in this transition phase; SQLite-oriented query paths may still require follow-up conversion."
+        );
+    }
 
-    // Run migrations
-    rustfin_db::migrate::run(&pool)
-        .await
-        .context("failed to run migrations")?;
-    info!("migrations complete");
+    if run_migrations {
+        rustfin_db::migrate::run(&pool, db_backend)
+            .await
+            .context("failed to run migrations")?;
+        info!("migrations complete");
+    } else {
+        warn!("RUSTFIN_RUN_MIGRATIONS disabled; assuming schema is pre-migrated");
+    }
 
     // Ensure setup defaults exist (idempotent)
     rustfin_db::repo::settings::insert_defaults(&pool)

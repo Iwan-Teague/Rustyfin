@@ -41,12 +41,12 @@ fn tmdb_schedule_to_seconds(schedule: &str) -> Option<i64> {
 }
 
 async fn has_running_sync_job(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     library_id: &str,
 ) -> Result<bool, sqlx::Error> {
     let payload_like = format!("%\"library_id\":\"{}\"%", library_id);
     let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM job WHERE kind = 'library_tmdb_sync' AND status = 'running' AND payload_json LIKE ? LIMIT 1",
+        "SELECT 1 FROM job WHERE kind = 'library_tmdb_sync' AND status = 'running' AND payload_json LIKE $1 LIMIT 1",
     )
     .bind(payload_like)
     .fetch_optional(pool)
@@ -55,7 +55,7 @@ async fn has_running_sync_job(
 }
 
 fn spawn_tmdb_sync_job(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     events: &Sender<crate::state::ServerEvent>,
     job_id: String,
     library_id: String,
@@ -124,7 +124,7 @@ fn spawn_tmdb_sync_job(
 }
 
 pub async fn maybe_enqueue_post_scan_tmdb_sync(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     events: &Sender<crate::state::ServerEvent>,
     library_id: &str,
     library_kind: &str,
@@ -272,7 +272,7 @@ async fn run_tmdb_sync(library_id: &str) -> Result<(), String> {
 }
 
 async fn update_job_status_with_retry(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     job_id: &str,
     status: &str,
     progress: f64,

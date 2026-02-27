@@ -21,18 +21,26 @@ die()     { echo -e "${RED}[start] ERROR:${RESET} $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [--youtube-cookie <cookie>] [-f <compose-file>]
+  ./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [--youtube-cookie <cookie>] [--docker-rust-build|--native-rust-build] [-f <compose-file>]
 
 Options:
   --build            Smart rebuild (only changed services, default behavior).
   --full-rebuild     Rebuild without cache (slowest, strictest).
   --cached-build     Alias for --build.
   --no-build         Skip image rebuild step.
+  --native-rust-build
+                     Build Rust service binaries on host and copy them into Docker runtime images (default).
+  --docker-rust-build
+                     Build Rust service binaries inside Docker builder stages.
   --foreground       Run compose in foreground (default is detached).
   --no-health-check  Skip backend health wait loop.
   --youtube-cookie   Set/persist RUSTFIN_YOUTUBE_COOKIE for online listen-together.
   RUSTFIN_RUST_BUILD_PROFILE
                      Rust Docker build profile (default: dev). Set to release for optimized builds.
+  RUSTFIN_NATIVE_LINUX_TARGET
+                     Override host->Linux target triple for native Rust builds.
+  RUSTFIN_NATIVE_RUST_BUILD
+                     Set to 0 to disable native Rust build mode globally.
   -f, --file         Compose file path (default: docker-compose.yml).
   -h, --help         Show this help.
 EOF
@@ -48,12 +56,15 @@ HEALTH_CHECK=true
 COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 CLI_YOUTUBE_COOKIE=""
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
+NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --build|--cached-build) BUILD=true; NO_CACHE_BUILD=false; shift ;;
     --full-rebuild) BUILD=true; NO_CACHE_BUILD=true; shift ;;
     --no-build) BUILD=false; shift ;;
+    --native-rust-build) NATIVE_RUST_BUILD=1; shift ;;
+    --docker-rust-build) NATIVE_RUST_BUILD=0; shift ;;
     --foreground) DETACH=false; shift ;;
     --no-health-check) HEALTH_CHECK=false; shift ;;
     --youtube-cookie)
@@ -183,6 +194,73 @@ image_exists_for_service() {
   docker image inspect "$image_name" >/dev/null 2>&1
 }
 
+resolve_native_linux_target() {
+  local override="${RUSTFIN_NATIVE_LINUX_TARGET:-}"
+  if [[ -n "$override" ]]; then
+    printf '%s' "$override"
+    return
+  fi
+
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    arm64|aarch64) printf '%s' "aarch64-unknown-linux-gnu" ;;
+    x86_64|amd64) printf '%s' "x86_64-unknown-linux-gnu" ;;
+    *)
+      die "Unsupported host arch '$arch' for native Linux Rust build. Set RUSTFIN_NATIVE_LINUX_TARGET explicitly."
+      ;;
+  esac
+}
+
+service_to_bin() {
+  case "$1" in
+    rustfin) printf '%s' "rustfin-server" ;;
+    rustfin-calendar) printf '%s' "rustfin-calendar" ;;
+    rustfin-tmdb-agent) printf '%s' "rustfin-tmdb-agent" ;;
+    rustfin-transcription-agent) printf '%s' "rustfin-transcription-agent" ;;
+    rustfin-youtube-agent) printf '%s' "rustfin-youtube-agent" ;;
+    *) return 1 ;;
+  esac
+}
+
+build_native_rust_bins() {
+  local native_target="$1"
+  local native_bin_dir="$2"
+  shift 2
+  local services=("$@")
+  local bins=()
+  local service=""
+  local bin=""
+
+  for service in "${services[@]}"; do
+    if bin="$(service_to_bin "$service" 2>/dev/null)"; then
+      bins+=("$bin")
+    fi
+  done
+
+  if [[ ${#bins[@]} -eq 0 ]]; then
+    return
+  fi
+
+  info "Native Rust build enabled; compiling Linux binaries on host (${native_target})..."
+  info "Native binary output: ${native_bin_dir}"
+
+  local -a cmd=( "$REPO_ROOT/scripts/build_linux_binaries.sh"
+    --profile "$RUSTFIN_RUST_BUILD_PROFILE"
+    --target "$native_target"
+    --output-dir "$native_bin_dir"
+    --cache-dir "$SAFE_TMP_DIR/native-linux/.build-cache"
+  )
+
+  for bin in "${bins[@]}"; do
+    cmd+=(--bin "$bin")
+  done
+
+  if ! "${cmd[@]}"; then
+    die "Native Rust Linux binary build failed. Install prerequisites (zig + cargo-zigbuild for macOS/Windows) or run with --docker-rust-build."
+  fi
+}
+
 service_build_reason() {
   local service="$1"
   local prev_fingerprint="$2"
@@ -252,8 +330,10 @@ compute_all_service_fingerprints() {
   youtube_agent_compose_hash="$(compose_service_hash "rustfin-youtube-agent")"
   ui_compose_hash="$(compose_service_hash "rustfin-ui")"
 
-  current_rustfin_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${rustfin_compose_hash}:$(compute_scope_fingerprint \
+  current_rustfin_fp="${RUSTFIN_RUST_BUILD_MODE_KEY}:${RUSTFIN_RUST_BUILD_PROFILE}:compose=${rustfin_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/Dockerfile" \
+    "$REPO_ROOT/docker/native" \
+    "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/server" \
@@ -262,29 +342,37 @@ compute_all_service_fingerprints() {
     "$REPO_ROOT/crates/scanner" \
     "$REPO_ROOT/crates/metadata" \
     "$REPO_ROOT/crates/transcoder")"
-  current_calendar_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${calendar_compose_hash}:$(compute_scope_fingerprint \
+  current_calendar_fp="${RUSTFIN_RUST_BUILD_MODE_KEY}:${RUSTFIN_RUST_BUILD_PROFILE}:compose=${calendar_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/calendar/Dockerfile" \
+    "$REPO_ROOT/docker/native" \
+    "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/calendar" \
     "$REPO_ROOT/crates/core" \
     "$REPO_ROOT/crates/db")"
-  current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${tmdb_agent_compose_hash}:$(compute_scope_fingerprint \
+  current_tmdb_agent_fp="${RUSTFIN_RUST_BUILD_MODE_KEY}:${RUSTFIN_RUST_BUILD_PROFILE}:compose=${tmdb_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/tmdb-agent/Dockerfile" \
+    "$REPO_ROOT/docker/native" \
+    "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/tmdb-agent" \
     "$REPO_ROOT/crates/core" \
     "$REPO_ROOT/crates/db" \
     "$REPO_ROOT/crates/metadata")"
-  current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${transcription_agent_compose_hash}:$(compute_scope_fingerprint \
+  current_transcription_agent_fp="${RUSTFIN_RUST_BUILD_MODE_KEY}:${RUSTFIN_RUST_BUILD_PROFILE}:compose=${transcription_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/transcription-agent/Dockerfile" \
+    "$REPO_ROOT/docker/native" \
+    "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/transcription-agent" \
     "$REPO_ROOT/crates/core")"
-  current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_PROFILE}:compose=${youtube_agent_compose_hash}:$(compute_scope_fingerprint \
+  current_youtube_agent_fp="${RUSTFIN_RUST_BUILD_MODE_KEY}:${RUSTFIN_RUST_BUILD_PROFILE}:compose=${youtube_agent_compose_hash}:$(compute_scope_fingerprint \
     "$REPO_ROOT/crates/youtube-agent/Dockerfile" \
+    "$REPO_ROOT/docker/native" \
+    "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     "$REPO_ROOT/Cargo.toml" \
     "$REPO_ROOT/Cargo.lock" \
     "$REPO_ROOT/crates/youtube-agent" \
@@ -317,6 +405,8 @@ persist_secret_env_var() {
 user_backend_port="${RUSTFIN_BACKEND_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
+user_database_url="${RUSTFIN_DATABASE_URL:-}"
+user_legacy_db_path="${RUSTFIN_DB:-}"
 user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
 user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 user_youtube_cookie="${RUSTFIN_YOUTUBE_COOKIE:-}"
@@ -341,6 +431,7 @@ fi
 [[ -n "$user_backend_port" ]] && RUSTFIN_BACKEND_PORT="$user_backend_port"
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
+[[ -n "$user_database_url" ]] && RUSTFIN_DATABASE_URL="$user_database_url"
 [[ -n "$user_browser_backend_origin" ]] && RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
 [[ -n "$user_ws_allowed_origins" ]] && RUSTFIN_WS_ALLOWED_ORIGINS="$user_ws_allowed_origins"
 if [[ -n "$user_youtube_cookie" ]]; then
@@ -357,6 +448,29 @@ case "$RUSTFIN_RUST_BUILD_PROFILE" in
     ;;
 esac
 export RUSTFIN_RUST_BUILD_PROFILE
+
+case "$NATIVE_RUST_BUILD" in
+  0|1) ;;
+  *) die "Invalid native build toggle '$NATIVE_RUST_BUILD' (expected 0 or 1)" ;;
+esac
+
+RUSTFIN_NATIVE_TARGET=""
+RUSTFIN_NATIVE_BIN_DIR=""
+RUSTFIN_NATIVE_BIN_DIR_ABS=""
+RUSTFIN_RUST_BUILD_MODE_KEY="docker-build"
+if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
+  RUSTFIN_NATIVE_TARGET="$(resolve_native_linux_target)"
+  RUSTFIN_NATIVE_BIN_DIR=".native-bins/${RUSTFIN_NATIVE_TARGET}/${RUSTFIN_RUST_BUILD_PROFILE}"
+  RUSTFIN_NATIVE_BIN_DIR_ABS="$REPO_ROOT/${RUSTFIN_NATIVE_BIN_DIR}"
+  RUSTFIN_RUST_BUILD_MODE_KEY="native-linux:${RUSTFIN_NATIVE_TARGET}"
+
+  export RUSTFIN_NATIVE_BIN_DIR
+  export RUSTFIN_SERVER_DOCKERFILE="docker/native/rustfin-server.Dockerfile"
+  export RUSTFIN_CALENDAR_DOCKERFILE="docker/native/rustfin-calendar.Dockerfile"
+  export RUSTFIN_TMDB_AGENT_DOCKERFILE="docker/native/rustfin-tmdb-agent.Dockerfile"
+  export RUSTFIN_YOUTUBE_AGENT_DOCKERFILE="docker/native/rustfin-youtube-agent.Dockerfile"
+  export RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE="docker/native/rustfin-transcription-agent.Dockerfile"
+fi
 
 # Migrate legacy repo-local default media root from older starts so Browse can
 # map typical user-selected folders without extra configuration.
@@ -380,6 +494,29 @@ MEDIA_PATH="$(cd "$MEDIA_PATH" && pwd -L)" || die "Failed to resolve media path:
 [[ -r "$MEDIA_PATH" ]] || die "Media path is not readable: $MEDIA_PATH"
 [[ -x "$MEDIA_PATH" ]] || die "Media path is not traversable: $MEDIA_PATH"
 export RUSTFIN_MEDIA_PATH="$MEDIA_PATH"
+
+# Database target defaulting:
+# - Prefer explicit RUSTFIN_DATABASE_URL.
+# - If legacy RUSTFIN_DB is explicitly set, keep SQLite path behavior.
+# - Otherwise default to local Postgres service in docker-compose.
+if [[ -z "${RUSTFIN_DATABASE_URL:-}" ]]; then
+  if [[ -n "$user_legacy_db_path" ]]; then
+    export RUSTFIN_DATABASE_URL="$user_legacy_db_path"
+  else
+    pg_user="${RUSTFIN_PG_USER:-rustfin}"
+    pg_password="${RUSTFIN_PG_PASSWORD:-rustfin}"
+    pg_db="${RUSTFIN_PG_DB:-rustfin}"
+    export RUSTFIN_DATABASE_URL="postgresql://${pg_user}:${pg_password}@postgres:5432/${pg_db}"
+  fi
+fi
+
+db_target_log="$RUSTFIN_DATABASE_URL"
+db_mode="sqlite"
+db_target_lc="$(printf '%s' "$RUSTFIN_DATABASE_URL" | tr '[:upper:]' '[:lower:]')"
+if [[ "$db_target_lc" == postgres://* || "$db_target_lc" == postgresql://* ]]; then
+  db_mode="postgres"
+  db_target_log="$(printf '%s' "$RUSTFIN_DATABASE_URL" | sed -E 's#(postgres(ql)?://)[^@/]+@#\1<redacted>@#')"
+fi
 
 PICKER_HELPER_PORT="${RUSTFIN_PICKER_HELPER_PORT:-43110}"
 PICKER_HELPER_HOST="${RUSTFIN_PICKER_HELPER_HOST:-0.0.0.0}"
@@ -739,6 +876,7 @@ wait_for_critical_services() {
   local service=""
   local failures=0
   local critical_services=(
+    postgres
     rustfin
     rustfin-calendar
     rustfin-tmdb-agent
@@ -840,7 +978,16 @@ info "Browser backend origin: $RUSTYFIN_BROWSER_BACKEND_ORIGIN"
 info "WebSocket allowed origins: $RUSTFIN_WS_ALLOWED_ORIGINS"
 info "UI transport: HTTPS (secure context for microphone/WebRTC on LAN)"
 info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
+info "Database mode: ${db_mode}"
+info "Database target: ${db_target_log}"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
+if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
+  info "Rust binary build mode: native host cross-compile -> Docker copy"
+  info "Native Linux target: $RUSTFIN_NATIVE_TARGET"
+  info "Native binary output dir: $RUSTFIN_NATIVE_BIN_DIR_ABS"
+else
+  warn "Rust binary build mode: Docker builder stages (--docker-rust-build)"
+fi
 if [[ "$BUILD" == "true" ]]; then
   if [[ "$NO_CACHE_BUILD" == "true" ]]; then
     info "Build mode: full rebuild (no Docker cache)"
@@ -863,6 +1010,17 @@ fi
 
 if [[ "$BUILD" == "true" ]]; then
   if [[ "$NO_CACHE_BUILD" == "true" ]]; then
+    if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
+      build_native_rust_bins \
+        "$RUSTFIN_NATIVE_TARGET" \
+        "$RUSTFIN_NATIVE_BIN_DIR_ABS" \
+        rustfin \
+        rustfin-calendar \
+        rustfin-tmdb-agent \
+        rustfin-transcription-agent \
+        rustfin-youtube-agent
+    fi
+
     info "Rebuilding all Docker images..."
     if ! docker compose -f "$COMPOSE_FILE" build --pull --no-cache; then
       warn "Full no-cache rebuild failed (likely transient network issue). Retrying once with Docker cache."
@@ -947,6 +1105,22 @@ if [[ "$BUILD" == "true" ]]; then
       for reason in "${changed_reasons[@]}"; do
         info " - ${reason}"
       done
+      if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
+        native_rust_changed_services=()
+        for service in "${changed_services[@]}"; do
+          case "$service" in
+            rustfin|rustfin-calendar|rustfin-tmdb-agent|rustfin-transcription-agent|rustfin-youtube-agent)
+              native_rust_changed_services+=("$service")
+              ;;
+          esac
+        done
+        if [[ ${#native_rust_changed_services[@]} -gt 0 ]]; then
+          build_native_rust_bins \
+            "$RUSTFIN_NATIVE_TARGET" \
+            "$RUSTFIN_NATIVE_BIN_DIR_ABS" \
+            "${native_rust_changed_services[@]}"
+        fi
+      fi
       if ! docker compose -f "$COMPOSE_FILE" build --pull "${changed_services[@]}"; then
         die "Docker image rebuild failed. Check your internet connection and retry."
       fi

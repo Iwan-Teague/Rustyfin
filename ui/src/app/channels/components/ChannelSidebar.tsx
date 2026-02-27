@@ -5,6 +5,7 @@ import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { useListReflowAnimation } from '@/lib/listReflowAnimation';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
@@ -33,7 +34,9 @@ interface MenuState {
 interface ContextMenuProps {
   channel: ChannelInfo;
   onClose: () => void;
+  onRequestRename: (channel: ChannelInfo) => void;
   onRequestDelete: () => void;
+  onCannotDelete: (channel: ChannelInfo, membersInChannel: number) => void;
   membersInChannel?: number;
 }
 
@@ -49,12 +52,15 @@ function userBubbleColor(userId: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-function ChannelContextMenu({ channel, onClose, onRequestDelete, membersInChannel = 0 }: ContextMenuProps) {
-  const [view, setView] = useState<'menu' | 'rename' | 'error'>('menu');
-  const [renameValue, setRenameValue] = useState(channel.name);
-  const [renameError, setRenameError] = useState('');
+function ChannelContextMenu({
+  channel,
+  onClose,
+  onRequestRename,
+  onRequestDelete,
+  onCannotDelete,
+  membersInChannel = 0,
+}: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
-  const renameRef = useRef<HTMLInputElement>(null);
 
   // Close on outside click
   useEffect(() => {
@@ -67,85 +73,34 @@ function ChannelContextMenu({ channel, onClose, onRequestDelete, membersInChanne
     return () => document.removeEventListener('mousedown', handleClick);
   }, [onClose]);
 
-  // Focus rename input when view switches
-  useEffect(() => {
-    if (view === 'rename') renameRef.current?.focus();
-  }, [view]);
-
-  async function handleRename() {
-    const name = renameValue.trim();
-    if (!name) { setRenameError('Name cannot be empty'); return; }
-    if (name === channel.name) { onClose(); return; }
-    setRenameError('');
-    try {
-      await renameChannel(channel.id, name);
-      onClose();
-    } catch {
-      setRenameError('Failed to rename channel');
-    }
-  }
-
   return (
     <div
       ref={menuRef}
       className="absolute right-0 top-full mt-1 z-50 panel rounded-xl shadow-xl border border-[var(--border)] w-44 py-1 text-sm"
       onClick={(e) => e.stopPropagation()}
     >
-      {view === 'menu' && (
-        <>
-          <button
-            className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-md"
-            onClick={() => setView('rename')}
-          >
-            Rename
-          </button>
-          <button
-            className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-md text-red-400 hover:text-red-300"
-            onClick={() => {
-              if (channel.kind === 'voice' && membersInChannel > 0) {
-                setView('error');
-              } else {
-                onRequestDelete();
-                onClose();
-              }
-            }}
-          >
-            Delete
-          </button>
-        </>
-      )}
-
-      {view === 'rename' && (
-        <div className="px-3 py-2 space-y-2">
-          <p className="text-xs muted font-semibold uppercase tracking-wide">Rename channel</p>
-          <input
-            ref={renameRef}
-            className="panel w-full rounded-md px-2 py-1 text-sm"
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleRename();
-              if (e.key === 'Escape') onClose();
-            }}
-            maxLength={64}
-          />
-          {renameError && <p className="text-xs text-red-400">{renameError}</p>}
-          <div className="flex gap-1 justify-end">
-            <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs">Cancel</button>
-            <button onClick={handleRename} className="btn-primary px-2 py-1 text-xs">Save</button>
-          </div>
-        </div>
-      )}
-
-      {view === 'error' && (
-        <div className="px-3 py-2 space-y-2">
-          <p className="text-xs font-semibold text-red-400">Cannot Delete Channel</p>
-          <p className="text-xs muted">This audio channel needs to be empty before deletion. Ask members to leave first.</p>
-          <div className="flex gap-1 justify-end">
-            <button onClick={() => setView('menu')} className="btn-ghost px-2 py-1 text-xs">Back</button>
-          </div>
-        </div>
-      )}
+      <button
+        className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-md"
+        onClick={() => {
+          onRequestRename(channel);
+          onClose();
+        }}
+      >
+        Rename
+      </button>
+      <button
+        className="w-full text-left px-3 py-2 hover:bg-white/5 rounded-md text-red-400 hover:text-red-300"
+        onClick={() => {
+          if (channel.kind === 'voice' && membersInChannel > 0) {
+            onCannotDelete(channel, membersInChannel);
+          } else {
+            onRequestDelete();
+          }
+          onClose();
+        }}
+      >
+        Delete
+      </button>
     </div>
   );
 }
@@ -166,7 +121,9 @@ interface ChannelRowProps {
   setMenuOpen: (state: MenuState | null) => void;
   onSelect: (id: string) => void;
   onQuickJoinVoice: (id: string, name: string) => void;
+  onRequestRenameChannel: (channel: ChannelInfo) => void;
   onRequestDeleteChannel: (channel: ChannelInfo) => void;
+  onCannotDeleteChannel: (channel: ChannelInfo, membersInChannel: number) => void;
 }
 
 function ChannelRow({
@@ -183,7 +140,9 @@ function ChannelRow({
   setMenuOpen,
   onSelect,
   onQuickJoinVoice,
+  onRequestRenameChannel,
   onRequestDeleteChannel,
+  onCannotDeleteChannel,
 }: ChannelRowProps) {
   const members = voicePresence[ch.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[ch.id] ?? []);
@@ -200,9 +159,8 @@ function ChannelRow({
   ].join(' ');
 
   return (
-    <div>
+    <div data-list-item-id={ch.id} data-channel-row-id={ch.id}>
       <div
-        data-channel-row-id={ch.id}
         className={rowClass}
         onClick={() => onSelect(ch.id)}
         onDoubleClick={() => {
@@ -245,7 +203,9 @@ function ChannelRow({
               <ChannelContextMenu
                 channel={ch}
                 onClose={() => setMenuOpen(null)}
+                onRequestRename={onRequestRenameChannel}
                 onRequestDelete={() => onRequestDeleteChannel(ch)}
+                onCannotDelete={onCannotDeleteChannel}
                 membersInChannel={members.length}
               />
             )}
@@ -304,8 +264,17 @@ export default function ChannelSidebar({
   onDeleteChannel,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState<MenuState | null>(null);
+  const [pendingRenameChannel, setPendingRenameChannel] = useState<ChannelInfo | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState('');
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<ChannelInfo | null>(null);
+  const [cannotDeleteChannel, setCannotDeleteChannel] = useState<{
+    name: string;
+    membersInChannel: number;
+  } | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const channelListRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const textChannels = channels.filter((c) => c.kind === 'text');
   const voiceChannels = channels.filter((c) => c.kind === 'voice');
@@ -317,6 +286,37 @@ export default function ChannelSidebar({
     return () => window.clearInterval(id);
   }, [hasActiveVoice]);
 
+  useListReflowAnimation(channelListRef, channels.map((channel) => channel.id), {
+    itemSelector: '[data-list-item-id]',
+  });
+
+  useEffect(() => {
+    if (!pendingRenameChannel) return;
+    setRenameValue(pendingRenameChannel.name);
+    setRenameError('');
+    window.setTimeout(() => renameInputRef.current?.focus(), 0);
+  }, [pendingRenameChannel]);
+
+  const handleRenameChannel = async () => {
+    if (!pendingRenameChannel) return;
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setRenameError('Name cannot be empty');
+      return;
+    }
+    if (nextName === pendingRenameChannel.name) {
+      setPendingRenameChannel(null);
+      return;
+    }
+    setRenameError('');
+    try {
+      await renameChannel(pendingRenameChannel.id, nextName);
+      setPendingRenameChannel(null);
+    } catch {
+      setRenameError('Failed to rename channel');
+    }
+  };
+
   return (
     <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-y-auto">
       {/* Server header */}
@@ -324,7 +324,7 @@ export default function ChannelSidebar({
         Rustyfin
       </div>
 
-      <div className="flex-1 overflow-y-auto py-2 space-y-4">
+      <div ref={channelListRef} className="flex-1 overflow-y-auto py-2 space-y-4">
         {/* TEXT CHANNELS */}
         <section>
           <div className="flex items-center justify-between px-3 py-1">
@@ -358,7 +358,11 @@ export default function ChannelSidebar({
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
               onQuickJoinVoice={onQuickJoinVoice}
+              onRequestRenameChannel={setPendingRenameChannel}
               onRequestDeleteChannel={setPendingDeleteChannel}
+              onCannotDeleteChannel={(channel, membersInChannel) =>
+                setCannotDeleteChannel({ name: channel.name, membersInChannel })
+              }
             />
           ))}
 
@@ -400,7 +404,11 @@ export default function ChannelSidebar({
               setMenuOpen={setMenuOpen}
               onSelect={onSelect}
               onQuickJoinVoice={onQuickJoinVoice}
+              onRequestRenameChannel={setPendingRenameChannel}
               onRequestDeleteChannel={setPendingDeleteChannel}
+              onCannotDeleteChannel={(channel, membersInChannel) =>
+                setCannotDeleteChannel({ name: channel.name, membersInChannel })
+              }
             />
           ))}
 
@@ -409,6 +417,64 @@ export default function ChannelSidebar({
           )}
         </section>
       </div>
+
+      {pendingRenameChannel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
+            <h2 className="font-semibold text-lg">Rename Channel</h2>
+            <p className="text-sm muted">
+              Enter a new name for &ldquo;{pendingRenameChannel.name}&rdquo;.
+            </p>
+            <input
+              ref={renameInputRef}
+              className="input rounded-xl px-3 py-2 text-sm"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  void handleRenameChannel();
+                }
+                if (e.key === 'Escape') {
+                  setPendingRenameChannel(null);
+                }
+              }}
+              maxLength={64}
+            />
+            {renameError ? <p className="text-xs text-red-400">{renameError}</p> : null}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingRenameChannel(null)}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button onClick={() => void handleRenameChannel()} className="btn-primary px-4 py-2 text-sm">
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cannotDeleteChannel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
+            <h2 className="font-semibold text-lg">Cannot Delete Channel</h2>
+            <p className="text-sm muted">
+              &ldquo;{cannotDeleteChannel.name}&rdquo; still has {cannotDeleteChannel.membersInChannel}{' '}
+              {cannotDeleteChannel.membersInChannel === 1 ? 'member' : 'members'} connected. Ask everyone to leave first.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setCannotDeleteChannel(null)}
+                className="btn-primary px-4 py-2 text-sm"
+              >
+                Okay
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingDeleteChannel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">

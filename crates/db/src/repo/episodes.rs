@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ExpectedEpisodeRow {
@@ -12,7 +12,7 @@ pub struct ExpectedEpisodeRow {
 
 /// Insert or update an expected episode.
 pub async fn upsert_expected_episode(
-    pool: &SqlitePool,
+    pool: &DbPool,
     series_id: &str,
     season_number: i32,
     episode_number: i32,
@@ -22,7 +22,7 @@ pub async fn upsert_expected_episode(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO episode_expected (series_id, season_number, episode_number, title, overview, air_date) \
-         VALUES (?, ?, ?, ?, ?, ?) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
          ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET \
          title = COALESCE(excluded.title, title), \
          overview = COALESCE(excluded.overview, overview), \
@@ -41,7 +41,7 @@ pub async fn upsert_expected_episode(
 
 /// Get all expected episodes for a series.
 pub async fn get_expected_episodes(
-    pool: &SqlitePool,
+    pool: &DbPool,
     series_id: &str,
 ) -> Result<Vec<ExpectedEpisodeRow>, sqlx::Error> {
     let rows: Vec<(
@@ -53,7 +53,7 @@ pub async fn get_expected_episodes(
         Option<String>,
     )> = sqlx::query_as(
         "SELECT series_id, season_number, episode_number, title, overview, air_date \
-             FROM episode_expected WHERE series_id = ? \
+             FROM episode_expected WHERE series_id = $1 \
              ORDER BY season_number, episode_number",
     )
     .bind(series_id)
@@ -75,7 +75,7 @@ pub async fn get_expected_episodes(
 
 /// Get expected episodes for a specific season.
 pub async fn get_season_expected(
-    pool: &SqlitePool,
+    pool: &DbPool,
     series_id: &str,
     season_number: i32,
 ) -> Result<Vec<ExpectedEpisodeRow>, sqlx::Error> {
@@ -88,7 +88,7 @@ pub async fn get_season_expected(
         Option<String>,
     )> = sqlx::query_as(
         "SELECT series_id, season_number, episode_number, title, overview, air_date \
-             FROM episode_expected WHERE series_id = ? AND season_number = ? \
+             FROM episode_expected WHERE series_id = $1 AND season_number = $2 \
              ORDER BY episode_number",
     )
     .bind(series_id)
@@ -111,7 +111,7 @@ pub async fn get_season_expected(
 
 /// Get present episode numbers for a series (from actual items).
 pub async fn get_present_episodes(
-    pool: &SqlitePool,
+    pool: &DbPool,
     series_id: &str,
 ) -> Result<Vec<(i32, i32)>, sqlx::Error> {
     // Episodes: kind='episode', parent=season, season.parent=series.
@@ -122,7 +122,7 @@ pub async fn get_present_episodes(
          CAST(SUBSTR(ep_item.title, INSTR(ep_item.title, 'E') + 1) AS INTEGER) as epnum \
          FROM item ep_item \
          JOIN item season_item ON ep_item.parent_id = season_item.id \
-         WHERE season_item.parent_id = ? AND ep_item.kind = 'episode' \
+         WHERE season_item.parent_id = $1 AND ep_item.kind = 'episode' \
          AND season_item.title LIKE 'Season %'",
     )
     .bind(series_id)
@@ -143,7 +143,7 @@ pub struct MissingEpisode {
 }
 
 pub async fn get_missing_episodes(
-    pool: &SqlitePool,
+    pool: &DbPool,
     series_id: &str,
 ) -> Result<Vec<MissingEpisode>, sqlx::Error> {
     let expected = get_expected_episodes(pool, series_id).await?;

@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct JobRow {
@@ -13,7 +13,7 @@ pub struct JobRow {
 }
 
 pub async fn create_job(
-    pool: &SqlitePool,
+    pool: &DbPool,
     kind: &str,
     payload_json: Option<&str>,
 ) -> Result<JobRow, sqlx::Error> {
@@ -22,7 +22,7 @@ pub async fn create_job(
 
     sqlx::query(
         "INSERT INTO job (id, kind, status, progress, payload_json, created_ts, updated_ts) \
-         VALUES (?, ?, 'queued', 0, ?, ?, ?)",
+         VALUES ($1, $2, 'queued', 0, $3, $4, $5)",
     )
     .bind(&id)
     .bind(kind)
@@ -44,12 +44,12 @@ pub async fn create_job(
     })
 }
 
-pub async fn list_jobs(pool: &SqlitePool) -> Result<Vec<JobRow>, sqlx::Error> {
+pub async fn list_jobs(pool: &DbPool) -> Result<Vec<JobRow>, sqlx::Error> {
     list_jobs_filtered(pool, &[], None, None, None).await
 }
 
 pub async fn list_jobs_filtered(
-    pool: &SqlitePool,
+    pool: &DbPool,
     statuses: &[&str],
     kind: Option<&str>,
     limit: Option<i64>,
@@ -59,18 +59,18 @@ pub async fn list_jobs_filtered(
         "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts FROM job",
     );
     let mut where_clauses: Vec<String> = Vec::new();
+    let mut next_param = 1usize;
 
     if !statuses.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(statuses.len())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let placeholders = crate::repo::dollar_placeholders(next_param, statuses.len());
+        next_param += statuses.len();
         where_clauses.push(format!("status IN ({placeholders})"));
     }
 
     let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty());
     if normalized_kind.is_some() {
-        where_clauses.push("kind = ?".to_string());
+        where_clauses.push(format!("kind = ${next_param}"));
+        next_param += 1;
     }
 
     if !where_clauses.is_empty() {
@@ -85,10 +85,12 @@ pub async fn list_jobs_filtered(
 
     match normalized_limit {
         Some(_) => {
-            sql.push_str(" LIMIT ? OFFSET ?");
+            sql.push_str(&format!(" LIMIT ${next_param} OFFSET ${}", next_param + 1));
+            next_param += 2;
         }
         None if normalized_offset > 0 => {
-            sql.push_str(" LIMIT -1 OFFSET ?");
+            sql.push_str(&format!(" OFFSET ${next_param}"));
+            next_param += 1;
         }
         None => {}
     }
@@ -125,11 +127,13 @@ pub async fn list_jobs_filtered(
         None => {}
     }
 
+    debug_assert!(next_param > 0);
+
     let rows = query.fetch_all(pool).await?;
     Ok(rows.into_iter().map(row_to_job).collect())
 }
 
-pub async fn get_job(pool: &SqlitePool, job_id: &str) -> Result<Option<JobRow>, sqlx::Error> {
+pub async fn get_job(pool: &DbPool, job_id: &str) -> Result<Option<JobRow>, sqlx::Error> {
     let row: Option<(
         String,
         String,
@@ -141,7 +145,7 @@ pub async fn get_job(pool: &SqlitePool, job_id: &str) -> Result<Option<JobRow>, 
         i64,
     )> = sqlx::query_as(
         "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
-             FROM job WHERE id = ?",
+             FROM job WHERE id = $1",
     )
     .bind(job_id)
     .fetch_optional(pool)
@@ -151,7 +155,7 @@ pub async fn get_job(pool: &SqlitePool, job_id: &str) -> Result<Option<JobRow>, 
 }
 
 pub async fn update_job_status(
-    pool: &SqlitePool,
+    pool: &DbPool,
     job_id: &str,
     status: &str,
     progress: f64,
@@ -159,7 +163,7 @@ pub async fn update_job_status(
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
-        "UPDATE job SET status = ?, progress = ?, error = ?, updated_ts = ? WHERE id = ?",
+        "UPDATE job SET status = $1, progress = $2, error = $3, updated_ts = $4 WHERE id = $5",
     )
     .bind(status)
     .bind(progress)
@@ -173,9 +177,9 @@ pub async fn update_job_status(
 
 /// Delete a job log entry. Only permitted for terminal states (completed, failed, cancelled, error).
 /// Returns true if a row was deleted, false if not found or still active.
-pub async fn delete_job(pool: &SqlitePool, job_id: &str) -> Result<bool, sqlx::Error> {
+pub async fn delete_job(pool: &DbPool, job_id: &str) -> Result<bool, sqlx::Error> {
     let result =
-        sqlx::query("DELETE FROM job WHERE id = ? AND status NOT IN ('queued', 'running')")
+        sqlx::query("DELETE FROM job WHERE id = $1 AND status NOT IN ('queued', 'running')")
             .bind(job_id)
             .execute(pool)
             .await?;
@@ -183,11 +187,11 @@ pub async fn delete_job(pool: &SqlitePool, job_id: &str) -> Result<bool, sqlx::E
 }
 
 /// Cancel a job (only if queued or running).
-pub async fn cancel_job(pool: &SqlitePool, job_id: &str) -> Result<bool, sqlx::Error> {
+pub async fn cancel_job(pool: &DbPool, job_id: &str) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
-        "UPDATE job SET status = 'cancelled', updated_ts = ? \
-         WHERE id = ? AND status IN ('queued', 'running')",
+        "UPDATE job SET status = 'cancelled', updated_ts = $1 \
+         WHERE id = $2 AND status IN ('queued', 'running')",
     )
     .bind(now)
     .bind(job_id)

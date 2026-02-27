@@ -112,7 +112,7 @@ pub async fn enqueue_library_scan(
 }
 
 async fn update_job_status_with_retry(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     job_id: &str,
     status: &str,
     progress: f64,

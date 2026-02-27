@@ -5,7 +5,7 @@ This file defines repo-specific operating rules for coding agents and contributo
 ## Project Summary
 
 Rustyfin is a Docker-first local media platform with:
-- Rust backend (`crates/server`, Axum + SQLite)
+- Rust backend (`crates/server`, Axum + SQLite today, PostgreSQL transition in progress)
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`)
 - Next.js frontend (`ui`)
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`)
@@ -47,8 +47,17 @@ Rustyfin is a Docker-first local media platform with:
 - Start stack: `./scripts/start.sh`
 - Stop stack: `./scripts/stop.sh`
 - Clean install/reset: `./scripts/clean_install.sh`
+- SQLite -> Postgres cutover helpers:
+  - `./scripts/db/migrate_sqlite_to_postgres.sh`
+  - `./scripts/db/validate_sqlite_postgres_counts.sh`
+
+Rust build runtime behavior:
+- `start.sh` defaults to native host Rust binary compilation for Linux targets, then Docker images copy the prebuilt binaries.
+- To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
+- On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
 
 Primary containers:
+- `postgres` (PostgreSQL database)
 - `rustfin` (main API)
 - `rustfin-calendar` (calendar service)
 - `rustfin-tmdb-agent` (TMDB sync service)
@@ -56,6 +65,18 @@ Primary containers:
 - `rustfin-transcription-agent` (Whisper transcription service)
 - `rustfin-ui` (Next.js app)
 - `rustfin-edge` (HTTPS edge proxy)
+
+Database runtime configuration:
+- Prefer `RUSTFIN_DATABASE_URL` for new wiring.
+- Keep `RUSTFIN_DB` as legacy fallback during transition.
+- Docker runtime defaults to PostgreSQL (`postgres` service) when `RUSTFIN_DATABASE_URL` is not explicitly set.
+- Migration authority is controlled by `RUSTFIN_RUN_MIGRATIONS`.
+  - Compose defaults:
+    - `rustfin`: `RUSTFIN_RUN_MIGRATIONS=true`
+    - `rustfin-calendar`: `RUSTFIN_RUN_MIGRATIONS=false`
+    - `rustfin-tmdb-agent`: `RUSTFIN_RUN_MIGRATIONS=false`
+- SQLite migrations live in `crates/db/migrations/` (legacy/compat runtime path).
+- PostgreSQL transition migrations live in `crates/db/migrations_pg/`.
 
 ## Quality Gates
 

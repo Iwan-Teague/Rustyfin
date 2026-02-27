@@ -8,19 +8,19 @@ use axum::{
 use chrono::{Datelike, NaiveDate};
 use rustfin_core::axum_error::AppError;
 use rustfin_core::error::ApiError;
+use rustfin_db::DbPool;
 use rustfin_db::repo::calendar::{
     CalendarEventRow, NewCalendarEvent, UpdateCalendarEvent, create_event as db_create_event,
     delete_event as db_delete_event, get_event as db_get_event, list_personal_events,
     list_visible_events, update_event as db_update_event,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
 struct AppState {
-    db: SqlitePool,
+    db: DbPool,
     auth_base_url: String,
     http_client: reqwest::Client,
 }
@@ -338,7 +338,7 @@ fn enforce_range_bounds(from: NaiveDate, to: NaiveDate) -> Result<(), AppError> 
     Ok(())
 }
 
-async fn ensure_user_exists(pool: &SqlitePool, user_id: &str) -> Result<(), AppError> {
+async fn ensure_user_exists(pool: &DbPool, user_id: &str) -> Result<(), AppError> {
     let user = rustfin_db::repo::users::find_by_id(pool, user_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -663,18 +663,45 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let db_path = std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "/config/rustfin.db".to_string());
+    let db_target = std::env::var("RUSTFIN_DATABASE_URL")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "/config/rustfin.db".to_string())
+        });
     let auth_base_url = std::env::var("RUSTFIN_AUTH_BASE_URL")
         .unwrap_or_else(|_| "http://rustfin:8096".to_string());
     let bind_addr =
         std::env::var("RUSTFIN_CALENDAR_BIND").unwrap_or_else(|_| "0.0.0.0:8099".to_string());
 
-    let db = rustfin_db::connect(&db_path)
+    let db = rustfin_db::connect(&db_target)
         .await
         .context("failed to connect to database")?;
-    rustfin_db::migrate::run(&db)
-        .await
-        .context("failed to run migrations")?;
+    let db_backend = rustfin_db::detect_backend(&db_target);
+    let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true);
+    if db_backend == rustfin_db::DatabaseBackend::Postgres {
+        warn!(
+            "PostgreSQL backend is experimental in this transition phase; SQLite-oriented query paths may still require follow-up conversion."
+        );
+    }
+    if run_migrations {
+        rustfin_db::migrate::run(&db, db_backend)
+            .await
+            .context("failed to run migrations")?;
+    } else {
+        warn!(
+            "RUSTFIN_RUN_MIGRATIONS disabled for calendar service; assuming schema is pre-migrated"
+        );
+    }
 
     let state = AppState {
         db,

@@ -8,9 +8,9 @@ use axum::{
 use rustfin_core::agent_auth::{normalize_secret, verify_agent_token};
 use rustfin_core::axum_error::AppError;
 use rustfin_core::error::ApiError;
+use rustfin_db::DbPool;
 use rustfin_metadata::provider::{MetadataProvider, SearchResult};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 use std::path::{Path as StdPath, PathBuf};
 use std::time::Instant;
 use tracing::{info, warn};
@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
 struct AppState {
-    db: SqlitePool,
+    db: DbPool,
     image_root: PathBuf,
     tmdb_key_env: Option<String>,
     agent_token: Option<String>,
@@ -261,14 +261,14 @@ async fn download_image_to_disk(
 }
 
 async fn upsert_tmdb_reviews(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     reviews: &serde_json::Value,
 ) -> Result<(), AppError> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO item_tmdb_review (item_id, reviews_json, updated_ts) \
-         VALUES (?, ?, ?) \
+         VALUES ($1, $2, $3) \
          ON CONFLICT(item_id) DO UPDATE SET \
             reviews_json = excluded.reviews_json, \
             updated_ts = excluded.updated_ts",
@@ -651,19 +651,46 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let bind = std::env::var("RUSTFIN_TMDB_AGENT_BIND").unwrap_or_else(|_| "0.0.0.0:8100".into());
-    let db_path = std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "/config/rustfin.db".into());
+    let db_target = std::env::var("RUSTFIN_DATABASE_URL")
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "/config/rustfin.db".into())
+        });
     let cache_dir = std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".into());
 
     let image_root = PathBuf::from(cache_dir);
     std::fs::create_dir_all(&image_root)
         .with_context(|| format!("failed to create cache dir {}", image_root.display()))?;
 
-    let pool = rustfin_db::connect(&db_path)
+    let pool = rustfin_db::connect(&db_target)
         .await
         .context("failed to connect to db")?;
-    rustfin_db::migrate::run(&pool)
-        .await
-        .context("failed to run db migrations")?;
+    let db_backend = rustfin_db::detect_backend(&db_target);
+    let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true);
+    if db_backend == rustfin_db::DatabaseBackend::Postgres {
+        warn!(
+            "PostgreSQL backend is experimental in this transition phase; SQLite-oriented query paths may still require follow-up conversion."
+        );
+    }
+    if run_migrations {
+        rustfin_db::migrate::run(&pool, db_backend)
+            .await
+            .context("failed to run db migrations")?;
+    } else {
+        warn!(
+            "RUSTFIN_RUN_MIGRATIONS disabled for tmdb-agent service; assuming schema is pre-migrated"
+        );
+    }
 
     let agent_token = normalize_secret(std::env::var("RUSTFIN_TMDB_AGENT_TOKEN").ok().as_deref());
     let tmdb_key_env = normalize_secret(std::env::var("RUSTFIN_TMDB_KEY").ok().as_deref());

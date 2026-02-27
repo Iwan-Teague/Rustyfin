@@ -1,10 +1,10 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 /// We store playback sessions in memory for now (they're ephemeral).
 /// Progress is persisted via user_item_state.
 
 pub async fn update_progress(
-    pool: &SqlitePool,
+    pool: &DbPool,
     user_id: &str,
     item_id: &str,
     progress_ms: i64,
@@ -13,7 +13,7 @@ pub async fn update_progress(
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO user_item_state (user_id, item_id, played, progress_ms, last_played_ts) \
-         VALUES (?, ?, ?, ?, ?) \
+         VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT(user_id, item_id) DO UPDATE SET \
          played = excluded.played, progress_ms = excluded.progress_ms, \
          last_played_ts = excluded.last_played_ts",
@@ -39,13 +39,13 @@ pub struct PlayStateRow {
 }
 
 pub async fn get_play_state(
-    pool: &SqlitePool,
+    pool: &DbPool,
     user_id: &str,
     item_id: &str,
 ) -> Result<Option<PlayStateRow>, sqlx::Error> {
     let row: Option<(String, String, bool, i64, Option<i64>, bool)> = sqlx::query_as(
         "SELECT user_id, item_id, played, progress_ms, last_played_ts, favorite \
-         FROM user_item_state WHERE user_id = ? AND item_id = ?",
+         FROM user_item_state WHERE user_id = $1 AND item_id = $2",
     )
     .bind(user_id)
     .bind(item_id)

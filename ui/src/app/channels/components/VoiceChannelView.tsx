@@ -425,22 +425,11 @@ export default function VoiceChannelView({
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {error && <p className="text-xs text-red-400 max-w-[12rem] truncate">{error}</p>}
 
-          {!isConnected ? (
-            <button onClick={handleConnect} className="btn-primary px-4 py-1.5 text-sm">
-              Connect
-            </button>
-          ) : (
+          {isConnected && (
             <>
               {!voiceSession?.localStream && (
                 <span className="text-xs muted px-2">Listening</span>
               )}
-              <button onClick={handleDisconnect} className="btn-secondary px-3 py-1.5 text-sm text-red-400">
-                Disconnect
-              </button>
-            </>
-          )}
-          {isConnected && (
-            <>
               {transcriptionState?.status === 'running' ? (
                 <>
                   <button
@@ -455,7 +444,7 @@ export default function VoiceChannelView({
                     disabled={transcriptionBusy}
                     className="btn-secondary px-3 py-1.5 text-sm text-red-300"
                   >
-                    Cancel
+                    Discard Transcript
                   </button>
                 </>
               ) : (
@@ -477,6 +466,16 @@ export default function VoiceChannelView({
               )}
             </>
           )}
+          <button
+            onClick={isConnected ? handleDisconnect : () => void handleConnect()}
+            className={`px-4 py-1.5 text-sm min-w-[9.5rem] justify-center ${
+              isConnected
+                ? 'btn-secondary text-red-400'
+                : 'btn-primary'
+            }`}
+          >
+            {isConnected ? 'Disconnect' : 'Connect'}
+          </button>
         </div>
       </div>
       {transcriptionStarting && (
