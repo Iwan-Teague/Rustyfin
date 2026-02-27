@@ -65,6 +65,7 @@ export default function ChannelUserSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [supportsOutputDeviceSelection, setSupportsOutputDeviceSelection] = useState(true);
 
   const avatarPreviewUrl = useMemo(() => {
     if (avatarFile) {
@@ -124,6 +125,14 @@ export default function ChannelUserSettings({
     setSuccess(null);
     setAvatarFile(null);
     setRemoveAvatar(false);
+    const sinkCapable =
+      typeof window !== 'undefined' &&
+      typeof (
+        HTMLMediaElement.prototype as HTMLMediaElement & {
+          setSinkId?: (deviceId: string) => Promise<void>;
+        }
+      ).setSinkId === 'function';
+    setSupportsOutputDeviceSelection(sinkCapable);
     try {
       const [nextProfile, nextPrefs] = await Promise.all([getMyProfile(), getMyPreferences()]);
       const audioPrefs = readAudioPrefs(nextPrefs);
@@ -163,7 +172,7 @@ export default function ChannelUserSettings({
 
       const audioPrefs = readAudioPrefs(prefsSnapshot);
       const desiredInput = selectedInputDeviceId || null;
-      const desiredOutput = selectedOutputDeviceId || null;
+      const desiredOutput = supportsOutputDeviceSelection ? (selectedOutputDeviceId || null) : audioPrefs.output;
       if (audioPrefs.input !== desiredInput || audioPrefs.output !== desiredOutput) {
         const nextPrefs = { ...prefsSnapshot };
         const nextAudio =
@@ -305,6 +314,7 @@ export default function ChannelUserSettings({
                     className="panel w-full rounded-lg px-3 py-2 text-sm"
                     value={selectedOutputDeviceId ?? ''}
                     onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
+                    disabled={!supportsOutputDeviceSelection}
                   >
                     <option value="">Default output</option>
                     {outputDevices.map((device) => (
@@ -313,6 +323,11 @@ export default function ChannelUserSettings({
                       </option>
                     ))}
                   </select>
+                  {!supportsOutputDeviceSelection && (
+                    <p className="text-xs muted">
+                      Your browser does not support speaker/output device selection in-app.
+                    </p>
+                  )}
 
                   <button
                     type="button"

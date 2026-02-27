@@ -118,6 +118,15 @@ export default function ChannelsPage() {
           onCreateText={() => { setCreateModal({ kind: 'text' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
           onCreateVoice={() => { setCreateModal({ kind: 'voice' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
           onDeleteChannel={handleDeleteChannel}
+          bottomContent={
+            <ChannelUserSettings
+              me={me}
+              preferredInputDeviceId={preferredInputDeviceId}
+              preferredOutputDeviceId={preferredOutputDeviceId}
+              setPreferredAudioDevices={setPreferredAudioDevices}
+              onProfileSaved={refreshMe}
+            />
+          }
         />
       </div>
 
@@ -170,13 +179,6 @@ export default function ChannelsPage() {
           )}
         </div>
 
-        <ChannelUserSettings
-          me={me}
-          preferredInputDeviceId={preferredInputDeviceId}
-          preferredOutputDeviceId={preferredOutputDeviceId}
-          setPreferredAudioDevices={setPreferredAudioDevices}
-          onProfileSaved={refreshMe}
-        />
       </div>
 
       {/* Create channel modal */}
