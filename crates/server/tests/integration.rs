@@ -4,10 +4,31 @@ use rustfin_server::state::AppState;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Create a test server with an in-memory SQLite database.
+fn test_database_target() -> String {
+    std::env::var("RUSTFIN_TEST_DATABASE_URL").unwrap_or_else(|_| ":memory:".to_string())
+}
+
+async fn create_test_pool() -> rustfin_db::DbPool {
+    let target = test_database_target();
+    let backend = rustfin_db::detect_backend(&target);
+    if backend == rustfin_db::DatabaseBackend::Postgres
+        && !target.to_ascii_lowercase().contains("test")
+        && std::env::var("RUSTFIN_TEST_DB_ALLOW_ANY").ok().as_deref() != Some("1")
+    {
+        panic!(
+            "Refusing to run integration tests against non-test PostgreSQL URL: {target}. \
+Set RUSTFIN_TEST_DB_ALLOW_ANY=1 to bypass."
+        );
+    }
+
+    let pool = rustfin_db::connect(&target).await.unwrap();
+    rustfin_db::migrate::run(&pool, backend).await.unwrap();
+    pool
+}
+
+/// Create a test server using the configured test database target.
 async fn test_app() -> TestServer {
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
 
     // Ensure setup defaults exist
     rustfin_db::repo::settings::insert_defaults(&pool)
@@ -63,8 +84,7 @@ async fn test_app() -> TestServer {
 }
 
 async fn test_app_http() -> TestServer {
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
 
     rustfin_db::repo::settings::insert_defaults(&pool)
         .await
@@ -236,8 +256,7 @@ Start-Sleep -Seconds 30
 }
 
 async fn test_app_with_fake_ffmpeg() -> TestServer {
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
     rustfin_db::repo::settings::insert_defaults(&pool)
         .await
         .unwrap();
@@ -401,10 +420,12 @@ async fn preferences_crud() {
 
 #[tokio::test]
 async fn migrations_are_idempotent() {
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
+    let target = test_database_target();
+    let backend = rustfin_db::detect_backend(&target);
+    let pool = rustfin_db::connect(&target).await.unwrap();
     // Run migrations twice — should not error
-    rustfin_db::migrate::run(&pool).await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    rustfin_db::migrate::run(&pool, backend).await.unwrap();
+    rustfin_db::migrate::run(&pool, backend).await.unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -784,8 +805,7 @@ async fn scan_movie_library_creates_items() {
     std::fs::create_dir_all(tmp.join("Inception (2010)")).unwrap();
     std::fs::write(tmp.join("Inception (2010)/Inception.2010.mkv"), b"fake").unwrap();
 
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
 
     // Create library pointing to tmp dir
     let lib = rustfin_db::repo::libraries::create_library(
@@ -844,8 +864,7 @@ async fn scan_tv_library_creates_series_hierarchy() {
     )
     .unwrap();
 
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
 
     let lib = rustfin_db::repo::libraries::create_library(
         &pool,
@@ -894,8 +913,7 @@ async fn scan_is_idempotent() {
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("Movie (2020).mkv"), b"fake").unwrap();
 
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
 
     let lib = rustfin_db::repo::libraries::create_library(
         &pool,
@@ -942,8 +960,7 @@ async fn stream_file_with_range_returns_206() {
     std::fs::write(tmp.join("TestMovie (2020).mkv"), &test_data).unwrap();
 
     // Set up DB + scan
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
     rustfin_db::repo::users::create_user(&pool, "admin", "admin_secure_123", "admin")
         .await
         .unwrap();
@@ -1914,8 +1931,7 @@ async fn watch_party_websocket_requires_auth_and_enforces_permissions() {
 
 /// Create a test server in fresh (uncompleted setup) state.
 async fn test_app_fresh() -> TestServer {
-    let pool = rustfin_db::connect(":memory:").await.unwrap();
-    rustfin_db::migrate::run(&pool).await.unwrap();
+    let pool = create_test_pool().await;
     rustfin_db::repo::settings::insert_defaults(&pool)
         .await
         .unwrap();

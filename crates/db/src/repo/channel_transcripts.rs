@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct TranscriptSessionRow {
@@ -100,7 +100,7 @@ fn map_entry(
 }
 
 pub async fn create_running_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
     started_by_user_id: &str,
     started_by_username: &str,
@@ -111,7 +111,7 @@ pub async fn create_running_session(
     sqlx::query(
         "INSERT INTO channel_transcript_session \
          (id, channel_id, status, started_by_user_id, started_by_username, started_ts) \
-         VALUES (?, ?, 'running', ?, ?, ?)",
+         VALUES ($1, $2, 'running', $3, $4, $5)",
     )
     .bind(&id)
     .bind(channel_id)
@@ -135,7 +135,7 @@ pub async fn create_running_session(
 }
 
 pub async fn get_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_id: &str,
 ) -> Result<Option<TranscriptSessionRow>, sqlx::Error> {
     let row: Option<(
@@ -152,7 +152,7 @@ pub async fn get_session(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
                 started_ts, ended_ts, output_path, failure_reason \
          FROM channel_transcript_session \
-         WHERE id = ?",
+         WHERE id = $1",
     )
     .bind(session_id)
     .fetch_optional(pool)
@@ -161,7 +161,7 @@ pub async fn get_session(
 }
 
 pub async fn get_running_session_for_channel(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
 ) -> Result<Option<TranscriptSessionRow>, sqlx::Error> {
     let row: Option<(
@@ -178,7 +178,7 @@ pub async fn get_running_session_for_channel(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
                 started_ts, ended_ts, output_path, failure_reason \
          FROM channel_transcript_session \
-         WHERE channel_id = ? AND status = 'running' \
+         WHERE channel_id = $1 AND status = 'running' \
          ORDER BY started_ts DESC \
          LIMIT 1",
     )
@@ -189,7 +189,7 @@ pub async fn get_running_session_for_channel(
 }
 
 pub async fn get_latest_session_for_channel(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
 ) -> Result<Option<TranscriptSessionRow>, sqlx::Error> {
     let row: Option<(
@@ -206,7 +206,7 @@ pub async fn get_latest_session_for_channel(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
                 started_ts, ended_ts, output_path, failure_reason \
          FROM channel_transcript_session \
-         WHERE channel_id = ? \
+         WHERE channel_id = $1 \
          ORDER BY started_ts DESC \
          LIMIT 1",
     )
@@ -217,7 +217,7 @@ pub async fn get_latest_session_for_channel(
 }
 
 pub async fn list_sessions_for_channel(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
     limit: i64,
 ) -> Result<Vec<TranscriptSessionRow>, sqlx::Error> {
@@ -236,9 +236,9 @@ pub async fn list_sessions_for_channel(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
                 started_ts, ended_ts, output_path, failure_reason \
          FROM channel_transcript_session \
-         WHERE channel_id = ? \
+         WHERE channel_id = $1 \
          ORDER BY started_ts DESC \
-         LIMIT ?",
+         LIMIT $2",
     )
     .bind(channel_id)
     .bind(clamped_limit)
@@ -248,7 +248,7 @@ pub async fn list_sessions_for_channel(
 }
 
 pub async fn list_running_sessions(
-    pool: &SqlitePool,
+    pool: &DbPool,
 ) -> Result<Vec<TranscriptSessionRow>, sqlx::Error> {
     let rows: Vec<(
         String,
@@ -273,7 +273,7 @@ pub async fn list_running_sessions(
 }
 
 pub async fn append_entry(
-    pool: &SqlitePool,
+    pool: &DbPool,
     entry: NewTranscriptEntry<'_>,
 ) -> Result<TranscriptEntryRow, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
@@ -281,7 +281,7 @@ pub async fn append_entry(
     sqlx::query(
         "INSERT INTO channel_transcript_entry \
          (id, session_id, channel_id, user_id, username, started_ts_ms, ended_ts_ms, text, created_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(&id)
     .bind(entry.session_id)
@@ -309,7 +309,7 @@ pub async fn append_entry(
 }
 
 pub async fn list_entries_for_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_id: &str,
 ) -> Result<Vec<TranscriptEntryRow>, sqlx::Error> {
     let rows: Vec<(
@@ -325,7 +325,7 @@ pub async fn list_entries_for_session(
     )> = sqlx::query_as(
         "SELECT id, session_id, channel_id, user_id, username, started_ts_ms, ended_ts_ms, text, created_ts \
          FROM channel_transcript_entry \
-         WHERE session_id = ? \
+         WHERE session_id = $1 \
          ORDER BY started_ts_ms ASC, created_ts ASC",
     )
     .bind(session_id)
@@ -335,11 +335,11 @@ pub async fn list_entries_for_session(
 }
 
 pub async fn count_entries_for_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_id: &str,
 ) -> Result<i64, sqlx::Error> {
     let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM channel_transcript_entry WHERE session_id = ?")
+        sqlx::query_as("SELECT COUNT(*) FROM channel_transcript_entry WHERE session_id = $1")
             .bind(session_id)
             .fetch_one(pool)
             .await?;
@@ -347,17 +347,14 @@ pub async fn count_entries_for_session(
 }
 
 pub async fn count_entries_for_sessions(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_ids: &[String],
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     if session_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(session_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = crate::repo::dollar_placeholders(1, session_ids.len());
     let sql = format!(
         "SELECT session_id, COUNT(*) \
          FROM channel_transcript_entry \
@@ -372,8 +369,8 @@ pub async fn count_entries_for_sessions(
     query.fetch_all(pool).await
 }
 
-pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM channel_transcript_session WHERE id = ?")
+pub async fn delete_session(pool: &DbPool, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel_transcript_session WHERE id = $1")
         .bind(session_id)
         .execute(pool)
         .await?;
@@ -381,15 +378,15 @@ pub async fn delete_session(pool: &SqlitePool, session_id: &str) -> Result<(), s
 }
 
 pub async fn complete_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_id: &str,
     output_path: &str,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE channel_transcript_session \
-         SET status = 'completed', ended_ts = ?, output_path = ?, failure_reason = NULL \
-         WHERE id = ?",
+         SET status = 'completed', ended_ts = $1, output_path = $2, failure_reason = NULL \
+         WHERE id = $3",
     )
     .bind(now)
     .bind(output_path)
@@ -399,12 +396,12 @@ pub async fn complete_session(
     Ok(())
 }
 
-pub async fn cancel_session(pool: &SqlitePool, session_id: &str) -> Result<(), sqlx::Error> {
+pub async fn cancel_session(pool: &DbPool, session_id: &str) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE channel_transcript_session \
-         SET status = 'cancelled', ended_ts = ?, output_path = NULL, failure_reason = NULL \
-         WHERE id = ?",
+         SET status = 'cancelled', ended_ts = $1, output_path = NULL, failure_reason = NULL \
+         WHERE id = $2",
     )
     .bind(now)
     .bind(session_id)
@@ -414,15 +411,15 @@ pub async fn cancel_session(pool: &SqlitePool, session_id: &str) -> Result<(), s
 }
 
 pub async fn fail_session(
-    pool: &SqlitePool,
+    pool: &DbPool,
     session_id: &str,
     reason: &str,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE channel_transcript_session \
-         SET status = 'failed', ended_ts = ?, output_path = NULL, failure_reason = ? \
-         WHERE id = ?",
+         SET status = 'failed', ended_ts = $1, output_path = NULL, failure_reason = $2 \
+         WHERE id = $3",
     )
     .bind(now)
     .bind(reason)

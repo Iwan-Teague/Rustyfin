@@ -12,3 +12,10 @@ pub mod settings;
 pub mod setup_session;
 pub mod users;
 pub mod watch_party;
+
+pub(crate) fn dollar_placeholders(start: usize, count: usize) -> String {
+    (start..start + count)
+        .map(|idx| format!("${idx}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}

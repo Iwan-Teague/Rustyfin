@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct ChannelRow {
@@ -33,7 +33,7 @@ pub struct MessageAttachmentRow {
     pub created_ts: i64,
 }
 
-pub async fn list_channels(pool: &SqlitePool) -> Result<Vec<ChannelRow>, sqlx::Error> {
+pub async fn list_channels(pool: &DbPool) -> Result<Vec<ChannelRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, i64, i64, String, i64)> = sqlx::query_as(
         "SELECT id, name, kind, position, is_private, created_by, created_ts \
          FROM channel ORDER BY position, created_ts",
@@ -57,10 +57,10 @@ pub async fn list_channels(pool: &SqlitePool) -> Result<Vec<ChannelRow>, sqlx::E
         .collect())
 }
 
-pub async fn get_channel(pool: &SqlitePool, id: &str) -> Result<Option<ChannelRow>, sqlx::Error> {
+pub async fn get_channel(pool: &DbPool, id: &str) -> Result<Option<ChannelRow>, sqlx::Error> {
     let row: Option<(String, String, String, i64, i64, String, i64)> = sqlx::query_as(
         "SELECT id, name, kind, position, is_private, created_by, created_ts \
-         FROM channel WHERE id = ?",
+         FROM channel WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -80,7 +80,7 @@ pub async fn get_channel(pool: &SqlitePool, id: &str) -> Result<Option<ChannelRo
 }
 
 pub async fn create_channel(
-    pool: &SqlitePool,
+    pool: &DbPool,
     name: &str,
     kind: &str,
     is_private: bool,
@@ -93,7 +93,7 @@ pub async fn create_channel(
 
     sqlx::query(
         "INSERT INTO channel (id, name, kind, position, is_private, created_by, created_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&id)
     .bind(name)
@@ -116,8 +116,8 @@ pub async fn create_channel(
     })
 }
 
-pub async fn rename_channel(pool: &SqlitePool, id: &str, name: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE channel SET name = ? WHERE id = ?")
+pub async fn rename_channel(pool: &DbPool, id: &str, name: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE channel SET name = $1 WHERE id = $2")
         .bind(name)
         .bind(id)
         .execute(pool)
@@ -126,13 +126,13 @@ pub async fn rename_channel(pool: &SqlitePool, id: &str, name: &str) -> Result<(
 }
 
 pub async fn update_channel(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
     name: &str,
     is_private: bool,
 ) -> Result<(), sqlx::Error> {
     let is_private_int: i64 = if is_private { 1 } else { 0 };
-    sqlx::query("UPDATE channel SET name = ?, is_private = ? WHERE id = ?")
+    sqlx::query("UPDATE channel SET name = $1, is_private = $2 WHERE id = $3")
         .bind(name)
         .bind(is_private_int)
         .bind(id)
@@ -141,18 +141,18 @@ pub async fn update_channel(
     Ok(())
 }
 
-pub async fn delete_channel(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM channel WHERE id = ?")
+pub async fn delete_channel(pool: &DbPool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
     Ok(())
 }
 
-pub async fn get_message(pool: &SqlitePool, id: &str) -> Result<Option<MessageRow>, sqlx::Error> {
+pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<MessageRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, String, i64)> = sqlx::query_as(
         "SELECT id, channel_id, user_id, username, content, created_ts \
-         FROM channel_message WHERE id = ?",
+         FROM channel_message WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -170,8 +170,8 @@ pub async fn get_message(pool: &SqlitePool, id: &str) -> Result<Option<MessageRo
     ))
 }
 
-pub async fn delete_message(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM channel_message WHERE id = ?")
+pub async fn delete_message(pool: &DbPool, id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM channel_message WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
@@ -179,7 +179,7 @@ pub async fn delete_message(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Err
 }
 
 pub async fn list_messages(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
     limit: i64,
     before_ts: i64,
@@ -191,10 +191,10 @@ pub async fn list_messages(
             sqlx::query_as(
                 "SELECT id, channel_id, user_id, username, content, created_ts \
                  FROM channel_message \
-                 WHERE channel_id = ? \
-                   AND (created_ts < ? OR (created_ts = ? AND id < ?)) \
+                 WHERE channel_id = $1 \
+                   AND (created_ts < $2 OR (created_ts = $3 AND id < $4)) \
                  ORDER BY created_ts DESC, id DESC \
-                 LIMIT ?",
+                 LIMIT $5",
             )
             .bind(channel_id)
             .bind(before_ts)
@@ -207,9 +207,9 @@ pub async fn list_messages(
             sqlx::query_as(
                 "SELECT id, channel_id, user_id, username, content, created_ts \
                  FROM channel_message \
-                 WHERE channel_id = ? AND created_ts < ? \
+                 WHERE channel_id = $1 AND created_ts < $2 \
                  ORDER BY created_ts DESC, id DESC \
-                 LIMIT ?",
+                 LIMIT $3",
             )
             .bind(channel_id)
             .bind(before_ts)
@@ -238,7 +238,7 @@ pub async fn list_messages(
 }
 
 pub async fn create_message(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
     user_id: &str,
     username: &str,
@@ -249,7 +249,7 @@ pub async fn create_message(
 
     sqlx::query(
         "INSERT INTO channel_message (id, channel_id, user_id, username, content, created_ts) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&id)
     .bind(channel_id)
@@ -271,7 +271,7 @@ pub async fn create_message(
 }
 
 pub async fn create_message_attachment(
-    pool: &SqlitePool,
+    pool: &DbPool,
     message_id: &str,
     channel_id: &str,
     filename: &str,
@@ -285,7 +285,7 @@ pub async fn create_message_attachment(
     sqlx::query(
         "INSERT INTO channel_message_attachment \
          (id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&id)
     .bind(message_id)
@@ -311,13 +311,13 @@ pub async fn create_message_attachment(
 }
 
 pub async fn list_message_attachments(
-    pool: &SqlitePool,
+    pool: &DbPool,
     message_id: &str,
 ) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
         "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
          FROM channel_message_attachment \
-         WHERE message_id = ? \
+         WHERE message_id = $1 \
          ORDER BY created_ts, id",
     )
     .bind(message_id)
@@ -351,17 +351,14 @@ pub async fn list_message_attachments(
 }
 
 pub async fn list_message_attachments_for_messages(
-    pool: &SqlitePool,
+    pool: &DbPool,
     message_ids: &[String],
 ) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
     if message_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(message_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = crate::repo::dollar_placeholders(1, message_ids.len());
     let sql = format!(
         "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
          FROM channel_message_attachment \
@@ -403,13 +400,13 @@ pub async fn list_message_attachments_for_messages(
 }
 
 pub async fn list_channel_attachments(
-    pool: &SqlitePool,
+    pool: &DbPool,
     channel_id: &str,
 ) -> Result<Vec<MessageAttachmentRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
         "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
          FROM channel_message_attachment \
-         WHERE channel_id = ? \
+         WHERE channel_id = $1 \
          ORDER BY created_ts, id",
     )
     .bind(channel_id)
@@ -443,13 +440,13 @@ pub async fn list_channel_attachments(
 }
 
 pub async fn get_message_attachment(
-    pool: &SqlitePool,
+    pool: &DbPool,
     id: &str,
 ) -> Result<Option<MessageAttachmentRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
         "SELECT id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts \
          FROM channel_message_attachment \
-         WHERE id = ?",
+         WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)

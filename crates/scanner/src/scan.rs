@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use rustfin_db::DbPool;
 use std::path::Path;
 use tracing::{info, warn};
 
@@ -7,7 +7,7 @@ use crate::walk;
 
 /// Run a full scan for a library, creating/updating items and media files.
 pub async fn run_library_scan(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     library_kind: &str,
 ) -> Result<ScanResult, ScanError> {
@@ -270,7 +270,7 @@ struct ExistingMediaFile {
 }
 
 async fn get_existing_media_file(
-    pool: &SqlitePool,
+    pool: &DbPool,
     path: &str,
 ) -> Result<Option<ExistingMediaFile>, sqlx::Error> {
     let row: Option<(String, i64)> = sqlx::query_as(
@@ -279,7 +279,7 @@ async fn get_existing_media_file(
                 SELECT 1 FROM episode_file_map efm WHERE efm.file_id = mf.id \
             ) THEN 1 ELSE 0 END AS has_mapping \
          FROM media_file mf \
-         WHERE mf.path = ?",
+         WHERE mf.path = $1",
     )
     .bind(path)
     .fetch_optional(pool)
@@ -292,7 +292,7 @@ async fn get_existing_media_file(
 }
 
 async fn ensure_media_file(
-    pool: &SqlitePool,
+    pool: &DbPool,
     path: &str,
     entry: &walk::MediaEntry,
     existing_file_id: Option<&str>,
@@ -303,8 +303,8 @@ async fn ensure_media_file(
     if let Some(existing_id) = existing_file_id {
         sqlx::query(
             "UPDATE media_file \
-             SET size_bytes = ?, mtime_ts = ?, updated_ts = ? \
-             WHERE id = ?",
+             SET size_bytes = $1, mtime_ts = $2, updated_ts = $3 \
+             WHERE id = $4",
         )
         .bind(entry.size_bytes as i64)
         .bind(entry.mtime_ts)
@@ -324,7 +324,7 @@ async fn ensure_media_file(
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO media_file (id, path, size_bytes, mtime_ts, duration_ms, created_ts, updated_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&id)
     .bind(path)
@@ -353,13 +353,9 @@ fn probe_audio_duration_ms(path: &str) -> Option<i64> {
     Some((duration_secs * 1000.0) as i64)
 }
 
-async fn link_file_to_item(
-    pool: &SqlitePool,
-    item_id: &str,
-    file_id: &str,
-) -> Result<(), sqlx::Error> {
+async fn link_file_to_item(pool: &DbPool, item_id: &str, file_id: &str) -> Result<(), sqlx::Error> {
     let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT id FROM episode_file_map WHERE episode_item_id = ? AND file_id = ? AND map_kind = 'primary'",
+        "SELECT id FROM episode_file_map WHERE episode_item_id = $1 AND file_id = $2 AND map_kind = 'primary'",
     )
     .bind(item_id)
     .bind(file_id)
@@ -374,7 +370,7 @@ async fn link_file_to_item(
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "INSERT INTO episode_file_map (id, episode_item_id, file_id, map_kind, created_ts) \
-         VALUES (?, ?, ?, 'primary', ?)",
+         VALUES ($1, $2, $3, 'primary', $4)",
     )
     .bind(&map_id)
     .bind(item_id)
@@ -387,7 +383,7 @@ async fn link_file_to_item(
 }
 
 async fn find_or_create_item(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     kind: &str,
     parent_id: Option<&str>,
@@ -397,7 +393,7 @@ async fn find_or_create_item(
     // Try to find existing item with same title, kind, and parent
     let existing: Option<(String,)> = if let Some(pid) = parent_id {
         sqlx::query_as(
-            "SELECT id FROM item WHERE library_id = ? AND kind = ? AND parent_id = ? AND title = ?",
+            "SELECT id FROM item WHERE library_id = $1 AND kind = $2 AND parent_id = $3 AND title = $4",
         )
         .bind(library_id)
         .bind(kind)
@@ -407,7 +403,7 @@ async fn find_or_create_item(
         .await?
     } else {
         sqlx::query_as(
-            "SELECT id FROM item WHERE library_id = ? AND kind = ? AND parent_id IS NULL AND title = ?",
+            "SELECT id FROM item WHERE library_id = $1 AND kind = $2 AND parent_id IS NULL AND title = $3",
         )
         .bind(library_id)
         .bind(kind)
@@ -425,7 +421,7 @@ async fn find_or_create_item(
 
     sqlx::query(
         "INSERT INTO item (id, library_id, kind, parent_id, title, year, created_ts, updated_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&id)
     .bind(library_id)
@@ -442,7 +438,7 @@ async fn find_or_create_item(
 }
 
 async fn create_movie_item(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     info: &parser::MovieInfo,
     file_path: &str,
@@ -458,7 +454,7 @@ async fn create_movie_item(
 }
 
 async fn create_episode_item(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     info: &parser::EpisodeInfo,
     file_path: &str,
@@ -510,7 +506,7 @@ async fn create_episode_item(
 
 /// Scan a music library root directory and create artist/album/track items.
 async fn parse_music_library(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     library_id: &str,
     root: &Path,
 ) -> Result<ScanResult, sqlx::Error> {
@@ -586,13 +582,13 @@ async fn parse_music_library(
                         let cover_str = cover_path.to_string_lossy().to_string();
                         // Only update if poster_url is not already set
                         let existing_art: Option<(Option<String>,)> =
-                            sqlx::query_as("SELECT poster_url FROM item WHERE id = ?")
+                            sqlx::query_as("SELECT poster_url FROM item WHERE id = $1")
                                 .bind(&album_id)
                                 .fetch_optional(pool)
                                 .await?;
                         if existing_art.and_then(|(p,)| p).is_none() {
                             sqlx::query(
-                                "UPDATE item SET poster_url = ?, updated_ts = ? WHERE id = ?",
+                                "UPDATE item SET poster_url = $1, updated_ts = $2 WHERE id = $3",
                             )
                             .bind(&cover_str)
                             .bind(chrono::Utc::now().timestamp())

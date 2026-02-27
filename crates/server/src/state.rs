@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
+use rustfin_db::DbPool;
 
 /// Server-sent event types.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -34,7 +34,7 @@ pub enum ServerEvent {
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: SqlitePool,
+    pub db: DbPool,
     pub jwt_secret: String,
     pub youtube_agent_url: String,
     pub youtube_agent_token: Option<String>,

@@ -5,7 +5,7 @@
 //! 2. Provider metadata fills in blanks.
 //! 3. Multiple providers: first non-null wins (priority order).
 
-use sqlx::SqlitePool;
+use rustfin_db::DbPool;
 use tracing::debug;
 
 use crate::ItemMetadata;
@@ -14,7 +14,7 @@ use crate::ItemMetadata;
 ///
 /// Returns the merged metadata and which fields were updated.
 pub async fn merge_metadata(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     provider_meta: &ItemMetadata,
 ) -> Result<MergeResult, sqlx::Error> {
@@ -76,14 +76,11 @@ pub struct MergeResult {
 }
 
 /// Lock a field for an item (user override).
-pub async fn lock_field(
-    pool: &SqlitePool,
-    item_id: &str,
-    field_name: &str,
-) -> Result<(), sqlx::Error> {
+pub async fn lock_field(pool: &DbPool, item_id: &str, field_name: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT OR IGNORE INTO item_field_lock (item_id, field, locked, locked_ts) \
-         VALUES (?, ?, 1, ?)",
+        "INSERT INTO item_field_lock (item_id, field, locked, locked_ts) \
+         VALUES ($1, $2, 1, $3) \
+         ON CONFLICT(item_id, field) DO NOTHING",
     )
     .bind(item_id)
     .bind(field_name)
@@ -95,11 +92,11 @@ pub async fn lock_field(
 
 /// Unlock a field for an item.
 pub async fn unlock_field(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     field_name: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM item_field_lock WHERE item_id = ? AND field = ?")
+    sqlx::query("DELETE FROM item_field_lock WHERE item_id = $1 AND field = $2")
         .bind(item_id)
         .bind(field_name)
         .execute(pool)
@@ -107,19 +104,16 @@ pub async fn unlock_field(
     Ok(())
 }
 
-async fn get_locked_fields(pool: &SqlitePool, item_id: &str) -> Result<Vec<String>, sqlx::Error> {
+async fn get_locked_fields(pool: &DbPool, item_id: &str) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT field FROM item_field_lock WHERE item_id = ?")
+        sqlx::query_as("SELECT field FROM item_field_lock WHERE item_id = $1")
             .bind(item_id)
             .fetch_all(pool)
             .await?;
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
-async fn get_current_metadata(
-    pool: &SqlitePool,
-    item_id: &str,
-) -> Result<ItemMetadata, sqlx::Error> {
+async fn get_current_metadata(pool: &DbPool, item_id: &str) -> Result<ItemMetadata, sqlx::Error> {
     let row: Option<(
         Option<String>,
         Option<String>,
@@ -133,7 +127,7 @@ async fn get_current_metadata(
     )> = sqlx::query_as(
         "SELECT title, sort_title, overview, tagline, year, premiere_date, \
          community_rating, poster_url, backdrop_url \
-         FROM item WHERE id = ?",
+         FROM item WHERE id = $1",
     )
     .bind(item_id)
     .fetch_optional(pool)
@@ -157,23 +151,23 @@ async fn get_current_metadata(
 }
 
 async fn save_metadata(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     meta: &ItemMetadata,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE item SET \
-         title = COALESCE(?, title), \
-         sort_title = COALESCE(?, sort_title), \
-         overview = ?, \
-         tagline = ?, \
-         year = COALESCE(?, year), \
-         premiere_date = ?, \
-         community_rating = ?, \
-         poster_url = ?, \
-         backdrop_url = ?, \
-         updated_ts = ? \
-         WHERE id = ?",
+         title = COALESCE($1, title), \
+         sort_title = COALESCE($2, sort_title), \
+         overview = $3, \
+         tagline = $4, \
+         year = COALESCE($5, year), \
+         premiere_date = $6, \
+         community_rating = $7, \
+         poster_url = $8, \
+         backdrop_url = $9, \
+         updated_ts = $10 \
+         WHERE id = $11",
     )
     .bind(&meta.title)
     .bind(&meta.sort_title)
@@ -193,14 +187,14 @@ async fn save_metadata(
 
 /// Store a provider ID for an item.
 pub async fn set_provider_id(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     provider: &str,
     provider_id: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO item_provider_id (item_id, provider, value) \
-         VALUES (?, ?, ?) \
+         VALUES ($1, $2, $3) \
          ON CONFLICT(item_id, provider) DO UPDATE SET value = excluded.value",
     )
     .bind(item_id)
@@ -213,11 +207,11 @@ pub async fn set_provider_id(
 
 /// Get provider IDs for an item.
 pub async fn get_provider_ids(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
 ) -> Result<Vec<(String, String)>, sqlx::Error> {
     let rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT provider, value FROM item_provider_id WHERE item_id = ?")
+        sqlx::query_as("SELECT provider, value FROM item_provider_id WHERE item_id = $1")
             .bind(item_id)
             .fetch_all(pool)
             .await?;
@@ -231,7 +225,9 @@ mod tests {
     #[tokio::test]
     async fn merge_respects_locked_fields() {
         let pool = rustfin_db::connect(":memory:").await.unwrap();
-        rustfin_db::migrate::run(&pool).await.unwrap();
+        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Sqlite)
+            .await
+            .unwrap();
 
         // Create a library first (FK requirement)
         sqlx::query(
@@ -246,7 +242,7 @@ mod tests {
         let item_id = "test-item-1";
         sqlx::query(
             "INSERT INTO item (id, library_id, kind, title, sort_title, year, created_ts, updated_ts) \
-             VALUES (?, 'lib1', 'movie', 'Original Title', 'original title', 2020, 0, 0)",
+             VALUES ($1, 'lib1', 'movie', 'Original Title', 'original title', 2020, 0, 0)",
         )
         .bind(item_id)
         .execute(&pool)
@@ -280,7 +276,9 @@ mod tests {
     #[tokio::test]
     async fn provider_ids_crud() {
         let pool = rustfin_db::connect(":memory:").await.unwrap();
-        rustfin_db::migrate::run(&pool).await.unwrap();
+        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Sqlite)
+            .await
+            .unwrap();
 
         sqlx::query(
             "INSERT INTO library (id, name, kind, created_ts, updated_ts) \
@@ -293,7 +291,7 @@ mod tests {
         let item_id = "test-item-2";
         sqlx::query(
             "INSERT INTO item (id, library_id, kind, title, sort_title, created_ts, updated_ts) \
-             VALUES (?, 'lib1', 'movie', 'Test', 'test', 0, 0)",
+             VALUES ($1, 'lib1', 'movie', 'Test', 'test', 0, 0)",
         )
         .bind(item_id)
         .execute(&pool)

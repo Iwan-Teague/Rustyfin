@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct ItemRow {
@@ -19,7 +19,7 @@ pub struct ItemRow {
     pub duration_ms: Option<i64>,
 }
 
-pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow>, sqlx::Error> {
+pub async fn get_item(pool: &DbPool, item_id: &str) -> Result<Option<ItemRow>, sqlx::Error> {
     let row: Option<(
         String,
         String,
@@ -38,7 +38,7 @@ pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow
     )> = sqlx::query_as(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
          poster_url, backdrop_url, logo_url, thumb_url, \
-         created_ts, updated_ts FROM item WHERE id = ?",
+         created_ts, updated_ts FROM item WHERE id = $1",
     )
     .bind(item_id)
     .fetch_optional(pool)
@@ -47,7 +47,7 @@ pub async fn get_item(pool: &SqlitePool, item_id: &str) -> Result<Option<ItemRow
     Ok(row.map(row_to_item))
 }
 
-pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {
+pub async fn get_children(pool: &DbPool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {
     let rows: Vec<(
         String,
         String,
@@ -72,7 +72,7 @@ pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<Item
           JOIN media_file mf2 ON mf2.id = efm2.file_id \
           WHERE efm2.episode_item_id = i.id LIMIT 1) AS duration_ms \
          FROM item i \
-         WHERE i.parent_id = ? ORDER BY i.title",
+         WHERE i.parent_id = $1 ORDER BY i.title",
     )
     .bind(parent_id)
     .fetch_all(pool)
@@ -82,7 +82,7 @@ pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<Item
 }
 
 pub async fn get_library_items(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
 ) -> Result<Vec<ItemRow>, sqlx::Error> {
     // Return top-level items (no parent) for the library
@@ -105,7 +105,7 @@ pub async fn get_library_items(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
          poster_url, backdrop_url, logo_url, thumb_url, \
          created_ts, updated_ts FROM item \
-         WHERE library_id = ? AND parent_id IS NULL ORDER BY title",
+         WHERE library_id = $1 AND parent_id IS NULL ORDER BY title",
     )
     .bind(library_id)
     .fetch_all(pool)
@@ -115,12 +115,9 @@ pub async fn get_library_items(
 }
 
 /// Get the media file ID associated with an item (via episode_file_map).
-pub async fn get_item_file_id(
-    pool: &SqlitePool,
-    item_id: &str,
-) -> Result<Option<String>, sqlx::Error> {
+pub async fn get_item_file_id(pool: &DbPool, item_id: &str) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT file_id FROM episode_file_map WHERE episode_item_id = ? LIMIT 1")
+        sqlx::query_as("SELECT file_id FROM episode_file_map WHERE episode_item_id = $1 LIMIT 1")
             .bind(item_id)
             .fetch_optional(pool)
             .await?;
@@ -129,11 +126,11 @@ pub async fn get_item_file_id(
 
 /// Get an item ID for a media file.
 pub async fn get_item_id_by_file_id(
-    pool: &SqlitePool,
+    pool: &DbPool,
     file_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> =
-        sqlx::query_as("SELECT episode_item_id FROM episode_file_map WHERE file_id = ? LIMIT 1")
+        sqlx::query_as("SELECT episode_item_id FROM episode_file_map WHERE file_id = $1 LIMIT 1")
             .bind(file_id)
             .fetch_optional(pool)
             .await?;
@@ -141,14 +138,14 @@ pub async fn get_item_id_by_file_id(
 }
 
 pub async fn get_item_media_path(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT mf.path \
          FROM episode_file_map ef \
          JOIN media_file mf ON mf.id = ef.file_id \
-         WHERE ef.episode_item_id = ? \
+         WHERE ef.episode_item_id = $1 \
          LIMIT 1",
     )
     .bind(item_id)
@@ -158,12 +155,12 @@ pub async fn get_item_media_path(
 }
 
 pub async fn get_first_descendant_media_path(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "WITH RECURSIVE descendants(id, depth) AS (
-            SELECT id, 0 FROM item WHERE id = ?
+            SELECT id, 0 FROM item WHERE id = $1
             UNION ALL
             SELECT i.id, d.depth + 1
             FROM item i
@@ -183,7 +180,7 @@ pub async fn get_first_descendant_media_path(
 }
 
 pub async fn get_item_artwork(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
 ) -> Result<
     Option<(
@@ -194,14 +191,14 @@ pub async fn get_item_artwork(
     )>,
     sqlx::Error,
 > {
-    sqlx::query_as("SELECT poster_url, backdrop_url, logo_url, thumb_url FROM item WHERE id = ?")
+    sqlx::query_as("SELECT poster_url, backdrop_url, logo_url, thumb_url FROM item WHERE id = $1")
         .bind(item_id)
         .fetch_optional(pool)
         .await
 }
 
 pub async fn update_item_artwork(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     poster_url: Option<&str>,
     backdrop_url: Option<&str>,
@@ -210,8 +207,8 @@ pub async fn update_item_artwork(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE item
-         SET poster_url = ?, backdrop_url = ?, logo_url = ?, thumb_url = ?, updated_ts = ?
-         WHERE id = ?",
+         SET poster_url = $1, backdrop_url = $2, logo_url = $3, thumb_url = $4, updated_ts = $5
+         WHERE id = $6",
     )
     .bind(poster_url)
     .bind(backdrop_url)
@@ -301,7 +298,7 @@ fn row_to_item_full(
 
 /// Get an image URL for an item by type (poster, backdrop, logo, thumb).
 pub async fn get_item_image_url(
-    pool: &SqlitePool,
+    pool: &DbPool,
     item_id: &str,
     image_type: &str,
 ) -> Result<Option<String>, sqlx::Error> {
@@ -312,7 +309,7 @@ pub async fn get_item_image_url(
         "thumb" => "thumb_url",
         _ => return Ok(None),
     };
-    let query = format!("SELECT {col} FROM item WHERE id = ?");
+    let query = format!("SELECT {col} FROM item WHERE id = $1");
     let row: Option<(Option<String>,)> = sqlx::query_as(&query)
         .bind(item_id)
         .fetch_optional(pool)

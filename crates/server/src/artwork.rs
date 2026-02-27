@@ -19,7 +19,7 @@ struct FetchedProviderMetadata {
     metadata: Option<ItemMetadata>,
 }
 
-async fn resolve_tmdb_api_key(pool: &sqlx::SqlitePool) -> anyhow::Result<Option<String>> {
+async fn resolve_tmdb_api_key(pool: &rustfin_db::DbPool) -> anyhow::Result<Option<String>> {
     let db_key = rustfin_db::repo::settings::get(pool, "tmdb_api_key")
         .await
         .context("failed to read tmdb_api_key from settings")?
@@ -46,7 +46,7 @@ async fn resolve_tmdb_api_key(pool: &sqlx::SqlitePool) -> anyhow::Result<Option<
 }
 
 pub async fn enrich_library_artwork(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     library_id: &str,
     library_kind: &str,
 ) -> anyhow::Result<()> {
@@ -309,7 +309,7 @@ async fn fetch_tmdb_series_metadata(
 }
 
 async fn merge_and_apply_artwork(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     item_id: &str,
     local: &Artwork,
     online: &Artwork,
@@ -377,7 +377,7 @@ async fn merge_and_apply_artwork(
 }
 
 async fn find_local_item_artwork(
-    pool: &sqlx::SqlitePool,
+    pool: &rustfin_db::DbPool,
     item_id: &str,
     item_kind: &str,
 ) -> anyhow::Result<Artwork> {

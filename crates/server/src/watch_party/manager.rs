@@ -1134,7 +1134,7 @@ impl WatchPartyManager {
         rooms.remove(room_id);
     }
 
-    pub async fn cleanup_empty_lobbies(&self, db: &sqlx::SqlitePool, room_audio_root: &Path) {
+    pub async fn cleanup_empty_lobbies(&self, db: &rustfin_db::DbPool, room_audio_root: &Path) {
         let cutoff_ts = chrono::Utc::now().timestamp() - EMPTY_ROOM_TTL_SECONDS;
         let candidate_room_ids =
             match rustfin_db::repo::watch_party::list_purgeable_room_ids_updated_before(

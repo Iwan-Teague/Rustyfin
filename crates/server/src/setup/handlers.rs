@@ -19,7 +19,7 @@ use crate::state::AppState;
 // Helper: get current setup state from DB
 // ---------------------------------------------------------------------------
 
-async fn get_setup_state(db: &sqlx::SqlitePool) -> Result<SetupState, AppError> {
+async fn get_setup_state(db: &rustfin_db::DbPool) -> Result<SetupState, AppError> {
     let state_str = rustfin_db::repo::settings::get(db, "setup_state")
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?

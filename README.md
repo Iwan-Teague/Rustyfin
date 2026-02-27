@@ -53,15 +53,20 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
 
 Rustyfin runs as a multi-service stack in Docker Compose:
 
+- `postgres` (PostgreSQL database)
+  - Default DB backend for Docker runtime (`start.sh` default).
+  - Persistent data volume managed by compose.
 - `rustfin` (Rust backend API)
   - Axum REST/WebSocket server.
-  - SQLite-backed core application logic.
+  - DB-backend abstraction via SQLx AnyPool (SQLite and PostgreSQL).
+  - Default migration authority (`RUSTFIN_RUN_MIGRATIONS=true`).
 - `rustfin-calendar` (Rust calendar API)
   - Dedicated calendar microservice.
-  - Shares the same SQLite database volume.
+  - Uses shared DB target; migrations disabled by default in compose.
 - `rustfin-tmdb-agent` (Rust TMDB sync API)
   - Dedicated metadata/poster sync microservice.
   - Scans indexed items in a library, resolves TMDB matches, downloads posters to shared cache, updates DB artwork paths.
+  - Uses shared DB target; migrations disabled by default in compose.
 - `rustfin-youtube-agent` (Rust YouTube download API)
   - Dedicated online-audio fetch/convert service for Listen Together.
   - Downloads YouTube source audio with multi-strategy fallback, converts to MP3, writes room-scoped files under shared cache.
@@ -119,7 +124,7 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 ### `start.sh` options
 
 ```bash
-./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [--youtube-cookie "<cookie>"] [-f docker-compose.yml]
+./scripts/start.sh [--no-build|--full-rebuild] [--foreground] [--no-health-check] [--youtube-cookie "<cookie>"] [--native-rust-build|--docker-rust-build] [-f docker-compose.yml]
 ```
 
 - Default behavior performs a smart incremental rebuild:
@@ -127,12 +132,20 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
   - Only changed services are rebuilt (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-transcription-agent`, `rustfin-youtube-agent`, `rustfin-ui`).
   - If nothing changed, it skips image rebuild and reuses existing images.
   - Compose config impact is hashed per service (`docker compose config --hash <service>`), so unrelated compose edits do not invalidate all service fingerprints.
-- Rust Docker build profile defaults to `dev` for faster local builds.
-  - Set `RUSTFIN_RUST_BUILD_PROFILE=release` when you need optimized release binaries.
+- Rust build profile defaults to `dev` for faster local builds.
+  - Set `RUSTFIN_RUST_BUILD_PROFILE=release` when you need optimized binaries.
+- Rust service binaries default to native host cross-compilation, then Docker runtime images copy those prebuilt binaries.
+  - This avoids repeated Rust compilation inside Docker build stages.
+  - Use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`) to force old Docker builder-stage behavior.
+  - Native cross-build prerequisites on non-Linux hosts:
+    - `zig`
+    - `cargo-zigbuild` (`cargo install cargo-zigbuild --locked`)
 - `--full-rebuild` forces no-cache rebuild.
 - `--no-build` skips rebuild.
-- Health checks in detached mode wait for critical services (`rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-youtube-agent`, `rustfin-transcription-agent`, `rustfin-ui`, `rustfin-edge`) before final success output.
+- Health checks in detached mode wait for critical services (`postgres`, `rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-youtube-agent`, `rustfin-transcription-agent`, `rustfin-ui`, `rustfin-edge`) before final success output.
 - If `RUSTFIN_YOUTUBE_COOKIE` is exported once, `start.sh` persists it to a local secrets file and auto-loads it on future runs.
+- If `RUSTFIN_DATABASE_URL` is not set, `start.sh` defaults Docker runtime to:
+  - `postgresql://<RUSTFIN_PG_USER>:<RUSTFIN_PG_PASSWORD>@postgres:5432/<RUSTFIN_PG_DB>`
 
 ## Access URLs and LAN Behavior
 
@@ -160,6 +173,17 @@ If default ports are occupied, it picks free ports.
 
 Common runtime variables:
 
+- `RUSTFIN_DATABASE_URL` (preferred database target; accepts `sqlite:` URLs/paths and `postgres://` URLs)
+- `RUSTFIN_DB` (legacy SQLite DB path fallback)
+- `RUSTFIN_RUN_MIGRATIONS` (`true`/`false`; default `true` for backend)
+- `RUSTFIN_CALENDAR_RUN_MIGRATIONS` (compose default: `false`)
+- `RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS` (compose default: `false`)
+- `RUSTFIN_PG_USER` (compose default: `rustfin`)
+- `RUSTFIN_PG_PASSWORD` (compose default: `rustfin`)
+- `RUSTFIN_PG_DB` (compose default: `rustfin`)
+- `RUSTFIN_NATIVE_RUST_BUILD` (`1` default; set `0` to compile Rust binaries inside Docker)
+- `RUSTFIN_NATIVE_LINUX_TARGET` (optional Linux target triple override for native Rust cross-build)
+- `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
 - `RUSTFIN_BACKEND_PORT`
 - `RUSTFIN_UI_PORT`
 - `RUSTFIN_PUBLIC_HOST`
@@ -198,6 +222,18 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 ```
+
+Database transition note:
+
+- `crates/db/migrations/` remains the active SQLite migration set.
+- `crates/db/migrations_pg/` is the PostgreSQL migration track introduced for transition work.
+- Docker runtime now defaults to PostgreSQL via compose + `start.sh`.
+- SQLite remains supported for legacy/dev targets via explicit `RUSTFIN_DATABASE_URL` or `RUSTFIN_DB`.
+- SQLite-to-PostgreSQL migration helpers:
+  - `scripts/db/migrate_sqlite_to_postgres.sh`
+  - `scripts/db/validate_sqlite_postgres_counts.sh`
+- Operational cutover document:
+  - `docs/reports/postgres-cutover-runbook.md`
 
 UI:
 

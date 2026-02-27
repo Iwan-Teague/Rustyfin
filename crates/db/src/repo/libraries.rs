@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct LibraryRow {
@@ -36,7 +36,7 @@ pub struct LibrarySettingsRow {
 }
 
 pub async fn create_library(
-    pool: &SqlitePool,
+    pool: &DbPool,
     name: &str,
     kind: &str,
     paths: &[String],
@@ -47,7 +47,7 @@ pub async fn create_library(
     let mut tx = pool.begin().await?;
 
     sqlx::query(
-        "INSERT INTO library (id, name, kind, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO library (id, name, kind, created_ts, updated_ts) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&id)
     .bind(name)
@@ -60,7 +60,7 @@ pub async fn create_library(
     for p in paths {
         let path_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO library_path (id, library_id, path, is_read_only, created_ts) VALUES (?, ?, ?, 1, ?)",
+            "INSERT INTO library_path (id, library_id, path, is_read_only, created_ts) VALUES ($1, $2, $3, 1, $4)",
         )
         .bind(&path_id)
         .bind(&id)
@@ -71,9 +71,10 @@ pub async fn create_library(
     }
 
     sqlx::query(
-        "INSERT OR IGNORE INTO library_settings \
+        "INSERT INTO library_settings \
          (library_id, show_images, prefer_local_artwork, fetch_online_artwork, updated_ts) \
-         VALUES (?, 1, 1, 1, ?)",
+         VALUES ($1, 1, 1, 1, $2) \
+         ON CONFLICT(library_id) DO NOTHING",
     )
     .bind(&id)
     .bind(now)
@@ -91,7 +92,7 @@ pub async fn create_library(
     })
 }
 
-pub async fn list_libraries(pool: &SqlitePool) -> Result<Vec<LibraryRow>, sqlx::Error> {
+pub async fn list_libraries(pool: &DbPool) -> Result<Vec<LibraryRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, i64, i64)> =
         sqlx::query_as("SELECT id, name, kind, created_ts, updated_ts FROM library ORDER BY name")
             .fetch_all(pool)
@@ -110,11 +111,11 @@ pub async fn list_libraries(pool: &SqlitePool) -> Result<Vec<LibraryRow>, sqlx::
 }
 
 pub async fn get_library(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
 ) -> Result<Option<LibraryRow>, sqlx::Error> {
     let row: Option<(String, String, String, i64, i64)> =
-        sqlx::query_as("SELECT id, name, kind, created_ts, updated_ts FROM library WHERE id = ?")
+        sqlx::query_as("SELECT id, name, kind, created_ts, updated_ts FROM library WHERE id = $1")
             .bind(library_id)
             .fetch_optional(pool)
             .await?;
@@ -131,13 +132,13 @@ pub async fn get_library(
 }
 
 pub async fn update_library(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     name: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     if let Some(new_name) = name {
         let now = chrono::Utc::now().timestamp();
-        let result = sqlx::query("UPDATE library SET name = ?, updated_ts = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE library SET name = $1, updated_ts = $2 WHERE id = $3")
             .bind(new_name)
             .bind(now)
             .bind(library_id)
@@ -150,11 +151,11 @@ pub async fn update_library(
 }
 
 pub async fn replace_library_paths(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     paths: &[String],
 ) -> Result<bool, sqlx::Error> {
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM library WHERE id = ?")
+    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM library WHERE id = $1")
         .bind(library_id)
         .fetch_optional(pool)
         .await?;
@@ -165,7 +166,7 @@ pub async fn replace_library_paths(
     let now = chrono::Utc::now().timestamp();
     let mut tx = pool.begin().await?;
 
-    sqlx::query("DELETE FROM library_path WHERE library_id = ?")
+    sqlx::query("DELETE FROM library_path WHERE library_id = $1")
         .bind(library_id)
         .execute(&mut *tx)
         .await?;
@@ -173,7 +174,7 @@ pub async fn replace_library_paths(
     for path in paths {
         let path_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO library_path (id, library_id, path, is_read_only, created_ts) VALUES (?, ?, ?, 1, ?)",
+            "INSERT INTO library_path (id, library_id, path, is_read_only, created_ts) VALUES ($1, $2, $3, 1, $4)",
         )
         .bind(&path_id)
         .bind(library_id)
@@ -183,7 +184,7 @@ pub async fn replace_library_paths(
         .await?;
     }
 
-    sqlx::query("UPDATE library SET updated_ts = ? WHERE id = ?")
+    sqlx::query("UPDATE library SET updated_ts = $1 WHERE id = $2")
         .bind(now)
         .bind(library_id)
         .execute(&mut *tx)
@@ -193,8 +194,8 @@ pub async fn replace_library_paths(
     Ok(true)
 }
 
-pub async fn delete_library(pool: &SqlitePool, library_id: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM library WHERE id = ?")
+pub async fn delete_library(pool: &DbPool, library_id: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM library WHERE id = $1")
         .bind(library_id)
         .execute(pool)
         .await?;
@@ -202,11 +203,11 @@ pub async fn delete_library(pool: &SqlitePool, library_id: &str) -> Result<bool,
 }
 
 pub async fn get_library_paths(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
 ) -> Result<Vec<LibraryPathRow>, sqlx::Error> {
     let rows: Vec<(String, String, String, bool, i64)> = sqlx::query_as(
-        "SELECT id, library_id, path, is_read_only, created_ts FROM library_path WHERE library_id = ?",
+        "SELECT id, library_id, path, is_read_only, created_ts FROM library_path WHERE library_id = $1",
     )
     .bind(library_id)
     .fetch_all(pool)
@@ -227,17 +228,14 @@ pub async fn get_library_paths(
 }
 
 pub async fn get_library_paths_for_libraries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_ids: &[String],
 ) -> Result<Vec<LibraryPathRow>, sqlx::Error> {
     if library_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(library_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
         "SELECT id, library_id, path, is_read_only, created_ts \
          FROM library_path \
@@ -266,10 +264,10 @@ pub async fn get_library_paths_for_libraries(
 }
 
 /// Count items belonging to a library.
-pub async fn count_library_items(pool: &SqlitePool, library_id: &str) -> Result<i64, sqlx::Error> {
+pub async fn count_library_items(pool: &DbPool, library_id: &str) -> Result<i64, sqlx::Error> {
     // Keep this aligned with GET /libraries/{id}/items, which returns top-level rows only.
     let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM item WHERE library_id = ? AND parent_id IS NULL")
+        sqlx::query_as("SELECT COUNT(*) FROM item WHERE library_id = $1 AND parent_id IS NULL")
             .bind(library_id)
             .fetch_one(pool)
             .await?;
@@ -277,17 +275,14 @@ pub async fn count_library_items(pool: &SqlitePool, library_id: &str) -> Result<
 }
 
 pub async fn count_library_items_for_libraries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_ids: &[String],
 ) -> Result<Vec<(String, i64)>, sqlx::Error> {
     if library_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(library_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
         "SELECT library_id, COUNT(*) FROM item \
          WHERE parent_id IS NULL AND library_id IN ({placeholders}) \
@@ -302,7 +297,7 @@ pub async fn count_library_items_for_libraries(
 }
 
 /// Get all library paths across all libraries.
-pub async fn get_all_library_paths(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+pub async fn get_all_library_paths(pool: &DbPool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT path FROM library_path")
         .fetch_all(pool)
         .await?;
@@ -310,7 +305,7 @@ pub async fn get_all_library_paths(pool: &SqlitePool) -> Result<Vec<String>, sql
 }
 
 pub async fn get_library_settings(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
 ) -> Result<Option<LibrarySettingsRow>, sqlx::Error> {
     let row: Option<(
@@ -332,7 +327,7 @@ pub async fn get_library_settings(
             tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
             tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, \
             updated_ts \
-         FROM library_settings WHERE library_id = ?",
+         FROM library_settings WHERE library_id = $1",
     )
     .bind(library_id)
     .fetch_optional(pool)
@@ -374,17 +369,14 @@ pub async fn get_library_settings(
 }
 
 pub async fn get_library_settings_for_libraries(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_ids: &[String],
 ) -> Result<Vec<LibrarySettingsRow>, sqlx::Error> {
     if library_ids.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat("?")
-        .take(library_ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
         "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
                 tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
@@ -454,7 +446,7 @@ pub async fn get_library_settings_for_libraries(
 }
 
 pub async fn upsert_library_settings(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     show_images: bool,
     prefer_local_artwork: bool,
@@ -475,7 +467,7 @@ pub async fn upsert_library_settings(
          (library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
           tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
           tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, updated_ts) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          ON CONFLICT(library_id) DO UPDATE SET \
            show_images = excluded.show_images, \
            prefer_local_artwork = excluded.prefer_local_artwork, \
@@ -524,15 +516,15 @@ pub async fn upsert_library_settings(
 }
 
 pub async fn touch_tmdb_last_sync_ts(
-    pool: &SqlitePool,
+    pool: &DbPool,
     library_id: &str,
     last_sync_ts: i64,
 ) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE library_settings \
-         SET tmdb_last_sync_ts = ?, updated_ts = ? \
-         WHERE library_id = ?",
+         SET tmdb_last_sync_ts = $1, updated_ts = $2 \
+         WHERE library_id = $3",
     )
     .bind(last_sync_ts)
     .bind(now)

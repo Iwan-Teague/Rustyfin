@@ -1,4 +1,4 @@
-use sqlx::SqlitePool;
+use crate::DbPool;
 
 #[derive(Debug, Clone)]
 pub struct MediaFileRow {
@@ -14,7 +14,7 @@ pub struct MediaFileRow {
 }
 
 pub async fn get_media_file(
-    pool: &SqlitePool,
+    pool: &DbPool,
     file_id: &str,
 ) -> Result<Option<MediaFileRow>, sqlx::Error> {
     let row: Option<(
@@ -29,7 +29,7 @@ pub async fn get_media_file(
         i64,
     )> = sqlx::query_as(
         "SELECT id, path, size_bytes, mtime_ts, container, duration_ms, stream_info_json, \
-         created_ts, updated_ts FROM media_file WHERE id = ?",
+         created_ts, updated_ts FROM media_file WHERE id = $1",
     )
     .bind(file_id)
     .fetch_optional(pool)

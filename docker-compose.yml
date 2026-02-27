@@ -1,11 +1,28 @@
 services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      - POSTGRES_USER=${RUSTFIN_PG_USER:-rustfin}
+      - POSTGRES_PASSWORD=${RUSTFIN_PG_PASSWORD:-rustfin}
+      - POSTGRES_DB=${RUSTFIN_PG_DB:-rustfin}
+    volumes:
+      - rustfin-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RUSTFIN_PG_USER:-rustfin} -d ${RUSTFIN_PG_DB:-rustfin}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   # Backend API server
   rustfin:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: ${RUSTFIN_SERVER_DOCKERFILE:-Dockerfile}
       args:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
+        NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     ports:
       - "${RUSTFIN_BACKEND_PORT:-8096}:8096"
     extra_hosts:
@@ -25,13 +42,17 @@ services:
       - RUSTFIN_YOUTUBE_AGENT_TOKEN=${RUSTFIN_YOUTUBE_AGENT_TOKEN:-}
       - RUSTFIN_TRANSCRIPTION_AGENT_URL=${RUSTFIN_TRANSCRIPTION_AGENT_URL:-http://rustfin-transcription-agent:8102}
       - RUSTFIN_TRANSCRIPTION_AGENT_TOKEN=${RUSTFIN_TRANSCRIPTION_AGENT_TOKEN:-}
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
       - RUSTFIN_YOUTUBE_COOKIE=${RUSTFIN_YOUTUBE_COOKIE:-}
       - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
       - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-./media}
       - RUSTFIN_MEDIA_CONTAINER_ROOT=${RUSTFIN_MEDIA_CONTAINER_ROOT:-/media}
       - RUSTFIN_CACHE_DIR=/cache
       - RUSTFIN_WS_ALLOWED_ORIGINS=${RUSTFIN_WS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - RUSTFIN_RUN_MIGRATIONS=${RUSTFIN_RUN_MIGRATIONS:-true}
     depends_on:
+      postgres:
+        condition: service_healthy
       rustfin-youtube-agent:
         condition: service_started
       rustfin-transcription-agent:
@@ -47,16 +68,19 @@ services:
   rustfin-tmdb-agent:
     build:
       context: .
-      dockerfile: crates/tmdb-agent/Dockerfile
+      dockerfile: ${RUSTFIN_TMDB_AGENT_DOCKERFILE:-crates/tmdb-agent/Dockerfile}
       args:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
+        NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
       - RUSTFIN_TMDB_AGENT_BIND=0.0.0.0:8100
       - RUSTFIN_DB=/config/rustfin.db
       - RUSTFIN_CACHE_DIR=/cache
       - RUSTFIN_TMDB_KEY=${RUSTFIN_TMDB_KEY:-}
       - RUSTFIN_TMDB_AGENT_TOKEN=${RUSTFIN_TMDB_AGENT_TOKEN:-}
+      - RUSTFIN_RUN_MIGRATIONS=${RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS:-false}
     volumes:
       - rustfin-config:/config
       - rustfin-cache:/cache
@@ -74,9 +98,10 @@ services:
   rustfin-youtube-agent:
     build:
       context: .
-      dockerfile: crates/youtube-agent/Dockerfile
+      dockerfile: ${RUSTFIN_YOUTUBE_AGENT_DOCKERFILE:-crates/youtube-agent/Dockerfile}
       args:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
+        NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
       - RUSTFIN_YOUTUBE_AGENT_BIND=0.0.0.0:8101
@@ -99,9 +124,10 @@ services:
   rustfin-transcription-agent:
     build:
       context: .
-      dockerfile: crates/transcription-agent/Dockerfile
+      dockerfile: ${RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE:-crates/transcription-agent/Dockerfile}
       args:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
+        NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
       - RUSTFIN_TRANSCRIPTION_AGENT_BIND=0.0.0.0:8102
@@ -135,14 +161,17 @@ services:
   rustfin-calendar:
     build:
       context: .
-      dockerfile: crates/calendar/Dockerfile
+      dockerfile: ${RUSTFIN_CALENDAR_DOCKERFILE:-crates/calendar/Dockerfile}
       args:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
+        NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
       - RUSTFIN_CALENDAR_BIND=0.0.0.0:8099
       - RUSTFIN_DB=/config/rustfin.db
       - RUSTFIN_AUTH_BASE_URL=http://rustfin:8096
+      - RUSTFIN_RUN_MIGRATIONS=${RUSTFIN_CALENDAR_RUN_MIGRATIONS:-false}
     volumes:
       - rustfin-config:/config
     depends_on:
@@ -182,5 +211,6 @@ volumes:
   rustfin-config:
   rustfin-cache:
   rustfin-transcode:
+  rustfin-postgres-data:
   rustfin-caddy-data:
   rustfin-caddy-config:

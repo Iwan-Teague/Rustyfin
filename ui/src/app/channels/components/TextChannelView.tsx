@@ -10,6 +10,7 @@ import type {
 import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/channelsApi';
 import { apiFetch } from '@/lib/api';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { useListReflowAnimation } from '@/lib/listReflowAnimation';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
@@ -233,6 +234,10 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
     el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  useListReflowAnimation(listRef, messages.map((msg) => msg.id), {
+    itemSelector: '[data-list-item-id]',
+  });
+
   // IntersectionObserver for load-more at top
   useEffect(() => {
     if (!topSentinelRef.current) return;
@@ -349,6 +354,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             <div
               key={msg.id}
               data-delete-message-id={msg.id}
+              data-list-item-id={msg.id}
               className={`group relative ${showHeader ? 'mt-3' : 'mt-0.5'}`}
             >
               {showHeader ? (

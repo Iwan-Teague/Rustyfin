@@ -55,6 +55,7 @@ ui/.next/
 
 # Local test/runtime artifacts
 /.tmp/
+/.native-bins/
 /.npm-cache/
 /.playwright-browsers/
 /tests/_runs/
