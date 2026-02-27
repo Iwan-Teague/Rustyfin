@@ -94,6 +94,10 @@ const SQLITE_MIGRATIONS: &[(&str, &str)] = &[
         "023_watch_party_invite_only_column",
         include_str!("../migrations/023_watch_party_invite_only_column.sql"),
     ),
+    (
+        "024_user_profile_fields",
+        include_str!("../migrations/024_user_profile_fields.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
@@ -192,6 +196,14 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
     (
         "024_online_audio_search_pg_indexes",
         include_str!("../migrations_pg/024_online_audio_search_pg_indexes.sql"),
+    ),
+    (
+        "025_real_to_double_precision",
+        include_str!("../migrations_pg/025_real_to_double_precision.sql"),
+    ),
+    (
+        "026_user_profile_fields",
+        include_str!("../migrations_pg/026_user_profile_fields.sql"),
     ),
 ];
 
