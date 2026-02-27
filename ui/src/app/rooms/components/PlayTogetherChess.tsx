@@ -15,18 +15,18 @@ const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] as const;
 const RANKS = ['8', '7', '6', '5', '4', '3', '2', '1'] as const;
 
 const PIECE_SYMBOLS: Record<string, string> = {
-  P: '♙',
-  N: '♘',
-  B: '♗',
-  R: '♖',
-  Q: '♕',
-  K: '♔',
-  p: '♟',
-  n: '♞',
-  b: '♝',
-  r: '♜',
-  q: '♛',
-  k: '♚',
+  P: '♟',
+  N: '♞',
+  B: '♝',
+  R: '♜',
+  Q: '♛',
+  K: '♚',
+  p: '♙',
+  n: '♘',
+  b: '♗',
+  r: '♖',
+  q: '♕',
+  k: '♔',
 };
 
 const PROMOTION_OPTIONS_WHITE = [
@@ -104,6 +104,16 @@ type PendingPromotion = {
   forColor: 'white' | 'black';
 };
 
+type SidePanelTab = 'local' | 'ai';
+type AiDifficulty = 'easy' | 'medium' | 'hard';
+type HumanColorPreference = 'white' | 'black' | 'random';
+
+const AI_DIFFICULTY_OPTIONS: Array<{ value: AiDifficulty; label: string }> = [
+  { value: 'easy', label: 'Easy' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'hard', label: 'Hard' },
+];
+
 export default function PlayTogetherChess({
   playState,
   members,
@@ -113,16 +123,46 @@ export default function PlayTogetherChess({
 }: Props) {
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion | null>(null);
+  const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('local');
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('medium');
+  const [humanColorPreference, setHumanColorPreference] = useState<HumanColorPreference>('white');
   const autoAssignedRef = useRef(false);
 
   const chess = playState?.chess;
   const board = useMemo(() => parseFenBoard(chess?.fen ?? ''), [chess?.fen]);
   const whiteUserId = chess?.white_user_id ?? null;
   const blackUserId = chess?.black_user_id ?? null;
+  const aiEnabled = chess?.ai_enabled === true;
+  const aiDifficultyValue: AiDifficulty =
+    chess?.ai_difficulty === 'easy' || chess?.ai_difficulty === 'hard'
+      ? chess.ai_difficulty
+      : 'medium';
+  const aiColor =
+    chess?.ai_color === 'white' || chess?.ai_color === 'black' ? chess.ai_color : null;
+  const humanColorActive: 'white' | 'black' | null = aiColor
+    ? aiColor === 'white'
+      ? 'black'
+      : 'white'
+    : null;
   const turn = chess?.turn === 'black' ? 'black' : 'white';
   const myAssignedColor: 'white' | 'black' | null =
     whiteUserId === currentUserId ? 'white' : blackUserId === currentUserId ? 'black' : null;
+  const hasWhitePlayer = !!whiteUserId;
+  const hasBlackPlayer = !!blackUserId;
+  const hasAnyAssignedPlayer = hasWhitePlayer || hasBlackPlayer;
+  const requiresDualResetConfirm =
+    hasWhitePlayer && hasBlackPlayer && whiteUserId !== blackUserId;
+  const canRequestBoardReset = !hasAnyAssignedPlayer || !!myAssignedColor;
+  const resetRequestedWhite = chess?.reset_requested_white === true;
+  const resetRequestedBlack = chess?.reset_requested_black === true;
+  const myResetRequested =
+    myAssignedColor === 'white'
+      ? resetRequestedWhite
+      : myAssignedColor === 'black'
+        ? resetRequestedBlack
+        : false;
   const turnUserId = turn === 'white' ? whiteUserId : blackUserId;
+  const turnOwnerName = nameForUser(turnUserId, members);
   const isMyTurnSeatAssigned = !!turnUserId && turnUserId === currentUserId;
   const canMove = canControl && isMyTurnSeatAssigned && chess?.status === 'active';
   const filesForDisplay =
@@ -168,6 +208,19 @@ export default function PlayTogetherChess({
     setPendingPromotion(null);
   }, [chess?.fen]);
 
+  useEffect(() => {
+    if (aiEnabled) {
+      setSidePanelTab('ai');
+    }
+  }, [aiEnabled]);
+
+  useEffect(() => {
+    setAiDifficulty(aiDifficultyValue);
+    if (humanColorActive) {
+      setHumanColorPreference(humanColorActive);
+    }
+  }, [aiDifficultyValue, humanColorActive]);
+
   function handleAssignPlayers(nextWhite: string | null, nextBlack: string | null) {
     if (!canControl) return;
     sendWs({
@@ -175,6 +228,37 @@ export default function PlayTogetherChess({
       white_user_id: nextWhite || null,
       black_user_id: nextBlack || null,
     });
+  }
+
+  function sendAiConfig(
+    enabled: boolean,
+    nextDifficulty: AiDifficulty = aiDifficulty,
+    nextHumanColorPreference: HumanColorPreference = humanColorPreference,
+  ) {
+    if (!canControl) return;
+    const resolvedHumanColor: 'white' | 'black' =
+      nextHumanColorPreference === 'random'
+        ? Math.random() < 0.5
+          ? 'white'
+          : 'black'
+        : nextHumanColorPreference;
+    sendWs({
+      type: 'chess_configure_ai',
+      enabled,
+      difficulty: nextDifficulty,
+      human_color: enabled ? resolvedHumanColor : undefined,
+    });
+  }
+
+  function handleSelectSidePanelTab(nextTab: SidePanelTab) {
+    setSidePanelTab(nextTab);
+    if (nextTab === 'ai' && !aiEnabled) {
+      sendAiConfig(true);
+      return;
+    }
+    if (nextTab === 'local' && aiEnabled) {
+      sendAiConfig(false);
+    }
   }
 
   function handleSquareClick(square: string) {
@@ -235,6 +319,24 @@ export default function PlayTogetherChess({
     setSelectedSquare(null);
   }
 
+  function handleStartNewGame(randomizeSeats: boolean) {
+    if (!canRequestBoardReset) return;
+    if (requiresDualResetConfirm && myResetRequested) return;
+    sendWs({ type: 'chess_reset' });
+    if (!randomizeSeats || aiEnabled || !canControl) {
+      return;
+    }
+    const assignment = randomSeatAssignment(members);
+    if (!assignment) {
+      return;
+    }
+    sendWs({
+      type: 'chess_set_players',
+      white_user_id: assignment.whiteUserId,
+      black_user_id: assignment.blackUserId,
+    });
+  }
+
   if (!chess) {
     return (
       <section className="panel space-y-3 p-5 sm:p-6">
@@ -244,136 +346,269 @@ export default function PlayTogetherChess({
     );
   }
 
-  return (
-    <section className="panel space-y-4 p-5 sm:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-2">
-          <button
-            type="button"
-            className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
-            onClick={() => sendWs({ type: 'play_set_game', game: 'chess' })}
-            disabled={playState?.active_game === 'chess'}
-          >
-            Chess
-          </button>
-          <button
-            type="button"
-            className="rounded-t-lg border border-b-0 border-[var(--border)] px-5 py-2.5 text-sm font-medium opacity-50"
-            disabled
-          >
-            More Soon
-          </button>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-          <span className="chip">Status: {displayStatus(chess.status)}</span>
-          <span className="chip">Turn: {turn === 'white' ? 'White' : 'Black'}</span>
-          {chess.winner_color && (
-            <span className="chip">Winner: {chess.winner_color === 'white' ? 'White' : 'Black'}</span>
-          )}
-        </div>
-      </div>
+  const isGameOver = chess.status === 'checkmate' || chess.status === 'stalemate';
+  const winnerColor =
+    chess.winner_color === 'white' || chess.winner_color === 'black' ? chess.winner_color : null;
+  const gameOverTitle =
+    chess.status === 'stalemate'
+      ? 'Stalemate'
+      : `${winnerColor === 'white' ? 'White' : 'Black'} won`;
+  const gameOverSummary =
+    chess.status === 'stalemate'
+      ? 'The game ended in a draw by stalemate.'
+      : myAssignedColor
+        ? myAssignedColor === winnerColor
+          ? 'You won this game.'
+          : 'You lost this game.'
+        : 'Game over.';
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-        <div className="panel-soft rounded-xl p-3 sm:p-4">
-          <div className="grid grid-cols-8 overflow-hidden rounded-lg border border-white/10">
-            {ranksForDisplay.flatMap((rank, rankIndex) =>
-              filesForDisplay.map((file, fileIndex) => {
-                const square = `${file}${rank}`;
-                const piece = board.get(square);
-                // Invert square parity so white/black board colors render in the expected order.
-                const isLight = (rankIndex + fileIndex) % 2 !== 0;
-                const isSelected = selectedSquare === square;
-                const isLastMove =
-                  chess.last_move_from === square || chess.last_move_to === square;
-                const isLegalDestination = !!selectedSquare && selectedLegalTargets.has(square);
-                return (
-                  <button
-                    key={square}
-                    type="button"
-                    onClick={() => handleSquareClick(square)}
-                    className={`relative flex h-12 items-center justify-center border border-white/5 text-2xl sm:h-14 ${
-                      isLight ? 'bg-white/5' : 'bg-black/20'
-                    } ${isSelected ? 'ring-2 ring-[var(--orange-soft)] ring-inset' : ''} ${
-                      isLastMove ? 'outline outline-1 outline-[var(--purple)] outline-offset-[-1px]' : ''
-                    }`}
-                  >
-                    {isLegalDestination &&
-                      (piece ? (
-                        <span className="pointer-events-none absolute inset-[18%] rounded-full border-2 border-[var(--orange-soft)]/85" />
-                      ) : (
-                        <span className="pointer-events-none absolute h-3 w-3 rounded-full bg-[var(--orange-soft)]/80" />
-                      ))}
-                    <span className={piece && piece === piece.toLowerCase() ? 'text-white/90' : 'text-white'}>
-                      {piece ? PIECE_SYMBOLS[piece] : ''}
-                    </span>
-                    <span className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/35">
-                      {square}
-                    </span>
-                  </button>
-                );
-              }),
+  return (
+    <section className="panel relative mt-[55px] p-5 pt-[40px] sm:p-6 sm:pt-[44px]">
+      <div className="absolute left-4 right-4 top-[-17px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <button
+              type="button"
+              className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
+              onClick={() => sendWs({ type: 'play_set_game', game: 'chess' })}
+              disabled={playState?.active_game === 'chess'}
+            >
+              Chess
+            </button>
+            <button
+              type="button"
+              className="rounded-t-lg border border-b-0 border-[var(--border)] px-5 py-2.5 text-sm font-medium opacity-50"
+              disabled
+            >
+              More Soon
+            </button>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <span className="chip">Status: {displayStatus(chess.status)}</span>
+            <span className="chip">Turn: {turn === 'white' ? 'White' : 'Black'}</span>
+            {chess.winner_color && (
+              <span className="chip">Winner: {chess.winner_color === 'white' ? 'White' : 'Black'}</span>
             )}
           </div>
         </div>
+      </div>
 
-        <aside className="panel-soft space-y-3 rounded-xl p-3 sm:p-4">
-          <div className="space-y-1">
-            <p className="text-xs uppercase tracking-wide muted">Players</p>
-            <p className="text-xs muted">
-              Assign white and black seats, or leave unassigned for open turns.
-            </p>
+      <div className="relative space-y-4">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="panel-soft rounded-xl p-3 sm:p-4">
+            <div className="grid grid-cols-8 overflow-hidden rounded-lg border border-white/10">
+              {ranksForDisplay.flatMap((rank, rankIndex) =>
+                filesForDisplay.map((file, fileIndex) => {
+                  const square = `${file}${rank}`;
+                  const piece = board.get(square);
+                  // Invert square parity so white/black board colors render in the expected order.
+                  const isLight = (rankIndex + fileIndex) % 2 !== 0;
+                  const isSelected = selectedSquare === square;
+                  const isLastMove =
+                    chess.last_move_from === square || chess.last_move_to === square;
+                  const isLegalDestination = !!selectedSquare && selectedLegalTargets.has(square);
+                  return (
+                    <button
+                      key={square}
+                      type="button"
+                      onClick={() => handleSquareClick(square)}
+                      className={`relative flex h-12 items-center justify-center border border-white/5 text-2xl sm:h-14 ${
+                        isLight ? 'bg-white/5' : 'bg-black/20'
+                      } ${isSelected ? 'ring-2 ring-[var(--orange-soft)] ring-inset' : ''} ${
+                        isLastMove ? 'outline outline-1 outline-[var(--purple)] outline-offset-[-1px]' : ''
+                      }`}
+                    >
+                      {isLegalDestination &&
+                        (piece ? (
+                          <span className="pointer-events-none absolute inset-[18%] rounded-full border-2 border-[var(--orange-soft)]/85" />
+                        ) : (
+                          <span className="pointer-events-none absolute h-3 w-3 rounded-full bg-[var(--orange-soft)]/80" />
+                        ))}
+                      <span className={piece && piece === piece.toLowerCase() ? 'text-white/90' : 'text-white'}>
+                        {piece ? PIECE_SYMBOLS[piece] : ''}
+                      </span>
+                      <span className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/35">
+                        {square}
+                      </span>
+                    </button>
+                  );
+                }),
+              )}
+            </div>
           </div>
 
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs uppercase tracking-wide muted">White</span>
-            <select
-              className="select px-2 py-2 text-sm"
-              value={whiteUserId ?? ''}
-              onChange={(event) => handleAssignPlayers(event.target.value || null, blackUserId)}
-              disabled={!canControl}
-            >
-              <option value="">Unassigned</option>
-              {members.map((member) => (
-                <option key={member.user_id} value={member.user_id}>
-                  {member.username}
-                </option>
-              ))}
-            </select>
-          </label>
+          <aside className="panel-soft space-y-3 rounded-xl p-3 sm:p-4">
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                  sidePanelTab === 'local' ? 'btn-primary' : 'btn-secondary'
+                }`}
+                onClick={() => handleSelectSidePanelTab('local')}
+              >
+                Local
+              </button>
+              <button
+                type="button"
+                className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                  sidePanelTab === 'ai' ? 'btn-primary' : 'btn-secondary'
+                }`}
+                onClick={() => handleSelectSidePanelTab('ai')}
+              >
+                AI
+              </button>
+            </div>
+          </div>
 
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs uppercase tracking-wide muted">Black</span>
-            <select
-              className="select px-2 py-2 text-sm"
-              value={blackUserId ?? ''}
-              onChange={(event) => handleAssignPlayers(whiteUserId, event.target.value || null)}
-              disabled={!canControl}
-            >
-              <option value="">Unassigned</option>
-              {members.map((member) => (
-                <option key={member.user_id} value={member.user_id}>
-                  {member.username}
-                </option>
-              ))}
-            </select>
-          </label>
+          {sidePanelTab === 'local' ? (
+            <>
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-wide muted">Players</p>
+                <p className="text-xs muted">
+                  Assign white and black seats, or leave unassigned for open turns.
+                </p>
+              </div>
+
+              <label className="block text-sm">
+                <span className="mb-1 block text-xs uppercase tracking-wide muted">White</span>
+                <select
+                  className="select px-2 py-2 text-sm"
+                  value={whiteUserId ?? ''}
+                  onChange={(event) => handleAssignPlayers(event.target.value || null, blackUserId)}
+                  disabled={!canControl}
+                >
+                  <option value="">Unassigned</option>
+                  {members.map((member) => (
+                    <option key={member.user_id} value={member.user_id}>
+                      {member.username}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-sm">
+                <span className="mb-1 block text-xs uppercase tracking-wide muted">Black</span>
+                <select
+                  className="select px-2 py-2 text-sm"
+                  value={blackUserId ?? ''}
+                  onChange={(event) => handleAssignPlayers(whiteUserId, event.target.value || null)}
+                  disabled={!canControl}
+                >
+                  <option value="">Unassigned</option>
+                  {members.map((member) => (
+                    <option key={member.user_id} value={member.user_id}>
+                      {member.username}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : (
+            <>
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-wide muted">AI Opponent</p>
+                <p className="text-xs muted">
+                  Play against server AI. Choose a difficulty and your side (or random color).
+                </p>
+              </div>
+
+              <label className="block text-sm">
+                <span className="mb-1 block text-xs uppercase tracking-wide muted">Difficulty</span>
+                <select
+                  className="select px-2 py-2 text-sm"
+                  value={aiDifficulty}
+                  onChange={(event) => {
+                    const nextDifficulty = event.target.value as AiDifficulty;
+                    setAiDifficulty(nextDifficulty);
+                    if (sidePanelTab === 'ai') {
+                      sendAiConfig(true, nextDifficulty, humanColorPreference);
+                    }
+                  }}
+                  disabled={!canControl}
+                >
+                  {AI_DIFFICULTY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block text-sm">
+                <span className="mb-1 block text-xs uppercase tracking-wide muted">You Play As</span>
+                <select
+                  className="select px-2 py-2 text-sm"
+                  value={humanColorPreference}
+                  onChange={(event) => {
+                    const nextPreference = event.target.value as HumanColorPreference;
+                    setHumanColorPreference(nextPreference);
+                    if (sidePanelTab === 'ai') {
+                      sendAiConfig(true, aiDifficulty, nextPreference);
+                    }
+                  }}
+                  disabled={!canControl}
+                >
+                  <option value="white">White</option>
+                  <option value="black">Black</option>
+                  <option value="random">Random</option>
+                </select>
+              </label>
+            </>
+          )}
 
           <div className="space-y-1 text-xs muted">
             <p>White: {nameForUser(whiteUserId, members)}</p>
             <p>Black: {nameForUser(blackUserId, members)}</p>
-            <p>Your color: {myAssignedColor ? (myAssignedColor === 'white' ? 'White' : 'Black') : 'Unassigned'}</p>
-            {turnUserId && <p>Current turn owner: {nameForUser(turnUserId, members)}</p>}
+            <p>Turn owner: {turnOwnerName}</p>
           </div>
 
-          <button
-            type="button"
-            className="btn-secondary w-full px-3 py-2 text-sm"
-            onClick={() => sendWs({ type: 'chess_reset' })}
-            disabled={!canControl}
-          >
-            Reset Board
-          </button>
-        </aside>
+            <button
+              type="button"
+              className="btn-secondary w-full px-3 py-2 text-sm"
+              onClick={() => sendWs({ type: 'chess_reset' })}
+              disabled={!canRequestBoardReset || (requiresDualResetConfirm && myResetRequested)}
+            >
+              {requiresDualResetConfirm && myResetRequested ? 'Waiting for Opponent…' : 'Reset Board'}
+            </button>
+          </aside>
+        </div>
+
+        {isGameOver && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/55 p-4 backdrop-blur-[2px]">
+            <div className="panel w-full max-w-md space-y-3 rounded-2xl border border-[var(--border)] p-5">
+              <h3 className="text-xl font-semibold">{gameOverTitle}</h3>
+              <p className="text-sm muted">{gameOverSummary}</p>
+              <div className="flex flex-wrap justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  className="btn-primary px-4 py-2 text-sm"
+                  onClick={() => handleStartNewGame(false)}
+                  disabled={!canRequestBoardReset || (requiresDualResetConfirm && myResetRequested)}
+                >
+                  {requiresDualResetConfirm && myResetRequested ? 'Waiting for Opponent…' : 'New Game'}
+                </button>
+                {!aiEnabled && (
+                  <button
+                    type="button"
+                    className="btn-secondary px-4 py-2 text-sm"
+                    onClick={() => handleStartNewGame(true)}
+                    disabled={
+                      !canControl ||
+                      !canRequestBoardReset ||
+                      (requiresDualResetConfirm && myResetRequested)
+                    }
+                  >
+                    New Game (Random Colors)
+                  </button>
+                )}
+              </div>
+              {!canRequestBoardReset && (
+                <p className="text-xs muted">Only active players can reset while seats are occupied.</p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
       {pendingPromotion && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">

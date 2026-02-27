@@ -152,6 +152,19 @@ export default function WatchPartyPage() {
   }, [publicRooms.length]);
 
   useEffect(() => {
+    if (!me) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      listPublicRooms()
+        .then(setPublicRooms)
+        .catch(() => {
+          // Non-fatal; room counts will refresh on next successful poll.
+        });
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [me]);
+
+  useEffect(() => {
     if (loading) return;
     const measureEl = roomOptionsMeasureRef.current;
     if (!measureEl) return;
@@ -311,6 +324,7 @@ export default function WatchPartyPage() {
   const fixedColumnHeightStyle = {
     height: fixedColumnHeightPx ? `${fixedColumnHeightPx}px` : '24rem',
   };
+  const topPanelsHeightClass = 'h-[14rem]';
 
   return (
     <div className="space-y-6 animate-rise">
@@ -318,49 +332,55 @@ export default function WatchPartyPage() {
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
       {message && <div className="notice-ok rounded-xl px-4 py-2 text-sm">{message}</div>}
 
-      <div className="grid gap-5 xl:grid-cols-2">
-        <section className="panel space-y-4 p-5 sm:p-6">
-          <div className="space-y-2">
-            <h2 className="text-xl font-semibold">Open Rooms</h2>
-            <p className="text-sm muted">Public rooms you can join right now.</p>
-          </div>
-
-          {publicRooms.length === 0 ? (
-            <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No open rooms right now.</div>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {publicRooms.map((room) => (
-                <div key={room.room_id} className="tile p-4 flex items-center justify-between gap-3">
-                  <div className="min-w-0 space-y-0.5">
-                    <p className="font-semibold truncate">{room.title}</p>
-                    <p className="text-xs muted">
-                      Hosted by {room.host_username}
-                      {room.member_count > 0 && ` · ${room.member_count} joined`}
-                      {' · '}
-                      {formatElapsedSeconds(elapsedSinceSeconds(room.created_ts, nowMs))}
-                    </p>
-                    {room.password_required && (
-                      <span className="chip text-xs">Password Protected</span>
-                    )}
-                  </div>
-                  <Link
-                    href={`/rooms/${room.room_id}`}
-                    className="btn-primary shrink-0 px-4 py-2 text-sm"
-                  >
-                    Join
-                  </Link>
-                </div>
-              ))}
+      <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
+        <div className={topPanelsHeightClass}>
+          <section className="panel flex h-full min-h-0 flex-col gap-4 p-5 sm:p-6">
+            <div className="space-y-2">
+              <h2 className="text-xl font-semibold">Open Rooms</h2>
+              <p className="text-sm muted">Public rooms you can join right now.</p>
             </div>
-          )}
-        </section>
 
-        <InvitesPanel
-          invites={invites}
-          onJoin={(roomId) => router.push(`/rooms/${roomId}`)}
-          onDecline={handleDeclineInvite}
-          decliningRoomId={decliningRoomId}
-        />
+            {publicRooms.length === 0 ? (
+              <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No open rooms right now.</div>
+            ) : (
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {publicRooms.map((room) => (
+                    <div key={room.room_id} className="tile p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="font-semibold truncate">{room.title}</p>
+                        <p className="text-xs muted">
+                          Hosted by {room.host_username}
+                          {` · ${room.member_count} in room now`}
+                          {' · '}
+                          {formatElapsedSeconds(elapsedSinceSeconds(room.created_ts, nowMs))}
+                        </p>
+                        {room.password_required && (
+                          <span className="chip text-xs">Password Protected</span>
+                        )}
+                      </div>
+                      <Link
+                        href={`/rooms/${room.room_id}`}
+                        className="btn-primary shrink-0 px-4 py-2 text-sm"
+                      >
+                        Join
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className={topPanelsHeightClass}>
+          <InvitesPanel
+            invites={invites}
+            onJoin={(roomId) => router.push(`/rooms/${roomId}`)}
+            onDecline={handleDeclineInvite}
+            decliningRoomId={decliningRoomId}
+          />
+        </div>
       </div>
 
       {/* Create room section */}
@@ -475,7 +495,7 @@ export default function WatchPartyPage() {
           </section>
         </div>
 
-        <section className="panel p-5 sm:p-6">
+        <section className="panel mt-[5px] p-5 sm:p-6">
           <button
             type="button"
             className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"

@@ -541,7 +541,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className={`panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -566,7 +566,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className={`panel relative p-5 pt-[68px] sm:p-6 sm:pt-[72px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -777,7 +777,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`panel relative space-y-4 p-5 pt-[56px] sm:p-6 sm:pt-[60px] ${watchWindowShiftClass}`}
+            className={`panel relative space-y-4 p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
@@ -899,11 +899,11 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && (
         <div className="grid gap-5 md:grid-cols-2">
-          <section className="panel space-y-3 p-5 sm:p-6">
+          <section className="panel flex h-[22rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
             <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
-            <ul className="space-y-2">
+            <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {activeMembers.map((member) => (
-                <li key={member.user_id} className="tile rounded-xl px-3 py-2">
+                <li key={member.user_id} className="panel-soft rounded-xl px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-medium">{member.username}</p>
@@ -929,65 +929,64 @@ export default function WatchPartyRoomPage() {
             </ul>
           </section>
 
-          <section className="panel space-y-4 p-5 sm:p-6">
+          <section className="panel flex h-[22rem] min-h-0 flex-col gap-4 p-5 sm:p-6">
             <h2 className="text-xl font-semibold">Invite to Room</h2>
-            <p className="text-xs muted">
-              Re-invites are allowed. Sending repeated invites to the same user has a 5-second cooldown.
-            </p>
             {invitableUsers.length === 0 ? (
               <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
                 All eligible users are already in this room.
               </div>
             ) : (
               <>
-                <ul className="space-y-2">
-                  {invitableUsers.map((user) => {
-                    const checked = user.id in inviteSelections;
-                    const role = inviteSelections[user.id] ?? 'viewer';
-                    return (
-                      <li key={user.id} className="tile rounded-xl px-3 py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setInviteSelections((prev) => {
-                                  const next = { ...prev };
-                                  if (next[user.id] !== undefined) {
-                                    delete next[user.id];
-                                  } else {
-                                    next[user.id] = 'viewer';
-                                  }
-                                  return next;
-                                });
-                              }}
-                              className="h-4 w-4 shrink-0"
-                            />
-                            <span className="w-[14ch] truncate text-sm font-medium" title={user.username}>
-                              {truncateInviteName(user.username)}
-                            </span>
+                <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                  <ul className="space-y-2">
+                    {invitableUsers.map((user) => {
+                      const checked = user.id in inviteSelections;
+                      const role = inviteSelections[user.id] ?? 'viewer';
+                      return (
+                        <li key={user.id} className="panel-soft rounded-xl px-3 py-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  setInviteSelections((prev) => {
+                                    const next = { ...prev };
+                                    if (next[user.id] !== undefined) {
+                                      delete next[user.id];
+                                    } else {
+                                      next[user.id] = 'viewer';
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="h-4 w-4 shrink-0"
+                              />
+                              <span className="w-[14ch] truncate text-sm font-medium" title={user.username}>
+                                {truncateInviteName(user.username)}
+                              </span>
+                            </div>
+                            <div className="w-[7.75rem] shrink-0">
+                              <select
+                                className="select w-full px-2 py-1.5 text-sm"
+                                value={role}
+                                onChange={(e) =>
+                                  setInviteSelections((prev) => ({
+                                    ...prev,
+                                    [user.id]: e.target.value as 'viewer' | 'controller',
+                                  }))
+                                }
+                              >
+                                <option value="viewer">{memberRoleDisplay}</option>
+                                <option value="controller">Admin</option>
+                              </select>
+                            </div>
                           </div>
-                          <div className="w-[7.75rem] shrink-0">
-                            <select
-                              className="select w-full px-2 py-1.5 text-sm"
-                              value={role}
-                              onChange={(e) =>
-                                setInviteSelections((prev) => ({
-                                  ...prev,
-                                  [user.id]: e.target.value as 'viewer' | 'controller',
-                                }))
-                              }
-                            >
-                              <option value="viewer">{memberRoleDisplay}</option>
-                              <option value="controller">Admin</option>
-                            </select>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
                 <button
                   type="button"
                   className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"

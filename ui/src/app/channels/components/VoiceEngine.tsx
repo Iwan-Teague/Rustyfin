@@ -18,6 +18,7 @@ interface Props {
   deafened: boolean;
   remoteVolumes: Record<string, number>;
   localMicGain: number;
+  preferredOutputDeviceId: string | null;
   onSpeakingChange: (channelId: string, userId: string, speaking: boolean) => void;
   transcriptionState: VoiceTranscriptionState | null;
   onTranscriptionChunk: (channelId: string, payload: VoiceTranscribeChunkRequest) => Promise<void>;
@@ -61,6 +62,7 @@ export default function VoiceEngine({
   deafened,
   remoteVolumes,
   localMicGain,
+  preferredOutputDeviceId,
   onSpeakingChange,
   transcriptionState,
   onTranscriptionChunk,
@@ -398,6 +400,26 @@ export default function VoiceEngine({
     return Math.min(1, Math.max(0, value));
   }
 
+  function applyPreferredOutputDevice(el: HTMLAudioElement) {
+    const sinkCapable = el as HTMLAudioElement & {
+      setSinkId?: (deviceId: string) => Promise<void>;
+      sinkId?: string;
+    };
+    if (typeof sinkCapable.setSinkId !== 'function') {
+      return;
+    }
+    const nextSinkId = preferredOutputDeviceId && preferredOutputDeviceId.trim()
+      ? preferredOutputDeviceId.trim()
+      : '';
+    const currentSinkId = sinkCapable.sinkId ?? '';
+    if (currentSinkId === nextSinkId) {
+      return;
+    }
+    void sinkCapable.setSinkId(nextSinkId).catch((err) => {
+      console.warn('VoiceEngine: failed setting output audio device', err);
+    });
+  }
+
   function attachAudio(userId: string, stream: MediaStream) {
     let el = audioElementsRef.current.get(userId);
     if (!el) {
@@ -418,6 +440,7 @@ export default function VoiceEngine({
     }
     el.muted = deafened;
     el.volume = getPeerVolume(userId);
+    applyPreferredOutputDevice(el);
     el.srcObject = stream;
     const tryPlay = () => {
       const playPromise = el?.play();
@@ -638,6 +661,7 @@ export default function VoiceEngine({
     audioElementsRef.current.forEach((audio, userId) => {
       audio.muted = deafened;
       audio.volume = getPeerVolume(userId);
+      applyPreferredOutputDevice(audio);
       if (!deafened) {
         const playPromise = audio.play();
         if (playPromise) {
@@ -646,7 +670,7 @@ export default function VoiceEngine({
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deafened, remoteVolumes]);
+  }, [deafened, remoteVolumes, preferredOutputDeviceId]);
 
   useEffect(() => {
     const nudgeAudio = () => {

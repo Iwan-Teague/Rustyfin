@@ -17,6 +17,7 @@ pub struct MessageRow {
     pub channel_id: String,
     pub user_id: String,
     pub username: String,
+    pub avatar_path: Option<String>,
     pub content: String,
     pub created_ts: i64,
 }
@@ -150,20 +151,24 @@ pub async fn delete_channel(pool: &DbPool, id: &str) -> Result<(), sqlx::Error> 
 }
 
 pub async fn get_message(pool: &DbPool, id: &str) -> Result<Option<MessageRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT id, channel_id, user_id, username, content, created_ts \
-         FROM channel_message WHERE id = $1",
+    let row: Option<(String, String, String, String, Option<String>, String, i64)> = sqlx::query_as(
+        "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
+                u.avatar_path, m.content, m.created_ts \
+         FROM channel_message m \
+         LEFT JOIN \"user\" u ON u.id = m.user_id \
+         WHERE m.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await?;
 
     Ok(row.map(
-        |(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+        |(id, channel_id, user_id, username, avatar_path, content, created_ts)| MessageRow {
             id,
             channel_id,
             user_id,
             username,
+            avatar_path,
             content,
             created_ts,
         },
@@ -186,14 +191,19 @@ pub async fn list_messages(
     before_id: Option<&str>,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let normalized_before_id = before_id.map(str::trim).filter(|id| !id.is_empty());
-    let rows: Vec<(String, String, String, String, String, i64)> =
-        if let Some(before_id) = normalized_before_id {
-            sqlx::query_as(
-                "SELECT id, channel_id, user_id, username, content, created_ts \
-                 FROM channel_message \
-                 WHERE channel_id = $1 \
-                   AND (created_ts < $2 OR (created_ts = $3 AND id < $4)) \
-                 ORDER BY created_ts DESC, id DESC \
+    let rows: Vec<(String, String, String, String, Option<String>, String, i64)> = if let Some(
+        before_id,
+    ) =
+        normalized_before_id
+    {
+        sqlx::query_as(
+                "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
+                        u.avatar_path, m.content, m.created_ts \
+                 FROM channel_message m \
+                 LEFT JOIN \"user\" u ON u.id = m.user_id \
+                 WHERE m.channel_id = $1 \
+                   AND (m.created_ts < $2 OR (m.created_ts = $3 AND m.id < $4)) \
+                 ORDER BY m.created_ts DESC, m.id DESC \
                  LIMIT $5",
             )
             .bind(channel_id)
@@ -203,12 +213,14 @@ pub async fn list_messages(
             .bind(limit)
             .fetch_all(pool)
             .await?
-        } else {
-            sqlx::query_as(
-                "SELECT id, channel_id, user_id, username, content, created_ts \
-                 FROM channel_message \
-                 WHERE channel_id = $1 AND created_ts < $2 \
-                 ORDER BY created_ts DESC, id DESC \
+    } else {
+        sqlx::query_as(
+                "SELECT m.id, m.channel_id, m.user_id, COALESCE(NULLIF(u.display_name, ''), m.username) AS username, \
+                        u.avatar_path, m.content, m.created_ts \
+                 FROM channel_message m \
+                 LEFT JOIN \"user\" u ON u.id = m.user_id \
+                 WHERE m.channel_id = $1 AND m.created_ts < $2 \
+                 ORDER BY m.created_ts DESC, m.id DESC \
                  LIMIT $3",
             )
             .bind(channel_id)
@@ -216,16 +228,17 @@ pub async fn list_messages(
             .bind(limit)
             .fetch_all(pool)
             .await?
-        };
+    };
 
     let mut messages: Vec<MessageRow> = rows
         .into_iter()
         .map(
-            |(id, channel_id, user_id, username, content, created_ts)| MessageRow {
+            |(id, channel_id, user_id, username, avatar_path, content, created_ts)| MessageRow {
                 id,
                 channel_id,
                 user_id,
                 username,
+                avatar_path,
                 content,
                 created_ts,
             },
@@ -265,6 +278,7 @@ pub async fn create_message(
         channel_id: channel_id.to_string(),
         user_id: user_id.to_string(),
         username: username.to_string(),
+        avatar_path: None,
         content: content.to_string(),
         created_ts: now,
     })

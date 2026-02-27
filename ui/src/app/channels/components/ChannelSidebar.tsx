@@ -233,12 +233,21 @@ function ChannelRow({
             }
             aria-hidden="true"
           >
-            <span
-              className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-              style={{ backgroundColor: userBubbleColor(u.user_id) }}
-            >
-              {u.username.slice(0, 2).toUpperCase()}
-            </span>
+            {u.avatar_url ? (
+              <img
+                src={u.avatar_url}
+                alt={u.username}
+                className="inline-flex h-5 w-5 rounded-full object-cover border border-[var(--border)] bg-black/20"
+                loading="lazy"
+              />
+            ) : (
+              <span
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                style={{ backgroundColor: userBubbleColor(u.user_id) }}
+              >
+                {u.username.slice(0, 2).toUpperCase()}
+              </span>
+            )}
           </span>
           <span className="truncate">{u.username}</span>
         </div>

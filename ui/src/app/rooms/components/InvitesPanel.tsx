@@ -12,7 +12,7 @@ type Props = {
 
 export default function InvitesPanel({ invites, onJoin, onDecline, decliningRoomId }: Props) {
   return (
-    <section className="panel space-y-4 p-5 sm:p-6">
+    <section className="panel flex h-full min-h-0 flex-col gap-4 p-5 sm:p-6">
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Invites Inbox</h2>
         <p className="text-sm muted">Pending watch-party invitations for this account.</p>
@@ -21,7 +21,7 @@ export default function InvitesPanel({ invites, onJoin, onDecline, decliningRoom
       {invites.length === 0 ? (
         <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No pending invites.</div>
       ) : (
-        <ul className="space-y-2">
+        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
           {invites.map((invite) => (
             <li key={invite.room_id} className="tile rounded-xl px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">

@@ -28,6 +28,28 @@ const MAX_MESSAGES_PER_WINDOW: usize = 300;
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 static WS_ALLOWED_ORIGINS: OnceLock<Vec<String>> = OnceLock::new();
 
+fn avatar_url_for_user(user_id: &str, avatar_path: Option<&str>) -> Option<String> {
+    avatar_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|_| format!("/api/v1/users/avatar/{user_id}"))
+}
+
+async fn resolve_runtime_profile(
+    state: &AppState,
+    user_id: &str,
+    fallback_username: &str,
+    fallback_avatar_url: &Option<String>,
+) -> (String, Option<String>) {
+    match rustfin_db::repo::users::find_by_id(&state.db, user_id).await {
+        Ok(Some(row)) => (
+            row.display_name,
+            avatar_url_for_user(user_id, row.avatar_path.as_deref()),
+        ),
+        _ => (fallback_username.to_string(), fallback_avatar_url.clone()),
+    }
+}
+
 fn ws_connect_rate_limiter() -> &'static RateLimiter {
     WS_CONNECT_RATE_LIMITER.get_or_init(|| RateLimiter::new(120, 60))
 }
@@ -171,8 +193,22 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     };
 
     let user_id = claims.sub.clone();
-    let username = claims.username.clone();
     let role = claims.role.clone();
+    let profile = match rustfin_db::repo::users::find_by_id(&state.db, &user_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            let _ = send_error(&mut socket, "user not found").await;
+            let _ = socket.close().await;
+            return;
+        }
+        Err(err) => {
+            let _ = send_error(&mut socket, &format!("db error: {err}")).await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+    let username = profile.display_name;
+    let avatar_url = avatar_url_for_user(&user_id, profile.avatar_path.as_deref());
 
     debug!(user_id = %user_id, "channels ws authenticated");
 
@@ -257,7 +293,18 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                     }
                 };
 
-                if dispatch(&state, &user_id, &username, &role, &mut socket, msg).await.is_err() {
+                if dispatch(
+                    &state,
+                    &user_id,
+                    &username,
+                    &avatar_url,
+                    &role,
+                    &mut socket,
+                    msg,
+                )
+                .await
+                .is_err()
+                {
                     break;
                 }
             }
@@ -268,13 +315,16 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     state.channel_manager.unregister_user(&user_id).await;
 
     let left_channels = state.channel_manager.leave_all_voice(&user_id).await;
+    let (runtime_username, runtime_avatar_url) =
+        resolve_runtime_profile(&state, &user_id, &username, &avatar_url).await;
     for left in left_channels {
         state
             .channel_manager
             .broadcast(ChannelEvent::VoicePresence {
                 channel_id: left.channel_id,
                 user_id: user_id.clone(),
-                username: username.clone(),
+                username: runtime_username.clone(),
+                avatar_url: runtime_avatar_url.clone(),
                 joined: false,
                 active_since_ts: left.active_since_ts,
             });
@@ -287,6 +337,7 @@ async fn dispatch(
     state: &AppState,
     user_id: &str,
     username: &str,
+    avatar_url: &Option<String>,
     role: &str,
     socket: &mut WebSocket,
     msg: ClientMsg,
@@ -302,9 +353,16 @@ async fn dispatch(
         }
 
         ClientMsg::JoinVoice { channel_id } => {
+            let (runtime_username, runtime_avatar_url) =
+                resolve_runtime_profile(state, user_id, username, avatar_url).await;
             let join_result = state
                 .channel_manager
-                .join_voice(&channel_id, user_id, username)
+                .join_voice(
+                    &channel_id,
+                    user_id,
+                    &runtime_username,
+                    runtime_avatar_url.as_deref(),
+                )
                 .await;
 
             // Broadcast to everyone that this user joined
@@ -313,7 +371,8 @@ async fn dispatch(
                 .broadcast(ChannelEvent::VoicePresence {
                     channel_id: channel_id.clone(),
                     user_id: user_id.to_string(),
-                    username: username.to_string(),
+                    username: runtime_username,
+                    avatar_url: runtime_avatar_url,
                     joined: true,
                     active_since_ts: Some(join_result.active_since_ts),
                 });
@@ -334,6 +393,8 @@ async fn dispatch(
         }
 
         ClientMsg::LeaveVoice { channel_id } => {
+            let (runtime_username, runtime_avatar_url) =
+                resolve_runtime_profile(state, user_id, username, avatar_url).await;
             let active_since_ts = state
                 .channel_manager
                 .leave_voice(&channel_id, user_id)
@@ -344,7 +405,8 @@ async fn dispatch(
                 .broadcast(ChannelEvent::VoicePresence {
                     channel_id,
                     user_id: user_id.to_string(),
-                    username: username.to_string(),
+                    username: runtime_username,
+                    avatar_url: runtime_avatar_url,
                     joined: false,
                     active_since_ts,
                 });
@@ -413,6 +475,8 @@ async fn dispatch(
             channel_id,
             content,
         } => {
+            let (runtime_username, runtime_avatar_url) =
+                resolve_runtime_profile(state, user_id, username, avatar_url).await;
             let content = content.trim().to_string();
             if content.is_empty() {
                 let _ = send_error(socket, "message content cannot be empty").await;
@@ -445,7 +509,7 @@ async fn dispatch(
                 &state.db,
                 &channel_id,
                 user_id,
-                username,
+                &runtime_username,
                 &content,
             )
             .await
@@ -457,6 +521,7 @@ async fn dispatch(
                     channel_id: row.channel_id,
                     user_id: row.user_id,
                     username: row.username,
+                    avatar_url: runtime_avatar_url,
                     content: row.content,
                     attachments: vec![],
                     created_ts: row.created_ts,
