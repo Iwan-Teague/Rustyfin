@@ -116,7 +116,7 @@ macOS example: brew install zig
 EOF
     exit 1
   fi
-  if ! cargo zigbuild --version >/dev/null 2>&1; then
+  if ! command -v cargo-zigbuild >/dev/null 2>&1; then
     cat >&2 <<'EOF'
 Native Linux cross-build requires cargo-zigbuild.
 Install and retry:
@@ -128,6 +128,12 @@ fi
 
 if ! rustup target list --installed | grep -Fxq "$TARGET_TRIPLE"; then
   rustup target add "$TARGET_TRIPLE"
+fi
+
+if [[ "$use_zigbuild" == "true" ]]; then
+  export ZIG_LOCAL_CACHE_DIR="${CACHE_DIR}/zig-local"
+  export ZIG_GLOBAL_CACHE_DIR="${CACHE_DIR}/zig-global"
+  mkdir -p "$ZIG_LOCAL_CACHE_DIR" "$ZIG_GLOBAL_CACHE_DIR"
 fi
 
 build_one() {

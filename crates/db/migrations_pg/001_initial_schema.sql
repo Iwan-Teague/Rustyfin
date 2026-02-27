@@ -1,7 +1,7 @@
 -- Enable WAL mode (set once, persists in the database file)
 
 -- Users
-CREATE TABLE IF NOT EXISTS user (
+CREATE TABLE IF NOT EXISTS "user" (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
@@ -11,20 +11,9 @@ CREATE TABLE IF NOT EXISTS user (
 
 -- User preferences (JSON blob per user)
 CREATE TABLE IF NOT EXISTS user_pref (
-    user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+    user_id TEXT PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
     json TEXT NOT NULL DEFAULT '{}',
     updated_ts INTEGER NOT NULL
-);
-
--- User per-item playback state
-CREATE TABLE IF NOT EXISTS user_item_state (
-    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
-    item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
-    played INTEGER NOT NULL DEFAULT 0,
-    progress_ms INTEGER NOT NULL DEFAULT 0,
-    last_played_ts INTEGER,
-    favorite INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(user_id, item_id)
 );
 
 -- Libraries
@@ -59,6 +48,17 @@ CREATE TABLE IF NOT EXISTS item (
 );
 CREATE INDEX IF NOT EXISTS idx_item_parent ON item(parent_id);
 CREATE INDEX IF NOT EXISTS idx_item_library ON item(library_id);
+
+-- User per-item playback state
+CREATE TABLE IF NOT EXISTS user_item_state (
+    user_id TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+    played INTEGER NOT NULL DEFAULT 0,
+    progress_ms INTEGER NOT NULL DEFAULT 0,
+    last_played_ts INTEGER,
+    favorite INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(user_id, item_id)
+);
 
 -- Provider IDs and field locks
 CREATE TABLE IF NOT EXISTS item_provider_id (
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS job (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
-    progress REAL NOT NULL DEFAULT 0,
+    progress DOUBLE PRECISION NOT NULL DEFAULT 0,
     payload_json TEXT,
     error TEXT,
     created_ts INTEGER NOT NULL,

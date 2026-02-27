@@ -258,7 +258,7 @@ build_native_rust_bins() {
   done
 
   if ! "${cmd[@]}"; then
-    die "Native Rust Linux binary build failed. Install prerequisites (zig + cargo-zigbuild for macOS/Windows) or run with --docker-rust-build."
+    die "Native Rust Linux binary build failed. See build output above for the concrete compiler error. On macOS/Windows, also ensure zig + cargo-zigbuild are installed; alternatively use --docker-rust-build."
   fi
 }
 
@@ -491,7 +491,7 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   if [[ "$native_needs_zig" == "true" ]]; then
     if ! command -v zig >/dev/null 2>&1; then
       native_fallback_reason="missing zig"
-    elif ! cargo zigbuild --version >/dev/null 2>&1; then
+    elif ! command -v cargo-zigbuild >/dev/null 2>&1; then
       native_fallback_reason="missing cargo-zigbuild"
     fi
   fi
