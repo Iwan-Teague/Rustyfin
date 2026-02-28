@@ -178,6 +178,18 @@ export interface LibrarySpec {
   is_read_only: boolean;
 }
 
+export interface SetupHostDirectoryListEntry {
+  name: string;
+  path: string;
+}
+
+export interface SetupHostDirectoryListResponse {
+  current_path: string;
+  parent_path: string | null;
+  roots: string[];
+  directories: SetupHostDirectoryListEntry[];
+}
+
 export async function createLibraries(libraries: LibrarySpec[]) {
   return setupJson<{
     created: number;
@@ -186,6 +198,14 @@ export async function createLibraries(libraries: LibrarySpec[]) {
   }>('/setup/libraries', {
     method: 'POST',
     body: JSON.stringify({ libraries }),
+  });
+}
+
+export async function listSetupHostDirectories(path?: string) {
+  const query = path?.trim();
+  const suffix = query ? `?path=${encodeURIComponent(query)}` : '';
+  return setupJson<SetupHostDirectoryListResponse>(`/setup/host-directories${suffix}`, {
+    method: 'GET',
   });
 }
 

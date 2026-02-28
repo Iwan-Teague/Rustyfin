@@ -121,6 +121,18 @@ interface TmdbSyncStatusRow {
   failure_reason: string | null;
 }
 
+interface HostDirectoryListEntry {
+  name: string;
+  path: string;
+}
+
+interface HostDirectoryListResponse {
+  current_path: string;
+  parent_path: string | null;
+  roots: string[];
+  directories: HostDirectoryListEntry[];
+}
+
 type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'logs' | 'tmdb';
 type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
 type PendingDeleteKind = 'user' | 'library' | 'channel' | 'room';
@@ -228,8 +240,18 @@ export default function AdminPage() {
     is_private: false,
   });
 
-  const [pickingPath, setPickingPath] = useState(false);
-  const [pickingPathForLibraryId, setPickingPathForLibraryId] = useState<string | null>(null);
+  const [hostDirBrowserOpen, setHostDirBrowserOpen] = useState(false);
+  const [hostDirBrowserLoading, setHostDirBrowserLoading] = useState(false);
+  const [hostDirBrowserError, setHostDirBrowserError] = useState('');
+  const [hostDirBrowserCurrentPath, setHostDirBrowserCurrentPath] = useState('');
+  const [hostDirBrowserParentPath, setHostDirBrowserParentPath] = useState<string | null>(null);
+  const [hostDirBrowserRoots, setHostDirBrowserRoots] = useState<string[]>([]);
+  const [hostDirBrowserDirectories, setHostDirBrowserDirectories] = useState<HostDirectoryListEntry[]>(
+    [],
+  );
+  const [hostDirBrowserTargetLibraryId, setHostDirBrowserTargetLibraryId] = useState<
+    string | null
+  >(null);
   const [tmdbConfig, setTmdbConfig] = useState<TmdbConfig>({
     configured: false,
     key_preview: null,
@@ -622,19 +644,41 @@ export default function AdminPage() {
     }
   }
 
-  async function browseLibraryPath() {
-    setPickingPath(true);
-    try {
-      const data = await apiJson<{ path: string }>('/system/pick-directory', {
-        method: 'POST',
+  async function fetchHostDirectories(path?: string) {
+    const query = path?.trim();
+    const endpoint = query
+      ? `/system/host-directories?path=${encodeURIComponent(query)}`
+      : '/system/host-directories';
+    const data = await apiJson<HostDirectoryListResponse>(endpoint);
+    setHostDirBrowserCurrentPath(data.current_path);
+    setHostDirBrowserParentPath(data.parent_path);
+    setHostDirBrowserRoots(data.roots);
+    setHostDirBrowserDirectories(data.directories);
+  }
+
+  function closeHostDirectoryBrowser() {
+    setHostDirBrowserOpen(false);
+    setHostDirBrowserLoading(false);
+    setHostDirBrowserError('');
+    setHostDirBrowserTargetLibraryId(null);
+  }
+
+  function openHostDirectoryBrowser(targetLibraryId: string | null, initialPath?: string) {
+    setHostDirBrowserOpen(true);
+    setHostDirBrowserTargetLibraryId(targetLibraryId);
+    setHostDirBrowserError('');
+    setHostDirBrowserLoading(true);
+    void fetchHostDirectories(initialPath)
+      .catch((err: unknown) => {
+        setHostDirBrowserError(clientErrorMessage(err, 'Failed to browse backend directories'));
+      })
+      .finally(() => {
+        setHostDirBrowserLoading(false);
       });
-      setNewLib((prev) => ({ ...prev, path: data.path }));
-      setOk('Directory selected');
-    } catch (err: unknown) {
-      setErr(clientErrorMessage(err, 'Failed to open directory picker'));
-    } finally {
-      setPickingPath(false);
-    }
+  }
+
+  function browseLibraryPath() {
+    openHostDirectoryBrowser(null, newLib.path);
   }
 
   function setLibraryEdit<K extends keyof LibraryEditState>(
@@ -664,19 +708,38 @@ export default function AdminPage() {
     }));
   }
 
-  async function browseExistingLibraryPath(libraryId: string) {
-    setPickingPathForLibraryId(libraryId);
-    try {
-      const data = await apiJson<{ path: string }>('/system/pick-directory', {
-        method: 'POST',
-      });
-      setLibraryEdit(libraryId, 'path', data.path);
-      setOk('Directory selected');
-    } catch (err: unknown) {
-      setErr(clientErrorMessage(err, 'Failed to open directory picker'));
-    } finally {
-      setPickingPathForLibraryId(null);
+  function browseExistingLibraryPath(libraryId: string) {
+    const editPath = libraryEdits[libraryId]?.path;
+    const existingPath = libraries.find((library) => library.id === libraryId)?.paths[0]?.path;
+    openHostDirectoryBrowser(libraryId, editPath || existingPath || '');
+  }
+
+  function confirmHostDirectorySelection() {
+    if (!hostDirBrowserCurrentPath.trim()) {
+      setHostDirBrowserError('No directory selected');
+      return;
     }
+    if (hostDirBrowserTargetLibraryId) {
+      setLibraryEdit(hostDirBrowserTargetLibraryId, 'path', hostDirBrowserCurrentPath);
+    } else {
+      setNewLib((prev) => ({ ...prev, path: hostDirBrowserCurrentPath }));
+    }
+    setOk('Directory selected');
+    closeHostDirectoryBrowser();
+  }
+
+  function navigateHostDirectory(path?: string | null) {
+    const target = path?.trim();
+    if (!target) return;
+    setHostDirBrowserError('');
+    setHostDirBrowserLoading(true);
+    void fetchHostDirectories(target)
+      .catch((err: unknown) => {
+        setHostDirBrowserError(clientErrorMessage(err, 'Failed to browse backend directories'));
+      })
+      .finally(() => {
+        setHostDirBrowserLoading(false);
+      });
   }
 
   async function saveLibrary(libraryId: string) {
@@ -1404,10 +1467,18 @@ export default function AdminPage() {
                 <button
                   type="button"
                   onClick={browseLibraryPath}
-                  disabled={pickingPath}
+                  disabled={
+                    hostDirBrowserOpen &&
+                    hostDirBrowserLoading &&
+                    hostDirBrowserTargetLibraryId === null
+                  }
                   className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
                 >
-                  {pickingPath ? 'Opening...' : 'Browse'}
+                  {hostDirBrowserOpen &&
+                  hostDirBrowserLoading &&
+                  hostDirBrowserTargetLibraryId === null
+                    ? 'Loading...'
+                    : 'Browse Host'}
                 </button>
                 <button type="submit" className="btn-primary px-4 py-2 text-sm">
                   Create
@@ -1573,10 +1644,18 @@ export default function AdminPage() {
                         <button
                           type="button"
                           onClick={() => browseExistingLibraryPath(lib.id)}
-                          disabled={pickingPathForLibraryId === lib.id}
+                          disabled={
+                            hostDirBrowserOpen &&
+                            hostDirBrowserLoading &&
+                            hostDirBrowserTargetLibraryId === lib.id
+                          }
                           className="btn-secondary flex-1 px-3 py-1.5 text-sm disabled:opacity-50"
                         >
-                          {pickingPathForLibraryId === lib.id ? 'Opening...' : 'Browse'}
+                          {hostDirBrowserOpen &&
+                          hostDirBrowserLoading &&
+                          hostDirBrowserTargetLibraryId === lib.id
+                            ? 'Loading...'
+                            : 'Browse Host'}
                         </button>
                         <button
                           type="button"
@@ -2107,6 +2186,108 @@ export default function AdminPage() {
             )}
           </div>
         </section>
+      )}
+
+      {hostDirBrowserOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+          <div className="panel w-full max-w-3xl max-h-[82vh] rounded-2xl border border-[var(--border)] p-4 sm:p-5 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h2 className="text-lg font-semibold">Browse Backend Directories</h2>
+                <p className="text-xs muted">
+                  Selecting folders from the server filesystem (Debian host or mounted media
+                  roots).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-3 py-1.5 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            {hostDirBrowserRoots.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {hostDirBrowserRoots.map((rootPath) => (
+                  <button
+                    key={rootPath}
+                    type="button"
+                    onClick={() => navigateHostDirectory(rootPath)}
+                    className={`btn-ghost px-2.5 py-1 text-xs ${
+                      hostDirBrowserCurrentPath.startsWith(rootPath)
+                        ? 'border-[var(--orange-soft)] text-[var(--orange-soft)]'
+                        : ''
+                    }`}
+                  >
+                    {rootPath}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="panel-soft rounded-xl border border-[var(--border)] px-3 py-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateHostDirectory(hostDirBrowserParentPath)}
+                disabled={!hostDirBrowserParentPath || hostDirBrowserLoading}
+                className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+              >
+                Up
+              </button>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.12em] muted">Current Path</p>
+                <p className="text-sm font-mono truncate" title={hostDirBrowserCurrentPath}>
+                  {hostDirBrowserCurrentPath || '—'}
+                </p>
+              </div>
+            </div>
+
+            {hostDirBrowserError && <p className="text-sm text-red-300">{hostDirBrowserError}</p>}
+
+            <div className="panel-soft min-h-[260px] overflow-auto rounded-xl border border-[var(--border)] p-2">
+              {hostDirBrowserLoading ? (
+                <p className="px-2 py-2 text-sm muted">Loading directories…</p>
+              ) : hostDirBrowserDirectories.length === 0 ? (
+                <p className="px-2 py-2 text-sm muted">No child directories found.</p>
+              ) : (
+                <div className="space-y-1">
+                  {hostDirBrowserDirectories.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      onClick={() => navigateHostDirectory(entry.path)}
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2 text-left text-sm hover:border-[var(--orange-soft)]/55 hover:bg-[var(--panel)]"
+                      title={entry.path}
+                    >
+                      <div className="font-medium">{entry.name}</div>
+                      <div className="truncate text-xs muted">{entry.path}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmHostDirectorySelection}
+                disabled={hostDirBrowserLoading || !hostDirBrowserCurrentPath}
+                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Use This Folder
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {pendingDeleteAction && (

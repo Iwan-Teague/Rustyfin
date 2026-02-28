@@ -27,6 +27,7 @@ OUTPUT_DIR=""
 TARGET_TRIPLE=""
 CACHE_DIR=""
 declare -a BINS=()
+RUST_TOOLCHAIN="${RUSTFIN_NATIVE_RUST_TOOLCHAIN:-stable}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +72,34 @@ done
 [[ -n "$OUTPUT_DIR" ]] || { echo "--output-dir is required" >&2; exit 1; }
 [[ ${#BINS[@]} -gt 0 ]] || { echo "At least one --bin is required" >&2; exit 1; }
 
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo is required for native Linux binary build." >&2
+  exit 1
+fi
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "rustc is required for native Linux binary build." >&2
+  exit 1
+fi
+
+declare -a RUSTC_CMD=("rustc")
+declare -a CARGO_CMD=("cargo")
+RUSTC_BIN=""
+RUSTDOC_BIN=""
+if command -v rustup >/dev/null 2>&1; then
+  if rustup run "$RUST_TOOLCHAIN" rustc -vV >/dev/null 2>&1 && rustup run "$RUST_TOOLCHAIN" cargo -V >/dev/null 2>&1; then
+    RUSTC_BIN="$(rustup which --toolchain "$RUST_TOOLCHAIN" rustc)"
+    RUSTDOC_BIN="$(rustup which --toolchain "$RUST_TOOLCHAIN" rustdoc)"
+    CARGO_BIN="$(rustup which --toolchain "$RUST_TOOLCHAIN" cargo)"
+    if [[ -x "$RUSTC_BIN" && -x "$RUSTDOC_BIN" && -x "$CARGO_BIN" ]]; then
+      RUSTC_CMD=("$RUSTC_BIN")
+      CARGO_CMD=("$CARGO_BIN")
+    else
+      RUSTC_CMD=("rustup" "run" "$RUST_TOOLCHAIN" "rustc")
+      CARGO_CMD=("rustup" "run" "$RUST_TOOLCHAIN" "cargo")
+    fi
+  fi
+fi
+
 host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 host_arch="$(uname -m)"
 
@@ -94,13 +123,15 @@ if [[ -z "$CACHE_DIR" ]]; then
 fi
 
 mkdir -p "$OUTPUT_DIR" "$CACHE_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
+CACHE_DIR="$(cd "$CACHE_DIR" && pwd -P)"
 
 artifact_profile_dir="$PROFILE"
 if [[ "$PROFILE" == "dev" || "$PROFILE" == "debug" ]]; then
   artifact_profile_dir="debug"
 fi
 
-rust_host_info="$(rustc -vV)"
+rust_host_info="$("${RUSTC_CMD[@]}" -vV)"
 rust_host_triple="$(printf '%s\n' "$rust_host_info" | awk '/^host: / {print $2}')"
 use_zigbuild=false
 if [[ "$host_os" != "linux" || "$rust_host_triple" != "$TARGET_TRIPLE" ]]; then
@@ -126,8 +157,10 @@ EOF
   fi
 fi
 
-if ! rustup target list --installed | grep -Fxq "$TARGET_TRIPLE"; then
-  rustup target add "$TARGET_TRIPLE"
+if command -v rustup >/dev/null 2>&1; then
+  if ! rustup target list --toolchain "$RUST_TOOLCHAIN" --installed | grep -Fxq "$TARGET_TRIPLE"; then
+    rustup target add --toolchain "$RUST_TOOLCHAIN" "$TARGET_TRIPLE"
+  fi
 fi
 
 if [[ "$use_zigbuild" == "true" ]]; then
@@ -141,11 +174,12 @@ build_one() {
   local -a cmd=()
 
   if [[ "$use_zigbuild" == "true" ]]; then
-    cmd=(cargo zigbuild --target "$TARGET_TRIPLE")
+    cmd=("${CARGO_CMD[@]}" zigbuild --target "$TARGET_TRIPLE")
   else
-    cmd=(cargo build --target "$TARGET_TRIPLE")
+    cmd=("${CARGO_CMD[@]}" build --target "$TARGET_TRIPLE")
   fi
 
+  cmd+=(--locked)
   if [[ "$PROFILE" == "release" ]]; then
     cmd+=(--release)
   elif [[ "$PROFILE" != "dev" && "$PROFILE" != "debug" ]]; then
@@ -154,7 +188,14 @@ build_one() {
   cmd+=(--bin "$bin")
 
   echo "[native-build] building ${bin} (${TARGET_TRIPLE}, profile=${PROFILE})"
-  CARGO_TARGET_DIR="$CACHE_DIR" "${cmd[@]}"
+  if [[ -n "$RUSTC_BIN" && -n "$RUSTDOC_BIN" ]]; then
+    CARGO_TARGET_DIR="$CACHE_DIR" \
+    RUSTC="$RUSTC_BIN" \
+    RUSTDOC="$RUSTDOC_BIN" \
+    "${cmd[@]}"
+  else
+    CARGO_TARGET_DIR="$CACHE_DIR" "${cmd[@]}"
+  fi
 
   local artifact="${CACHE_DIR}/${TARGET_TRIPLE}/${artifact_profile_dir}/${bin}"
   if [[ ! -f "$artifact" ]]; then
