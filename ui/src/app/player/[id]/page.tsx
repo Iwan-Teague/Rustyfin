@@ -241,15 +241,15 @@ export default function PlayerPage() {
       setMode('hls');
       setDirectSupportMessage('');
 
-      if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = data.hls_url;
-        video.load();
-      } else {
-        const Hls = (await import('hls.js')).default;
-        if (!Hls.isSupported()) {
-          throw new Error('HLS playback is not supported in this browser.');
-        }
-        const hls = new Hls();
+      const Hls = (await import('hls.js')).default;
+      const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+
+      // Prefer hls.js when available; native HLS detection can be misleading on Chromium.
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: false,
+        });
         hlsRef.current = hls;
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           // manifest loaded — user presses play on the native controls
@@ -261,6 +261,11 @@ export default function PlayerPage() {
         });
         hls.attachMedia(video);
         hls.loadSource(data.hls_url);
+      } else if (canNativeHls) {
+        video.src = data.hls_url;
+        video.load();
+      } else {
+        throw new Error('HLS playback is not supported in this browser.');
       }
     } catch (e: unknown) {
       setError(clientErrorMessage(e, 'Failed to start HLS playback.'));
