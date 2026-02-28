@@ -1,0 +1,2 @@
+ALTER TABLE IF EXISTS media_file
+    ALTER COLUMN size_bytes TYPE BIGINT USING size_bytes::BIGINT;

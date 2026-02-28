@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS episode_expected (
 CREATE TABLE IF NOT EXISTS media_file (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
-    size_bytes INTEGER NOT NULL,
+    size_bytes BIGINT NOT NULL,
     mtime_ts INTEGER NOT NULL,
     quick_hash INTEGER,
     strong_hash BYTEA,

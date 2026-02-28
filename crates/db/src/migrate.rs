@@ -106,6 +106,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "026_user_profile_fields",
         include_str!("../migrations_pg/026_user_profile_fields.sql"),
     ),
+    (
+        "027_media_file_size_bigint",
+        include_str!("../migrations_pg/027_media_file_size_bigint.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

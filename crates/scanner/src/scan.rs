@@ -74,7 +74,7 @@ pub async fn run_library_scan(
 
             match parsed {
                 ParsedMedia::Movie(info) => {
-                    create_movie_item(
+                    if let Err(error) = create_movie_item(
                         pool,
                         library_id,
                         &info,
@@ -83,11 +83,20 @@ pub async fn run_library_scan(
                         existing_file_id.as_deref(),
                     )
                     .await
-                    .map_err(ScanError::Db)?;
+                    {
+                        warn!(
+                            library_id = library_id,
+                            file = %path_str,
+                            error = %error,
+                            "failed to index movie file; skipping entry"
+                        );
+                        result.skipped += 1;
+                        continue;
+                    }
                     result.added += 1;
                 }
                 ParsedMedia::Episode(info) => {
-                    create_episode_item(
+                    if let Err(error) = create_episode_item(
                         pool,
                         library_id,
                         &info,
@@ -96,7 +105,16 @@ pub async fn run_library_scan(
                         existing_file_id.as_deref(),
                     )
                     .await
-                    .map_err(ScanError::Db)?;
+                    {
+                        warn!(
+                            library_id = library_id,
+                            file = %path_str,
+                            error = %error,
+                            "failed to index episode file; skipping entry"
+                        );
+                        result.skipped += 1;
+                        continue;
+                    }
                     result.added += 1;
                 }
                 ParsedMedia::Unknown(name) => {
@@ -299,6 +317,17 @@ async fn ensure_media_file(
     probe_duration: bool,
 ) -> Result<String, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
+    let size_bytes_i64 = match i64::try_from(entry.size_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            warn!(
+                file = %path,
+                size_bytes = entry.size_bytes,
+                "file size exceeds i64 range; clamping to i64::MAX"
+            );
+            i64::MAX
+        }
+    };
 
     if let Some(existing_id) = existing_file_id {
         sqlx::query(
@@ -306,7 +335,7 @@ async fn ensure_media_file(
              SET size_bytes = $1, mtime_ts = $2, updated_ts = $3 \
              WHERE id = $4",
         )
-        .bind(entry.size_bytes as i64)
+        .bind(size_bytes_i64)
         .bind(entry.mtime_ts)
         .bind(now)
         .bind(existing_id)
@@ -328,7 +357,7 @@ async fn ensure_media_file(
     )
     .bind(&id)
     .bind(path)
-    .bind(entry.size_bytes as i64)
+    .bind(size_bytes_i64)
     .bind(entry.mtime_ts)
     .bind(duration_ms)
     .bind(now)
