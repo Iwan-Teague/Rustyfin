@@ -141,6 +141,10 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
     - `zig`
     - `cargo-zigbuild` (`cargo install cargo-zigbuild --locked`)
   - If prerequisites are missing, `start.sh` automatically falls back to Docker Rust build mode (unless `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1`).
+- On Linux hosts, `start.sh` auto-enables onboard GPU passthrough for transcoding when `/dev/dri` exists.
+  - It injects a compose overlay that maps `/dev/dri` into `rustfin` and sets `RUSTFIN_TRANSCODER_HW_ACCEL=auto`.
+  - Disable with `RUSTFIN_AUTO_HW_ACCEL=0`.
+  - Force a specific mode with `RUSTFIN_TRANSCODER_HW_ACCEL` (`none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
 - `--full-rebuild` forces no-cache rebuild.
 - `--no-build` skips rebuild.
 - Health checks in detached mode wait for critical services (`postgres`, `rustfin`, `rustfin-calendar`, `rustfin-tmdb-agent`, `rustfin-youtube-agent`, `rustfin-transcription-agent`, `rustfin-ui`, `rustfin-edge`) before final success output.
@@ -184,6 +188,8 @@ Common runtime variables:
 - `RUSTFIN_NATIVE_RUST_BUILD` (`1` default; set `0` to compile Rust binaries inside Docker)
 - `RUSTFIN_NATIVE_LINUX_TARGET` (optional Linux target triple override for native Rust cross-build)
 - `RUSTFIN_NATIVE_RUST_BUILD_STRICT` (`0` default; set `1` to fail instead of fallback when native prerequisites are missing)
+- `RUSTFIN_AUTO_HW_ACCEL` (`1` default; Linux-only auto `/dev/dri` passthrough)
+- `RUSTFIN_TRANSCODER_HW_ACCEL` (`auto` default; `none|nvenc|vaapi|qsv|videotoolbox`)
 - `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
 - `RUSTFIN_BACKEND_PORT`
 - `RUSTFIN_UI_PORT`

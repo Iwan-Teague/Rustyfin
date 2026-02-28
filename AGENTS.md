@@ -52,6 +52,8 @@ Rust build runtime behavior:
 - `start.sh` defaults to native host Rust binary compilation for Linux targets, then Docker images copy the prebuilt binaries.
 - To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
 - On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
+- On Linux hosts, `start.sh` auto-attaches `/dev/dri` to the `rustfin` container when present (unless `RUSTFIN_AUTO_HW_ACCEL=0`).
+- Use `RUSTFIN_TRANSCODER_HW_ACCEL` to force hardware mode (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
 
 Primary containers:
 - `postgres` (PostgreSQL database)

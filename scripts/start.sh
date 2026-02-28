@@ -41,7 +41,11 @@ Options:
                      Override host->Linux target triple for native Rust builds.
   RUSTFIN_NATIVE_RUST_BUILD
                      Set to 0 to disable native Rust build mode globally.
-  -f, --file         Compose file path (default: docker-compose.yml).
+  -f, --file         Compose file path (can be repeated). Defaults to docker-compose.yml.
+  RUSTFIN_AUTO_HW_ACCEL
+                     Set to 0 to disable Linux auto-attach of /dev/dri for onboard GPU decode.
+  RUSTFIN_TRANSCODER_HW_ACCEL
+                     Transcoder mode: auto (default), none, nvenc, vaapi, qsv, or videotoolbox.
   -h, --help         Show this help.
 EOF
 }
@@ -53,7 +57,8 @@ BUILD=true
 NO_CACHE_BUILD=false
 DETACH=true
 HEALTH_CHECK=true
-COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
+COMPOSE_FILES=("$REPO_ROOT/docker-compose.yml")
+COMPOSE_FILES_SET_BY_USER=false
 CLI_YOUTUBE_COOKIE=""
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
@@ -75,7 +80,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     -f|--file)
       [[ $# -ge 2 ]] || die "Missing value for $1"
-      COMPOSE_FILE="$2"
+      file_arg="$2"
+      if [[ "$file_arg" != /* ]]; then
+        file_arg="$REPO_ROOT/$file_arg"
+      fi
+      if [[ "$COMPOSE_FILES_SET_BY_USER" == "false" ]]; then
+        COMPOSE_FILES=()
+        COMPOSE_FILES_SET_BY_USER=true
+      fi
+      COMPOSE_FILES+=("$file_arg")
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
@@ -83,13 +96,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$COMPOSE_FILE" != /* ]]; then
-  COMPOSE_FILE="$REPO_ROOT/$COMPOSE_FILE"
-fi
-
 cd "$REPO_ROOT"
 
-[[ -f "$COMPOSE_FILE" ]] || die "docker-compose.yml not found at $COMPOSE_FILE"
+if [[ ${#COMPOSE_FILES[@]} -eq 0 ]]; then
+  die "No compose files configured"
+fi
+for compose_file in "${COMPOSE_FILES[@]}"; do
+  [[ -f "$compose_file" ]] || die "Compose file not found at $compose_file"
+done
+
 command -v docker >/dev/null 2>&1 || die "docker is not installed or not in PATH"
 docker compose version >/dev/null 2>&1 || die "docker compose is not available"
 
@@ -104,6 +119,99 @@ mkdir -p "$SAFE_TMP_DIR" || die "Failed to create temp dir: $SAFE_TMP_DIR"
 chmod 700 "$SAFE_TMP_DIR" 2>/dev/null || true
 [[ -w "$SAFE_TMP_DIR" ]] || die "Temp dir is not writable: $SAFE_TMP_DIR"
 export TMPDIR="$SAFE_TMP_DIR"
+
+RUSTFIN_AUTO_HW_ACCEL="${RUSTFIN_AUTO_HW_ACCEL:-1}"
+case "$RUSTFIN_AUTO_HW_ACCEL" in
+  0|1) ;;
+  *) die "Invalid RUSTFIN_AUTO_HW_ACCEL='$RUSTFIN_AUTO_HW_ACCEL' (expected 0 or 1)" ;;
+esac
+
+compose_flags=()
+compose_cmd_display="docker compose"
+refresh_compose_invocation() {
+  compose_flags=()
+  local compose_file=""
+  local display_flags=()
+  for compose_file in "${COMPOSE_FILES[@]}"; do
+    compose_flags+=(-f "$compose_file")
+    display_flags+=("-f \"$compose_file\"")
+  done
+  compose_cmd_display="docker compose ${display_flags[*]}"
+}
+
+docker_compose() {
+  docker compose "${compose_flags[@]}" "$@"
+}
+
+unique_append_number() {
+  local value="$1"
+  shift
+  local existing=""
+  for existing in "$@"; do
+    if [[ "$existing" == "$value" ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+maybe_enable_linux_hwaccel_overlay() {
+  if [[ "$RUSTFIN_AUTO_HW_ACCEL" != "1" ]]; then
+    return
+  fi
+  if [[ "$COMPOSE_FILES_SET_BY_USER" == "true" ]]; then
+    return
+  fi
+
+  local host_os
+  host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  if [[ "$host_os" != "linux" ]]; then
+    return
+  fi
+
+  if [[ ! -d "/dev/dri" ]]; then
+    warn "Onboard GPU auto-detect: /dev/dri not present on host; transcoding will use CPU unless manually configured."
+    return
+  fi
+
+  local -a dri_group_ids=()
+  local dev=""
+  local gid=""
+  for dev in /dev/dri/renderD* /dev/dri/card*; do
+    [[ -e "$dev" ]] || continue
+    gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
+    [[ -n "$gid" ]] || continue
+    if unique_append_number "$gid" "${dri_group_ids[@]}"; then
+      dri_group_ids+=("$gid")
+    fi
+  done
+
+  local overlay_file="$SAFE_TMP_DIR/docker-compose.hwaccel.auto.yml"
+  {
+    echo "services:"
+    echo "  rustfin:"
+    echo "    devices:"
+    echo "      - /dev/dri:/dev/dri"
+    if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+      echo "    group_add:"
+      for gid in "${dri_group_ids[@]}"; do
+        echo "      - \"$gid\""
+      done
+    fi
+    echo "    environment:"
+    echo "      - RUSTFIN_TRANSCODER_HW_ACCEL=\${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
+  } > "$overlay_file"
+
+  COMPOSE_FILES+=("$overlay_file")
+  export RUSTFIN_TRANSCODER_HW_ACCEL="${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
+  info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode)."
+  if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+    info "Applied supplemental GPU group IDs inside container: ${dri_group_ids[*]}"
+  fi
+}
+
+maybe_enable_linux_hwaccel_overlay
+refresh_compose_invocation
 
 BUILD_STATE_FILE="$SAFE_TMP_DIR/build-fingerprints.env"
 
@@ -166,7 +274,7 @@ compose_service_hash() {
   local line=""
   local hash=""
 
-  line="$(docker compose -f "$COMPOSE_FILE" config --hash "$service" 2>/dev/null | awk -v svc="$service" '$1 == svc { print $2; exit }' || true)"
+  line="$(docker_compose config --hash "$service" 2>/dev/null | awk -v svc="$service" '$1 == svc { print $2; exit }' || true)"
   hash="${line##*$'\n'}"
 
   if [[ -n "$hash" ]]; then
@@ -176,7 +284,12 @@ compose_service_hash() {
 
   # Safe fallback: if per-service compose hashing is unavailable, use the
   # compose file hash so build invalidation is still correct (but broader).
-  printf '%s' "$(hash_file "$COMPOSE_FILE")"
+  {
+    local compose_file=""
+    for compose_file in "${COMPOSE_FILES[@]}"; do
+      printf '%s  %s\n' "$(hash_file "$compose_file")" "${compose_file#$REPO_ROOT/}"
+    done
+  } | hash_stdin
 }
 
 project_name_default() {
@@ -870,7 +983,7 @@ ensure_edge_tls_cert() {
 
 compose_has_service() {
   local service="$1"
-  docker compose -f "$COMPOSE_FILE" config --services 2>/dev/null | grep -Fxq "$service"
+  docker_compose config --services 2>/dev/null | grep -Fxq "$service"
 }
 
 wait_for_service_ready() {
@@ -880,7 +993,7 @@ wait_for_service_ready() {
   start_ts="$(date +%s)"
 
   while true; do
-    container_id="$(docker compose -f "$COMPOSE_FILE" ps -q "$service" 2>/dev/null || true)"
+    container_id="$(docker_compose ps -q "$service" 2>/dev/null || true)"
     if [[ -n "$container_id" ]]; then
       break
     fi
@@ -956,7 +1069,7 @@ wait_for_critical_services() {
 
   if (( failures > 0 )); then
     warn "One or more services did not report ready."
-    warn "Inspect logs with: docker compose -f \"$COMPOSE_FILE\" logs -f"
+    warn "Inspect logs with: ${compose_cmd_display} logs -f"
     return 1
   fi
 
@@ -964,7 +1077,7 @@ wait_for_critical_services() {
 }
 
 project_running=false
-if docker compose -f "$COMPOSE_FILE" ps --status running -q 2>/dev/null | grep -q .; then
+if docker_compose ps --status running -q 2>/dev/null | grep -q .; then
   project_running=true
 fi
 
@@ -1028,6 +1141,7 @@ else
 fi
 
 info "Using TMPDIR: $TMPDIR"
+info "Compose files: ${COMPOSE_FILES[*]}"
 info "Using media path: $RUSTFIN_MEDIA_PATH"
 info "Backend port: $RUSTFIN_BACKEND_PORT"
 info "UI port: $RUSTFIN_UI_PORT"
@@ -1039,6 +1153,7 @@ info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
 info "Database mode: ${db_mode}"
 info "Database target: ${db_target_log}"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
+info "Transcoder hw accel mode: ${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
 if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   info "Rust binary build mode: native host cross-compile -> Docker copy"
   info "Native Linux target: $RUSTFIN_NATIVE_TARGET"
@@ -1080,9 +1195,9 @@ if [[ "$BUILD" == "true" ]]; then
     fi
 
     info "Rebuilding all Docker images..."
-    if ! docker compose -f "$COMPOSE_FILE" build --pull --no-cache; then
+    if ! docker_compose build --pull --no-cache; then
       warn "Full no-cache rebuild failed (likely transient network issue). Retrying once with Docker cache."
-      if ! docker compose -f "$COMPOSE_FILE" build --pull; then
+      if ! docker_compose build --pull; then
         die "Docker image rebuild failed after retry. Check your internet connection and retry."
       fi
     fi
@@ -1179,7 +1294,7 @@ if [[ "$BUILD" == "true" ]]; then
             "${native_rust_changed_services[@]}"
         fi
       fi
-      if ! docker compose -f "$COMPOSE_FILE" build --pull "${changed_services[@]}"; then
+      if ! docker_compose build --pull "${changed_services[@]}"; then
         die "Docker image rebuild failed. Check your internet connection and retry."
       fi
     fi
@@ -1199,7 +1314,7 @@ if [[ "$DETACH" == "true" ]]; then
   compose_args+=(-d)
 fi
 
-docker compose -f "$COMPOSE_FILE" "${compose_args[@]}"
+docker_compose "${compose_args[@]}"
 
 {
   echo "# Generated by scripts/start.sh"
@@ -1226,7 +1341,7 @@ if [[ "$DETACH" == "true" && "$HEALTH_CHECK" == "true" ]]; then
     done
     if [[ "$ok" != "true" ]]; then
       warn "Backend health check did not pass within 60s."
-      warn "Check logs with: docker compose -f \"$COMPOSE_FILE\" logs -f"
+      warn "Check logs with: ${compose_cmd_display} logs -f"
     fi
   else
     warn "curl is not installed; skipping host-level backend health check."

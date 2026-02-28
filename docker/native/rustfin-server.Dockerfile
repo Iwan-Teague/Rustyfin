@@ -4,6 +4,8 @@ ARG NATIVE_BIN_DIR=.tmp/native-bins
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    va-driver-all \
+    vainfo \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*
