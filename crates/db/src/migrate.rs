@@ -148,15 +148,11 @@ pub async fn run(pool: &DbPool, backend: DatabaseBackend) -> Result<(), sqlx::Er
             migration = name,
             "applying migration"
         );
-        // Execute all statements for a migration on one connection.
+        // Execute migration as a raw SQL script so PostgreSQL procedural blocks
+        // (e.g. DO $$...$$) and semicolons inside function bodies are handled
+        // correctly by the database parser.
         let mut conn = pool.acquire().await?;
-        for statement in sql.split(';') {
-            let trimmed = statement.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            sqlx::query(trimmed).execute(&mut *conn).await?;
-        }
+        sqlx::raw_sql(sql).execute(&mut *conn).await?;
         drop(conn);
 
         let now = chrono::Utc::now().timestamp();
