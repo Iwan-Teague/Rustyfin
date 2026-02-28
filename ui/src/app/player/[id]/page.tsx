@@ -39,6 +39,16 @@ type DirectSupportResult = {
   tooltip?: string;
 };
 
+const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
+  { value: 'auto', label: 'Auto (Original)' },
+  { value: 2160, label: '2160p (4K)' },
+  { value: 1440, label: '1440p' },
+  { value: 1080, label: '1080p' },
+  { value: 720, label: '720p' },
+  { value: 480, label: '480p' },
+  { value: 360, label: '360p' },
+];
+
 const DIRECT_MIME_BY_CONTAINER: Array<[string, string]> = [
   ['mp4', 'video/mp4'],
   ['mov', 'video/quicktime'],
@@ -84,6 +94,16 @@ function buildDirectUnsupportedMessage(contentType: string): string {
   return `Direct Play is not supported for this media type in your browser (${contentType}). Use Transcode (HLS), which is slower but compatible. To use Direct Play, add support for this media type.`;
 }
 
+function ensureAudibleVideo(video: HTMLVideoElement): void {
+  if (video.muted || video.defaultMuted) {
+    video.muted = false;
+    video.defaultMuted = false;
+  }
+  if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+    video.volume = 1;
+  }
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -98,6 +118,7 @@ export default function PlayerPage() {
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
   const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
   const [directSupportMessage, setDirectSupportMessage] = useState('');
@@ -179,7 +200,7 @@ export default function PlayerPage() {
     return { supported: true };
   }, [directContentType, mediaInfo]);
 
-  const startHls = useCallback(async () => {
+  const startHls = useCallback(async (targetHeightOverride?: number | null) => {
     if (!descriptor?.file_id) {
       setError('No media file is attached to this item. Rescan the library and try again.');
       return;
@@ -190,6 +211,13 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
+    ensureAudibleVideo(video);
+    const selectedTargetHeight =
+      targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
+    const startTimeSecs =
+      Number.isFinite(video.currentTime) && video.currentTime > 0.5
+        ? video.currentTime
+        : undefined;
 
     setStartingHls(true);
     setError('');
@@ -201,7 +229,11 @@ export default function PlayerPage() {
 
       const data = await apiJson<PlaybackSession>(descriptor.hls_start_url, {
         method: 'POST',
-        body: JSON.stringify({ file_id: descriptor.file_id }),
+        body: JSON.stringify({
+          file_id: descriptor.file_id,
+          start_time_secs: startTimeSecs,
+          target_height: selectedTargetHeight ?? undefined,
+        }),
       });
 
       destroyHls();
@@ -235,7 +267,7 @@ export default function PlayerPage() {
     } finally {
       setStartingHls(false);
     }
-  }, [descriptor, destroyHls, sessionId, stopSession]);
+  }, [descriptor, destroyHls, sessionId, stopSession, hlsTargetHeight]);
 
   const startDirectPlay = useCallback(async () => {
     if (!descriptor?.file_id) {
@@ -248,8 +280,9 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
+    ensureAudibleVideo(video);
 
-      setStartingDirect(true);
+    setStartingDirect(true);
     setError('');
     setDirectFallbackTriggered(false);
     try {
@@ -408,6 +441,12 @@ export default function PlayerPage() {
           controls
           className="w-full max-h-[80vh]"
           playsInline
+          onLoadedMetadata={(event) => {
+            ensureAudibleVideo(event.currentTarget);
+          }}
+          onPlay={(event) => {
+            ensureAudibleVideo(event.currentTarget);
+          }}
           onError={() => {
             if (mode !== 'direct' || directFallbackTriggered || !canStartPlayback) return;
             setDirectFallbackTriggered(true);
@@ -445,6 +484,28 @@ export default function PlayerPage() {
         >
           {startingHls ? 'Starting…' : 'Transcode (HLS)'}
         </button>
+        <label className="ml-auto flex items-center gap-2 text-xs muted">
+          <span>Quality</span>
+          <select
+            className="select px-2 py-1.5 text-sm"
+            value={hlsTargetHeight ?? 'auto'}
+            onChange={(event) => {
+              const value = event.target.value;
+              const nextTargetHeight = value === 'auto' ? null : Number(value);
+              setHlsTargetHeight(nextTargetHeight);
+              if (mode === 'hls') {
+                void startHls(nextTargetHeight);
+              }
+            }}
+            disabled={startingDirect || startingHls}
+          >
+            {HLS_QUALITY_OPTIONS.map((option) => (
+              <option key={option.label} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         {directContentType && (
           <p className="text-xs muted">Direct capability check: {directContentType}</p>
         )}

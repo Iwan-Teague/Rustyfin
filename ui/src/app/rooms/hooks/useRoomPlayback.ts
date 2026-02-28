@@ -14,6 +14,16 @@ type UseRoomPlaybackArgs = {
   setInfo: (message: string) => void;
 };
 
+function ensureAudibleVideo(video: HTMLVideoElement): void {
+  if (video.muted || video.defaultMuted) {
+    video.muted = false;
+    video.defaultMuted = false;
+  }
+  if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+    video.volume = 1;
+  }
+}
+
 async function waitForVideoMetadata(
   video: HTMLVideoElement,
   timeoutMs = 5000,
@@ -46,6 +56,7 @@ export function useRoomPlayback({
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
@@ -101,6 +112,7 @@ export function useRoomPlayback({
     }
 
     if (stateMessage.playing && video.paused) {
+      ensureAudibleVideo(video);
       await video.play().catch(() => {});
     }
 
@@ -136,6 +148,7 @@ export function useRoomPlayback({
 
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
+        ensureAudibleVideo(video);
 
         setMode('direct');
         video.src = descriptor.direct_url;
@@ -145,6 +158,7 @@ export function useRoomPlayback({
         if (roomState) {
           await applyRemoteState(roomState);
         } else if (options.autoplayWhenNoState ?? true) {
+          ensureAudibleVideo(video);
           await video.play().catch(() => {});
         } else {
           video.pause();
@@ -187,6 +201,15 @@ export function useRoomPlayback({
       try {
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
+        ensureAudibleVideo(video);
+        const selectedTargetHeight =
+          options.targetHeightOverride !== undefined
+            ? options.targetHeightOverride
+            : hlsTargetHeight;
+        const startTimeSecs =
+          Number.isFinite(video.currentTime) && video.currentTime > 0.5
+            ? video.currentTime
+            : undefined;
 
         destroyHls();
         if (sessionIdRef.current) {
@@ -196,7 +219,11 @@ export function useRoomPlayback({
 
         const session = await apiJson<PlaybackSession>(descriptor.hls_start_url, {
           method: 'POST',
-          body: JSON.stringify({ file_id: descriptor.file_id }),
+          body: JSON.stringify({
+            file_id: descriptor.file_id,
+            start_time_secs: startTimeSecs,
+            target_height: selectedTargetHeight ?? undefined,
+          }),
         });
 
         sessionIdRef.current = session.session_id;
@@ -209,6 +236,7 @@ export function useRoomPlayback({
           if (roomState) {
             await applyRemoteState(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
+            ensureAudibleVideo(video);
             await video.play().catch(() => {});
           } else {
             video.pause();
@@ -231,6 +259,7 @@ export function useRoomPlayback({
             if (roomState) {
               void applyRemoteState(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
+              ensureAudibleVideo(video);
               void video.play().catch(() => {});
             } else {
               video.pause();
@@ -261,7 +290,16 @@ export function useRoomPlayback({
         setStartingHls(false);
       }
     },
-    [descriptor, destroyHls, stopSession, roomState, applyRemoteState, setError, setInfo],
+    [
+      descriptor,
+      destroyHls,
+      stopSession,
+      roomState,
+      applyRemoteState,
+      setError,
+      setInfo,
+      hlsTargetHeight,
+    ],
   );
 
   useEffect(() => {
@@ -352,6 +390,8 @@ export function useRoomPlayback({
     mode,
     startingDirect,
     startingHls,
+    hlsTargetHeight,
+    setHlsTargetHeight,
     isVideoRoom,
     videoRef,
     applyingRemoteRef,

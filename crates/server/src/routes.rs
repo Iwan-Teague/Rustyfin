@@ -1864,6 +1864,8 @@ struct CreateSessionRequest {
     file_id: String,
     #[serde(default)]
     start_time_secs: Option<f64>,
+    #[serde(default)]
+    target_height: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1877,6 +1879,8 @@ async fn create_playback_session(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, AppError> {
+    let target_height = normalize_transcode_height(body.target_height)?;
+
     if auth.role != "admin" {
         let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &body.file_id)
             .await
@@ -1915,6 +1919,7 @@ async fn create_playback_session(
         .create_session(
             input_path,
             body.start_time_secs,
+            target_height,
             None,
             auth.user_id.clone(),
             body.file_id.clone(),
@@ -1936,6 +1941,19 @@ async fn create_playback_session(
         session_id,
         hls_url,
     }))
+}
+
+fn normalize_transcode_height(raw: Option<u32>) -> Result<Option<u32>, AppError> {
+    let Some(height) = raw else {
+        return Ok(None);
+    };
+    match height {
+        360 | 480 | 720 | 1080 | 1440 | 2160 => Ok(Some(height)),
+        _ => Err(ApiError::BadRequest(
+            "invalid target_height. allowed: 360, 480, 720, 1080, 1440, 2160".into(),
+        )
+        .into()),
+    }
 }
 
 async fn stop_playback_session(

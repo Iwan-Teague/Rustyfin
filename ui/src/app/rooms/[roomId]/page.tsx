@@ -30,6 +30,15 @@ import { useRoomRealtime } from '../hooks/useRoomRealtime';
 import { useWatchRoomData } from '../hooks/useWatchRoomData';
 
 const INVITE_NAME_MAX_CHARS = 14;
+const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
+  { value: 'auto', label: 'Auto (Original)' },
+  { value: 2160, label: '2160p (4K)' },
+  { value: 1440, label: '1440p' },
+  { value: 1080, label: '1080p' },
+  { value: 720, label: '720p' },
+  { value: 480, label: '480p' },
+  { value: 360, label: '360p' },
+];
 function truncateInviteName(name: string): string {
   if (name.length <= INVITE_NAME_MAX_CHARS) return name;
   return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
@@ -841,7 +850,25 @@ export default function WatchPartyRoomPage() {
                     preload="auto"
                     playsInline
                     className="w-full max-h-[70vh]"
+                    onLoadedMetadata={(event) => {
+                      const video = event.currentTarget;
+                      if (video.muted || video.defaultMuted) {
+                        video.muted = false;
+                        video.defaultMuted = false;
+                      }
+                      if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+                        video.volume = 1;
+                      }
+                    }}
                     onPlay={(event) => {
+                      const video = event.currentTarget;
+                      if (video.muted || video.defaultMuted) {
+                        video.muted = false;
+                        video.defaultMuted = false;
+                      }
+                      if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+                        video.volume = 1;
+                      }
                       if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'play',
@@ -887,6 +914,31 @@ export default function WatchPartyRoomPage() {
                   >
                     {playback.startingHls ? 'Starting…' : 'Transcode (HLS)'}
                   </button>
+                  <label className="ml-auto flex items-center gap-2 text-xs muted">
+                    <span>Quality</span>
+                    <select
+                      className="select px-2 py-1.5 text-sm"
+                      value={playback.hlsTargetHeight ?? 'auto'}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const nextTargetHeight = value === 'auto' ? null : Number(value);
+                        playback.setHlsTargetHeight(nextTargetHeight);
+                        if (playback.mode === 'hls') {
+                          void playback.startHls({
+                            silent: true,
+                            targetHeightOverride: nextTargetHeight,
+                          });
+                        }
+                      }}
+                      disabled={playback.startingDirect || playback.startingHls}
+                    >
+                      {HLS_QUALITY_OPTIONS.map((option) => (
+                        <option key={option.label} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   {!controlsEnabled && (
                     <span className="text-xs muted">Playback controls are host-only in this room.</span>
                   )}
