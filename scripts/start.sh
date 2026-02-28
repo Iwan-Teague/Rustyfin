@@ -41,6 +41,9 @@ Options:
                      Override host->Linux target triple for native Rust builds.
   RUSTFIN_NATIVE_RUST_BUILD
                      Set to 0 to disable native Rust build mode globally.
+  RUSTFIN_NATIVE_RUST_BUILD_STRICT
+                     Set to 0 to allow automatic fallback to Docker Rust build when native prerequisites are missing.
+                     Default is strict native mode (1).
   -f, --file         Compose file path (can be repeated). Defaults to docker-compose.yml.
   RUSTFIN_AUTO_HW_ACCEL
                      Set to 0 to disable Linux auto-attach of /dev/dri for onboard GPU decode.
@@ -62,7 +65,7 @@ COMPOSE_FILES_SET_BY_USER=false
 CLI_YOUTUBE_COOKIE=""
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
-NATIVE_RUST_BUILD_STRICT="${RUSTFIN_NATIVE_RUST_BUILD_STRICT:-0}"
+NATIVE_RUST_BUILD_STRICT="${RUSTFIN_NATIVE_RUST_BUILD_STRICT:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -600,6 +603,8 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
     native_fallback_reason="missing rustc"
   elif ! command -v cargo >/dev/null 2>&1; then
     native_fallback_reason="missing cargo"
+  elif ! command -v rustup >/dev/null 2>&1; then
+    native_fallback_reason="missing rustup"
   else
     native_host_triple="$(rustc -vV | awk '/^host: / {print $2}')"
     if [[ "$native_host_os" == "linux" && "$native_host_triple" == "$RUSTFIN_NATIVE_TARGET" ]]; then
@@ -617,10 +622,15 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
 
   if [[ -n "$native_fallback_reason" ]]; then
     native_install_hint="Install prerequisites to re-enable native mode: brew install zig && cargo install cargo-zigbuild --locked"
+    case "$native_fallback_reason" in
+      "missing rustc"|"missing cargo"|"missing rustup")
+        native_install_hint="Install Rust toolchain prerequisites via rustup: https://rustup.rs"
+        ;;
+    esac
     if [[ "$native_host_os" == "linux" ]]; then
       case "$native_fallback_reason" in
-        "missing rustc"|"missing cargo")
-          native_install_hint="Install prerequisites to re-enable native mode: sudo apt-get update && sudo apt-get install -y rustc cargo"
+        "missing rustc"|"missing cargo"|"missing rustup")
+          native_install_hint="Install prerequisites to re-enable native mode: install rustup/cargo/rustc (https://rustup.rs)"
           ;;
         "missing zig")
           native_install_hint="Install prerequisites to re-enable native mode: install zig and cargo-zigbuild, or run with --docker-rust-build"
