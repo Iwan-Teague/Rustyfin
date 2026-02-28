@@ -309,11 +309,22 @@ async fn spawn_ffmpeg(
             "veryfast".into(),
             "-crf".into(),
             "23".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
         ]);
     }
 
     // Audio: always AAC for HLS compatibility
-    args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "128k".into()]);
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-ac".into(),
+        "2".into(),
+        "-ar".into(),
+        "48000".into(),
+    ]);
 
     // HLS output
     let seg_pattern = output_dir.join("seg_%05d.ts");
