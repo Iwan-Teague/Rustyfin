@@ -480,28 +480,50 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   # - Linux host building for its own Linux host triple: plain cargo build works.
   # - Any other host/target combo: requires zig + cargo-zigbuild.
   native_host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  native_host_triple="$(rustc -vV | awk '/^host: / {print $2}')"
+  native_host_triple=""
   native_needs_zig=true
-  if [[ "$native_host_os" == "linux" && "$native_host_triple" == "$RUSTFIN_NATIVE_TARGET" ]]; then
-    native_needs_zig=false
-  fi
-
   native_fallback_reason=""
-  if [[ "$native_needs_zig" == "true" ]]; then
-    if ! command -v zig >/dev/null 2>&1; then
-      native_fallback_reason="missing zig"
-    elif ! command -v cargo-zigbuild >/dev/null 2>&1; then
-      native_fallback_reason="missing cargo-zigbuild"
+  if ! command -v rustc >/dev/null 2>&1; then
+    native_fallback_reason="missing rustc"
+  elif ! command -v cargo >/dev/null 2>&1; then
+    native_fallback_reason="missing cargo"
+  else
+    native_host_triple="$(rustc -vV | awk '/^host: / {print $2}')"
+    if [[ "$native_host_os" == "linux" && "$native_host_triple" == "$RUSTFIN_NATIVE_TARGET" ]]; then
+      native_needs_zig=false
+    fi
+
+    if [[ "$native_needs_zig" == "true" ]]; then
+      if ! command -v zig >/dev/null 2>&1; then
+        native_fallback_reason="missing zig"
+      elif ! command -v cargo-zigbuild >/dev/null 2>&1; then
+        native_fallback_reason="missing cargo-zigbuild"
+      fi
     fi
   fi
 
   if [[ -n "$native_fallback_reason" ]]; then
+    native_install_hint="Install prerequisites to re-enable native mode: brew install zig && cargo install cargo-zigbuild --locked"
+    if [[ "$native_host_os" == "linux" ]]; then
+      case "$native_fallback_reason" in
+        "missing rustc"|"missing cargo")
+          native_install_hint="Install prerequisites to re-enable native mode: sudo apt-get update && sudo apt-get install -y rustc cargo"
+          ;;
+        "missing zig")
+          native_install_hint="Install prerequisites to re-enable native mode: install zig and cargo-zigbuild, or run with --docker-rust-build"
+          ;;
+        "missing cargo-zigbuild")
+          native_install_hint="Install prerequisites to re-enable native mode: cargo install cargo-zigbuild --locked"
+          ;;
+      esac
+    fi
+
     if [[ "$NATIVE_RUST_BUILD_STRICT" == "1" ]]; then
-      die "Native Rust Linux build prerequisites are not met (${native_fallback_reason}). Install zig + cargo-zigbuild or use --docker-rust-build."
+      die "Native Rust Linux build prerequisites are not met (${native_fallback_reason}). ${native_install_hint}"
     fi
 
     warn "Native Rust Linux build prerequisites are not met (${native_fallback_reason}); falling back to Docker Rust build."
-    warn "Install prerequisites to re-enable native mode: brew install zig && cargo install cargo-zigbuild --locked"
+    warn "$native_install_hint"
 
     NATIVE_RUST_BUILD=0
     RUSTFIN_RUST_BUILD_MODE_KEY="docker-build"
