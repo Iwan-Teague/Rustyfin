@@ -9,9 +9,13 @@ import {
   clearOwnerToken,
   putSetupConfig,
   createAdmin,
+  createLibraries,
+  listSetupHostDirectories,
   putSetupMetadata,
   putSetupNetwork,
   completeSetup,
+  type LibrarySpec,
+  type SetupHostDirectoryListEntry,
   type SetupError,
 } from '@/lib/setupApi';
 import { parseResponseBody } from '@/lib/api';
@@ -22,6 +26,14 @@ type Step = 'loading' | 'welcome' | 'config' | 'admin' | 'libraries' | 'metadata
 
 interface FieldErrors {
   [key: string]: string[];
+}
+
+interface SetupLibraryDraft {
+  id: string;
+  name: string;
+  kind: 'movies' | 'tv_shows' | 'music';
+  path: string;
+  is_read_only: boolean;
 }
 
 export default function SetupWizard() {
@@ -50,6 +62,31 @@ export default function SetupWizard() {
   // Network state
   const [allowRemote, setAllowRemote] = useState(false);
   const [autoPort, setAutoPort] = useState(false);
+
+  // Optional libraries state
+  const [libraryDrafts, setLibraryDrafts] = useState<SetupLibraryDraft[]>([
+    {
+      id: 'lib-1',
+      name: '',
+      kind: 'movies',
+      path: '',
+      is_read_only: false,
+    },
+  ]);
+
+  // Setup host directory browser state
+  const [hostDirBrowserOpen, setHostDirBrowserOpen] = useState(false);
+  const [hostDirBrowserLoading, setHostDirBrowserLoading] = useState(false);
+  const [hostDirBrowserError, setHostDirBrowserError] = useState<string | null>(null);
+  const [hostDirBrowserCurrentPath, setHostDirBrowserCurrentPath] = useState('');
+  const [hostDirBrowserParentPath, setHostDirBrowserParentPath] = useState<string | null>(null);
+  const [hostDirBrowserRoots, setHostDirBrowserRoots] = useState<string[]>([]);
+  const [hostDirBrowserDirectories, setHostDirBrowserDirectories] = useState<
+    SetupHostDirectoryListEntry[]
+  >([]);
+  const [hostDirBrowserTargetLibraryId, setHostDirBrowserTargetLibraryId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +183,128 @@ export default function SetupWizard() {
           ? crypto.randomUUID()
           : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
       await createAdmin(adminUsername, adminPassword, idempotencyKey);
+      setStep('libraries');
+    } catch (err) {
+      handleError(err);
+    }
+    setSaving(false);
+  };
+
+  const updateLibraryDraft = <K extends keyof SetupLibraryDraft>(
+    id: string,
+    key: K,
+    value: SetupLibraryDraft[K],
+  ) => {
+    setLibraryDrafts((prev) =>
+      prev.map((draft) => (draft.id === id ? { ...draft, [key]: value } : draft)),
+    );
+  };
+
+  const addLibraryDraft = () => {
+    setLibraryDrafts((prev) => [
+      ...prev,
+      {
+        id: `lib-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: '',
+        kind: 'movies',
+        path: '',
+        is_read_only: false,
+      },
+    ]);
+  };
+
+  const removeLibraryDraft = (id: string) => {
+    setLibraryDrafts((prev) => (prev.length <= 1 ? prev : prev.filter((draft) => draft.id !== id)));
+  };
+
+  const fetchHostDirectories = async (path?: string) => {
+    const data = await listSetupHostDirectories(path);
+    setHostDirBrowserCurrentPath(data.current_path);
+    setHostDirBrowserParentPath(data.parent_path);
+    setHostDirBrowserRoots(data.roots);
+    setHostDirBrowserDirectories(data.directories);
+  };
+
+  const openHostDirectoryBrowser = (libraryId: string, initialPath?: string) => {
+    setHostDirBrowserOpen(true);
+    setHostDirBrowserTargetLibraryId(libraryId);
+    setHostDirBrowserError(null);
+    setHostDirBrowserLoading(true);
+    void fetchHostDirectories(initialPath)
+      .catch((err: unknown) => {
+        const setupErr = err as SetupError;
+        setHostDirBrowserError(
+          setupErr?.message || 'Failed to browse backend directories.',
+        );
+      })
+      .finally(() => {
+        setHostDirBrowserLoading(false);
+      });
+  };
+
+  const closeHostDirectoryBrowser = () => {
+    setHostDirBrowserOpen(false);
+    setHostDirBrowserLoading(false);
+    setHostDirBrowserError(null);
+    setHostDirBrowserTargetLibraryId(null);
+  };
+
+  const navigateHostDirectory = (path?: string | null) => {
+    const target = path?.trim();
+    if (!target) return;
+    setHostDirBrowserError(null);
+    setHostDirBrowserLoading(true);
+    void fetchHostDirectories(target)
+      .catch((err: unknown) => {
+        const setupErr = err as SetupError;
+        setHostDirBrowserError(
+          setupErr?.message || 'Failed to browse backend directories.',
+        );
+      })
+      .finally(() => {
+        setHostDirBrowserLoading(false);
+      });
+  };
+
+  const confirmHostDirectorySelection = () => {
+    if (!hostDirBrowserTargetLibraryId || !hostDirBrowserCurrentPath.trim()) {
+      setHostDirBrowserError('No directory selected.');
+      return;
+    }
+    updateLibraryDraft(hostDirBrowserTargetLibraryId, 'path', hostDirBrowserCurrentPath);
+    closeHostDirectoryBrowser();
+  };
+
+  const handleLibraries = async () => {
+    clearErrors();
+    const normalized = libraryDrafts.map((draft) => ({
+      ...draft,
+      name: draft.name.trim(),
+      path: draft.path.trim(),
+    }));
+
+    const populated = normalized.filter((draft) => draft.name || draft.path);
+    if (populated.length === 0) {
+      setStep('metadata');
+      return;
+    }
+
+    const invalidPartial = populated.find((draft) => !draft.name || !draft.path);
+    if (invalidPartial) {
+      setError('Each library row must include both a name and a path, or be left blank.');
+      return;
+    }
+
+    const payload: LibrarySpec[] = populated.map((draft) => ({
+      name: draft.name,
+      kind: draft.kind,
+      paths: [draft.path],
+      is_read_only: draft.is_read_only,
+    }));
+
+    setSaving(true);
+    try {
+      await createLibraries(payload);
       setStep('metadata');
     } catch (err) {
       handleError(err);
@@ -153,7 +312,7 @@ export default function SetupWizard() {
     setSaving(false);
   };
 
-  // Step 4: Metadata (skipping libraries for simplicity — optional step)
+  // Step 5: Metadata
   const handleMetadata = async () => {
     clearErrors();
     setSaving(true);
@@ -169,7 +328,7 @@ export default function SetupWizard() {
     setSaving(false);
   };
 
-  // Step 5: Network
+  // Step 6: Network
   const handleNetwork = async () => {
     clearErrors();
     setSaving(true);
@@ -186,7 +345,7 @@ export default function SetupWizard() {
     setSaving(false);
   };
 
-  // Step 6: Complete
+  // Step 7: Complete
   const handleComplete = async () => {
     clearErrors();
     setSaving(true);
@@ -218,13 +377,13 @@ export default function SetupWizard() {
     welcome: 'Welcome',
     config: 'Server Config',
     admin: 'Create Admin',
-    libraries: 'Libraries',
+    libraries: 'Libraries (Optional)',
     metadata: 'Metadata',
     network: 'Networking',
     complete: 'Finish',
   };
 
-  const stepOrder: Step[] = ['welcome', 'config', 'admin', 'metadata', 'network', 'complete'];
+  const stepOrder: Step[] = ['welcome', 'config', 'admin', 'libraries', 'metadata', 'network', 'complete'];
   const currentIndex = stepOrder.indexOf(step);
   const progressPercent = currentIndex >= 0 ? ((currentIndex + 1) / stepOrder.length) * 100 : 0;
   const inputClass = (hasError: boolean) => `input px-3 py-2 ${hasError ? 'border-[var(--danger)]' : ''}`;
@@ -428,6 +587,112 @@ export default function SetupWizard() {
         </section>
       )}
 
+      {step === 'libraries' && (
+        <section className="panel space-y-6 p-6 sm:p-7">
+          <h2 className="text-2xl font-semibold sm:text-3xl">Libraries (Optional)</h2>
+          <p className="text-sm muted">
+            Add media libraries now, or skip and configure them later in Admin. Browse uses the backend host filesystem.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleLibraries();
+            }}
+            className="space-y-4"
+          >
+            <div className="space-y-3">
+              {libraryDrafts.map((draft, idx) => (
+                <div key={draft.id} className="tile space-y-3 p-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.1fr_0.8fr_2fr_auto]">
+                    <input
+                      type="text"
+                      value={draft.name}
+                      onChange={(e) => updateLibraryDraft(draft.id, 'name', e.target.value)}
+                      placeholder={`Library ${idx + 1} name`}
+                      className="input px-3 py-2 text-sm"
+                    />
+                    <select
+                      value={draft.kind}
+                      onChange={(e) =>
+                        updateLibraryDraft(
+                          draft.id,
+                          'kind',
+                          e.target.value as 'movies' | 'tv_shows' | 'music',
+                        )
+                      }
+                      className="select px-3 py-2 text-sm"
+                    >
+                      <option value="movies">Movies</option>
+                      <option value="tv_shows">TV Shows</option>
+                      <option value="music">Music</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={draft.path}
+                      onChange={(e) => updateLibraryDraft(draft.id, 'path', e.target.value)}
+                      placeholder="/media/movies"
+                      className="input px-3 py-2 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => openHostDirectoryBrowser(draft.id, draft.path)}
+                      className="btn-secondary px-4 py-2 text-sm"
+                    >
+                      Browse Host
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="panel-soft inline-flex items-center gap-2 px-3 py-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={draft.is_read_only}
+                        onChange={(e) =>
+                          updateLibraryDraft(draft.id, 'is_read_only', e.target.checked)
+                        }
+                        className="h-4 w-4 [accent-color:var(--purple)]"
+                      />
+                      <span>Read only</span>
+                    </label>
+                    {libraryDrafts.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeLibraryDraft(draft.id)}
+                        className="btn-ghost px-3 py-1.5 text-xs text-[var(--danger)]"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={addLibraryDraft}
+                className="btn-secondary px-4 py-2 text-sm"
+              >
+                Add Library
+              </button>
+              <button
+                type="button"
+                onClick={() => setStep('metadata')}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Skip for now
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="btn-primary px-6 py-2.5 text-sm disabled:opacity-50"
+              >
+                {saving ? 'Saving...' : 'Next'}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
+
       {step === 'metadata' && (
         <section className="panel space-y-6 p-6 sm:p-7">
           <h2 className="text-2xl font-semibold sm:text-3xl">Metadata Preferences</h2>
@@ -520,6 +785,12 @@ export default function SetupWizard() {
             <div><span className="muted">Server:</span> {serverName}</div>
             <div><span className="muted">Admin:</span> {adminUsername}</div>
             <div><span className="muted">Locale:</span> {locale} / {region}</div>
+            <div>
+              <span className="muted">Libraries:</span>{' '}
+              {
+                libraryDrafts.filter((draft) => draft.name.trim() && draft.path.trim()).length
+              } configured
+            </div>
             <div><span className="muted">Remote Access:</span> {allowRemote ? 'Enabled' : 'Disabled'}</div>
           </div>
           <form onSubmit={(e) => { e.preventDefault(); handleComplete(); }}>
@@ -532,6 +803,107 @@ export default function SetupWizard() {
             </button>
           </form>
         </section>
+      )}
+
+      {hostDirBrowserOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
+          <div className="panel w-full max-w-3xl max-h-[82vh] rounded-2xl border border-[var(--border)] p-4 sm:p-5 flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-lg font-semibold">Browse Backend Directories</h3>
+                <p className="text-xs muted">
+                  Choose a folder on the server host (Debian 12) for this library path.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-3 py-1.5 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            {hostDirBrowserRoots.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {hostDirBrowserRoots.map((rootPath) => (
+                  <button
+                    key={rootPath}
+                    type="button"
+                    onClick={() => navigateHostDirectory(rootPath)}
+                    className={`btn-ghost px-2.5 py-1 text-xs ${
+                      hostDirBrowserCurrentPath.startsWith(rootPath)
+                        ? 'border-[var(--orange-soft)] text-[var(--orange-soft)]'
+                        : ''
+                    }`}
+                  >
+                    {rootPath}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="panel-soft rounded-xl border border-[var(--border)] px-3 py-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateHostDirectory(hostDirBrowserParentPath)}
+                disabled={!hostDirBrowserParentPath || hostDirBrowserLoading}
+                className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+              >
+                Up
+              </button>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.12em] muted">Current Path</p>
+                <p className="text-sm font-mono truncate" title={hostDirBrowserCurrentPath}>
+                  {hostDirBrowserCurrentPath || '—'}
+                </p>
+              </div>
+            </div>
+
+            {hostDirBrowserError && <p className="text-sm text-red-300">{hostDirBrowserError}</p>}
+
+            <div className="panel-soft min-h-[260px] overflow-auto rounded-xl border border-[var(--border)] p-2">
+              {hostDirBrowserLoading ? (
+                <p className="px-2 py-2 text-sm muted">Loading directories…</p>
+              ) : hostDirBrowserDirectories.length === 0 ? (
+                <p className="px-2 py-2 text-sm muted">No child directories found.</p>
+              ) : (
+                <div className="space-y-1">
+                  {hostDirBrowserDirectories.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      onClick={() => navigateHostDirectory(entry.path)}
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2 text-left text-sm hover:border-[var(--orange-soft)]/55 hover:bg-[var(--panel)]"
+                      title={entry.path}
+                    >
+                      <div className="font-medium">{entry.name}</div>
+                      <div className="truncate text-xs muted">{entry.path}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmHostDirectorySelection}
+                disabled={hostDirBrowserLoading || !hostDirBrowserCurrentPath}
+                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Use This Folder
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

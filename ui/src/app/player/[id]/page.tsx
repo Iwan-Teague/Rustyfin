@@ -104,6 +104,13 @@ function ensureAudibleVideo(video: HTMLVideoElement): void {
   }
 }
 
+function resetVideoSourceForMse(video: HTMLVideoElement): void {
+  // Clear any existing direct/native source before attaching hls.js.
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -214,9 +221,16 @@ export default function PlayerPage() {
     ensureAudibleVideo(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
-    const startTimeSecs =
-      Number.isFinite(video.currentTime) && video.currentTime > 0.5
+    const currentTime =
+      Number.isFinite(video.currentTime) && video.currentTime >= 0
         ? video.currentTime
+        : 0;
+    const finiteDuration = Number.isFinite(video.duration) && video.duration > 0;
+    const startTimeSecs =
+      finiteDuration &&
+      currentTime > 0.5 &&
+      currentTime < (video.duration as number) - 0.5
+        ? currentTime
         : undefined;
 
     setStartingHls(true);
@@ -246,6 +260,7 @@ export default function PlayerPage() {
 
       // Prefer hls.js when available; native HLS detection can be misleading on Chromium.
       if (Hls.isSupported()) {
+        resetVideoSourceForMse(video);
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
@@ -303,6 +318,10 @@ export default function PlayerPage() {
       }
 
       destroyHls();
+      if (sessionId) {
+        await stopSession(sessionId);
+        setSessionId(null);
+      }
       setMode('direct');
       video.src = descriptor.direct_url;
       video.load();

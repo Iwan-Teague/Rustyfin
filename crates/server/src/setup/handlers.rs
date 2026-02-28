@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rustfin_core::error::{ApiError, ErrorBody, ErrorEnvelope};
@@ -10,6 +10,7 @@ use tracing::info;
 
 use crate::auth::AdminUser;
 use crate::error::AppError;
+use crate::host_directories::{HostDirectoryListResponse, build_host_directory_listing};
 use crate::setup::guard::{SetupReadGuard, SetupWriteGuard, hash_token};
 use crate::setup::state_machine::SetupState;
 use crate::setup::validation;
@@ -611,6 +612,39 @@ pub async fn validate_path(
         }),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct HostDirectoryListQuery {
+    path: Option<String>,
+}
+
+pub async fn list_host_directories(
+    _guard: SetupReadGuard,
+    Query(query): Query<HostDirectoryListQuery>,
+) -> Response {
+    let requested = query.path.and_then(|p| {
+        let trimmed = p.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    let response =
+        match tokio::task::spawn_blocking(move || build_host_directory_listing(requested)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => return AppError::from(err).into_response(),
+            Err(e) => {
+                return AppError::from(ApiError::Internal(format!(
+                    "host directory listing task failed: {e}"
+                )))
+                .into_response();
+            }
+        };
+
+    (StatusCode::OK, Json::<HostDirectoryListResponse>(response)).into_response()
 }
 
 // ---------------------------------------------------------------------------

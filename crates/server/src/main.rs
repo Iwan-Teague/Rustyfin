@@ -32,9 +32,7 @@ fn select_auto_hw_accel(
         candidates.push(rustfin_transcoder::HwAccel::VideoToolbox);
     }
 
-    candidates
-        .into_iter()
-        .find(hw_accel_runtime_available)
+    candidates.into_iter().find(hw_accel_runtime_available)
 }
 
 fn parse_hw_accel_mode(mode: &str) -> Option<rustfin_transcoder::HwAccel> {
@@ -171,8 +169,8 @@ async fn main() -> anyhow::Result<()> {
     let ffmpeg_path = std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
     let ffprobe_path =
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string());
-    let hw_accel_mode_raw = std::env::var("RUSTFIN_TRANSCODER_HW_ACCEL")
-        .unwrap_or_else(|_| "auto".to_string());
+    let hw_accel_mode_raw =
+        std::env::var("RUSTFIN_TRANSCODER_HW_ACCEL").unwrap_or_else(|_| "auto".to_string());
     let hw_accel_mode = hw_accel_mode_raw.trim().to_ascii_lowercase();
 
     let selected_hw_accel = match hw_accel_mode.as_str() {

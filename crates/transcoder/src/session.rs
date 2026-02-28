@@ -335,6 +335,8 @@ async fn spawn_ffmpeg(
         "hls".into(),
         "-hls_time".into(),
         segment_secs.to_string(),
+        "-hls_list_size".into(),
+        "0".into(),
         "-hls_playlist_type".into(),
         "event".into(),
         "-hls_segment_filename".into(),

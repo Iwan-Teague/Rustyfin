@@ -24,6 +24,14 @@ function ensureAudibleVideo(video: HTMLVideoElement): void {
   }
 }
 
+function resetVideoSourceForMse(video: HTMLVideoElement): void {
+  // Ensure any previous direct/native source is fully detached before hls.js
+  // attaches a MediaSource. This avoids stale source state on mode toggles.
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
 async function waitForVideoMetadata(
   video: HTMLVideoElement,
   timeoutMs = 5000,
@@ -206,9 +214,16 @@ export function useRoomPlayback({
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
             : hlsTargetHeight;
-        const startTimeSecs =
-          Number.isFinite(video.currentTime) && video.currentTime > 0.5
+        const currentTime =
+          Number.isFinite(video.currentTime) && video.currentTime >= 0
             ? video.currentTime
+            : 0;
+        const finiteDuration = Number.isFinite(video.duration) && video.duration > 0;
+        const startTimeSecs =
+          finiteDuration &&
+          currentTime > 0.5 &&
+          currentTime < (video.duration as number) - 0.5
+            ? currentTime
             : undefined;
 
         destroyHls();
@@ -234,6 +249,7 @@ export function useRoomPlayback({
 
         // Prefer hls.js whenever possible; browser canPlayType() is not reliable for HLS support.
         if (Hls.isSupported()) {
+          resetVideoSourceForMse(video);
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,

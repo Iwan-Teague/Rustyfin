@@ -16,6 +16,7 @@ use crate::auth::{
     AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
 };
 use crate::error::AppError;
+use crate::host_directories::{HostDirectoryListResponse, build_host_directory_listing};
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::user_pipeline;
@@ -141,6 +142,7 @@ fn api_router() -> Router<AppState> {
         .route("/playback/sessions", post(create_playback_session))
         .route("/playback/sessions/{sid}/stop", post(stop_playback_session))
         .route("/playback/info/{file_id}", get(get_media_info))
+        .route("/system/host-directories", get(list_host_directories))
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
@@ -176,6 +178,10 @@ fn setup_router() -> Router<AppState> {
         .route(
             "/paths/validate",
             post(crate::setup::handlers::validate_path),
+        )
+        .route(
+            "/host-directories",
+            get(crate::setup::handlers::list_host_directories),
         )
         .route("/libraries", post(crate::setup::handlers::create_libraries))
         .route(
@@ -2567,6 +2573,31 @@ async fn serve_subtitle(
 #[derive(Serialize)]
 struct PickDirectoryResponse {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct HostDirectoryListQuery {
+    path: Option<String>,
+}
+
+async fn list_host_directories(
+    _admin: AdminUser,
+    Query(query): Query<HostDirectoryListQuery>,
+) -> Result<Json<HostDirectoryListResponse>, AppError> {
+    let requested = query.path.and_then(|p| {
+        let trimmed = p.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    let response = tokio::task::spawn_blocking(move || build_host_directory_listing(requested))
+        .await
+        .map_err(|e| ApiError::Internal(format!("host directory listing task failed: {e}")))??;
+
+    Ok(Json(response))
 }
 
 async fn pick_directory(_admin: AdminUser) -> Result<Json<PickDirectoryResponse>, AppError> {

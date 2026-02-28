@@ -35,9 +35,7 @@ pub fn detect_backend(target: &str) -> DatabaseBackend {
     if trimmed.starts_with("postgres://") || trimmed.starts_with("postgresql://") {
         DatabaseBackend::Postgres
     } else {
-        panic!(
-            "unsupported database target; only PostgreSQL URLs are accepted (got: {target})"
-        );
+        panic!("unsupported database target; only PostgreSQL URLs are accepted (got: {target})");
     }
 }
 
@@ -70,6 +68,9 @@ pub async fn connect(target: &str) -> Result<DbPool, sqlx::Error> {
         let _ = ACTIVE_BACKEND.set(backend);
     }
 
-    let pool = PgPoolOptions::new().max_connections(15).connect(&url).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(15)
+        .connect(&url)
+        .await?;
     Ok(pool)
 }
