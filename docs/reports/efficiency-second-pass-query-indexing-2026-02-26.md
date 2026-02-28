@@ -43,7 +43,7 @@ Implemented a focused index migration to remove remaining full scans / temp sort
 
 ## EXPLAIN QUERY PLAN Verification
 
-Executed before/after plan snapshots on fresh SQLite schemas built from migrations (before: `001..017`, after: `001..018`) using representative seed data.
+Executed before/after plan snapshots on fresh PostgreSQL schemas built from migrations (before: `001..017`, after: `001..018`) using representative seed data.
 
 ### Before
 

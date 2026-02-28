@@ -47,7 +47,7 @@ Implementing a full transcoder is a multi-year effort. Use FFmpeg as the heavy l
 ### Option A (recommended for *minimum languages*): Rust full-stack UI
 - **Backend:** Rust + Tokio + Axum
 - **Frontend:** **Leptos** (Rust → WASM) with SSR/hydration for a “modern app” feel
-- **DB:** SQLite (via SQLx)
+- **DB:** PostgreSQL (via SQLx)
 - **Media:** FFmpeg/ffprobe
 - **Packaging (optional):** Tauri (still Rust + WebView)
 
@@ -59,7 +59,7 @@ Implementing a full transcoder is a multi-year effort. Use FFmpeg as the heavy l
 ### Option B (if you want the biggest web ecosystem): Rust backend + Next.js UI
 - **Backend:** Rust + Tokio + Axum
 - **Frontend:** Next.js (TypeScript/React)
-- **DB:** SQLite (via SQLx)
+- **DB:** PostgreSQL (via SQLx)
 - **Media:** FFmpeg/ffprobe
 - **Packaging:** optional
 
@@ -79,12 +79,12 @@ Axum is built on Tokio + Hyper + Tower, and uses Tower middleware instead of inv
 
 **Problem prevented:** ad-hoc middleware spaghetti and inconsistent cross-cutting concerns.
 
-### 3.2 SQLx + SQLite (local database)
-SQLx provides async SQL with **compile-time checked queries** (when enabled) and supports SQLite.
+### 3.2 SQLx + PostgreSQL (local database)
+SQLx provides async SQL with **compile-time checked queries** (when enabled) and supports PostgreSQL.
 
 **Problem prevented:** “it compiles but the query is wrong” and runtime-only SQL failures.
 
-SQLite is perfect for local-first:
+PostgreSQL is perfect for local-first:
 - zero admin
 - single file
 - easy backups
@@ -120,7 +120,7 @@ Your Rustfin should support the same set by selecting FFmpeg arguments based on 
 │  ├───────────────┤           │
 │  │ Auth/Users     │  tokens  │
 │  ├───────────────┤           │
-│  │ Library Index  │  SQLite  │
+│  │ Library Index  │  PostgreSQL  │
 │  ├───────────────┤           │
 │  │ Streaming      │  Range/HLS│
 │  ├───────────────┤           │
@@ -142,7 +142,7 @@ Your Rustfin should support the same set by selecting FFmpeg arguments based on 
 ## 5) A pragmatic feature roadmap (build working slices)
 
 ### Phase 1: “Playable”
-- Scan folders → store media items in SQLite
+- Scan folders → store media items in PostgreSQL
 - Web UI lists items
 - Direct file streaming with HTTP Range requests (seek works)
 
@@ -191,7 +191,7 @@ web/
 
 ---
 
-## 7) Core data model (SQLite)
+## 7) Core data model (PostgreSQL)
 
 ### 7.1 Minimal schema
 ```sql
@@ -290,7 +290,7 @@ pub struct MediaItemRow {
 
 ### 8.1 Token approach
 For local-only:
-- Use **opaque bearer tokens** stored in SQLite (or in-memory with restart invalidation).
+- Use **opaque bearer tokens** stored in PostgreSQL (or in-memory with restart invalidation).
 - Hash passwords with **Argon2id**.
 
 **Problem prevented:** JWT complexity + key rotation + footguns, when you don’t need it.
@@ -746,7 +746,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs
 tower-http = { version = "0.6", features = ["trace", "compression-gzip", "cors"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "macros"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros"] }
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
@@ -785,7 +785,7 @@ If your goal is “a Rust Jellyfin-like system,” the clean approach is:
 
 ## 22) “Next action” checklist (practical)
 1) Create workspace + crates
-2) Implement SQLite schema + migrations
+2) Implement PostgreSQL schema + migrations
 3) Implement library scanning + media_items table population
 4) Implement **direct streaming with Range**
 5) Implement `ffprobe` caching

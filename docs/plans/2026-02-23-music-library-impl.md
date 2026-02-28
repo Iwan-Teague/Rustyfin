@@ -172,7 +172,7 @@ fn row_to_item_full(
 Replace the entire `get_children` function (lines 49–75) with:
 
 ```rust
-pub async fn get_children(pool: &SqlitePool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {
+pub async fn get_children(pool: &AnyPool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {
     let rows: Vec<(
         String,
         String,

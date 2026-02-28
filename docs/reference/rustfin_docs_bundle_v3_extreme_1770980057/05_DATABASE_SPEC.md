@@ -1,4 +1,4 @@
-# Database Specification (Extreme Expansion, SQLite)
+# Database Specification (Extreme Expansion, PostgreSQL)
 
 Goals:
 - fast browse queries

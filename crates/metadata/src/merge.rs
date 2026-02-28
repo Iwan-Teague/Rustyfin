@@ -224,8 +224,10 @@ mod tests {
 
     #[tokio::test]
     async fn merge_respects_locked_fields() {
-        let pool = rustfin_db::connect(":memory:").await.unwrap();
-        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Sqlite)
+        let target = std::env::var("RUSTFIN_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin_test".to_string());
+        let pool = rustfin_db::connect(&target).await.unwrap();
+        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Postgres)
             .await
             .unwrap();
 
@@ -275,8 +277,10 @@ mod tests {
 
     #[tokio::test]
     async fn provider_ids_crud() {
-        let pool = rustfin_db::connect(":memory:").await.unwrap();
-        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Sqlite)
+        let target = std::env::var("RUSTFIN_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin_test".to_string());
+        let pool = rustfin_db::connect(&target).await.unwrap();
+        rustfin_db::migrate::run(&pool, rustfin_db::DatabaseBackend::Postgres)
             .await
             .unwrap();
 

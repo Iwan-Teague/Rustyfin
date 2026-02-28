@@ -72,7 +72,7 @@ Impact:
 
 ## Query Plan Verification
 
-Validated with temporary SQLite DBs and `EXPLAIN QUERY PLAN`.
+Validated with temporary PostgreSQL DBs and `EXPLAIN QUERY PLAN`.
 
 Observed improvements:
 

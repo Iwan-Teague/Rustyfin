@@ -16,7 +16,7 @@ USER rustfin
 EXPOSE 8099
 
 ENV RUSTFIN_CALENDAR_BIND=0.0.0.0:8099
-ENV RUSTFIN_DB=/config/rustfin.db
+ENV RUSTFIN_DATABASE_URL=postgresql://rustfin:rustfin@postgres:5432/rustfin
 ENV RUSTFIN_AUTH_BASE_URL=http://rustfin:8096
 
 CMD ["rustfin-calendar"]

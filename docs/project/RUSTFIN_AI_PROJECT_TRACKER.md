@@ -8,7 +8,7 @@ Purpose: This document is written for an AI agent (and humans) to **structure th
 ---
 
 ## 0) Project identity (one paragraph)
-Rustfin is a **local-first** Jellyfin-class media server, implemented as a **single Rust server binary** with **SQLite** for storage, using **FFmpeg/ffprobe** for media probing/remux/transcoding, and a **single UI app** (either Rust/WASM or Next.js) talking to the server via a versioned HTTP API. Streaming supports **HTTP Range** (Direct Play) and **HLS** (adaptive; Transcode when required). Docker support is required.
+Rustfin is a **local-first** Jellyfin-class media server, implemented as a **single Rust server binary** with **PostgreSQL** for storage, using **FFmpeg/ffprobe** for media probing/remux/transcoding, and a **single UI app** (either Rust/WASM or Next.js) talking to the server via a versioned HTTP API. Streaming supports **HTTP Range** (Direct Play) and **HLS** (adaptive; Transcode when required). Docker support is required.
 
 ---
 
@@ -17,7 +17,7 @@ Rustfin is a **local-first** Jellyfin-class media server, implemented as a **sin
 ### 1.1 Stack constraints
 - **Backend language:** Rust (required).
 - **Server architecture:** **Modular monolith** (one server process). No microservice network.
-- **Database:** SQLite (required) using WAL mode.
+- **Database:** PostgreSQL (required) using WAL mode.
 - **Media engine:** FFmpeg + ffprobe (required). Do not attempt to implement codecs/containers.
 - **Client/UI:** Choose exactly **one**:
   - **Option A:** Rust/WASM (Leptos or equivalent)  
@@ -40,7 +40,7 @@ Rustfin must support:
 - Docker + persistent volumes + (optional) GPU support
 
 ### 1.3 “No surprises” rules
-- All config is **DB-first** (stored in SQLite). Do not require editing config files for normal use.
+- All config is **DB-first** (stored in PostgreSQL). Do not require editing config files for normal use.
 - Providers are optional and must be **visible** (no hidden network calls).
 - Every expensive task must be cancelable (jobs, transcodes).
 - Every feature needs an acceptance check (see checklists).
@@ -99,7 +99,7 @@ Maintain **exactly one** authoritative status table here.
 | Subsystem | Status | Notes (what’s done / what’s missing) | Last updated |
 |---|---:|---|---|
 | Repo skeleton + workspace | ✅ | Cargo workspace with core/db/server crates, rustfmt + clippy config | 2026-02-13 |
-| DB migrations + connection | ✅ | SQLite WAL mode, forward-only migration runner, all baseline tables | 2026-02-13 |
+| DB migrations + connection | ✅ | PostgreSQL WAL mode, forward-only migration runner, all baseline tables | 2026-02-13 |
 | Auth (login, tokens) | ✅ | POST /api/v1/auth/login with Argon2 + JWT, Bearer auth extractor | 2026-02-13 |
 | Users + roles + prefs | ✅ | Admin bootstrap, GET /users/me, GET/PATCH preferences, POST/GET /users (admin create+list), DELETE /users/{id} | 2026-02-14 |
 | Libraries CRUD | ✅ | POST/GET/PATCH /libraries, paths, item counts, admin-only guards | 2026-02-13 |
@@ -132,7 +132,7 @@ Maintain **exactly one** authoritative status table here.
 After each meaningful change, append a bullet to this section:
 
 #### Implementation Log
-- (2026-02-13) [Milestone 0] Repo skeleton + health + DB + auth — Cargo workspace (core/db/server), domain types, ApiError envelope, SQLite WAL + migrations, Argon2 auth + JWT, admin bootstrap, health/login/users/prefs endpoints. 7 integration tests.
+- (2026-02-13) [Milestone 0] Repo skeleton + health + DB + auth — Cargo workspace (core/db/server), domain types, ApiError envelope, PostgreSQL WAL + migrations, Argon2 auth + JWT, admin bootstrap, health/login/users/prefs endpoints. 7 integration tests.
 - (2026-02-13) [Milestone 1] Libraries CRUD + Jobs queue — DB repos for libraries and jobs. AdminUser extractor (403 for non-admins). POST/GET /libraries, GET/PATCH /libraries/{id}, POST /libraries/{id}/scan, GET/cancel /jobs. 6 new integration tests.
 - (2026-02-13) [Milestone 2] Scanner + item graph — Created scanner crate with filename parser (movies: Title (Year), TV: SxxExx/1x02/Season X Episode Y, specials S00), filesystem walker (ignore patterns, video-only), scan engine (walk→parse→DB items+files). Items repo for browse (get, children, library items). Server routes: GET /libraries/{id}/items, GET /items/{id}, GET /items/{id}/children. Scan runs in background via tokio::spawn with job status tracking. 12 parser unit tests + 3 scan integration tests. Files: crates/scanner/*, crates/db/src/repo/items.rs, crates/server/src/routes.rs. Follow-up: Range streaming (Milestone 5).
 - (2026-02-13) [Milestone 4] Range streaming (Direct Play) — RFC 7233-compliant Range handler: supports bytes=start-end, start-, -suffix; returns 206 Partial Content with Content-Range header; 416 for invalid ranges. Path traversal protection via canonicalization + library root checks. Content-type detection from extension. Route: GET /stream/file/{file_id}. 7 unit tests + 1 integration test. Files: crates/server/src/streaming.rs, crates/db/src/repo/media_files.rs.

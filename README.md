@@ -2,7 +2,7 @@
 
 Rustyfin is a local-first home server platform for media playback, live rooms, channels, and calendar planning.
 
-It combines a Rust backend (Axum + SQLite), a Next.js UI, and a Docker-first runtime that works on one device or across your LAN.
+It combines a Rust backend (Axum + PostgreSQL), a Next.js UI, and a Docker-first runtime that works on one device or across your LAN.
 
 ## Recommended Host OS
 
@@ -58,7 +58,7 @@ Rustyfin runs as a multi-service stack in Docker Compose:
   - Persistent data volume managed by compose.
 - `rustfin` (Rust backend API)
   - Axum REST/WebSocket server.
-  - DB-backend abstraction via SQLx AnyPool (SQLite and PostgreSQL).
+  - DB layer targets PostgreSQL for runtime.
   - Default migration authority (`RUSTFIN_RUN_MIGRATIONS=true`).
 - `rustfin-calendar` (Rust calendar API)
   - Dedicated calendar microservice.
@@ -174,8 +174,7 @@ If default ports are occupied, it picks free ports.
 
 Common runtime variables:
 
-- `RUSTFIN_DATABASE_URL` (preferred database target; accepts `sqlite:` URLs/paths and `postgres://` URLs)
-- `RUSTFIN_DB` (legacy SQLite DB path fallback)
+- `RUSTFIN_DATABASE_URL` (required PostgreSQL target; `postgres://` or `postgresql://`)
 - `RUSTFIN_RUN_MIGRATIONS` (`true`/`false`; default `true` for backend)
 - `RUSTFIN_CALENDAR_RUN_MIGRATIONS` (compose default: `false`)
 - `RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS` (compose default: `false`)
@@ -225,15 +224,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 ```
 
-Database transition note:
+Database note:
 
-- `crates/db/migrations/` remains the active SQLite migration set.
-- `crates/db/migrations_pg/` is the PostgreSQL migration track introduced for transition work.
-- Docker runtime now defaults to PostgreSQL via compose + `start.sh`.
-- SQLite remains supported for legacy/dev targets via explicit `RUSTFIN_DATABASE_URL` or `RUSTFIN_DB`.
-- SQLite-to-PostgreSQL migration helpers:
-  - `scripts/db/migrate_sqlite_to_postgres.sh`
-  - `scripts/db/validate_sqlite_postgres_counts.sh`
+- Docker runtime is PostgreSQL-only via compose + `start.sh`.
+- PostgreSQL migrations are in `crates/db/migrations_pg/`.
 - Operational cutover document:
   - `docs/reports/postgres-cutover-runbook.md`
 

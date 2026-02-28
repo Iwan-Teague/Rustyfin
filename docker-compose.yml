@@ -42,7 +42,7 @@ services:
       - RUSTFIN_YOUTUBE_AGENT_TOKEN=${RUSTFIN_YOUTUBE_AGENT_TOKEN:-}
       - RUSTFIN_TRANSCRIPTION_AGENT_URL=${RUSTFIN_TRANSCRIPTION_AGENT_URL:-http://rustfin-transcription-agent:8102}
       - RUSTFIN_TRANSCRIPTION_AGENT_TOKEN=${RUSTFIN_TRANSCRIPTION_AGENT_TOKEN:-}
-      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-postgresql://rustfin:rustfin@postgres:5432/rustfin}
       - RUSTFIN_YOUTUBE_COOKIE=${RUSTFIN_YOUTUBE_COOKIE:-}
       - RUSTFIN_DIRECTORY_PICKER_HELPER_URL=${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-http://host.docker.internal:43110/pick}
       - RUSTFIN_MEDIA_HOST_PATH=${RUSTFIN_MEDIA_PATH:-./media}
@@ -74,9 +74,8 @@ services:
         NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
-      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-postgresql://rustfin:rustfin@postgres:5432/rustfin}
       - RUSTFIN_TMDB_AGENT_BIND=0.0.0.0:8100
-      - RUSTFIN_DB=/config/rustfin.db
       - RUSTFIN_CACHE_DIR=/cache
       - RUSTFIN_TMDB_KEY=${RUSTFIN_TMDB_KEY:-}
       - RUSTFIN_TMDB_AGENT_TOKEN=${RUSTFIN_TMDB_AGENT_TOKEN:-}
@@ -167,9 +166,8 @@ services:
         NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     environment:
       - RUST_LOG=info
-      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-}
+      - RUSTFIN_DATABASE_URL=${RUSTFIN_DATABASE_URL:-postgresql://rustfin:rustfin@postgres:5432/rustfin}
       - RUSTFIN_CALENDAR_BIND=0.0.0.0:8099
-      - RUSTFIN_DB=/config/rustfin.db
       - RUSTFIN_AUTH_BASE_URL=http://rustfin:8096
       - RUSTFIN_RUN_MIGRATIONS=${RUSTFIN_CALENDAR_RUN_MIGRATIONS:-false}
     volumes:

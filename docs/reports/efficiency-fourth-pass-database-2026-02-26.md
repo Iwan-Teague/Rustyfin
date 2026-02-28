@@ -82,7 +82,7 @@ Details:
 
 ## Query Plan Verification
 
-Validated with temporary SQLite DBs using `EXPLAIN QUERY PLAN`.
+Validated with temporary PostgreSQL DBs using `EXPLAIN QUERY PLAN`.
 
 Key observations:
 
@@ -90,7 +90,7 @@ Key observations:
 - Post-FTS online search:
   - uses room ordering index + FTS virtual table match path.
 - Online by-IDs fetch:
-  - uses primary key lookup (`sqlite_autoindex_watch_party_online_audio_track_1`).
+  - uses primary key lookup on the track table primary index.
 - Local duration subquery continues using `idx_episode_file_map_episode_created` from prior pass.
 
 ## Validation Run

@@ -53,7 +53,7 @@ This document does two things:
                      ┌─────────────────────────┐
                      │  Persistent state       │
                      │  - Config files         │
-                     │  - SQLite DB (EF Core)  │
+                     │  - PostgreSQL DB (EF Core)  │
                      │  - Metadata cache       │
                      │  - Transcode cache      │
                      └─────────────────────────┘
@@ -97,7 +97,7 @@ Clone-friendly layout:
 
 ```
 /var/lib/myfin/          # data: authoritative state
-  db.sqlite3
+  db.psql
   library/
   metadata/
 
@@ -116,7 +116,7 @@ Clone-friendly layout:
 
 ## Database + entities
 
-Jellyfin uses **SQLite via Entity Framework Core**. Think of it as two main worlds:
+Jellyfin uses **PostgreSQL via Entity Framework Core**. Think of it as two main worlds:
 
 1) **Library entities** (movies/episodes/tracks, plus stream info, chapters, images, etc.)
 2) **Account/session entities** (users, API keys, devices, user data like playback progress)

@@ -166,7 +166,7 @@ Evidence:
 
 Improvement:
 - Return constructed row in-process when safe.
-- Where needed, use `RETURNING` (SQLite >= 3.35) with fallback strategy.
+- Where needed, use `RETURNING` (PostgreSQL >= 3.35) with fallback strategy.
 
 Benefit:
 - Fewer DB round trips in high-frequency paths.

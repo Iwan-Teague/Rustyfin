@@ -9,7 +9,7 @@ trap 'stop_services "${RUN_DIR}"' EXIT
 
 log_info "Run dir: ${RUN_DIR}"
 PICKER="$(absolute_fixture_path)"
-DB="${RUN_DIR}/tmp/rustfin_picker.db"
+DB="${RUSTFIN_TEST_DATABASE_URL:-postgresql://rustfin:rustfin.0.0.1:5432/rustfin_test}"
 
 start_server "${RUN_DIR}" "${DB}" "${PICKER}"
 start_ui "${RUN_DIR}"

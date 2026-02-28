@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -655,9 +655,13 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "/config/rustfin.db".into())
-        });
+        .unwrap_or_else(|| "postgresql://rustfin:rustfin@postgres:5432/rustfin".to_string());
+    let db_target_lc = db_target.to_ascii_lowercase();
+    if !db_target_lc.starts_with("postgres://") && !db_target_lc.starts_with("postgresql://") {
+        bail!(
+            "RUSTFIN_DATABASE_URL must be a PostgreSQL URL (postgres:// or postgresql://); non-PostgreSQL targets are not supported"
+        );
+    }
     let cache_dir = std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".into());
 
     let image_root = PathBuf::from(cache_dir);
@@ -667,7 +671,7 @@ async fn main() -> anyhow::Result<()> {
     let pool = rustfin_db::connect(&db_target)
         .await
         .context("failed to connect to db")?;
-    let db_backend = rustfin_db::detect_backend(&db_target);
+    let db_backend = rustfin_db::DatabaseBackend::Postgres;
     let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
         .ok()
         .map(|raw| {
@@ -677,11 +681,6 @@ async fn main() -> anyhow::Result<()> {
             )
         })
         .unwrap_or(true);
-    if db_backend == rustfin_db::DatabaseBackend::Postgres {
-        warn!(
-            "PostgreSQL backend is experimental in this transition phase; SQLite-oriented query paths may still require follow-up conversion."
-        );
-    }
     if run_migrations {
         rustfin_db::migrate::run(&pool, db_backend)
             .await
