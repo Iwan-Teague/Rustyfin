@@ -229,31 +229,15 @@ export function useRoomPlayback({
         sessionIdRef.current = session.session_id;
         setMode('hls');
 
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = session.hls_url;
-          video.load();
-          await waitForVideoMetadata(video);
-          if (roomState) {
-            await applyRemoteState(roomState);
-          } else if (options.autoplayWhenNoState ?? true) {
-            ensureAudibleVideo(video);
-            await video.play().catch(() => {});
-          } else {
-            video.pause();
-            try {
-              if (video.currentTime !== 0) {
-                video.currentTime = 0;
-              }
-            } catch {
-              // Some browsers may block programmatic seek before enough data is ready.
-            }
-          }
-        } else {
-          const Hls = (await import('hls.js')).default;
-          if (!Hls.isSupported()) {
-            throw new Error('HLS is not supported in this browser');
-          }
-          const hls = new Hls();
+        const Hls = (await import('hls.js')).default;
+        const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+
+        // Prefer hls.js whenever possible; browser canPlayType() is not reliable for HLS support.
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+          });
           hlsRef.current = hls;
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             if (roomState) {
@@ -279,6 +263,27 @@ export function useRoomPlayback({
           });
           hls.attachMedia(video);
           hls.loadSource(session.hls_url);
+        } else if (canNativeHls) {
+          video.src = session.hls_url;
+          video.load();
+          await waitForVideoMetadata(video);
+          if (roomState) {
+            await applyRemoteState(roomState);
+          } else if (options.autoplayWhenNoState ?? true) {
+            ensureAudibleVideo(video);
+            await video.play().catch(() => {});
+          } else {
+            video.pause();
+            try {
+              if (video.currentTime !== 0) {
+                video.currentTime = 0;
+              }
+            } catch {
+              // Some browsers may block programmatic seek before enough data is ready.
+            }
+          }
+        } else {
+          throw new Error('HLS is not supported in this browser');
         }
         return true;
       } catch (err: unknown) {
