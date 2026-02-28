@@ -80,6 +80,7 @@ impl SessionManager {
         &self,
         input_path: PathBuf,
         start_time_secs: Option<f64>,
+        target_height: Option<u32>,
         video_codec_override: Option<&str>,
         owner_user_id: String,
         file_id: String,
@@ -101,6 +102,7 @@ impl SessionManager {
             &output_dir,
             self.config.segment_secs,
             start_time_secs,
+            target_height,
             video_codec_override,
             self.config.hw_accel.as_ref(),
         )
@@ -234,13 +236,20 @@ async fn spawn_ffmpeg(
     output_dir: &Path,
     segment_secs: u32,
     start_time: Option<f64>,
+    target_height: Option<u32>,
     video_codec_override: Option<&str>,
     hw_accel: Option<&HwAccel>,
 ) -> Result<Child, TranscodeError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
+    let disable_hw_pipeline_for_scaling = target_height.is_some();
+    let active_hw_accel = if disable_hw_pipeline_for_scaling {
+        None
+    } else {
+        hw_accel
+    };
 
     // HW accel input flags
-    if let Some(hw) = hw_accel {
+    if let Some(hw) = active_hw_accel {
         match hw {
             HwAccel::Nvenc => {
                 args.extend(["-hwaccel".into(), "cuda".into()]);
@@ -272,10 +281,15 @@ async fn spawn_ffmpeg(
     // Input
     args.extend(["-i".into(), input.to_string_lossy().into_owned()]);
 
+    if let Some(height) = target_height {
+        // Downscale only when the source exceeds the requested height.
+        args.extend(["-vf".into(), format!("scale=-2:min(ih\\,{height})")]);
+    }
+
     // Video codec
     let vcodec = if let Some(vc) = video_codec_override {
         vc.to_string()
-    } else if let Some(hw) = hw_accel {
+    } else if let Some(hw) = active_hw_accel {
         match hw {
             HwAccel::Nvenc => "h264_nvenc".into(),
             HwAccel::Vaapi => "h264_vaapi".into(),
@@ -289,7 +303,7 @@ async fn spawn_ffmpeg(
     args.extend(["-c:v".into(), vcodec]);
 
     // Video encoding params for software encode
-    if hw_accel.is_none() && video_codec_override.is_none() {
+    if active_hw_accel.is_none() && video_codec_override.is_none() {
         args.extend([
             "-preset".into(),
             "veryfast".into(),
