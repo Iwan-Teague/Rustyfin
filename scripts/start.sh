@@ -407,7 +407,6 @@ user_backend_port="${RUSTFIN_BACKEND_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
 user_database_url="${RUSTFIN_DATABASE_URL:-}"
-user_legacy_db_path="${RUSTFIN_DB:-}"
 user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
 user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 user_youtube_cookie="${RUSTFIN_YOUTUBE_COOKIE:-}"
@@ -540,26 +539,20 @@ export RUSTFIN_MEDIA_PATH="$MEDIA_PATH"
 
 # Database target defaulting:
 # - Prefer explicit RUSTFIN_DATABASE_URL.
-# - If legacy RUSTFIN_DB is explicitly set, keep SQLite path behavior.
 # - Otherwise default to local Postgres service in docker-compose.
 if [[ -z "${RUSTFIN_DATABASE_URL:-}" ]]; then
-  if [[ -n "$user_legacy_db_path" ]]; then
-    export RUSTFIN_DATABASE_URL="$user_legacy_db_path"
-  else
-    pg_user="${RUSTFIN_PG_USER:-rustfin}"
-    pg_password="${RUSTFIN_PG_PASSWORD:-rustfin}"
-    pg_db="${RUSTFIN_PG_DB:-rustfin}"
-    export RUSTFIN_DATABASE_URL="postgresql://${pg_user}:${pg_password}@postgres:5432/${pg_db}"
-  fi
+  pg_user="${RUSTFIN_PG_USER:-rustfin}"
+  pg_password="${RUSTFIN_PG_PASSWORD:-rustfin}"
+  pg_db="${RUSTFIN_PG_DB:-rustfin}"
+  export RUSTFIN_DATABASE_URL="postgresql://${pg_user}:${pg_password}@postgres:5432/${pg_db}"
 fi
 
-db_target_log="$RUSTFIN_DATABASE_URL"
-db_mode="sqlite"
 db_target_lc="$(printf '%s' "$RUSTFIN_DATABASE_URL" | tr '[:upper:]' '[:lower:]')"
-if [[ "$db_target_lc" == postgres://* || "$db_target_lc" == postgresql://* ]]; then
-  db_mode="postgres"
-  db_target_log="$(printf '%s' "$RUSTFIN_DATABASE_URL" | sed -E 's#(postgres(ql)?://)[^@/]+@#\1<redacted>@#')"
+if [[ "$db_target_lc" != postgres://* && "$db_target_lc" != postgresql://* ]]; then
+  die "RUSTFIN_DATABASE_URL must be a PostgreSQL URL (postgres:// or postgresql://). non-PostgreSQL targets are not supported."
 fi
+db_mode="postgres"
+db_target_log="$(printf '%s' "$RUSTFIN_DATABASE_URL" | sed -E 's#(postgres(ql)?://)[^@/]+@#\1<redacted>@#')"
 
 PICKER_HELPER_PORT="${RUSTFIN_PICKER_HELPER_PORT:-43110}"
 PICKER_HELPER_HOST="${RUSTFIN_PICKER_HELPER_HOST:-0.0.0.0}"

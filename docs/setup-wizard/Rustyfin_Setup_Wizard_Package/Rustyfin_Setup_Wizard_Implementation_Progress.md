@@ -30,7 +30,7 @@ This tracker is meant for an AI implementer **and** humans. It is intentionally 
 
 ### 1.2 Engineering constraints
 - Backend is Rust (Axum + Tower). Rate limiting MUST be implementable cleanly as a **Tower layer**.
-- Keep the existing architectural style: modular monolith, SQLite via `sqlx`, JWT auth.
+- Keep the existing architectural style: modular monolith, PostgreSQL via `sqlx`, JWT auth.
 - Avoid adding new “system binaries” as dependencies or workarounds.
 - All network/API behavior MUST match the OpenAPI YAML.
 
@@ -140,7 +140,7 @@ Legend: ⬜ not started, 🟧 in progress, ✅ done, 🟥 blocked
 - [x] Confirm the implementer has these files locally and will not improvise contracts:
   - `Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md`
   - `rustyfin-setup-wizard.openapi.yaml`
-- [x] Confirm backend stack: Axum + Tower, SQLite via sqlx, JWT auth (already in repo).
+- [x] Confirm backend stack: Axum + Tower, PostgreSQL via sqlx, JWT auth (already in repo).
 - [x] Decide rate limiting crate:
   - Used custom in-memory rate limiter (lighter than tower-governor; same 429 error body).
 

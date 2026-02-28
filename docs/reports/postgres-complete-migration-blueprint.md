@@ -1,11 +1,11 @@
-# Rustyfin SQLite -> PostgreSQL Complete Migration Blueprint
+# Rustyfin PostgreSQL -> PostgreSQL Complete Migration Blueprint
 
 Date: 2026-02-26  
 Owner: Platform / Backend
 
 ## 1) Goal
 
-Migrate Rustyfin from SQLite to PostgreSQL as the primary and only production database, including:
+Migrate Rustyfin from PostgreSQL to PostgreSQL as the primary and only production database, including:
 
 - Backend API (`crates/server`)
 - Calendar service (`crates/calendar`)
@@ -20,22 +20,22 @@ This is a full migration plan, not a partial compatibility patch.
 
 ### Verified coupling points
 
-- Workspace SQLx is SQLite-only today:
-  - `Cargo.toml` has `sqlx = { ..., features = ["runtime-tokio", "sqlite"] }`
-- Core pool type is SQLite:
-  - `crates/db/src/lib.rs` returns `SqlitePool`
-  - `crates/server/src/state.rs` stores `SqlitePool`
-  - `crates/calendar/src/main.rs` and `crates/tmdb-agent/src/main.rs` use `SqlitePool`
-- Migration runner is custom + SQLite-specific:
+- Workspace SQLx is PostgreSQL-only today:
+  - `Cargo.toml` has `sqlx = { ..., features = ["runtime-tokio", "postgres"] }`
+- Core pool type is PostgreSQL:
+  - `crates/db/src/lib.rs` returns `AnyPool`
+  - `crates/server/src/state.rs` stores `AnyPool`
+  - `crates/calendar/src/main.rs` and `crates/tmdb-agent/src/main.rs` use `AnyPool`
+- Migration runner is custom + PostgreSQL-specific:
   - `crates/db/src/migrate.rs`
   - Runs split SQL statements and relies on PRAGMA behavior
-- SQLite-specific SQL exists in schema/migrations:
+- PostgreSQL-specific SQL exists in schema/migrations:
   - `PRAGMA ...`
   - `INSERT OR IGNORE`
   - `json_extract(...)`
   - FTS5 virtual table (`CREATE VIRTUAL TABLE ... USING fts5`)
 - Runtime wiring uses file DB path:
-  - `RUSTFIN_DB=/config/rustfin.db` in compose/runtime
+  - `RUSTFIN_DATABASE_URL=/config/rustfin.db` in compose/runtime
 - Cleanup scripts delete `rustfin.db`, `rustfin.db-wal`, `rustfin.db-shm`.
 
 ### Important pre-existing issue to fix first
@@ -49,16 +49,16 @@ Use a **phased cutover**:
 
 1. Build Postgres-capable code path.
 2. Add Postgres schema/migrations.
-3. Bulk copy SQLite data -> Postgres.
+3. Bulk copy PostgreSQL data -> Postgres.
 4. Freeze writes, run delta sync, cut over all services to Postgres.
-5. Keep SQLite snapshot for rollback window.
+5. Keep PostgreSQL snapshot for rollback window.
 
 Avoid long-lived dual-write unless absolutely needed; it adds complexity and drift risk.
 
 ## 4) Target Architecture
 
 - Add PostgreSQL service in compose (`postgres:16` or `15`).
-- Replace `RUSTFIN_DB` (file path) with DSN-based config:
+- Replace `RUSTFIN_DATABASE_URL` (file path) with DSN-based config:
   - `RUSTFIN_DATABASE_URL=postgres://...`
 - Single migration authority:
   - One service or startup phase runs migrations.
@@ -74,7 +74,7 @@ Avoid long-lived dual-write unless absolutely needed; it adds complexity and dri
 1. Update SQLx features in root `Cargo.toml`:
    - Add `postgres`, `macros`, and migrate support as needed.
 2. In `crates/db/src/lib.rs`:
-   - Replace SQLite connect options with `PgConnectOptions`/`PgPoolOptions`.
+   - Replace PostgreSQL connect options with `PgConnectOptions`/`PgPoolOptions`.
    - Rename input config from `db_path` to `database_url`.
 3. Introduce central DB type aliases in `crates/db`:
    - `pub type DbPool = sqlx::PgPool;`
@@ -90,7 +90,7 @@ Avoid long-lived dual-write unless absolutely needed; it adds complexity and dri
 
 1. Replace manual migration runner in `crates/db/src/migrate.rs` with SQLx migrator:
    - `sqlx::migrate!` against a Postgres migration directory.
-2. Convert existing SQLite migrations into Postgres-safe migrations.
+2. Convert existing PostgreSQL migrations into Postgres-safe migrations.
 3. Include missing migration 023 logic in the new migration set.
 4. Add migration locking strategy:
    - Prefer one migration runner service.
@@ -101,7 +101,7 @@ Avoid long-lived dual-write unless absolutely needed; it adds complexity and dri
 - Current runner depends on `PRAGMA` and split-on-semicolon behavior.
 - Multi-service startup currently tries migrations from multiple processes.
 
-## 5.3 Schema conversion (SQLite -> PostgreSQL)
+## 5.3 Schema conversion (PostgreSQL -> PostgreSQL)
 
 Map and update schema patterns:
 
@@ -118,7 +118,7 @@ Map and update schema patterns:
 
 ## 5.4 SQL query rewrite across repo
 
-Current SQL is SQLite-style with `?` bind placeholders. PostgreSQL requires `$1`, `$2`, ...
+Current SQL is PostgreSQL-style with `?` bind placeholders. PostgreSQL requires `$1`, `$2`, ...
 
 ### Required rewrite scope
 
@@ -140,7 +140,7 @@ Current SQL is SQLite-style with `?` bind placeholders. PostgreSQL requires `$1`
 
 ## 5.5 FTS migration (critical)
 
-Current online-audio search relies on SQLite FTS5:
+Current online-audio search relies on PostgreSQL FTS5:
 
 - Migration file: `crates/db/migrations/020_online_audio_search_fts.sql`
 - Table: `watch_party_online_audio_track_fts`
@@ -169,7 +169,7 @@ Option B:
    - `rustfin`
    - `rustfin-calendar`
    - `rustfin-tmdb-agent`
-3. Remove SQLite file-path assumptions.
+3. Remove PostgreSQL file-path assumptions.
 
 ### scripts
 
@@ -181,7 +181,7 @@ Update:
 
 Concrete updates:
 - Add PG health wait (`pg_isready` or TCP + SQL probe).
-- Remove direct SQLite file deletion logic.
+- Remove direct PostgreSQL file deletion logic.
 - On clean install, drop/reset PG volume/schema instead.
 
 ## 5.7 Service startup and migration ordering
@@ -195,10 +195,10 @@ Recommended:
 
 ## 5.8 Test strategy migration
 
-Current tests depend on SQLite behavior:
+Current tests depend on PostgreSQL behavior:
 
 - `crates/server/tests/integration.rs` uses `:memory:` DB.
-- `tests/lib/harness.sh` exports file-based `RUSTFIN_DB`.
+- `tests/lib/harness.sh` exports file-based `RUSTFIN_DATABASE_URL`.
 
 ### Replace with
 
@@ -208,13 +208,13 @@ Current tests depend on SQLite behavior:
   - migrations up/down or forward-only validation
   - integration tests against Postgres
 
-## 5.9 Data migration (SQLite -> PG)
+## 5.9 Data migration (PostgreSQL -> PG)
 
 ## Step-by-step
 
-1. Freeze version and take SQLite snapshot.
+1. Freeze version and take PostgreSQL snapshot.
 2. Create PG schema via new migrations.
-3. Export SQLite data in deterministic table order.
+3. Export PostgreSQL data in deterministic table order.
 4. Import into PG with FK-safe ordering.
 5. Run post-import fixups:
    - sequence alignment (if sequences used)
@@ -238,11 +238,11 @@ Current tests depend on SQLite behavior:
 
 Rollback must be scripted before cutover:
 
-1. Keep SQLite DB snapshot immutable.
+1. Keep PostgreSQL DB snapshot immutable.
 2. During cutover, maintain change log of writes applied to PG.
 3. If rollback triggered:
    - Stop all services
-   - Restore old runtime config to SQLite mode
+   - Restore old runtime config to PostgreSQL mode
    - Restart on snapshot
 
 Define hard rollback window (for example 24-72h).
@@ -283,8 +283,8 @@ Define hard rollback window (for example 24-72h).
 
 ## 8) Acceptance Criteria (Done Definition)
 
-- No crate imports `sqlx::SqlitePool`.
-- No SQLite-specific SQL remains in runtime path.
+- No crate imports `sqlx::AnyPool`.
+- No PostgreSQL-specific SQL remains in runtime path.
 - All migrations are Postgres and applied via unified migrator.
 - Compose defaults to Postgres.
 - Start/stop/clean scripts support Postgres lifecycle.
@@ -293,8 +293,8 @@ Define hard rollback window (for example 24-72h).
 
 ## 9) Risks and Mitigations
 
-1. **Hidden SQLite syntax left behind**
-   - Mitigation: grep gates in CI for `SqlitePool`, `PRAGMA`, `INSERT OR IGNORE`, `?` placeholders in SQL strings.
+1. **Hidden PostgreSQL syntax left behind**
+   - Mitigation: grep gates in CI for `AnyPool`, `PRAGMA`, `INSERT OR IGNORE`, `?` placeholders in SQL strings.
 2. **Migration race on startup**
    - Mitigation: single migration authority + health dependency ordering.
 3. **Search regressions from FTS migration**

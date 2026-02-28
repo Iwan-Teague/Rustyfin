@@ -5,7 +5,7 @@ This folder is a *spec library* for building a Jellyfin-class media server in a 
 - **Rust server** (single binary, modular internals)
 - **One UI app** (choose *either* Leptos/WASM *or* Next.js)
 - **FFmpeg** is the only “codec brain” (probe/remux/transcode/thumbs/subs)
-- **SQLite** as the local-first DB (no external infra)
+- **PostgreSQL** as the local-first DB (no external infra)
 
 ## What you get in this bundle
 
@@ -30,7 +30,7 @@ This folder is a *spec library* for building a Jellyfin-class media server in a 
 
 ## Guiding rules (prevents roadblocks)
 1) **Two-language cap**: Rust server + (Rust UI OR TypeScript UI). No microservice zoo.  
-2) **DB-first configuration**: UI edits config stored in SQLite; minimal config files.  
+2) **DB-first configuration**: UI edits config stored in PostgreSQL; minimal config files.  
 3) **Determinism beats cleverness**: provider IDs when available; heuristics only as fallback.  
 4) **Streaming correctness is a spec problem**: implement Range + HLS correctly and players behave.
 

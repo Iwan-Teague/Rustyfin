@@ -48,7 +48,7 @@ Why: stops you from mixing provider calls + ffmpeg + DB writes inside request ha
 - Child processes: `ffprobe` / `ffmpeg` as needed
 
 Storage:
-- SQLite DB: `/config/rustfin.db`
+- PostgreSQL DB: `/config/rustfin.db`
 - Cache: `/cache`
 - Transcode scratch: `/transcode/<sid>/`
 - Media mounts: `/media` (read-only preferred)

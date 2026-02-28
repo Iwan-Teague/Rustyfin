@@ -67,7 +67,7 @@ is_postgres_target() {
 }
 
 resolve_test_database_target() {
-  local sqlite_fallback_path="$1"
+  local default_postgres_url="$1"
   if [[ -n "${RUSTFIN_TEST_DATABASE_URL:-}" ]]; then
     printf '%s' "${RUSTFIN_TEST_DATABASE_URL}"
     return
@@ -76,7 +76,7 @@ resolve_test_database_target() {
     printf '%s' "${RUSTFIN_DATABASE_URL}"
     return
   fi
-  printf '%s' "${sqlite_fallback_path}"
+  printf '%s' "${default_postgres_url}"
 }
 
 start_server() {
@@ -90,16 +90,11 @@ start_server() {
 
   local db_target
   db_target="$(resolve_test_database_target "${db_path}")"
-  if is_postgres_target "$db_target"; then
-    log_info "Starting backend (rustfin-server) with PostgreSQL test target ..."
-  else
-    log_info "Starting backend (rustfin-server) with SQLite test target ..."
-  fi
+  log_info "Starting backend (rustfin-server) with PostgreSQL test target ..."
 
   (
     cd "${REPO_ROOT}"
     export RUSTFIN_DATABASE_URL="${db_target}"
-    unset RUSTFIN_DB
     export RUSTFIN_BIND="${TEST_BACKEND_BIND}"
     export RUSTFIN_JWT_SECRET="rustyfin_test_secret"
     export RUSTFIN_CACHE_DIR="${run_dir}/tmp/cache"

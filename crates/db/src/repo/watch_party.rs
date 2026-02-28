@@ -1033,21 +1033,6 @@ fn search_tokens(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn build_fts_prefix_query(raw: &str) -> Option<String> {
-    let tokens = search_tokens(raw);
-    if tokens.is_empty() {
-        return None;
-    }
-
-    Some(
-        tokens
-            .into_iter()
-            .map(|term| format!("{term}*"))
-            .collect::<Vec<_>>()
-            .join(" AND "),
-    )
-}
-
 fn build_pg_prefix_tsquery(raw: &str) -> Option<String> {
     let tokens = search_tokens(raw);
     if tokens.is_empty() {
@@ -1171,68 +1156,45 @@ pub async fn list_online_audio_tracks(
 ) -> Result<Vec<OnlineAudioTrackRow>, sqlx::Error> {
     let limit = limit.max(1);
     let search = query.map(str::trim).filter(|s| !s.is_empty());
-    let backend = crate::active_backend().unwrap_or(crate::DatabaseBackend::Sqlite);
 
     let rows: Vec<OnlineAudioTrackTuple> = if let Some(search) = search {
-        if backend == crate::DatabaseBackend::Postgres {
-            if let Some(ts_query) = build_pg_prefix_tsquery(search) {
-                sqlx::query_as(
-                    "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
-                     FROM watch_party_online_audio_track t \
-                     JOIN watch_party_online_audio_track_fts f \
-                       ON f.track_id = t.id \
-                      AND f.room_id = t.room_id \
-                     WHERE t.room_id = $1 \
-                       AND to_tsvector('simple', COALESCE(f.title, '') || ' ' || COALESCE(f.channel, '')) @@ to_tsquery('simple', $2) \
-                     ORDER BY t.created_ts DESC, t.updated_ts DESC \
-                     LIMIT $3 OFFSET $4",
-                )
-                .bind(room_id)
-                .bind(ts_query)
-                .bind(limit as i64)
-                .bind(offset as i64)
-                .fetch_all(pool)
-                .await?
-            } else {
-                let search = format!("%{}%", search.to_lowercase());
-                sqlx::query_as(
-                    "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
-                     FROM watch_party_online_audio_track t \
-                     JOIN watch_party_online_audio_track_fts f \
-                       ON f.track_id = t.id \
-                      AND f.room_id = t.room_id \
-                     WHERE t.room_id = $1 \
-                       AND (LOWER(f.title) LIKE $2 OR LOWER(f.channel) LIKE $2) \
-                     ORDER BY t.created_ts DESC, t.updated_ts DESC \
-                     LIMIT $3 OFFSET $4",
-                )
-                .bind(room_id)
-                .bind(search)
-                .bind(limit as i64)
-                .bind(offset as i64)
-                .fetch_all(pool)
-                .await?
-            }
-        } else if let Some(fts_query) = build_fts_prefix_query(search) {
+        if let Some(ts_query) = build_pg_prefix_tsquery(search) {
             sqlx::query_as(
                 "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
                  FROM watch_party_online_audio_track t \
-                 JOIN watch_party_online_audio_track_fts \
-                   ON watch_party_online_audio_track_fts.track_id = t.id \
-                  AND watch_party_online_audio_track_fts.room_id = t.room_id \
+                 JOIN watch_party_online_audio_track_fts f \
+                   ON f.track_id = t.id \
+                  AND f.room_id = t.room_id \
                  WHERE t.room_id = $1 \
-                   AND watch_party_online_audio_track_fts MATCH $2 \
+                   AND to_tsvector('simple', COALESCE(f.title, '') || ' ' || COALESCE(f.channel, '')) @@ to_tsquery('simple', $2) \
                  ORDER BY t.created_ts DESC, t.updated_ts DESC \
                  LIMIT $3 OFFSET $4",
             )
             .bind(room_id)
-            .bind(fts_query)
+            .bind(ts_query)
             .bind(limit as i64)
             .bind(offset as i64)
             .fetch_all(pool)
             .await?
         } else {
-            Vec::new()
+            let search = format!("%{}%", search.to_lowercase());
+            sqlx::query_as(
+                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
+                 FROM watch_party_online_audio_track t \
+                 JOIN watch_party_online_audio_track_fts f \
+                   ON f.track_id = t.id \
+                  AND f.room_id = t.room_id \
+                 WHERE t.room_id = $1 \
+                   AND (LOWER(f.title) LIKE $2 OR LOWER(f.channel) LIKE $2) \
+                 ORDER BY t.created_ts DESC, t.updated_ts DESC \
+                 LIMIT $3 OFFSET $4",
+            )
+            .bind(room_id)
+            .bind(search)
+            .bind(limit as i64)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await?
         }
     } else {
         sqlx::query_as(
@@ -1254,13 +1216,7 @@ pub async fn list_online_audio_tracks(
 
 #[cfg(test)]
 mod search_query_tests {
-    use super::{build_fts_prefix_query, build_pg_prefix_tsquery};
-
-    #[test]
-    fn sqlite_fts_prefix_query_tokenizes_to_prefix_and() {
-        let q = build_fts_prefix_query("Tory Lanez 1985").expect("query");
-        assert_eq!(q, "tory* AND lanez* AND 1985*");
-    }
+    use super::build_pg_prefix_tsquery;
 
     #[test]
     fn postgres_tsquery_tokenizes_to_prefix_and() {
@@ -1270,7 +1226,6 @@ mod search_query_tests {
 
     #[test]
     fn search_query_builder_rejects_punctuation_only() {
-        assert!(build_fts_prefix_query("!!! ...").is_none());
         assert!(build_pg_prefix_tsquery("!!! ...").is_none());
     }
 }

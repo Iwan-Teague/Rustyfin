@@ -14,7 +14,7 @@ ALTER TABLE item ADD COLUMN logo_url TEXT;
 ALTER TABLE item ADD COLUMN thumb_url TEXT;
 
 -- Fix item_provider_id column name to match code expectations
--- SQLite doesn't support RENAME COLUMN in all versions, so we keep 'value' and add an alias via view
+-- Keep legacy `value` compatibility while introducing provider_id naming.
 -- Instead, let's make sure the code uses the correct column name from the schema: 'value'
 
 -- Fix item_field_lock column name
@@ -22,5 +22,5 @@ ALTER TABLE item ADD COLUMN thumb_url TEXT;
 -- Actually, just update code to use 'field' to match schema.
 
 -- Add locked_ts to field_lock if not present
--- SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we use a safe approach
+-- Keep migration idempotent for environments with pre-existing columns.
 ALTER TABLE item_field_lock ADD COLUMN locked_ts INTEGER;

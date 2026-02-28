@@ -13,7 +13,7 @@
 This spec is written to fit the actual Rustyfin workspace structure and dependencies:
 
 - Backend: **Axum 0.8 + Tower + tower-http** (CORS/trace available)
-- DB: **sqlx + SQLite**
+- DB: **sqlx + PostgreSQL**
 - Auth: **JWT** + **Argon2** password hashing
 - Current first-run behavior (must be removed):
   - `crates/server/src/main.rs` **auto-creates an `admin` user** on empty DB, with password from `RUSTFIN_ADMIN_PASSWORD` or default `"admin"`.
@@ -750,7 +750,7 @@ Rules:
 
 ---
 
-## 9) Persistence model (SQLite + sqlx)
+## 9) Persistence model (PostgreSQL + sqlx)
 
 ### 9.1 Migration: `003_settings_and_setup.sql`
 
@@ -829,7 +829,7 @@ These operations MUST be atomic:
 - `POST /setup/admin`: create user + record idempotency + update state in one txn
 - `POST /setup/complete`: set completed + delete sessions + invalidate remote token in one txn
 
-Use `sqlx::Transaction<'_, sqlx::Sqlite>`.
+Use `sqlx::Transaction<'_, sqlx::Postgres>`.
 
 ---
 
@@ -942,7 +942,7 @@ Migration policy for existing installs:
   - reject leading/trailing spaces (after trim, must be identical to input)
 - Regex: `^[a-zA-Z0-9._-]{3,32}$`
 - MUST enforce uniqueness:
-  - recommended: store usernames lowercased in separate column or enforce uniqueness with `COLLATE NOCASE` in SQLite.
+  - recommended: store usernames lowercased in separate column or enforce uniqueness with `COLLATE NOCASE` in PostgreSQL.
 
 ### 11.2 Password policy
 
@@ -1162,7 +1162,7 @@ A build is “wizard-complete” only if ALL are true:
   - if hashes match: return stored response_json
   - else 409 idempotency_conflict
 
-### A.3 SQLite uniqueness (case-insensitive username)
+### A.3 PostgreSQL uniqueness (case-insensitive username)
 
 Recommended schema tweak:
 

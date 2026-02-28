@@ -28,8 +28,8 @@ axum = { version = "0.8", features = ["macros", "ws", "multipart"] }
 tower = { version = "0.5", features = ["timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "any"] }
+# Database (PostgreSQL-only)
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

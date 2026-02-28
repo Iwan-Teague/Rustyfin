@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use std::path::Path;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -36,26 +36,25 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    // Database target: prefer URL-based config, then fall back to legacy DB path.
+    // Database target: Postgres-only.
     let db_target = std::env::var("RUSTFIN_DATABASE_URL")
         .ok()
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())
-        .unwrap_or_else(|| {
-            std::env::var("RUSTFIN_DB").unwrap_or_else(|_| "rustfin.db".to_string())
-        });
-    let db_target_log =
-        if db_target.starts_with("postgres://") || db_target.starts_with("postgresql://") {
-            "postgres (credentials redacted)"
-        } else {
-            db_target.as_str()
-        };
+        .unwrap_or_else(|| "postgresql://rustfin:rustfin@postgres:5432/rustfin".to_string());
+    let db_target_lc = db_target.to_ascii_lowercase();
+    if !db_target_lc.starts_with("postgres://") && !db_target_lc.starts_with("postgresql://") {
+        bail!(
+            "RUSTFIN_DATABASE_URL must be a PostgreSQL URL (postgres:// or postgresql://); non-PostgreSQL targets are not supported"
+        );
+    }
+    let db_target_log = "postgres (credentials redacted)";
     info!(db_target = %db_target_log, "connecting to database");
 
     let pool = rustfin_db::connect(&db_target)
         .await
         .context("failed to connect to database")?;
-    let db_backend = rustfin_db::detect_backend(&db_target);
+    let db_backend = rustfin_db::DatabaseBackend::Postgres;
     let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
         .ok()
         .map(|raw| {
@@ -65,12 +64,6 @@ async fn main() -> anyhow::Result<()> {
             )
         })
         .unwrap_or(true);
-    if db_backend == rustfin_db::DatabaseBackend::Postgres {
-        warn!(
-            "PostgreSQL backend is experimental in this transition phase; SQLite-oriented query paths may still require follow-up conversion."
-        );
-    }
-
     if run_migrations {
         rustfin_db::migrate::run(&pool, db_backend)
             .await

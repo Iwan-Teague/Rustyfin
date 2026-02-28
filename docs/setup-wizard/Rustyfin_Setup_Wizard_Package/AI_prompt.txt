@@ -11,7 +11,7 @@ You MUST update the progress tracker as you work:
   - Add any deviations to the decision log
 
 Repo context (from Rustyfin.zip)
-- Backend: crates/server (Axum + Tower), crates/db (sqlx + SQLite), crates/core (ApiError)
+- Backend: crates/server (Axum + Tower), crates/db (sqlx + PostgreSQL), crates/core (ApiError)
 - UI: ui/ (Next.js app router)
 
 Hard constraints

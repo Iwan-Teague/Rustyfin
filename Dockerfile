@@ -56,7 +56,7 @@ COPY --from=builder /tmp/rustfin-out/rustfin-server /usr/local/bin/rustfin-serve
 
 USER rustfin
 
-ENV RUSTFIN_DB=/config/rustfin.db
+ENV RUSTFIN_DATABASE_URL=postgresql://rustfin:rustfin@postgres:5432/rustfin
 ENV RUSTFIN_TRANSCODE_DIR=/transcode
 ENV RUSTFIN_CACHE_DIR=/cache
 ENV RUSTFIN_BIND=0.0.0.0:8096

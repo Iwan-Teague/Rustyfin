@@ -57,7 +57,7 @@ These are the “ground truth” references for how Jellyfin behaves/configures 
 Pick one UI path:
 
 **Option A (minimum languages):**
-1) **Rust backend**: `axum` + `tokio` + `sqlx` (SQLite)  
+1) **Rust backend**: `axum` + `tokio` + `sqlx` (PostgreSQL)  
 2) **Rust web UI**: `leptos` (SSR + WASM)  
 3) **Media engine**: FFmpeg (binary or libav)  
 4) **Optional**: a small “provider SDK” crate for plugins
@@ -360,7 +360,7 @@ rustfin/
 ```
 
 ### 11.2 Database: keep it local, fast, and simple
-Use SQLite unless you *know* you need Postgres. SQLite is perfect for local-first and avoids deployment friction.
+Use PostgreSQL unless you *know* you need Postgres. PostgreSQL is perfect for local-first and avoids deployment friction.
 - store DB on local SSD
 - store media on NAS if needed
 - store cache on SSD if possible

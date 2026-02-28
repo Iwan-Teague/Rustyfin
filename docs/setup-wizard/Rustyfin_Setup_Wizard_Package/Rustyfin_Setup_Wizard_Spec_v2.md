@@ -1,7 +1,7 @@
 # Rustyfin Setup Wizard Specification (Jellyfin-Mirroring) — v2
 
 **Audience:** Rustyfin contributors implementing first-time setup (backend + UI + tests)  
-**Stack assumptions (confirmed in repo):** Axum + Tower on Rust backend, SQLite (WAL), JWT auth, Next.js UI.  
+**Stack assumptions (confirmed in repo):** Axum + Tower on Rust backend, PostgreSQL (WAL), JWT auth, Next.js UI.  
 **Scope:** Replaces “login wall on first run” with a guided, secure, modern install wizard that mirrors Jellyfin’s first-time setup flow.
 
 ---
@@ -689,7 +689,7 @@ This spec is designed to be “5/5” on the review rubric by construction:
   Mirrors Jellyfin’s successful flow, avoids login wall, includes validation and recovery behavior.
 
 - **Consistency with modern stack + Rust conventions: 5/5**  
-  Axum/Tower middleware expectations, SQLite schema, and typed API contracts fit the existing project docs.
+  Axum/Tower middleware expectations, PostgreSQL schema, and typed API contracts fit the existing project docs.
 
 - **Testability: 5/5**  
   Acceptance criteria are explicit and map cleanly to automated tests.
