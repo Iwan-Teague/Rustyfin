@@ -3,6 +3,50 @@ use std::path::Path;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+fn hw_accel_runtime_available(accel: &rustfin_transcoder::HwAccel) -> bool {
+    match accel {
+        rustfin_transcoder::HwAccel::Nvenc => {
+            Path::new("/dev/nvidiactl").exists() || Path::new("/dev/nvidia0").exists()
+        }
+        rustfin_transcoder::HwAccel::Vaapi | rustfin_transcoder::HwAccel::Qsv => {
+            rustfin_transcoder::gpu::vaapi_device_exists()
+        }
+        rustfin_transcoder::HwAccel::VideoToolbox => cfg!(target_os = "macos"),
+    }
+}
+
+fn select_auto_hw_accel(
+    caps: &rustfin_transcoder::gpu::GpuCapabilities,
+) -> Option<rustfin_transcoder::HwAccel> {
+    let mut candidates = Vec::new();
+    if caps.nvenc {
+        candidates.push(rustfin_transcoder::HwAccel::Nvenc);
+    }
+    if caps.qsv {
+        candidates.push(rustfin_transcoder::HwAccel::Qsv);
+    }
+    if caps.vaapi {
+        candidates.push(rustfin_transcoder::HwAccel::Vaapi);
+    }
+    if caps.videotoolbox {
+        candidates.push(rustfin_transcoder::HwAccel::VideoToolbox);
+    }
+
+    candidates
+        .into_iter()
+        .find(hw_accel_runtime_available)
+}
+
+fn parse_hw_accel_mode(mode: &str) -> Option<rustfin_transcoder::HwAccel> {
+    match mode {
+        "nvenc" | "cuda" => Some(rustfin_transcoder::HwAccel::Nvenc),
+        "vaapi" => Some(rustfin_transcoder::HwAccel::Vaapi),
+        "qsv" => Some(rustfin_transcoder::HwAccel::Qsv),
+        "videotoolbox" | "video_toolbox" => Some(rustfin_transcoder::HwAccel::VideoToolbox),
+        _ => None,
+    }
+}
+
 fn probe_binary(path: &Path, name: &str) {
     match std::process::Command::new(path).arg("-version").output() {
         Ok(out) if out.status.success() => {
@@ -127,12 +171,69 @@ async fn main() -> anyhow::Result<()> {
     let ffmpeg_path = std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
     let ffprobe_path =
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string());
+    let hw_accel_mode_raw = std::env::var("RUSTFIN_TRANSCODER_HW_ACCEL")
+        .unwrap_or_else(|_| "auto".to_string());
+    let hw_accel_mode = hw_accel_mode_raw.trim().to_ascii_lowercase();
+
+    let selected_hw_accel = match hw_accel_mode.as_str() {
+        "" | "auto" => {
+            let caps = rustfin_transcoder::gpu::detect(Path::new(&ffmpeg_path)).await;
+            let selected = select_auto_hw_accel(&caps);
+            info!(
+                mode = "auto",
+                ?caps,
+                selected = ?selected,
+                "transcoder hardware acceleration auto-detected"
+            );
+            selected
+        }
+        "none" | "off" | "cpu" | "disabled" => {
+            info!(
+                mode = %hw_accel_mode,
+                "transcoder hardware acceleration explicitly disabled"
+            );
+            None
+        }
+        _ => {
+            if let Some(accel) = parse_hw_accel_mode(&hw_accel_mode) {
+                if hw_accel_runtime_available(&accel) {
+                    info!(
+                        mode = %hw_accel_mode,
+                        selected = ?accel,
+                        "transcoder hardware acceleration configured from environment"
+                    );
+                    Some(accel)
+                } else {
+                    warn!(
+                        mode = %hw_accel_mode,
+                        "requested hardware acceleration is not available in this runtime; using CPU"
+                    );
+                    None
+                }
+            } else {
+                warn!(
+                    mode = %hw_accel_mode,
+                    "unknown RUSTFIN_TRANSCODER_HW_ACCEL value; falling back to auto detection"
+                );
+                let caps = rustfin_transcoder::gpu::detect(Path::new(&ffmpeg_path)).await;
+                let selected = select_auto_hw_accel(&caps);
+                info!(
+                    mode = "auto-fallback",
+                    ?caps,
+                    selected = ?selected,
+                    "transcoder hardware acceleration auto-detected"
+                );
+                selected
+            }
+        }
+    };
 
     let tc_config = rustfin_transcoder::TranscoderConfig {
         ffmpeg_path: ffmpeg_path.clone().into(),
         ffprobe_path: ffprobe_path.clone().into(),
         transcode_dir: transcode_dir.into(),
         max_concurrent: max_transcodes,
+        hw_accel: selected_hw_accel,
         ..Default::default()
     };
 

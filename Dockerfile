@@ -41,6 +41,8 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    va-driver-all \
+    vainfo \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*
