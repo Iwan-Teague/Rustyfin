@@ -118,7 +118,7 @@ export default function PlayerPage() {
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
-  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(1080);
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
   const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
   const [directSupportMessage, setDirectSupportMessage] = useState('');
@@ -375,9 +375,11 @@ export default function PlayerPage() {
   useEffect(() => {
     if (!loadingDescriptor && canStartPlayback && !autoStartedRef.current) {
       autoStartedRef.current = true;
-      void startDirectPlay();
+      void startHls().catch(() => {
+        void startDirectPlay();
+      });
     }
-  }, [loadingDescriptor, canStartPlayback, startDirectPlay]);
+  }, [loadingDescriptor, canStartPlayback, startHls, startDirectPlay]);
 
   useEffect(() => {
     return () => {

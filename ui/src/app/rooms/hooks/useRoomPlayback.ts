@@ -56,7 +56,7 @@ export function useRoomPlayback({
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
-  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(1080);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
@@ -338,26 +338,26 @@ export function useRoomPlayback({
     if (autoPreloadedItemRef.current === room.item_id) return;
 
     autoPreloadedItemRef.current = room.item_id;
-    appendDebug(`auto preload requested item_id=${room.item_id} preferred=direct`);
+    appendDebug(`auto preload requested item_id=${room.item_id} preferred=hls`);
 
     void (async () => {
-      const directOk = await startDirect({
-        autoplayWhenNoState: false,
-        silent: true,
-      });
-      if (directOk) {
-        appendDebug(`auto preload succeeded mode=direct item_id=${room.item_id}`);
-        return;
-      }
-
-      appendDebug(`auto preload direct failed; falling back to hls item_id=${room.item_id}`);
       const hlsOk = await startHls({
         autoplayWhenNoState: false,
         silent: true,
       });
-
       if (hlsOk) {
-        setInfo('Direct play could not be preloaded automatically. Using HLS preload.');
+        appendDebug(`auto preload succeeded mode=hls item_id=${room.item_id}`);
+        return;
+      }
+
+      appendDebug(`auto preload hls failed; falling back to direct item_id=${room.item_id}`);
+      const directOk = await startDirect({
+        autoplayWhenNoState: false,
+        silent: true,
+      });
+
+      if (directOk) {
+        setInfo('HLS preload failed. Using Direct Play preload.');
       } else {
         setInfo('Automatic preload failed. Use Direct Play or Transcode (HLS).');
       }
