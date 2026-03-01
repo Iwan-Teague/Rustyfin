@@ -228,6 +228,13 @@ build_one() {
     artifact_target_dir="$zig_target"
   fi
   local artifact="${CACHE_DIR}/${artifact_target_dir}/${artifact_profile_dir}/${bin}"
+  if [[ ! -f "$artifact" && "$use_zigbuild" == "true" && "$artifact_target_dir" != "$TARGET_TRIPLE" ]]; then
+    # cargo-zigbuild may still emit into the canonical Rust target dir.
+    local fallback_artifact="${CACHE_DIR}/${TARGET_TRIPLE}/${artifact_profile_dir}/${bin}"
+    if [[ -f "$fallback_artifact" ]]; then
+      artifact="$fallback_artifact"
+    fi
+  fi
   if [[ ! -f "$artifact" ]]; then
     echo "Expected artifact missing: $artifact" >&2
     exit 1
