@@ -15,10 +15,13 @@ Options:
   -h, --help    Show this help.
 
 Notes:
-  - On non-Linux hosts this script uses `cargo zigbuild` and requires:
+  - This script uses `cargo zigbuild` when cross-compiling or when GNU libc
+    compatibility mode is enabled (default for Linux GNU targets).
+  - `cargo zigbuild` requires:
     - `zig`
     - `cargo-zigbuild`
-  - On Linux, if target matches rust host triple, plain `cargo build` is used.
+  - To force host-glibc builds on Linux GNU targets, set:
+      RUSTFIN_NATIVE_GNU_COMPAT_BUILD=0
 EOF
 }
 
@@ -28,6 +31,8 @@ TARGET_TRIPLE=""
 CACHE_DIR=""
 declare -a BINS=()
 RUST_TOOLCHAIN="${RUSTFIN_NATIVE_RUST_TOOLCHAIN:-stable}"
+RUSTFIN_NATIVE_GNU_COMPAT_BUILD="${RUSTFIN_NATIVE_GNU_COMPAT_BUILD:-1}"
+RUSTFIN_NATIVE_GNU_GLIBC_VERSION="${RUSTFIN_NATIVE_GNU_GLIBC_VERSION:-2.36}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -134,8 +139,26 @@ fi
 rust_host_info="$("${RUSTC_CMD[@]}" -vV)"
 rust_host_triple="$(printf '%s\n' "$rust_host_info" | awk '/^host: / {print $2}')"
 use_zigbuild=false
-if [[ "$host_os" != "linux" || "$rust_host_triple" != "$TARGET_TRIPLE" ]]; then
+target_is_gnu_linux=false
+if [[ "$TARGET_TRIPLE" == *-unknown-linux-gnu* ]]; then
+  target_is_gnu_linux=true
+fi
+
+force_gnu_compat_zig=false
+if [[ "$host_os" == "linux" && "$target_is_gnu_linux" == "true" && "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" ]]; then
+  force_gnu_compat_zig=true
+fi
+
+if [[ "$host_os" != "linux" || "$rust_host_triple" != "$TARGET_TRIPLE" || "$force_gnu_compat_zig" == "true" ]]; then
   use_zigbuild=true
+fi
+
+zig_target="$TARGET_TRIPLE"
+if [[ "$use_zigbuild" == "true" && "$target_is_gnu_linux" == "true" && "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" ]]; then
+  # Produce binaries linked against a Debian-12-compatible glibc baseline.
+  if [[ "$TARGET_TRIPLE" != *.* ]]; then
+    zig_target="${TARGET_TRIPLE}.${RUSTFIN_NATIVE_GNU_GLIBC_VERSION}"
+  fi
 fi
 
 if [[ "$use_zigbuild" == "true" ]]; then
@@ -174,7 +197,7 @@ build_one() {
   local -a cmd=()
 
   if [[ "$use_zigbuild" == "true" ]]; then
-    cmd=("${CARGO_CMD[@]}" zigbuild --target "$TARGET_TRIPLE")
+    cmd=("${CARGO_CMD[@]}" zigbuild --target "$zig_target")
   else
     cmd=("${CARGO_CMD[@]}" build --target "$TARGET_TRIPLE")
   fi
@@ -188,6 +211,9 @@ build_one() {
   cmd+=(--bin "$bin")
 
   echo "[native-build] building ${bin} (${TARGET_TRIPLE}, profile=${PROFILE})"
+  if [[ "$use_zigbuild" == "true" ]]; then
+    echo "[native-build]   zig target: ${zig_target}"
+  fi
   if [[ -n "$RUSTC_BIN" && -n "$RUSTDOC_BIN" ]]; then
     CARGO_TARGET_DIR="$CACHE_DIR" \
     RUSTC="$RUSTC_BIN" \
@@ -197,7 +223,11 @@ build_one() {
     CARGO_TARGET_DIR="$CACHE_DIR" "${cmd[@]}"
   fi
 
-  local artifact="${CACHE_DIR}/${TARGET_TRIPLE}/${artifact_profile_dir}/${bin}"
+  local artifact_target_dir="$TARGET_TRIPLE"
+  if [[ "$use_zigbuild" == "true" ]]; then
+    artifact_target_dir="$zig_target"
+  fi
+  local artifact="${CACHE_DIR}/${artifact_target_dir}/${artifact_profile_dir}/${bin}"
   if [[ ! -f "$artifact" ]]; then
     echo "Expected artifact missing: $artifact" >&2
     exit 1

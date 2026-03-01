@@ -66,6 +66,8 @@ CLI_YOUTUBE_COOKIE=""
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
 NATIVE_RUST_BUILD_STRICT="${RUSTFIN_NATIVE_RUST_BUILD_STRICT:-1}"
+RUSTFIN_NATIVE_GNU_COMPAT_BUILD="${RUSTFIN_NATIVE_GNU_COMPAT_BUILD:-1}"
+RUSTFIN_NATIVE_GNU_GLIBC_VERSION="${RUSTFIN_NATIVE_GNU_GLIBC_VERSION:-2.36}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -593,10 +595,13 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   export RUSTFIN_TMDB_AGENT_DOCKERFILE="docker/native/rustfin-tmdb-agent.Dockerfile"
   export RUSTFIN_YOUTUBE_AGENT_DOCKERFILE="docker/native/rustfin-youtube-agent.Dockerfile"
   export RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE="docker/native/rustfin-transcription-agent.Dockerfile"
+  export RUSTFIN_NATIVE_GNU_COMPAT_BUILD
+  export RUSTFIN_NATIVE_GNU_GLIBC_VERSION
 
   # Native Linux cross-build requirements:
-  # - Linux host building for its own Linux host triple: plain cargo build works.
-  # - Any other host/target combo: requires zig + cargo-zigbuild.
+  # - Non-Linux hosts: requires zig + cargo-zigbuild.
+  # - Linux GNU targets with compatibility mode (default): requires zig + cargo-zigbuild
+  #   so binaries remain runnable inside Debian 12 runtime images.
   native_host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   native_host_triple=""
   native_needs_zig=true
@@ -611,6 +616,9 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
     native_host_triple="$(rustc -vV | awk '/^host: / {print $2}')"
     if [[ "$native_host_os" == "linux" && "$native_host_triple" == "$RUSTFIN_NATIVE_TARGET" ]]; then
       native_needs_zig=false
+      if [[ "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" && "$RUSTFIN_NATIVE_TARGET" == *-unknown-linux-gnu* ]]; then
+        native_needs_zig=true
+      fi
     fi
 
     if [[ "$native_needs_zig" == "true" ]]; then
@@ -1165,6 +1173,9 @@ info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
 info "Database mode: ${db_mode}"
 info "Database target: ${db_target_log}"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
+if [[ "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" ]]; then
+  info "Native GNU libc compatibility mode: enabled (glibc ${RUSTFIN_NATIVE_GNU_GLIBC_VERSION})"
+fi
 info "Transcoder hw accel mode: ${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
 if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   info "Rust binary build mode: native host cross-compile -> Docker copy"
