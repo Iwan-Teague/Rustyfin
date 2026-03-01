@@ -1715,7 +1715,10 @@ async fn get_item_playback(
     {
         let media_path = std::path::Path::new(&file.path);
         if media_path.exists() && media_path.is_file() {
-            if let Ok(info) = rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path).await {
+            if let Ok(info) =
+                rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
+                    .await
+            {
                 let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
                 if probed_duration_ms > 0 {
                     duration_ms = Some(probed_duration_ms);
@@ -2182,7 +2185,7 @@ async fn hls_master(
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
-    use axum::http::header;
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
 
     let authorized = authorize_hls_session_request(&state, &sid, &headers, &query).await?;
@@ -2198,8 +2201,8 @@ async fn hls_master(
         .await
         .map_err(|e| ApiError::NotFound(format!("session error: {e}")))?;
 
-    // Wait for ffmpeg to write the playlist (up to 10s)
-    for _ in 0..50 {
+    // Wait for ffmpeg to write the playlist (up to 30s)
+    for _ in 0..150 {
         if path.exists() {
             break;
         }
@@ -2216,12 +2219,21 @@ async fn hls_master(
             .map(|content| last_non_empty_lines(&content, 6))
             .filter(|tail| !tail.is_empty());
 
-        if let Some(tail) = ffmpeg_log_tail {
-            return Err(
-                ApiError::Internal(format!("playlist not ready yet; ffmpeg log: {tail}")).into(),
-            );
-        }
-        return Err(ApiError::Internal("playlist not ready yet".into()).into());
+        let message = if let Some(tail) = ffmpeg_log_tail {
+            format!("playlist not ready yet; ffmpeg log: {tail}")
+        } else {
+            "playlist not ready yet".to_string()
+        };
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::RETRY_AFTER, "1"),
+            ],
+            Body::from(message),
+        )
+            .into_response());
     }
 
     let content = tokio::fs::read_to_string(&path)
@@ -2268,7 +2280,7 @@ async fn hls_segment(
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     use axum::body::Body;
-    use axum::http::header;
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
 
     let _authorized = authorize_hls_session_request(&state, &sid, &headers, &query).await?;
@@ -2289,8 +2301,8 @@ async fn hls_segment(
         .await
         .map_err(|e| ApiError::NotFound(format!("session error: {e}")))?;
 
-    // Wait for segment to appear (up to 5s)
-    for _ in 0..25 {
+    // Wait for segment to appear (up to 20s)
+    for _ in 0..100 {
         if path.exists() {
             break;
         }
@@ -2298,7 +2310,16 @@ async fn hls_segment(
     }
 
     if !path.exists() {
-        return Err(ApiError::NotFound("segment not ready".into()).into());
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::RETRY_AFTER, "1"),
+            ],
+            Body::from("segment not ready"),
+        )
+            .into_response());
     }
 
     let content_type = if filename.ends_with(".m3u8") {

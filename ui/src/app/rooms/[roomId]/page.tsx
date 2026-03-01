@@ -870,25 +870,7 @@ export default function WatchPartyRoomPage() {
                     preload="auto"
                     playsInline
                     className="w-full max-h-[70vh]"
-                    onLoadedMetadata={(event) => {
-                      const video = event.currentTarget;
-                      if (video.muted || video.defaultMuted) {
-                        video.muted = false;
-                        video.defaultMuted = false;
-                      }
-                      if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
-                        video.volume = 1;
-                      }
-                    }}
                     onPlay={(event) => {
-                      const video = event.currentTarget;
-                      if (video.muted || video.defaultMuted) {
-                        video.muted = false;
-                        video.defaultMuted = false;
-                      }
-                      if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
-                        video.volume = 1;
-                      }
                       if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'play',

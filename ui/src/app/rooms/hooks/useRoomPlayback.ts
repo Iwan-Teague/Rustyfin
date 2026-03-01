@@ -14,12 +14,15 @@ type UseRoomPlaybackArgs = {
   setInfo: (message: string) => void;
 };
 
-function ensureAudibleVideo(video: HTMLVideoElement): void {
-  if (video.muted || video.defaultMuted) {
-    video.muted = false;
-    video.defaultMuted = false;
+function normalizeVideoVolume(video: HTMLVideoElement): void {
+  // Preserve user mute/unmute choice; only normalize invalid volume values.
+  if (!Number.isFinite(video.volume)) {
+    video.volume = 1;
+    return;
   }
-  if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+  if (video.volume < 0) {
+    video.volume = 0;
+  } else if (video.volume > 1) {
     video.volume = 1;
   }
 }
@@ -46,6 +49,30 @@ function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: numbe
   } catch {
     // Some browsers may reject duration writes while updating source buffers.
   }
+}
+
+function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: number): void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+  const details = (levelData as { details?: Record<string, unknown> } | null)?.details;
+  if (!details) return;
+  const currentTotal =
+    typeof details.totalduration === 'number' && Number.isFinite(details.totalduration)
+      ? details.totalduration
+      : 0;
+  if (currentTotal < durationSeconds) {
+    details.totalduration = durationSeconds;
+    details.edge = durationSeconds;
+  }
+}
+
+function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): () => void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return () => {};
+  }
+  const tick = () => applyKnownDurationToHlsMediaSource(hls, durationSeconds);
+  tick();
+  const timer = window.setInterval(tick, 500);
+  return () => window.clearInterval(timer);
 }
 
 async function waitForVideoMetadata(
@@ -99,6 +126,15 @@ export function useRoomPlayback({
 
   const destroyHls = useCallback(() => {
     const hls = hlsRef.current as { destroy?: () => void } | null;
+    const stopDurationEnforcer = (hls as { __stopKnownDurationEnforcer?: () => void } | null)
+      ?.__stopKnownDurationEnforcer;
+    if (typeof stopDurationEnforcer === 'function') {
+      try {
+        stopDurationEnforcer();
+      } catch {
+        // no-op
+      }
+    }
     if (hls && typeof hls.destroy === 'function') {
       try {
         hls.destroy();
@@ -136,7 +172,7 @@ export function useRoomPlayback({
     }
 
     if (stateMessage.playing && video.paused) {
-      ensureAudibleVideo(video);
+      normalizeVideoVolume(video);
       await video.play().catch(() => {});
     }
 
@@ -172,7 +208,7 @@ export function useRoomPlayback({
 
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
-        ensureAudibleVideo(video);
+        normalizeVideoVolume(video);
 
         setMode('direct');
         video.src = descriptor.direct_url;
@@ -182,7 +218,7 @@ export function useRoomPlayback({
         if (roomState) {
           await applyRemoteState(roomState);
         } else if (options.autoplayWhenNoState ?? true) {
-          ensureAudibleVideo(video);
+          normalizeVideoVolume(video);
           await video.play().catch(() => {});
         } else {
           video.pause();
@@ -225,7 +261,7 @@ export function useRoomPlayback({
       try {
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
-        ensureAudibleVideo(video);
+        normalizeVideoVolume(video);
         const selectedTargetHeight =
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
@@ -264,14 +300,33 @@ export function useRoomPlayback({
             maxBufferSize: 256 * 1000 * 1000,
             backBufferLength: 180,
             startFragPrefetch: true,
+            manifestLoadingTimeOut: 45000,
+            levelLoadingTimeOut: 45000,
+            fragLoadingTimeOut: 45000,
+            manifestLoadingMaxRetry: 10,
+            levelLoadingMaxRetry: 10,
+            fragLoadingMaxRetry: 8,
+            manifestLoadingRetryDelay: 1000,
+            levelLoadingRetryDelay: 1000,
+            fragLoadingRetryDelay: 1000,
+            manifestLoadingMaxRetryTimeout: 10000,
+            levelLoadingMaxRetryTimeout: 10000,
+            fragLoadingMaxRetryTimeout: 8000,
           });
+          const stopDurationEnforcer = installKnownDurationEnforcer(hls, knownDurationSeconds);
+          (hls as { __stopKnownDurationEnforcer?: () => void }).__stopKnownDurationEnforcer =
+            stopDurationEnforcer;
           hlsRef.current = hls;
+          let networkRecoveries = 0;
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+            window.setTimeout(() => {
+              applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+            }, 0);
             if (roomState) {
               void applyRemoteState(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
-              ensureAudibleVideo(video);
+              normalizeVideoVolume(video);
               void video.play().catch(() => {});
             } else {
               video.pause();
@@ -284,13 +339,34 @@ export function useRoomPlayback({
               }
             }
           });
-          hls.on(Hls.Events.LEVEL_LOADED, () => {
+          hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: unknown) => {
+            forceKnownDurationInLevelDetails(data, knownDurationSeconds);
             applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+            window.setTimeout(() => {
+              applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+            }, 0);
           });
-          hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal?: boolean; details?: string }) => {
-            if (data?.fatal) {
-              setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
+          hls.on(Hls.Events.ERROR, (_event: unknown, data: any) => {
+            if (!data?.fatal) return;
+            const errorType = data?.type;
+            if (errorType === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 10) {
+              networkRecoveries += 1;
+              setInfo('Transcode stream reconnecting…');
+              try {
+                hls.startLoad();
+                return;
+              } catch {
+                // fall through to hard error
+              }
+            } else if (errorType === Hls.ErrorTypes.MEDIA_ERROR) {
+              try {
+                hls.recoverMediaError();
+                return;
+              } catch {
+                // fall through to hard error
+              }
             }
+            setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
           });
           hls.attachMedia(video);
           hls.loadSource(session.hls_url);
@@ -301,7 +377,7 @@ export function useRoomPlayback({
           if (roomState) {
             await applyRemoteState(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
-            ensureAudibleVideo(video);
+            normalizeVideoVolume(video);
             await video.play().catch(() => {});
           } else {
             video.pause();
