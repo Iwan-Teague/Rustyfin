@@ -19,6 +19,7 @@ type PlaybackSession = {
 };
 
 type MediaInfo = {
+  duration_secs?: number;
   container?: string;
   video?: {
     codec?: string;
@@ -32,6 +33,18 @@ type MediaInfo = {
     channels?: number;
   }>;
 };
+
+function formatClock(totalSeconds?: number): string {
+  if (!Number.isFinite(totalSeconds) || !totalSeconds || totalSeconds < 0) return '0:00';
+  const whole = Math.floor(totalSeconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const seconds = whole % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
 
 type DirectSupportResult = {
   supported: boolean;
@@ -135,6 +148,8 @@ export default function PlayerPage() {
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
   const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
   const [directSupportMessage, setDirectSupportMessage] = useState('');
+  const [timelineNowSecs, setTimelineNowSecs] = useState(0);
+  const [timelineDurationSecs, setTimelineDurationSecs] = useState(0);
   const autoStartedRef = useRef(false);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
@@ -351,6 +366,8 @@ export default function PlayerPage() {
     setError('');
     setDirectSupport(null);
     setDirectSupportMessage('');
+    setTimelineNowSecs(0);
+    setTimelineDurationSecs(0);
 
     apiJson<PlaybackDescriptor>(`/items/${id}/playback`)
       .then((data) => {
@@ -448,6 +465,12 @@ export default function PlayerPage() {
     : directPlayUnsupported
       ? (directSupport?.tooltip ?? 'Compatibility check failed, but you can still try Direct Play.')
       : 'Use browser-native Direct Play';
+  const effectiveTotalDuration =
+    timelineDurationSecs > 0
+      ? timelineDurationSecs
+      : mediaInfo?.duration_secs && mediaInfo.duration_secs > 0
+        ? mediaInfo.duration_secs
+        : 0;
 
   return (
     <div className="space-y-5 animate-rise">
@@ -476,10 +499,20 @@ export default function PlayerPage() {
           className="w-full max-h-[80vh]"
           playsInline
           onLoadedMetadata={(event) => {
-            ensureAudibleVideo(event.currentTarget);
+            const video = event.currentTarget;
+            ensureAudibleVideo(video);
+            setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+            setTimelineDurationSecs(Number.isFinite(video.duration) ? video.duration : 0);
           }}
           onPlay={(event) => {
             ensureAudibleVideo(event.currentTarget);
+          }}
+          onTimeUpdate={(event) => {
+            const video = event.currentTarget;
+            setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+            if (Number.isFinite(video.duration) && video.duration > 0) {
+              setTimelineDurationSecs(video.duration);
+            }
           }}
           onError={() => {
             if (mode !== 'direct' || directFallbackTriggered || !canStartPlayback) return;
@@ -488,6 +521,11 @@ export default function PlayerPage() {
             void startHls();
           }}
         />
+      </div>
+      <div className="px-1 text-xs muted">
+        <span>
+          Timeline: {formatClock(timelineNowSecs)} / {formatClock(effectiveTotalDuration)}
+        </span>
       </div>
 
       <div className="panel-soft flex flex-wrap items-center gap-3 px-4 py-4">
