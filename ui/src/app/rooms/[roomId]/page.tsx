@@ -39,6 +39,18 @@ const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
   { value: 480, label: '480p' },
   { value: 360, label: '360p' },
 ];
+
+function formatPlaybackClock(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 function truncateInviteName(name: string): string {
   if (name.length <= INVITE_NAME_MAX_CHARS) return name;
   return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
@@ -195,6 +207,14 @@ export default function WatchPartyRoomPage() {
   }, [room, joinedRole]);
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
+  const videoPositionMs = realtime.roomState?.position_ms ?? 0;
+  const videoDurationMs =
+    playback.descriptor?.duration_ms && playback.descriptor.duration_ms > 0
+      ? playback.descriptor.duration_ms
+      : null;
+  const playbackDurationLabel = videoDurationMs
+    ? `${formatPlaybackClock(videoPositionMs)} / ${formatPlaybackClock(videoDurationMs)}`
+    : null;
 
   const roomDurationSeconds = useMemo(() => {
     if (!room) return 0;
@@ -939,6 +959,11 @@ export default function WatchPartyRoomPage() {
                       ))}
                     </select>
                   </label>
+                  {playbackDurationLabel && (
+                    <span className="text-xs muted">
+                      {playbackDurationLabel}
+                    </span>
+                  )}
                   {!controlsEnabled && (
                     <span className="text-xs muted">Playback controls are host-only in this room.</span>
                   )}

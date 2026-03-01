@@ -67,6 +67,7 @@ export type PlaybackDescriptor = {
   direct_url: string;
   hls_start_url: string;
   media_info_url: string;
+  duration_ms?: number | null;
 };
 
 export type PlaybackSession = {

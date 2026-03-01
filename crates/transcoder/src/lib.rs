@@ -38,6 +38,7 @@ pub struct TranscoderConfig {
     pub segment_secs: u32,
     pub idle_timeout_secs: u64,
     pub hw_accel: Option<HwAccel>,
+    pub hw_device_path: Option<PathBuf>,
 }
 
 impl Default for TranscoderConfig {
@@ -50,6 +51,7 @@ impl Default for TranscoderConfig {
             segment_secs: 4,
             idle_timeout_secs: 60,
             hw_accel: None,
+            hw_device_path: None,
         }
     }
 }
