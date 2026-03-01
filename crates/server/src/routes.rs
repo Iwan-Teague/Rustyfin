@@ -2936,9 +2936,16 @@ if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
     )))
 }
 
-async fn get_gpu_caps(_auth: AdminUser) -> Result<Json<serde_json::Value>, AppError> {
+async fn get_gpu_caps(
+    _auth: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let caps = rustfin_transcoder::gpu::detect(std::path::Path::new("ffmpeg")).await;
-    Ok(Json(serde_json::to_value(&caps).unwrap()))
+    Ok(Json(serde_json::json!({
+        "detected_caps": caps,
+        "selected_hw_accel": state.transcoder_hw_accel,
+        "require_hw_accel": state.transcoder_hw_accel_required,
+    })))
 }
 
 #[derive(Serialize)]

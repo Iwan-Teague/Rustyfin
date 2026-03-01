@@ -64,7 +64,7 @@ export function useRoomPlayback({
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
-  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(1080);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
@@ -214,18 +214,6 @@ export function useRoomPlayback({
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
             : hlsTargetHeight;
-        const currentTime =
-          Number.isFinite(video.currentTime) && video.currentTime >= 0
-            ? video.currentTime
-            : 0;
-        const finiteDuration = Number.isFinite(video.duration) && video.duration > 0;
-        const startTimeSecs =
-          finiteDuration &&
-          currentTime > 0.5 &&
-          currentTime < (video.duration as number) - 0.5
-            ? currentTime
-            : undefined;
-
         destroyHls();
         if (sessionIdRef.current) {
           await stopSession(sessionIdRef.current);
@@ -236,7 +224,6 @@ export function useRoomPlayback({
           method: 'POST',
           body: JSON.stringify({
             file_id: descriptor.file_id,
-            start_time_secs: startTimeSecs,
             target_height: selectedTargetHeight ?? undefined,
           }),
         });

@@ -104,6 +104,12 @@ function ensureAudibleVideo(video: HTMLVideoElement): void {
   }
 }
 
+function shouldResumeFromCurrentSource(video: HTMLVideoElement, fileId: string): boolean {
+  const src = `${video.currentSrc || video.src || ''}`.toLowerCase();
+  if (!src) return false;
+  return src.includes(`/stream/files/${fileId.toLowerCase()}`);
+}
+
 function resetVideoSourceForMse(video: HTMLVideoElement): void {
   // Clear any existing direct/native source before attaching hls.js.
   video.pause();
@@ -125,7 +131,7 @@ export default function PlayerPage() {
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
-  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(1080);
+  const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
   const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
   const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
   const [directSupportMessage, setDirectSupportMessage] = useState('');
@@ -221,11 +227,13 @@ export default function PlayerPage() {
     ensureAudibleVideo(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
+    const canResumeFromCurrentSource = shouldResumeFromCurrentSource(video, descriptor.file_id);
     const currentTime =
-      Number.isFinite(video.currentTime) && video.currentTime >= 0
+      canResumeFromCurrentSource && Number.isFinite(video.currentTime) && video.currentTime >= 0
         ? video.currentTime
         : 0;
-    const finiteDuration = Number.isFinite(video.duration) && video.duration > 0;
+    const finiteDuration =
+      canResumeFromCurrentSource && Number.isFinite(video.duration) && video.duration > 0;
     const startTimeSecs =
       finiteDuration &&
       currentTime > 0.5 &&

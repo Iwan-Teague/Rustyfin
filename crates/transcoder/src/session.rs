@@ -241,12 +241,7 @@ async fn spawn_ffmpeg(
     hw_accel: Option<&HwAccel>,
 ) -> Result<Child, TranscodeError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
-    let disable_hw_pipeline_for_scaling = target_height.is_some();
-    let active_hw_accel = if disable_hw_pipeline_for_scaling {
-        None
-    } else {
-        hw_accel
-    };
+    let active_hw_accel = hw_accel;
 
     // HW accel input flags
     if let Some(hw) = active_hw_accel {
@@ -281,9 +276,25 @@ async fn spawn_ffmpeg(
     // Input
     args.extend(["-i".into(), input.to_string_lossy().into_owned()]);
 
+    // Select the primary video stream and the first audio stream (if present).
+    // This avoids ambiguous/default stream selection behavior on some containers.
+    args.extend([
+        "-map".into(),
+        "0:v:0?".into(),
+        "-map".into(),
+        "0:a:0?".into(),
+        "-sn".into(),
+        "-dn".into(),
+    ]);
+
     if let Some(height) = target_height {
-        // Downscale only when the source exceeds the requested height.
-        args.extend(["-vf".into(), format!("scale=-2:min(ih\\,{height})")]);
+        // Preserve hardware encode paths when possible while applying target height.
+        let filter = match active_hw_accel {
+            Some(HwAccel::Vaapi) => format!("scale_vaapi=w=-2:h={height}"),
+            Some(HwAccel::Qsv) => format!("vpp_qsv=w=-2:h={height}"),
+            _ => format!("scale=-2:min(ih\\,{height})"),
+        };
+        args.extend(["-vf".into(), filter]);
     }
 
     // Video codec
@@ -324,6 +335,10 @@ async fn spawn_ffmpeg(
         "2".into(),
         "-ar".into(),
         "48000".into(),
+        "-max_muxing_queue_size".into(),
+        "4096".into(),
+        "-force_key_frames".into(),
+        format!("expr:gte(t,n_forced*{segment_secs})"),
     ]);
 
     // HLS output
@@ -342,7 +357,7 @@ async fn spawn_ffmpeg(
         "-hls_segment_filename".into(),
         seg_pattern.to_string_lossy().into_owned(),
         "-hls_flags".into(),
-        "independent_segments".into(),
+        "independent_segments+append_list".into(),
         master.to_string_lossy().into_owned(),
     ]);
 
