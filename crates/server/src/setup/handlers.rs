@@ -284,17 +284,17 @@ pub async fn get_setup_config(_guard: SetupReadGuard, State(state): State<AppSta
 
     let locale = rustfin_db::repo::settings::get(&state.db, "default_ui_locale")
         .await
-        .unwrap_or(Some("en".to_string()))
-        .unwrap_or_else(|| "en".to_string());
+        .unwrap_or(Some("en-GB".to_string()))
+        .unwrap_or_else(|| "en-GB".to_string());
 
     let region = rustfin_db::repo::settings::get(&state.db, "default_region")
         .await
-        .unwrap_or(Some("US".to_string()))
-        .unwrap_or_else(|| "US".to_string());
+        .unwrap_or(Some("GB".to_string()))
+        .unwrap_or_else(|| "GB".to_string());
 
     let tz = rustfin_db::repo::settings::get(&state.db, "default_time_zone")
         .await
-        .unwrap_or(None);
+        .unwrap_or(Some("Europe/London".to_string()));
     let tz = tz.and_then(|t| if t.is_empty() { None } else { Some(t) });
 
     (
@@ -823,8 +823,8 @@ pub async fn get_setup_metadata(_guard: SetupReadGuard, State(state): State<AppS
 
     let region = rustfin_db::repo::settings::get(&state.db, "metadata_region")
         .await
-        .unwrap_or(Some("US".to_string()))
-        .unwrap_or_else(|| "US".to_string());
+        .unwrap_or(Some("GB".to_string()))
+        .unwrap_or_else(|| "GB".to_string());
 
     (
         StatusCode::OK,

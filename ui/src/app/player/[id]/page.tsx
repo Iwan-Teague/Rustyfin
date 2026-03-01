@@ -108,17 +108,28 @@ function buildDirectUnsupportedMessage(contentType: string): string {
   return `Direct Play is not supported for this media type in your browser (${contentType}). Use Transcode (HLS), which is slower but compatible. To use Direct Play, add support for this media type.`;
 }
 
-function normalizeVideoVolume(video: HTMLVideoElement): void {
-  // Preserve user mute/unmute choice; only normalize invalid volume values.
-  if (!Number.isFinite(video.volume)) {
-    video.volume = 1;
-    return;
-  }
-  if (video.volume < 0) {
-    video.volume = 0;
-  } else if (video.volume > 1) {
-    video.volume = 1;
-  }
+type VideoAudioState = {
+  muted: boolean;
+  volume: number;
+};
+
+function clampVideoVolume(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function readVideoAudioState(video: HTMLVideoElement): VideoAudioState {
+  return {
+    muted: video.muted,
+    volume: clampVideoVolume(video.volume),
+  };
+}
+
+function applyVideoAudioState(video: HTMLVideoElement, state: VideoAudioState): void {
+  video.volume = clampVideoVolume(state.volume);
+  video.muted = state.muted;
 }
 
 function shouldResumeFromCurrentSource(video: HTMLVideoElement, fileId: string): boolean {
@@ -195,6 +206,7 @@ export default function PlayerPage() {
   const [timelineNowSecs, setTimelineNowSecs] = useState(0);
   const [timelineDurationSecs, setTimelineDurationSecs] = useState(0);
   const autoStartedRef = useRef(false);
+  const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
 
   const canStartPlayback = Boolean(descriptor?.file_id);
   const directContentType = useMemo(() => buildDirectContentType(mediaInfo), [mediaInfo]);
@@ -292,8 +304,9 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
+    audioStateRef.current = readVideoAudioState(video);
+    const preservedAudioState = audioStateRef.current;
     const shouldResumePlayback = !video.paused;
-    normalizeVideoVolume(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
     const knownDurationSeconds = Math.max(
@@ -345,6 +358,7 @@ export default function PlayerPage() {
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          liveDurationInfinity: false,
           // Allow large prebuffer so paused/slow users can preload more than ~30s.
           maxBufferLength: 600,
           maxMaxBufferLength: 1200,
@@ -374,8 +388,8 @@ export default function PlayerPage() {
           window.setTimeout(() => {
             applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
           }, 0);
+          applyVideoAudioState(video, preservedAudioState);
           if (shouldResumePlayback) {
-            normalizeVideoVolume(video);
             void video.play().catch(() => {});
           } else {
             video.pause();
@@ -414,6 +428,7 @@ export default function PlayerPage() {
       } else if (canNativeHls) {
         video.src = data.hls_url;
         video.load();
+        applyVideoAudioState(video, preservedAudioState);
         if (!shouldResumePlayback) {
           video.pause();
         }
@@ -438,7 +453,8 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
-    normalizeVideoVolume(video);
+    audioStateRef.current = readVideoAudioState(video);
+    const preservedAudioState = audioStateRef.current;
 
     setStartingDirect(true);
     setError('');
@@ -463,6 +479,7 @@ export default function PlayerPage() {
       setMode('direct');
       video.src = descriptor.direct_url;
       video.load();
+      applyVideoAudioState(video, preservedAudioState);
     } catch (e: unknown) {
       setError(clientErrorMessage(e, 'Direct Play failed; switching to HLS.'));
       await startHls();
@@ -555,6 +572,41 @@ export default function PlayerPage() {
   }, [destroyHls, sessionId, stopSession]);
 
   useEffect(() => {
+    if (mode !== 'hls') return;
+    const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
+    if (!hls) return;
+
+    const nextDuration = Math.max(
+      descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+      mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+    );
+    if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
+
+    const previousStop = hls.__stopKnownDurationEnforcer;
+    if (typeof previousStop === 'function') {
+      try {
+        previousStop();
+      } catch {
+        // no-op
+      }
+    }
+
+    const stop = installKnownDurationEnforcer(hls, nextDuration);
+    hls.__stopKnownDurationEnforcer = stop;
+    applyKnownDurationToHlsMediaSource(hls, nextDuration);
+
+    return () => {
+      if (hls.__stopKnownDurationEnforcer === stop) {
+        try {
+          stop();
+        } catch {
+          // no-op
+        }
+      }
+    };
+  }, [mode, descriptor?.duration_ms, mediaInfo?.duration_secs]);
+
+  useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const interval = setInterval(() => {
@@ -615,14 +667,18 @@ export default function PlayerPage() {
           playsInline
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
-            normalizeVideoVolume(video);
+            audioStateRef.current = readVideoAudioState(video);
             setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
           }}
           onPlay={(event) => {
-            normalizeVideoVolume(event.currentTarget);
+            const video = event.currentTarget;
+            applyVideoAudioState(video, audioStateRef.current);
+          }}
+          onVolumeChange={(event) => {
+            audioStateRef.current = readVideoAudioState(event.currentTarget);
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;

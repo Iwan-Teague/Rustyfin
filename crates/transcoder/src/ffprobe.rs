@@ -86,23 +86,40 @@ fn parse_probe_output(raw: &serde_json::Value) -> Result<MediaInfo, TranscodeErr
         .unwrap_or("unknown")
         .to_string();
 
-    let duration_secs: f64 = format
+    let streams = raw
+        .get("streams")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut duration_secs: f64 = format
         .get("duration")
         .and_then(|v| v.as_str())
-        .and_then(|s| s.parse().ok())
+        .and_then(parse_duration_seconds)
         .unwrap_or(0.0);
+
+    if duration_secs <= 0.0 {
+        duration_secs = streams
+            .iter()
+            .find_map(|s| {
+                s.get("duration")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_duration_seconds)
+                    .or_else(|| {
+                        s.get("tags")
+                            .and_then(|t| t.get("DURATION").or_else(|| t.get("duration")))
+                            .and_then(|v| v.as_str())
+                            .and_then(parse_duration_seconds)
+                    })
+            })
+            .unwrap_or(0.0);
+    }
 
     let bitrate_kbps: Option<u32> = format
         .get("bit_rate")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<u64>().ok())
         .map(|b| (b / 1000) as u32);
-
-    let streams = raw
-        .get("streams")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
 
     let mut video = None;
     let mut audio = Vec::new();
@@ -207,6 +224,45 @@ fn parse_fraction(s: &str) -> Option<f64> {
     }
 }
 
+fn parse_duration_seconds(raw: &str) -> Option<f64> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("n/a") {
+        return None;
+    }
+
+    if let Ok(seconds) = value.parse::<f64>() {
+        if seconds.is_finite() && seconds > 0.0 {
+            return Some(seconds);
+        }
+    }
+
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        [hours, minutes, seconds] => {
+            let h = hours.trim().parse::<f64>().ok()?;
+            let m = minutes.trim().parse::<f64>().ok()?;
+            let s = seconds.trim().parse::<f64>().ok()?;
+            let total = (h * 3600.0) + (m * 60.0) + s;
+            if total.is_finite() && total > 0.0 {
+                Some(total)
+            } else {
+                None
+            }
+        }
+        [minutes, seconds] => {
+            let m = minutes.trim().parse::<f64>().ok()?;
+            let s = seconds.trim().parse::<f64>().ok()?;
+            let total = (m * 60.0) + s;
+            if total.is_finite() && total > 0.0 {
+                Some(total)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +332,13 @@ mod tests {
         assert!(!info.subtitles[0].is_forced);
         assert_eq!(info.subtitles[1].codec, "hdmv_pgs_subtitle");
         assert!(info.subtitles[1].is_forced);
+    }
+
+    #[test]
+    fn parse_duration_seconds_variants() {
+        assert_eq!(parse_duration_seconds("01:02:03.500"), Some(3723.5));
+        assert_eq!(parse_duration_seconds("12:34"), Some(754.0));
+        assert_eq!(parse_duration_seconds("N/A"), None);
     }
 
     #[test]

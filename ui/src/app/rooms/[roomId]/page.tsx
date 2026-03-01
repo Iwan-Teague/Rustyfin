@@ -208,10 +208,7 @@ export default function WatchPartyRoomPage() {
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
   const videoPositionMs = realtime.roomState?.position_ms ?? 0;
-  const videoDurationMs =
-    playback.descriptor?.duration_ms && playback.descriptor.duration_ms > 0
-      ? playback.descriptor.duration_ms
-      : null;
+  const videoDurationMs = playback.knownDurationMs > 0 ? playback.knownDurationMs : null;
   const playbackDurationLabel = videoDurationMs
     ? `${formatPlaybackClock(videoPositionMs)} / ${formatPlaybackClock(videoDurationMs)}`
     : null;

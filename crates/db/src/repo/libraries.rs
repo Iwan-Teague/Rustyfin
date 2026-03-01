@@ -1,10 +1,6 @@
 use crate::DbPool;
 
-fn db_int_to_bool(v: i64) -> bool {
-    v != 0
-}
-
-fn bool_to_db_int(v: bool) -> i64 {
+fn bool_to_db_int(v: bool) -> i32 {
     if v { 1 } else { 0 }
 }
 
@@ -214,8 +210,10 @@ pub async fn get_library_paths(
     pool: &DbPool,
     library_id: &str,
 ) -> Result<Vec<LibraryPathRow>, sqlx::Error> {
-    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT id, library_id, path, is_read_only, created_ts FROM library_path WHERE library_id = $1",
+    let rows: Vec<(String, String, String, bool, i64)> = sqlx::query_as(
+        "SELECT id, library_id, path, (is_read_only <> 0) AS is_read_only, created_ts \
+         FROM library_path \
+         WHERE library_id = $1",
     )
     .bind(library_id)
     .fetch_all(pool)
@@ -228,7 +226,7 @@ pub async fn get_library_paths(
                 id,
                 library_id,
                 path,
-                is_read_only: db_int_to_bool(is_read_only),
+                is_read_only,
                 created_ts,
             },
         )
@@ -245,13 +243,13 @@ pub async fn get_library_paths_for_libraries(
 
     let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
-        "SELECT id, library_id, path, is_read_only, created_ts \
+        "SELECT id, library_id, path, (is_read_only <> 0) AS is_read_only, created_ts \
          FROM library_path \
          WHERE library_id IN ({placeholders}) \
          ORDER BY library_id, created_ts, id"
     );
 
-    let mut query = sqlx::query_as::<_, (String, String, String, i64, i64)>(&sql);
+    let mut query = sqlx::query_as::<_, (String, String, String, bool, i64)>(&sql);
     for library_id in library_ids {
         query = query.bind(library_id);
     }
@@ -264,7 +262,7 @@ pub async fn get_library_paths_for_libraries(
                 id,
                 library_id,
                 path,
-                is_read_only: db_int_to_bool(is_read_only),
+                is_read_only,
                 created_ts,
             },
         )
@@ -318,23 +316,32 @@ pub async fn get_library_settings(
 ) -> Result<Option<LibrarySettingsRow>, sqlx::Error> {
     let row: Option<(
         String,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
         String,
         Option<i64>,
-        i64,
-        i64,
-        i64,
-        i64,
+        bool,
+        bool,
+        bool,
+        bool,
         i64,
     )> = sqlx::query_as(
-        "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
-            tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
-            tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, \
-            updated_ts \
+        "SELECT library_id, \
+            (show_images <> 0) AS show_images, \
+            (prefer_local_artwork <> 0) AS prefer_local_artwork, \
+            (fetch_online_artwork <> 0) AS fetch_online_artwork, \
+            (tmdb_store_in_media_dir <> 0) AS tmdb_store_in_media_dir, \
+            (tmdb_sync_on_new_media <> 0) AS tmdb_sync_on_new_media, \
+            tmdb_sync_schedule, \
+            CAST(tmdb_last_sync_ts AS BIGINT) AS tmdb_last_sync_ts, \
+            (tmdb_fetch_posters <> 0) AS tmdb_fetch_posters, \
+            (tmdb_fetch_backdrops <> 0) AS tmdb_fetch_backdrops, \
+            (tmdb_fetch_metadata <> 0) AS tmdb_fetch_metadata, \
+            (tmdb_fetch_reviews <> 0) AS tmdb_fetch_reviews, \
+            CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM library_settings WHERE library_id = $1",
     )
     .bind(library_id)
@@ -359,17 +366,17 @@ pub async fn get_library_settings(
         )| {
             LibrarySettingsRow {
                 library_id,
-                show_images: db_int_to_bool(show_images),
-                prefer_local_artwork: db_int_to_bool(prefer_local_artwork),
-                fetch_online_artwork: db_int_to_bool(fetch_online_artwork),
-                tmdb_store_in_media_dir: db_int_to_bool(tmdb_store_in_media_dir),
-                tmdb_sync_on_new_media: db_int_to_bool(tmdb_sync_on_new_media),
+                show_images,
+                prefer_local_artwork,
+                fetch_online_artwork,
+                tmdb_store_in_media_dir,
+                tmdb_sync_on_new_media,
                 tmdb_sync_schedule,
                 tmdb_last_sync_ts,
-                tmdb_fetch_posters: db_int_to_bool(tmdb_fetch_posters),
-                tmdb_fetch_backdrops: db_int_to_bool(tmdb_fetch_backdrops),
-                tmdb_fetch_metadata: db_int_to_bool(tmdb_fetch_metadata),
-                tmdb_fetch_reviews: db_int_to_bool(tmdb_fetch_reviews),
+                tmdb_fetch_posters,
+                tmdb_fetch_backdrops,
+                tmdb_fetch_metadata,
+                tmdb_fetch_reviews,
                 updated_ts,
             }
         },
@@ -386,10 +393,19 @@ pub async fn get_library_settings_for_libraries(
 
     let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
-        "SELECT library_id, show_images, prefer_local_artwork, fetch_online_artwork, \
-                tmdb_store_in_media_dir, tmdb_sync_on_new_media, tmdb_sync_schedule, tmdb_last_sync_ts, \
-                tmdb_fetch_posters, tmdb_fetch_backdrops, tmdb_fetch_metadata, tmdb_fetch_reviews, \
-                updated_ts \
+        "SELECT library_id, \
+                (show_images <> 0) AS show_images, \
+                (prefer_local_artwork <> 0) AS prefer_local_artwork, \
+                (fetch_online_artwork <> 0) AS fetch_online_artwork, \
+                (tmdb_store_in_media_dir <> 0) AS tmdb_store_in_media_dir, \
+                (tmdb_sync_on_new_media <> 0) AS tmdb_sync_on_new_media, \
+                tmdb_sync_schedule, \
+                CAST(tmdb_last_sync_ts AS BIGINT) AS tmdb_last_sync_ts, \
+                (tmdb_fetch_posters <> 0) AS tmdb_fetch_posters, \
+                (tmdb_fetch_backdrops <> 0) AS tmdb_fetch_backdrops, \
+                (tmdb_fetch_metadata <> 0) AS tmdb_fetch_metadata, \
+                (tmdb_fetch_reviews <> 0) AS tmdb_fetch_reviews, \
+                CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM library_settings \
          WHERE library_id IN ({placeholders})"
     );
@@ -398,17 +414,17 @@ pub async fn get_library_settings_for_libraries(
         _,
         (
             String,
-            i64,
-            i64,
-            i64,
-            i64,
-            i64,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
             String,
             Option<i64>,
-            i64,
-            i64,
-            i64,
-            i64,
+            bool,
+            bool,
+            bool,
+            bool,
             i64,
         ),
     >(&sql);
@@ -436,17 +452,17 @@ pub async fn get_library_settings_for_libraries(
                 updated_ts,
             )| LibrarySettingsRow {
                 library_id,
-                show_images: db_int_to_bool(show_images),
-                prefer_local_artwork: db_int_to_bool(prefer_local_artwork),
-                fetch_online_artwork: db_int_to_bool(fetch_online_artwork),
-                tmdb_store_in_media_dir: db_int_to_bool(tmdb_store_in_media_dir),
-                tmdb_sync_on_new_media: db_int_to_bool(tmdb_sync_on_new_media),
+                show_images,
+                prefer_local_artwork,
+                fetch_online_artwork,
+                tmdb_store_in_media_dir,
+                tmdb_sync_on_new_media,
                 tmdb_sync_schedule,
                 tmdb_last_sync_ts,
-                tmdb_fetch_posters: db_int_to_bool(tmdb_fetch_posters),
-                tmdb_fetch_backdrops: db_int_to_bool(tmdb_fetch_backdrops),
-                tmdb_fetch_metadata: db_int_to_bool(tmdb_fetch_metadata),
-                tmdb_fetch_reviews: db_int_to_bool(tmdb_fetch_reviews),
+                tmdb_fetch_posters,
+                tmdb_fetch_backdrops,
+                tmdb_fetch_metadata,
+                tmdb_fetch_reviews,
                 updated_ts,
             },
         )
