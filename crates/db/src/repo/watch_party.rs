@@ -492,7 +492,7 @@ pub async fn list_invites_for_user(
 ) -> Result<Vec<WatchPartyInviteSummary>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, i64, String, String)> = sqlx::query_as(
         "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(NULLIF(r.room_name, ''), COALESCE(i.title, r.room_mode)), r.host_user_id, host.username, r.created_ts, \
-                CASE WHEN r.join_password_hash IS NULL OR r.join_password_hash = '' THEN 0 ELSE 1 END AS password_required, \
+                CAST(CASE WHEN r.join_password_hash IS NULL OR r.join_password_hash = '' THEN 0 ELSE 1 END AS BIGINT) AS password_required, \
                 m.role, m.status \
          FROM watch_party_member m \
          JOIN watch_party_room r ON r.id = m.room_id \
@@ -592,7 +592,7 @@ pub async fn list_public_rooms(pool: &DbPool) -> Result<Vec<PublicRoomRow>, sqlx
         sqlx::query_as(
             "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                     COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
-                    CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
+                    CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
                     COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                     r.created_ts \
              FROM watch_party_room r \
@@ -668,7 +668,7 @@ pub async fn list_admin_rooms(pool: &DbPool) -> Result<Vec<AdminRoomRow>, sqlx::
     )> = sqlx::query_as(
         "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                 COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
-                CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END, \
+                CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
                 r.invite_only, \
                 COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
                 r.status, r.created_ts, r.updated_ts \
@@ -1117,7 +1117,10 @@ pub async fn get_online_audio_track_by_video_id(
     video_id: &str,
 ) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
     let row: Option<OnlineAudioTrackTuple> = sqlx::query_as(
-        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, \
+                CAST(duration_ms AS BIGINT) AS duration_ms, \
+                CAST(created_ts AS BIGINT) AS created_ts, \
+                CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM watch_party_online_audio_track \
          WHERE room_id = $1 AND video_id = $2",
     )
@@ -1135,7 +1138,10 @@ pub async fn get_online_audio_track(
     track_id: &str,
 ) -> Result<Option<OnlineAudioTrackRow>, sqlx::Error> {
     let row: Option<OnlineAudioTrackTuple> = sqlx::query_as(
-        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, \
+                CAST(duration_ms AS BIGINT) AS duration_ms, \
+                CAST(created_ts AS BIGINT) AS created_ts, \
+                CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM watch_party_online_audio_track \
          WHERE room_id = $1 AND id = $2",
     )
@@ -1160,7 +1166,10 @@ pub async fn list_online_audio_tracks(
     let rows: Vec<OnlineAudioTrackTuple> = if let Some(search) = search {
         if let Some(ts_query) = build_pg_prefix_tsquery(search) {
             sqlx::query_as(
-                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
+                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, \
+                        CAST(t.duration_ms AS BIGINT) AS duration_ms, \
+                        CAST(t.created_ts AS BIGINT) AS created_ts, \
+                        CAST(t.updated_ts AS BIGINT) AS updated_ts \
                  FROM watch_party_online_audio_track t \
                  JOIN watch_party_online_audio_track_fts f \
                    ON f.track_id = t.id \
@@ -1179,7 +1188,10 @@ pub async fn list_online_audio_tracks(
         } else {
             let search = format!("%{}%", search.to_lowercase());
             sqlx::query_as(
-                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, t.duration_ms, t.created_ts, t.updated_ts \
+                "SELECT t.id, t.room_id, t.video_id, t.title, t.channel, t.thumbnail_url, t.file_path, \
+                        CAST(t.duration_ms AS BIGINT) AS duration_ms, \
+                        CAST(t.created_ts AS BIGINT) AS created_ts, \
+                        CAST(t.updated_ts AS BIGINT) AS updated_ts \
                  FROM watch_party_online_audio_track t \
                  JOIN watch_party_online_audio_track_fts f \
                    ON f.track_id = t.id \
@@ -1198,7 +1210,10 @@ pub async fn list_online_audio_tracks(
         }
     } else {
         sqlx::query_as(
-            "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+            "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, \
+                    CAST(duration_ms AS BIGINT) AS duration_ms, \
+                    CAST(created_ts AS BIGINT) AS created_ts, \
+                    CAST(updated_ts AS BIGINT) AS updated_ts \
              FROM watch_party_online_audio_track \
              WHERE room_id = $1 \
              ORDER BY created_ts DESC, updated_ts DESC \
@@ -1241,7 +1256,10 @@ pub async fn list_online_audio_tracks_by_ids(
 
     let placeholders = crate::repo::dollar_placeholders(2, track_ids.len());
     let sql = format!(
-        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, duration_ms, created_ts, updated_ts \
+        "SELECT id, room_id, video_id, title, channel, thumbnail_url, file_path, \
+                CAST(duration_ms AS BIGINT) AS duration_ms, \
+                CAST(created_ts AS BIGINT) AS created_ts, \
+                CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM watch_party_online_audio_track \
          WHERE room_id = $1 AND id IN ({placeholders})"
     );

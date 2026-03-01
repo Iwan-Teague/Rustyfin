@@ -145,9 +145,30 @@ function resetVideoSourceForMse(video: HTMLVideoElement): void {
   video.load();
 }
 
+function resolveHlsMediaSource(hls: unknown): MediaSource | null {
+  const candidate = hls as {
+    mediaSource?: unknown;
+    bufferController?: { mediaSource?: unknown };
+    coreComponents?: Array<{ mediaSource?: unknown }>;
+  } | null;
+  if (!candidate) return null;
+  if (candidate.mediaSource instanceof MediaSource) return candidate.mediaSource;
+  if (candidate.bufferController?.mediaSource instanceof MediaSource) {
+    return candidate.bufferController.mediaSource;
+  }
+  if (Array.isArray(candidate.coreComponents)) {
+    for (const component of candidate.coreComponents) {
+      if (component?.mediaSource instanceof MediaSource) {
+        return component.mediaSource;
+      }
+    }
+  }
+  return null;
+}
+
 function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: number): void {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
-  const mediaSource = (hls as { mediaSource?: MediaSource } | null)?.mediaSource;
+  const mediaSource = resolveHlsMediaSource(hls);
   if (!mediaSource || typeof mediaSource.duration !== 'number') return;
   try {
     if (mediaSource.readyState === 'open') {
@@ -173,6 +194,8 @@ function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: n
     details.totalduration = durationSeconds;
     details.edge = durationSeconds;
   }
+  details.live = false;
+  details.type = 'VOD';
 }
 
 function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): () => void {
