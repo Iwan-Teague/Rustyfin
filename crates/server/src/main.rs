@@ -8,9 +8,8 @@ fn hw_accel_runtime_available(accel: &rustfin_transcoder::HwAccel) -> bool {
         rustfin_transcoder::HwAccel::Nvenc => {
             Path::new("/dev/nvidiactl").exists() || Path::new("/dev/nvidia0").exists()
         }
-        rustfin_transcoder::HwAccel::Vaapi | rustfin_transcoder::HwAccel::Qsv => {
-            rustfin_transcoder::gpu::vaapi_device_exists()
-        }
+        rustfin_transcoder::HwAccel::Vaapi => rustfin_transcoder::gpu::vaapi_device_exists(),
+        rustfin_transcoder::HwAccel::Qsv => rustfin_transcoder::gpu::qsv_device_exists(),
         rustfin_transcoder::HwAccel::VideoToolbox => cfg!(target_os = "macos"),
     }
 }
@@ -22,11 +21,11 @@ fn select_auto_hw_accel(
     if caps.nvenc {
         candidates.push(rustfin_transcoder::HwAccel::Nvenc);
     }
-    if caps.qsv {
-        candidates.push(rustfin_transcoder::HwAccel::Qsv);
-    }
     if caps.vaapi {
         candidates.push(rustfin_transcoder::HwAccel::Vaapi);
+    }
+    if caps.qsv {
+        candidates.push(rustfin_transcoder::HwAccel::Qsv);
     }
     if caps.videotoolbox {
         candidates.push(rustfin_transcoder::HwAccel::VideoToolbox);

@@ -2091,6 +2091,14 @@ fn attach_stream_token_to_playlist(playlist: &str, token: &str) -> String {
     out
 }
 
+fn last_non_empty_lines(content: &str, max_lines: usize) -> String {
+    let mut lines: Vec<&str> = content.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.len() > max_lines {
+        lines = lines.split_off(lines.len() - max_lines);
+    }
+    lines.join(" | ")
+}
+
 async fn authorize_hls_session_request(
     state: &AppState,
     sid: &str,
@@ -2166,6 +2174,21 @@ async fn hls_master(
     }
 
     if !path.exists() {
+        let ffmpeg_log_tail = state
+            .transcoder
+            .get_file_path(&sid, "ffmpeg.log")
+            .await
+            .ok()
+            .and_then(|log_path| std::fs::read_to_string(log_path).ok())
+            .map(|content| last_non_empty_lines(&content, 6))
+            .filter(|tail| !tail.is_empty());
+
+        if let Some(tail) = ffmpeg_log_tail {
+            return Err(ApiError::Internal(format!(
+                "playlist not ready yet; ffmpeg log: {tail}"
+            ))
+            .into());
+        }
         return Err(ApiError::Internal("playlist not ready yet".into()).into());
     }
 
