@@ -1587,6 +1587,7 @@ struct PlaybackDescriptorResponse {
     direct_url: String,
     hls_start_url: String,
     media_info_url: String,
+    duration_ms: Option<i64>,
 }
 
 fn item_image_url(item_id: &str, img_type: &str, include_images: bool) -> Option<String> {
@@ -1714,6 +1715,7 @@ async fn get_item_playback(
         direct_url: format!("/stream/file/{file_id}?st={token}"),
         hls_start_url: "/api/v1/playback/sessions".to_string(),
         media_info_url: format!("/api/v1/playback/info/{file_id}"),
+        duration_ms: item.duration_ms,
     }))
 }
 
@@ -2092,7 +2094,11 @@ fn attach_stream_token_to_playlist(playlist: &str, token: &str) -> String {
 }
 
 fn last_non_empty_lines(content: &str, max_lines: usize) -> String {
-    let mut lines: Vec<&str> = content.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut lines: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.len() > max_lines {
         lines = lines.split_off(lines.len() - max_lines);
     }
@@ -2184,10 +2190,9 @@ async fn hls_master(
             .filter(|tail| !tail.is_empty());
 
         if let Some(tail) = ffmpeg_log_tail {
-            return Err(ApiError::Internal(format!(
-                "playlist not ready yet; ffmpeg log: {tail}"
-            ))
-            .into());
+            return Err(
+                ApiError::Internal(format!("playlist not ready yet; ffmpeg log: {tail}")).into(),
+            );
         }
         return Err(ApiError::Internal("playlist not ready yet".into()).into());
     }

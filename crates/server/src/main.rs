@@ -1,22 +1,11 @@
 use anyhow::{Context, bail};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-fn hw_accel_runtime_available(accel: &rustfin_transcoder::HwAccel) -> bool {
-    match accel {
-        rustfin_transcoder::HwAccel::Nvenc => {
-            Path::new("/dev/nvidiactl").exists() || Path::new("/dev/nvidia0").exists()
-        }
-        rustfin_transcoder::HwAccel::Vaapi => rustfin_transcoder::gpu::vaapi_device_exists(),
-        rustfin_transcoder::HwAccel::Qsv => rustfin_transcoder::gpu::qsv_device_exists(),
-        rustfin_transcoder::HwAccel::VideoToolbox => cfg!(target_os = "macos"),
-    }
-}
-
-fn select_auto_hw_accel(
+fn auto_hw_accel_candidates(
     caps: &rustfin_transcoder::gpu::GpuCapabilities,
-) -> Option<rustfin_transcoder::HwAccel> {
+) -> Vec<rustfin_transcoder::HwAccel> {
     let mut candidates = Vec::new();
     if caps.nvenc {
         candidates.push(rustfin_transcoder::HwAccel::Nvenc);
@@ -30,8 +19,33 @@ fn select_auto_hw_accel(
     if caps.videotoolbox {
         candidates.push(rustfin_transcoder::HwAccel::VideoToolbox);
     }
+    candidates
+}
 
-    candidates.into_iter().find(hw_accel_runtime_available)
+async fn select_first_working_hw_accel(
+    ffmpeg_path: &Path,
+    candidates: Vec<rustfin_transcoder::HwAccel>,
+) -> (Option<rustfin_transcoder::HwAccel>, Option<PathBuf>) {
+    for candidate in candidates {
+        match rustfin_transcoder::gpu::probe_runtime(ffmpeg_path, &candidate).await {
+            Ok(device_path) => {
+                info!(
+                    selected = ?candidate,
+                    hw_device = ?device_path,
+                    "transcoder hardware acceleration runtime probe succeeded"
+                );
+                return (Some(candidate), device_path);
+            }
+            Err(err) => {
+                warn!(
+                    candidate = ?candidate,
+                    error = %err,
+                    "transcoder hardware acceleration runtime probe failed; trying next candidate"
+                );
+            }
+        }
+    }
+    (None, None)
 }
 
 fn parse_hw_accel_mode(mode: &str) -> Option<rustfin_transcoder::HwAccel> {
@@ -185,40 +199,51 @@ async fn main() -> anyhow::Result<()> {
     let hw_accel_mode = hw_accel_mode_raw.trim().to_ascii_lowercase();
     let require_hw_accel = parse_env_bool("RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL", false);
 
-    let selected_hw_accel = match hw_accel_mode.as_str() {
+    let (selected_hw_accel, selected_hw_device_path) = match hw_accel_mode.as_str() {
         "" | "auto" => {
             let caps = rustfin_transcoder::gpu::detect(Path::new(&ffmpeg_path)).await;
-            let selected = select_auto_hw_accel(&caps);
+            let (selected, hw_device) = select_first_working_hw_accel(
+                Path::new(&ffmpeg_path),
+                auto_hw_accel_candidates(&caps),
+            )
+            .await;
             info!(
                 mode = "auto",
                 ?caps,
                 selected = ?selected,
+                hw_device = ?hw_device,
                 "transcoder hardware acceleration auto-detected"
             );
-            selected
+            (selected, hw_device)
         }
         "none" | "off" | "cpu" | "disabled" => {
             info!(
                 mode = %hw_accel_mode,
                 "transcoder hardware acceleration explicitly disabled"
             );
-            None
+            (None, None)
         }
         _ => {
             if let Some(accel) = parse_hw_accel_mode(&hw_accel_mode) {
-                if hw_accel_runtime_available(&accel) {
-                    info!(
-                        mode = %hw_accel_mode,
-                        selected = ?accel,
-                        "transcoder hardware acceleration configured from environment"
-                    );
-                    Some(accel)
-                } else {
-                    warn!(
-                        mode = %hw_accel_mode,
-                        "requested hardware acceleration is not available in this runtime; using CPU"
-                    );
-                    None
+                match rustfin_transcoder::gpu::probe_runtime(Path::new(&ffmpeg_path), &accel).await
+                {
+                    Ok(hw_device) => {
+                        info!(
+                            mode = %hw_accel_mode,
+                            selected = ?accel,
+                            hw_device = ?hw_device,
+                            "transcoder hardware acceleration configured from environment"
+                        );
+                        (Some(accel), hw_device)
+                    }
+                    Err(err) => {
+                        warn!(
+                            mode = %hw_accel_mode,
+                            error = %err,
+                            "requested hardware acceleration is not available in this runtime; using CPU"
+                        );
+                        (None, None)
+                    }
                 }
             } else {
                 warn!(
@@ -226,14 +251,19 @@ async fn main() -> anyhow::Result<()> {
                     "unknown RUSTFIN_TRANSCODER_HW_ACCEL value; falling back to auto detection"
                 );
                 let caps = rustfin_transcoder::gpu::detect(Path::new(&ffmpeg_path)).await;
-                let selected = select_auto_hw_accel(&caps);
+                let (selected, hw_device) = select_first_working_hw_accel(
+                    Path::new(&ffmpeg_path),
+                    auto_hw_accel_candidates(&caps),
+                )
+                .await;
                 info!(
                     mode = "auto-fallback",
                     ?caps,
                     selected = ?selected,
+                    hw_device = ?hw_device,
                     "transcoder hardware acceleration auto-detected"
                 );
-                selected
+                (selected, hw_device)
             }
         }
     };
@@ -249,6 +279,7 @@ async fn main() -> anyhow::Result<()> {
         transcode_dir: transcode_dir.into(),
         max_concurrent: max_transcodes,
         hw_accel: selected_hw_accel.clone(),
+        hw_device_path: selected_hw_device_path.clone(),
         ..Default::default()
     };
 

@@ -105,6 +105,7 @@ impl SessionManager {
             target_height,
             video_codec_override,
             self.config.hw_accel.as_ref(),
+            self.config.hw_device_path.as_deref(),
         )
         .await?;
 
@@ -239,6 +240,7 @@ async fn spawn_ffmpeg(
     target_height: Option<u32>,
     video_codec_override: Option<&str>,
     hw_accel: Option<&HwAccel>,
+    hw_device_path: Option<&Path>,
 ) -> Result<Child, TranscodeError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
     let active_hw_accel = hw_accel;
@@ -250,17 +252,24 @@ async fn spawn_ffmpeg(
                 args.extend(["-hwaccel".into(), "cuda".into()]);
             }
             HwAccel::Vaapi => {
+                let device = hw_device_path
+                    .unwrap_or_else(|| Path::new("/dev/dri/renderD128"))
+                    .to_string_lossy()
+                    .into_owned();
                 args.extend([
                     "-hwaccel".into(),
                     "vaapi".into(),
                     "-hwaccel_output_format".into(),
                     "vaapi".into(),
                     "-vaapi_device".into(),
-                    "/dev/dri/renderD128".into(),
+                    device,
                 ]);
             }
             HwAccel::Qsv => {
                 args.extend(["-hwaccel".into(), "qsv".into()]);
+                if let Some(device) = hw_device_path {
+                    args.extend(["-qsv_device".into(), device.to_string_lossy().into_owned()]);
+                }
             }
             HwAccel::VideoToolbox => {
                 args.extend(["-hwaccel".into(), "videotoolbox".into()]);
