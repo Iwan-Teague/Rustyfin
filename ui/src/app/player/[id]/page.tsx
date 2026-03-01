@@ -406,11 +406,17 @@ export default function PlayerPage() {
           stopDurationEnforcer;
         hlsRef.current = hls;
         let networkRecoveries = 0;
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        const reinforceKnownDuration = (data?: unknown) => {
+          if (data) {
+            forceKnownDurationInLevelDetails(data, knownDurationSeconds);
+          }
           applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
           window.setTimeout(() => {
             applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
           }, 0);
+        };
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          reinforceKnownDuration();
           applyVideoAudioState(video, preservedAudioState);
           if (shouldResumePlayback) {
             void video.play().catch(() => {});
@@ -419,11 +425,13 @@ export default function PlayerPage() {
           }
         });
         hls.on(Hls.Events.LEVEL_LOADED, (_event: any, data: any) => {
-          forceKnownDurationInLevelDetails(data, knownDurationSeconds);
-          applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
-          window.setTimeout(() => {
-            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
-          }, 0);
+          reinforceKnownDuration(data);
+        });
+        hls.on(Hls.Events.LEVEL_UPDATED, (_event: any, data: any) => {
+          reinforceKnownDuration(data);
+        });
+        hls.on(Hls.Events.FRAG_BUFFERED, () => {
+          reinforceKnownDuration();
         });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (!data?.fatal) return;

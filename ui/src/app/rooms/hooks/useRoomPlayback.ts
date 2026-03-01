@@ -365,11 +365,17 @@ export function useRoomPlayback({
             stopDurationEnforcer;
           hlsRef.current = hls;
           let networkRecoveries = 0;
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          const reinforceKnownDuration = (data?: unknown) => {
+            if (data) {
+              forceKnownDurationInLevelDetails(data, knownDurationSeconds);
+            }
             applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
             window.setTimeout(() => {
               applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
             }, 0);
+          };
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            reinforceKnownDuration();
             applyVideoAudioState(video, preservedAudioState);
             if (roomState) {
               void applyRemoteState(roomState);
@@ -387,11 +393,13 @@ export function useRoomPlayback({
             }
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: unknown) => {
-            forceKnownDurationInLevelDetails(data, knownDurationSeconds);
-            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
-            window.setTimeout(() => {
-              applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
-            }, 0);
+            reinforceKnownDuration(data);
+          });
+          hls.on(Hls.Events.LEVEL_UPDATED, (_event: unknown, data: unknown) => {
+            reinforceKnownDuration(data);
+          });
+          hls.on(Hls.Events.FRAG_BUFFERED, () => {
+            reinforceKnownDuration();
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: any) => {
             if (!data?.fatal) return;
