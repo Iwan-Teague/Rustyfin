@@ -43,6 +43,8 @@ pub struct AppState {
     pub transcoder: Arc<rustfin_transcoder::session::SessionManager>,
     pub ffmpeg_path: std::path::PathBuf,
     pub ffprobe_path: std::path::PathBuf,
+    pub transcoder_hw_accel: Option<rustfin_transcoder::HwAccel>,
+    pub transcoder_hw_accel_required: bool,
     pub cache_dir: std::path::PathBuf,
     pub watch_party_audio_dir: std::path::PathBuf,
     pub events: tokio::sync::broadcast::Sender<ServerEvent>,

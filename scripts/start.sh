@@ -203,11 +203,13 @@ maybe_enable_linux_hwaccel_overlay() {
     fi
     echo "    environment:"
     echo "      - RUSTFIN_TRANSCODER_HW_ACCEL=\${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
+    echo "      - RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=\${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
   } > "$overlay_file"
 
   COMPOSE_FILES+=("$overlay_file")
   export RUSTFIN_TRANSCODER_HW_ACCEL="${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
-  info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode)."
+  export RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
+  info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode, strict requirement on)."
   if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
     info "Applied supplemental GPU group IDs inside container: ${dri_group_ids[*]}"
   fi

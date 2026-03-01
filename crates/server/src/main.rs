@@ -45,6 +45,18 @@ fn parse_hw_accel_mode(mode: &str) -> Option<rustfin_transcoder::HwAccel> {
     }
 }
 
+fn parse_env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
 fn probe_binary(path: &Path, name: &str) {
     match std::process::Command::new(path).arg("-version").output() {
         Ok(out) if out.status.success() => {
@@ -172,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
     let hw_accel_mode_raw =
         std::env::var("RUSTFIN_TRANSCODER_HW_ACCEL").unwrap_or_else(|_| "auto".to_string());
     let hw_accel_mode = hw_accel_mode_raw.trim().to_ascii_lowercase();
+    let require_hw_accel = parse_env_bool("RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL", false);
 
     let selected_hw_accel = match hw_accel_mode.as_str() {
         "" | "auto" => {
@@ -225,13 +238,18 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
+    if require_hw_accel && selected_hw_accel.is_none() {
+        bail!(
+            "RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL is enabled but no usable hardware transcoder was detected (mode={hw_accel_mode})"
+        );
+    }
 
     let tc_config = rustfin_transcoder::TranscoderConfig {
         ffmpeg_path: ffmpeg_path.clone().into(),
         ffprobe_path: ffprobe_path.clone().into(),
         transcode_dir: transcode_dir.into(),
         max_concurrent: max_transcodes,
-        hw_accel: selected_hw_accel,
+        hw_accel: selected_hw_accel.clone(),
         ..Default::default()
     };
 
@@ -287,6 +305,8 @@ async fn main() -> anyhow::Result<()> {
         transcoder: session_mgr,
         ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
         ffprobe_path: std::path::PathBuf::from(&ffprobe_path),
+        transcoder_hw_accel: selected_hw_accel.clone(),
+        transcoder_hw_accel_required: require_hw_accel,
         cache_dir,
         watch_party_audio_dir: watch_party_audio_dir.clone(),
         events: events_tx,

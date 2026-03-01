@@ -50,6 +50,8 @@ services:
       - RUSTFIN_CACHE_DIR=/cache
       - RUSTFIN_WS_ALLOWED_ORIGINS=${RUSTFIN_WS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       - RUSTFIN_RUN_MIGRATIONS=${RUSTFIN_RUN_MIGRATIONS:-true}
+      - RUSTFIN_TRANSCODER_HW_ACCEL=${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}
+      - RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-0}
     depends_on:
       postgres:
         condition: service_healthy
