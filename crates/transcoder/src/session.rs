@@ -257,10 +257,6 @@ async fn spawn_ffmpeg(
                     .to_string_lossy()
                     .into_owned();
                 args.extend([
-                    "-hwaccel".into(),
-                    "vaapi".into(),
-                    "-hwaccel_output_format".into(),
-                    "vaapi".into(),
                     "-vaapi_device".into(),
                     device,
                 ]);
@@ -296,13 +292,21 @@ async fn spawn_ffmpeg(
         "-dn".into(),
     ]);
 
-    if let Some(height) = target_height {
-        // Preserve hardware encode paths when possible while applying target height.
-        let filter = match active_hw_accel {
-            Some(HwAccel::Vaapi) => format!("scale_vaapi=w=-2:h={height}"),
-            Some(HwAccel::Qsv) => format!("vpp_qsv=w=-2:h={height}"),
-            _ => format!("scale=-2:min(ih\\,{height})"),
-        };
+    // Filters / format conversion.
+    let vf = match active_hw_accel {
+        // For VAAPI, decode in software then upload to VAAPI. This is more robust
+        // across 10-bit HDR sources than forcing vaapi decode/output.
+        Some(HwAccel::Vaapi) => {
+            let mut chain = vec!["format=nv12".to_string(), "hwupload".to_string()];
+            if let Some(height) = target_height {
+                chain.push(format!("scale_vaapi=w=-2:h={height}"));
+            }
+            Some(chain.join(","))
+        }
+        Some(HwAccel::Qsv) => target_height.map(|height| format!("vpp_qsv=w=-2:h={height}")),
+        _ => target_height.map(|height| format!("scale=-2:min(ih\\,{height})")),
+    };
+    if let Some(filter) = vf {
         args.extend(["-vf".into(), filter]);
     }
 
@@ -321,6 +325,9 @@ async fn spawn_ffmpeg(
     };
 
     args.extend(["-c:v".into(), vcodec]);
+    if matches!(active_hw_accel, Some(HwAccel::Vaapi)) {
+        args.extend(["-profile:v".into(), "high".into()]);
+    }
 
     // Video encoding params for software encode
     if active_hw_accel.is_none() && video_codec_override.is_none() {
