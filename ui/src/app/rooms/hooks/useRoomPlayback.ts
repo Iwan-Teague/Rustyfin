@@ -14,17 +14,32 @@ type UseRoomPlaybackArgs = {
   setInfo: (message: string) => void;
 };
 
-function normalizeVideoVolume(video: HTMLVideoElement): void {
-  // Preserve user mute/unmute choice; only normalize invalid volume values.
-  if (!Number.isFinite(video.volume)) {
-    video.volume = 1;
-    return;
-  }
-  if (video.volume < 0) {
-    video.volume = 0;
-  } else if (video.volume > 1) {
-    video.volume = 1;
-  }
+type MediaInfo = {
+  duration_secs?: number;
+};
+
+type VideoAudioState = {
+  muted: boolean;
+  volume: number;
+};
+
+function clampVideoVolume(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function readVideoAudioState(video: HTMLVideoElement): VideoAudioState {
+  return {
+    muted: video.muted,
+    volume: clampVideoVolume(video.volume),
+  };
+}
+
+function applyVideoAudioState(video: HTMLVideoElement, state: VideoAudioState): void {
+  video.volume = clampVideoVolume(state.volume);
+  video.muted = state.muted;
 }
 
 function resetVideoSourceForMse(video: HTMLVideoElement): void {
@@ -104,6 +119,7 @@ export function useRoomPlayback({
   setInfo,
 }: UseRoomPlaybackArgs) {
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
+  const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
@@ -114,6 +130,7 @@ export function useRoomPlayback({
   const sessionIdRef = useRef<string | null>(null);
   const applyingRemoteRef = useRef(false);
   const autoPreloadedItemRef = useRef<string | null>(null);
+  const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
 
   const isAudioRoom = room?.room_mode === 'audio';
   const isWebRoom = room?.room_mode === 'web';
@@ -156,6 +173,7 @@ export function useRoomPlayback({
       sessionIdRef.current = null;
     }
     setDescriptor(null);
+    setMediaInfo(null);
     setMode('direct');
   }, [destroyHls, stopSession]);
 
@@ -172,7 +190,7 @@ export function useRoomPlayback({
     }
 
     if (stateMessage.playing && video.paused) {
-      normalizeVideoVolume(video);
+      applyVideoAudioState(video, audioStateRef.current);
       await video.play().catch(() => {});
     }
 
@@ -208,17 +226,19 @@ export function useRoomPlayback({
 
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
-        normalizeVideoVolume(video);
+        audioStateRef.current = readVideoAudioState(video);
+        const preservedAudioState = audioStateRef.current;
 
         setMode('direct');
         video.src = descriptor.direct_url;
         video.load();
+        applyVideoAudioState(video, preservedAudioState);
         await waitForVideoMetadata(video);
 
         if (roomState) {
           await applyRemoteState(roomState);
         } else if (options.autoplayWhenNoState ?? true) {
-          normalizeVideoVolume(video);
+          applyVideoAudioState(video, preservedAudioState);
           await video.play().catch(() => {});
         } else {
           video.pause();
@@ -261,13 +281,16 @@ export function useRoomPlayback({
       try {
         const video = videoRef.current;
         if (!video) throw new Error('Video element is not ready');
-        normalizeVideoVolume(video);
+        audioStateRef.current = readVideoAudioState(video);
+        const preservedAudioState = audioStateRef.current;
         const selectedTargetHeight =
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
             : hlsTargetHeight;
-        const knownDurationSeconds =
-          descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0;
+        const knownDurationSeconds = Math.max(
+          descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+          mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+        );
         destroyHls();
         if (sessionIdRef.current) {
           await stopSession(sessionIdRef.current);
@@ -294,6 +317,7 @@ export function useRoomPlayback({
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
+            liveDurationInfinity: false,
             // Preload a deeper forward buffer for smoother watch-party playback.
             maxBufferLength: 600,
             maxMaxBufferLength: 1200,
@@ -323,10 +347,10 @@ export function useRoomPlayback({
             window.setTimeout(() => {
               applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
             }, 0);
+            applyVideoAudioState(video, preservedAudioState);
             if (roomState) {
               void applyRemoteState(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
-              normalizeVideoVolume(video);
               void video.play().catch(() => {});
             } else {
               video.pause();
@@ -373,11 +397,11 @@ export function useRoomPlayback({
         } else if (canNativeHls) {
           video.src = session.hls_url;
           video.load();
+          applyVideoAudioState(video, preservedAudioState);
           await waitForVideoMetadata(video);
           if (roomState) {
             await applyRemoteState(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
-            normalizeVideoVolume(video);
             await video.play().catch(() => {});
           } else {
             video.pause();
@@ -411,6 +435,7 @@ export function useRoomPlayback({
       setError,
       setInfo,
       hlsTargetHeight,
+      mediaInfo,
     ],
   );
 
@@ -418,6 +443,7 @@ export function useRoomPlayback({
     if (!room || !joinedRole || !isVideoRoom) return;
     if (!room.item_id || room.item_id.trim().length === 0) {
       setDescriptor(null);
+      setMediaInfo(null);
       return;
     }
 
@@ -427,6 +453,15 @@ export function useRoomPlayback({
       .then((data) => {
         if (cancelled) return;
         setDescriptor(data);
+        void apiJson<MediaInfo>(data.media_info_url)
+          .then((info) => {
+            if (!cancelled) {
+              setMediaInfo(info);
+            }
+          })
+          .catch(() => {
+            // Media info fetch is best-effort and only used for duration stabilization.
+          });
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -442,6 +477,21 @@ export function useRoomPlayback({
   useEffect(() => {
     autoPreloadedItemRef.current = null;
   }, [room?.item_id, room?.room_mode]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const syncAudioState = () => {
+      audioStateRef.current = readVideoAudioState(video);
+    };
+    syncAudioState();
+    video.addEventListener('volumechange', syncAudioState);
+    video.addEventListener('loadedmetadata', syncAudioState);
+    return () => {
+      video.removeEventListener('volumechange', syncAudioState);
+      video.removeEventListener('loadedmetadata', syncAudioState);
+    };
+  }, [room?.item_id]);
 
   useEffect(() => {
     if (!room || !joinedRole || !isVideoRoom || !descriptor) return;
@@ -478,6 +528,41 @@ export function useRoomPlayback({
   ]);
 
   useEffect(() => {
+    if (mode !== 'hls') return;
+    const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
+    if (!hls) return;
+
+    const nextDuration = Math.max(
+      descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+      mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+    );
+    if (!Number.isFinite(nextDuration) || nextDuration <= 0) return;
+
+    const previousStop = hls.__stopKnownDurationEnforcer;
+    if (typeof previousStop === 'function') {
+      try {
+        previousStop();
+      } catch {
+        // no-op
+      }
+    }
+
+    const stop = installKnownDurationEnforcer(hls, nextDuration);
+    hls.__stopKnownDurationEnforcer = stop;
+    applyKnownDurationToHlsMediaSource(hls, nextDuration);
+
+    return () => {
+      if (hls.__stopKnownDurationEnforcer === stop) {
+        try {
+          stop();
+        } catch {
+          // no-op
+        }
+      }
+    };
+  }, [mode, descriptor?.duration_ms, mediaInfo?.duration_secs]);
+
+  useEffect(() => {
     return () => {
       destroyHls();
       if (sessionIdRef.current) {
@@ -487,8 +572,16 @@ export function useRoomPlayback({
     };
   }, [destroyHls, stopSession]);
 
+  const knownDurationMs = Math.floor(
+    Math.max(
+      descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms : 0,
+      mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs * 1000 : 0,
+    ),
+  );
+
   return {
     descriptor,
+    knownDurationMs,
     mode,
     startingDirect,
     startingHls,
