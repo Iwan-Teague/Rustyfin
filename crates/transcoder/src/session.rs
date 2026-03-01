@@ -365,15 +365,12 @@ async fn spawn_ffmpeg(
         segment_secs.to_string(),
         "-hls_list_size".into(),
         "0".into(),
-        // VOD + known duration stabilization gives the browser a fixed timeline
-        // while still allowing incremental segment generation.
         "-hls_playlist_type".into(),
-        "vod".into(),
+        "event".into(),
         "-hls_segment_filename".into(),
         seg_pattern.to_string_lossy().into_owned(),
         "-hls_flags".into(),
-        // temp_file avoids partial playlist reads that can trigger HLS level load errors.
-        "independent_segments+temp_file".into(),
+        "independent_segments+append_list".into(),
         master.to_string_lossy().into_owned(),
     ]);
 
