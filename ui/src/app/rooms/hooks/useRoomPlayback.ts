@@ -32,6 +32,22 @@ function resetVideoSourceForMse(video: HTMLVideoElement): void {
   video.load();
 }
 
+function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: number): void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+  const mediaSource = (hls as { mediaSource?: MediaSource } | null)?.mediaSource;
+  if (!mediaSource || typeof mediaSource.duration !== 'number') return;
+  try {
+    if (mediaSource.readyState === 'open') {
+      const current = mediaSource.duration;
+      if (!Number.isFinite(current) || current < durationSeconds - 0.5) {
+        mediaSource.duration = durationSeconds;
+      }
+    }
+  } catch {
+    // Some browsers may reject duration writes while updating source buffers.
+  }
+}
+
 async function waitForVideoMetadata(
   video: HTMLVideoElement,
   timeoutMs = 5000,
@@ -214,6 +230,8 @@ export function useRoomPlayback({
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
             : hlsTargetHeight;
+        const knownDurationSeconds =
+          descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0;
         destroyHls();
         if (sessionIdRef.current) {
           await stopSession(sessionIdRef.current);
@@ -249,6 +267,7 @@ export function useRoomPlayback({
           });
           hlsRef.current = hls;
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
             if (roomState) {
               void applyRemoteState(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
@@ -264,6 +283,9 @@ export function useRoomPlayback({
                 // Some browsers may block programmatic seek before enough data is ready.
               }
             }
+          });
+          hls.on(Hls.Events.LEVEL_LOADED, () => {
+            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: { fatal?: boolean; details?: string }) => {
             if (data?.fatal) {
