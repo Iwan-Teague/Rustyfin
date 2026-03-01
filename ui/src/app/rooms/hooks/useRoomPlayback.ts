@@ -99,8 +99,6 @@ function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: n
     details.totalduration = durationSeconds;
     details.edge = durationSeconds;
   }
-  details.live = false;
-  details.type = 'VOD';
 }
 
 function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): () => void {
