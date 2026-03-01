@@ -192,7 +192,10 @@ pub async fn get_room(
         String,
     )> =
         sqlx::query_as(
-            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, created_ts, updated_ts, room_mode, COALESCE(audio_source, 'library'), audio_library_id, youtube_video_id, web_url, COALESCE(create_tool, 'text'), COALESCE(create_document_name, 'Untitled Document') \
+            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, \
+                    CAST(created_ts AS BIGINT) AS created_ts, \
+                    CAST(updated_ts AS BIGINT) AS updated_ts, \
+                    room_mode, COALESCE(audio_source, 'library'), audio_library_id, youtube_video_id, web_url, COALESCE(create_tool, 'text'), COALESCE(create_document_name, 'Untitled Document') \
              FROM watch_party_room WHERE id = $1",
         )
         .bind(room_id)
@@ -254,7 +257,10 @@ pub async fn list_members(
         Option<i64>,
         Option<i64>,
     )> = sqlx::query_as(
-        "SELECT room_id, user_id, role, status, invited_by, invited_ts, joined_ts, last_seen_ts \
+        "SELECT room_id, user_id, role, status, invited_by, \
+                CAST(invited_ts AS BIGINT) AS invited_ts, \
+                CAST(joined_ts AS BIGINT) AS joined_ts, \
+                CAST(last_seen_ts AS BIGINT) AS last_seen_ts \
              FROM watch_party_member WHERE room_id = $1 ORDER BY invited_ts ASC, user_id ASC",
     )
     .bind(room_id)
@@ -295,7 +301,11 @@ pub async fn list_members_with_usernames(
         Option<i64>,
         String,
     )> = sqlx::query_as(
-        "SELECT m.room_id, m.user_id, m.role, m.status, m.invited_by, m.invited_ts, m.joined_ts, m.last_seen_ts, u.username \
+        "SELECT m.room_id, m.user_id, m.role, m.status, m.invited_by, \
+                CAST(m.invited_ts AS BIGINT) AS invited_ts, \
+                CAST(m.joined_ts AS BIGINT) AS joined_ts, \
+                CAST(m.last_seen_ts AS BIGINT) AS last_seen_ts, \
+                u.username \
          FROM watch_party_member m \
          JOIN \"user\" u ON u.id = m.user_id \
          WHERE m.room_id = $1 \
@@ -348,7 +358,10 @@ pub async fn get_member(
         Option<i64>,
         Option<i64>,
     )> = sqlx::query_as(
-        "SELECT room_id, user_id, role, status, invited_by, invited_ts, joined_ts, last_seen_ts \
+        "SELECT room_id, user_id, role, status, invited_by, \
+                CAST(invited_ts AS BIGINT) AS invited_ts, \
+                CAST(joined_ts AS BIGINT) AS joined_ts, \
+                CAST(last_seen_ts AS BIGINT) AS last_seen_ts \
              FROM watch_party_member WHERE room_id = $1 AND user_id = $2",
     )
     .bind(room_id)
@@ -491,7 +504,8 @@ pub async fn list_invites_for_user(
     user_id: &str,
 ) -> Result<Vec<WatchPartyInviteSummary>, sqlx::Error> {
     let rows: Vec<(String, String, String, String, String, i64, i64, String, String)> = sqlx::query_as(
-        "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(NULLIF(r.room_name, ''), COALESCE(i.title, r.room_mode)), r.host_user_id, host.username, r.created_ts, \
+        "SELECT m.room_id, COALESCE(r.item_id, ''), COALESCE(NULLIF(r.room_name, ''), COALESCE(i.title, r.room_mode)), r.host_user_id, host.username, \
+                CAST(r.created_ts AS BIGINT) AS created_ts, \
                 CAST(CASE WHEN r.join_password_hash IS NULL OR r.join_password_hash = '' THEN 0 ELSE 1 END AS BIGINT) AS password_required, \
                 m.role, m.status \
          FROM watch_party_member m \
@@ -593,8 +607,8 @@ pub async fn list_public_rooms(pool: &DbPool) -> Result<Vec<PublicRoomRow>, sqlx
             "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                     COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                     CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
-                    COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
-                    r.created_ts \
+                    CAST(COUNT(CASE WHEN m.status = 'joined' THEN 1 END) AS BIGINT) AS member_count, \
+                    CAST(r.created_ts AS BIGINT) AS created_ts \
              FROM watch_party_room r \
              JOIN \"user\" host ON host.id = r.host_user_id \
              LEFT JOIN item i ON i.id = r.item_id \
@@ -669,9 +683,11 @@ pub async fn list_admin_rooms(pool: &DbPool) -> Result<Vec<AdminRoomRow>, sqlx::
         "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                 COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                 CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
-                r.invite_only, \
-                COUNT(CASE WHEN m.status = 'joined' THEN 1 END), \
-                r.status, r.created_ts, r.updated_ts \
+                CAST(r.invite_only AS BIGINT) AS invite_only, \
+                CAST(COUNT(CASE WHEN m.status = 'joined' THEN 1 END) AS BIGINT) AS member_count, \
+                r.status, \
+                CAST(r.created_ts AS BIGINT) AS created_ts, \
+                CAST(r.updated_ts AS BIGINT) AS updated_ts \
          FROM watch_party_room r \
          JOIN \"user\" host ON host.id = r.host_user_id \
          LEFT JOIN item i ON i.id = r.item_id \
@@ -787,7 +803,8 @@ pub async fn get_audio_queue(
     room_id: &str,
 ) -> Result<Option<(Vec<String>, usize)>, sqlx::Error> {
     let row: Option<(String, i64)> = sqlx::query_as(
-        "SELECT track_ids_json, current_index FROM watch_party_audio_queue WHERE room_id = $1",
+        "SELECT track_ids_json, CAST(current_index AS BIGINT) AS current_index \
+         FROM watch_party_audio_queue WHERE room_id = $1",
     )
     .bind(room_id)
     .fetch_optional(pool)
@@ -820,7 +837,7 @@ pub async fn get_library_tracks(
                     artist.title, \
                     album.poster_url, \
                     ( \
-                        SELECT mf.duration_ms \
+                        SELECT CAST(mf.duration_ms AS BIGINT) AS duration_ms \
                         FROM episode_file_map efm \
                         JOIN media_file mf ON mf.id = efm.file_id \
                         WHERE efm.episode_item_id = t.id \
@@ -911,7 +928,7 @@ pub async fn get_library_tracks_by_item_ids(
                     artist.title, \
                     album.poster_url, \
                     ( \
-                        SELECT mf.duration_ms \
+                        SELECT CAST(mf.duration_ms AS BIGINT) AS duration_ms \
                         FROM episode_file_map efm \
                         JOIN media_file mf ON mf.id = efm.file_id \
                         WHERE efm.episode_item_id = t.id \
@@ -1316,7 +1333,8 @@ pub async fn get_create_state(
     room_id: &str,
 ) -> Result<Option<WatchPartyCreateStateRow>, sqlx::Error> {
     let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT room_id, active_tool, document_name, text_format, text_content, canvas_strokes_json, updated_ts \
+        "SELECT room_id, active_tool, document_name, text_format, text_content, canvas_strokes_json, \
+                CAST(updated_ts AS BIGINT) AS updated_ts \
          FROM watch_party_create_state WHERE room_id = $1",
     )
     .bind(room_id)
