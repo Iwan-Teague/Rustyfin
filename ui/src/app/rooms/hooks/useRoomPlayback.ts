@@ -240,6 +240,12 @@ export function useRoomPlayback({
           const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false,
+            // Preload a deeper forward buffer for smoother watch-party playback.
+            maxBufferLength: 600,
+            maxMaxBufferLength: 1200,
+            maxBufferSize: 256 * 1000 * 1000,
+            backBufferLength: 180,
+            startFragPrefetch: true,
           });
           hlsRef.current = hls;
           hls.on(Hls.Events.MANIFEST_PARSED, () => {

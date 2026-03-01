@@ -239,6 +239,7 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
+    const shouldResumePlayback = !video.paused;
     ensureAudibleVideo(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
@@ -287,10 +288,21 @@ export default function PlayerPage() {
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: false,
+          // Allow large prebuffer so paused/slow users can preload more than ~30s.
+          maxBufferLength: 600,
+          maxMaxBufferLength: 1200,
+          maxBufferSize: 256 * 1000 * 1000,
+          backBufferLength: 180,
+          startFragPrefetch: true,
         });
         hlsRef.current = hls;
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          // manifest loaded — user presses play on the native controls
+          if (shouldResumePlayback) {
+            ensureAudibleVideo(video);
+            void video.play().catch(() => {});
+          } else {
+            video.pause();
+          }
         });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (data?.fatal) {
@@ -302,6 +314,9 @@ export default function PlayerPage() {
       } else if (canNativeHls) {
         video.src = data.hls_url;
         video.load();
+        if (!shouldResumePlayback) {
+          video.pause();
+        }
       } else {
         throw new Error('HLS playback is not supported in this browser.');
       }
@@ -465,12 +480,10 @@ export default function PlayerPage() {
     : directPlayUnsupported
       ? (directSupport?.tooltip ?? 'Compatibility check failed, but you can still try Direct Play.')
       : 'Use browser-native Direct Play';
-  const effectiveTotalDuration =
-    timelineDurationSecs > 0
-      ? timelineDurationSecs
-      : mediaInfo?.duration_secs && mediaInfo.duration_secs > 0
-        ? mediaInfo.duration_secs
-        : 0;
+  const knownDurationSecs = mediaInfo?.duration_secs && mediaInfo.duration_secs > 0
+    ? mediaInfo.duration_secs
+    : 0;
+  const effectiveTotalDuration = Math.max(knownDurationSecs, timelineDurationSecs);
 
   return (
     <div className="space-y-5 animate-rise">
@@ -502,7 +515,9 @@ export default function PlayerPage() {
             const video = event.currentTarget;
             ensureAudibleVideo(video);
             setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
-            setTimelineDurationSecs(Number.isFinite(video.duration) ? video.duration : 0);
+            if (Number.isFinite(video.duration) && video.duration > 0) {
+              setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
+            }
           }}
           onPlay={(event) => {
             ensureAudibleVideo(event.currentTarget);
@@ -511,7 +526,7 @@ export default function PlayerPage() {
             const video = event.currentTarget;
             setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
             if (Number.isFinite(video.duration) && video.duration > 0) {
-              setTimelineDurationSecs(video.duration);
+              setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
           }}
           onError={() => {
@@ -526,6 +541,11 @@ export default function PlayerPage() {
         <span>
           Timeline: {formatClock(timelineNowSecs)} / {formatClock(effectiveTotalDuration)}
         </span>
+        {mode === 'hls' && knownDurationSecs > 0 && timelineDurationSecs > 0 && timelineDurationSecs < knownDurationSecs - 1 ? (
+          <span className="ml-2">
+            (buffered window: {formatClock(timelineDurationSecs)})
+          </span>
+        ) : null}
       </div>
 
       <div className="panel-soft flex flex-wrap items-center gap-3 px-4 py-4">
