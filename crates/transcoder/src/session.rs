@@ -85,6 +85,14 @@ impl SessionManager {
         owner_user_id: String,
         file_id: String,
     ) -> Result<String, TranscodeError> {
+        // Free slots from any completed ffmpeg processes before taking a permit.
+        self.reap_finished_sessions().await;
+
+        // Replace prior sessions for the same user/file to avoid slot leaks when
+        // clients switch sources/modes without stopping the old session.
+        self.stop_sessions_for_owner_file(&owner_user_id, &file_id)
+            .await;
+
         // Hold a permit for the full session lifetime to enforce max concurrency.
         let permit = self
             .semaphore
@@ -128,6 +136,70 @@ impl SessionManager {
 
         info!(session_id = %session_id, "HLS transcode session created");
         Ok(session_id)
+    }
+
+    async fn stop_sessions_for_owner_file(&self, owner_user_id: &str, file_id: &str) {
+        let mut sessions = self.sessions.lock().await;
+        let ids_to_remove: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.owner_user_id == owner_user_id && s.file_id == file_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in ids_to_remove {
+            if let Some(mut session) = sessions.remove(&id) {
+                if let Some(ref mut child) = session.child {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                }
+                if session.output_dir.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
+                        warn!(session_id = %id, error = %e, "failed to clean replaced session dir");
+                    }
+                }
+                info!(session_id = %id, "replaced existing HLS session for same user/file");
+            }
+        }
+    }
+
+    async fn reap_finished_sessions(&self) {
+        let mut sessions = self.sessions.lock().await;
+        let mut ids_to_remove = Vec::new();
+
+        for (id, session) in sessions.iter_mut() {
+            let Some(child) = session.child.as_mut() else {
+                ids_to_remove.push(id.clone());
+                continue;
+            };
+
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    info!(session_id = %id, ?status, "reaping finished HLS session");
+                    ids_to_remove.push(id.clone());
+                }
+                Ok(None) => {
+                    // Still running.
+                }
+                Err(e) => {
+                    warn!(session_id = %id, error = %e, "failed to poll HLS session process; reaping");
+                    ids_to_remove.push(id.clone());
+                }
+            }
+        }
+
+        for id in ids_to_remove {
+            if let Some(mut session) = sessions.remove(&id) {
+                if let Some(ref mut child) = session.child {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                }
+                if session.output_dir.exists() {
+                    if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
+                        warn!(session_id = %id, error = %e, "failed to clean reaped session dir");
+                    }
+                }
+            }
+        }
     }
 
     /// Ping a session (update last_ping) and return if it exists.
@@ -178,6 +250,7 @@ impl SessionManager {
 
     /// Clean up idle sessions. Call this periodically.
     pub async fn cleanup_idle(&self) {
+        self.reap_finished_sessions().await;
         let timeout = self.config.idle_timeout_secs;
         let mut sessions = self.sessions.lock().await;
         let idle_ids: Vec<String> = sessions
