@@ -22,10 +22,10 @@ impl GpuCapabilities {
     pub fn best(&self) -> Option<HwAccel> {
         if self.nvenc {
             Some(HwAccel::Nvenc)
-        } else if self.qsv {
-            Some(HwAccel::Qsv)
         } else if self.vaapi {
             Some(HwAccel::Vaapi)
+        } else if self.qsv {
+            Some(HwAccel::Qsv)
         } else if self.videotoolbox {
             Some(HwAccel::VideoToolbox)
         } else {
@@ -79,6 +79,31 @@ pub fn vaapi_device_exists() -> bool {
     Path::new("/dev/dri/renderD128").exists()
 }
 
+/// Check if an Intel render node is available for QSV.
+pub fn qsv_device_exists() -> bool {
+    let dri_root = Path::new("/sys/class/drm");
+    let entries = match std::fs::read_dir(dri_root) {
+        Ok(entries) => entries,
+        Err(_) => return false,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("renderD") {
+            continue;
+        }
+        let vendor_path = entry.path().join("device").join("vendor");
+        let Ok(vendor) = std::fs::read_to_string(vendor_path) else {
+            continue;
+        };
+        if vendor.trim().eq_ignore_ascii_case("0x8086") {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,7 +124,7 @@ mod tests {
             qsv: true,
             videotoolbox: false,
         };
-        assert!(matches!(caps.best(), Some(HwAccel::Qsv)));
+        assert!(matches!(caps.best(), Some(HwAccel::Vaapi)));
 
         let caps = GpuCapabilities {
             nvenc: false,
