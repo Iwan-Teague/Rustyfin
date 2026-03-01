@@ -131,6 +131,22 @@ function resetVideoSourceForMse(video: HTMLVideoElement): void {
   video.load();
 }
 
+function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: number): void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+  const mediaSource = (hls as { mediaSource?: MediaSource } | null)?.mediaSource;
+  if (!mediaSource || typeof mediaSource.duration !== 'number') return;
+  try {
+    if (mediaSource.readyState === 'open') {
+      const current = mediaSource.duration;
+      if (!Number.isFinite(current) || current < durationSeconds - 0.5) {
+        mediaSource.duration = durationSeconds;
+      }
+    }
+  } catch {
+    // Some browsers may reject duration writes while updating source buffers.
+  }
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -244,6 +260,10 @@ export default function PlayerPage() {
     ensureAudibleVideo(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
+    const knownDurationSeconds = Math.max(
+      descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+      mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+    );
     const canResumeFromCurrentSource = shouldResumeFromCurrentSource(video, descriptor.file_id);
     const currentTime =
       canResumeFromCurrentSource && Number.isFinite(video.currentTime) && video.currentTime >= 0
@@ -298,12 +318,16 @@ export default function PlayerPage() {
         });
         hlsRef.current = hls;
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
           if (shouldResumePlayback) {
             ensureAudibleVideo(video);
             void video.play().catch(() => {});
           } else {
             video.pause();
           }
+        });
+        hls.on(Hls.Events.LEVEL_LOADED, () => {
+          applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
         });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
           if (data?.fatal) {
@@ -326,7 +350,7 @@ export default function PlayerPage() {
     } finally {
       setStartingHls(false);
     }
-  }, [descriptor, destroyHls, sessionId, stopSession, hlsTargetHeight]);
+  }, [descriptor, destroyHls, sessionId, stopSession, hlsTargetHeight, mediaInfo]);
 
   const startDirectPlay = useCallback(async () => {
     if (!descriptor?.file_id) {
