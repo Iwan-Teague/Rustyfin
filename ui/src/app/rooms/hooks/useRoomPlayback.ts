@@ -358,17 +358,8 @@ export function useRoomPlayback({
         return;
       }
 
-      appendDebug(`auto preload hls failed; falling back to direct item_id=${room.item_id}`);
-      const directOk = await startDirect({
-        autoplayWhenNoState: false,
-        silent: true,
-      });
-
-      if (directOk) {
-        setInfo('HLS preload failed. Using Direct Play preload.');
-      } else {
-        setInfo('Automatic preload failed. Use Direct Play or Transcode (HLS).');
-      }
+      appendDebug(`auto preload hls failed; keeping room idle item_id=${room.item_id}`);
+      setInfo('HLS preload failed. Retry Transcode (HLS) or use Direct Play manually.');
     })();
   }, [
     room,
@@ -377,7 +368,6 @@ export function useRoomPlayback({
     isVideoRoom,
     startingDirect,
     startingHls,
-    startDirect,
     startHls,
     appendDebug,
     setInfo,
