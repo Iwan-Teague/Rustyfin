@@ -11,6 +11,7 @@ type PlaybackDescriptor = {
   direct_url: string;
   hls_start_url: string;
   media_info_url: string;
+  duration_ms?: number | null;
 };
 
 type PlaybackSession = {
@@ -480,9 +481,11 @@ export default function PlayerPage() {
     : directPlayUnsupported
       ? (directSupport?.tooltip ?? 'Compatibility check failed, but you can still try Direct Play.')
       : 'Use browser-native Direct Play';
-  const knownDurationSecs = mediaInfo?.duration_secs && mediaInfo.duration_secs > 0
-    ? mediaInfo.duration_secs
-    : 0;
+  const knownDurationFromDescriptorSecs =
+    descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0;
+  const knownDurationFromProbeSecs =
+    mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0;
+  const knownDurationSecs = Math.max(knownDurationFromDescriptorSecs, knownDurationFromProbeSecs);
   const effectiveTotalDuration = Math.max(knownDurationSecs, timelineDurationSecs);
 
   return (
