@@ -31,7 +31,11 @@ Rustyfin is a Docker-first local media platform with:
 - Do not break: setup flow, libraries/scanning, playback, channels, rooms, calendar, admin, start/stop/clean scripts.
 - Favor additive, backward-compatible changes.
 
-5. UI Animation Consistency (mandatory)
+5. Script Platform Policy
+- Repository runtime/ops scripts are POSIX shell-based (`.sh`) only.
+- Do not add or reintroduce PowerShell (`.ps1`) script variants.
+
+6. UI Animation Consistency (mandatory)
 - Save/Create/primary actions:
   - Use `.btn-primary` for primary action buttons.
   - Keep click feedback centralized through `ui/src/app/components/PrimaryButtonEffects.tsx` and `.btn-click-burst` styles in `ui/src/app/globals.css`.
@@ -52,6 +56,8 @@ Rust build runtime behavior:
 - `start.sh` defaults to native host Rust binary compilation for Linux targets, then Docker images copy the prebuilt binaries.
 - To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
 - On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
+- Native prerequisite strict mode defaults to `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1` (fail-fast).
+  - Set `RUSTFIN_NATIVE_RUST_BUILD_STRICT=0` to allow fallback to Docker Rust build mode.
 - On Linux hosts, `start.sh` auto-attaches `/dev/dri` to the `rustfin` container when present (unless `RUSTFIN_AUTO_HW_ACCEL=0`).
 - Use `RUSTFIN_TRANSCODER_HW_ACCEL` to force hardware mode (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
 

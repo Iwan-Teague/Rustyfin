@@ -37,12 +37,16 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
     - Shared collaborative document editor (plain text / markdown / PDF-text workflow).
     - Shared paint-style canvas with synchronized strokes.
     - Import `.txt`, `.md`, `.pdf` (text extraction) and export `.txt`, `.md`, `.pdf`, `.png`.
+  - Play Together:
+    - Shared chess game with synchronized state.
+    - Local player seats (white/black), AI opponent mode, promotion choice, legal-move indicators, and board reset flows.
   - Room permissions, invites, password-protected rooms, and reconfiguration.
   - Empty room auto-cleanup after 5 minutes.
 - Channels
   - Text channels with live updates and file/image attachments.
   - Voice channels with speaking indicators, mute, deafen, per-peer output volume, and local mic gain.
   - Voice channel transcription with per-speaker capture, Whisper-based transcription, stop/save, cancel, and markdown download.
+  - User profile controls in channels UI (display name/avatar updates plus local audio device selection where browser support exists).
 - Calendar
   - Separate Rust calendar service with admin-global and user-personal events.
   - Recurring birthdays and multiple calendar views in UI.
@@ -96,6 +100,7 @@ Supporting host process:
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.
 - `ui` - Next.js frontend.
 - `scripts` - operational scripts (`start.sh`, `stop.sh`, `clean_install.sh`, packaging helpers).
+  - Shell-only scripts (`.sh`); PowerShell (`.ps1`) scripts are not part of this repository.
 - `tests` - test harness and E2E suites.
 - `docs` - reports, plans, references, and setup wizard artifacts.
 
@@ -140,9 +145,11 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
   - Native cross-build prerequisites on non-Linux hosts:
     - `zig`
     - `cargo-zigbuild` (`cargo install cargo-zigbuild --locked`)
-  - If prerequisites are missing, `start.sh` automatically falls back to Docker Rust build mode (unless `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1`).
+  - `RUSTFIN_NATIVE_RUST_BUILD_STRICT` defaults to `1` (strict): missing prerequisites fail startup.
+  - Set `RUSTFIN_NATIVE_RUST_BUILD_STRICT=0` to allow automatic fallback to Docker Rust build mode.
 - On Linux hosts, `start.sh` auto-enables onboard GPU passthrough for transcoding when `/dev/dri` exists.
   - It injects a compose overlay that maps `/dev/dri` into `rustfin` and sets `RUSTFIN_TRANSCODER_HW_ACCEL=auto`.
+  - Auto-overlay also sets `RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=1` by default.
   - Disable with `RUSTFIN_AUTO_HW_ACCEL=0`.
   - Force a specific mode with `RUSTFIN_TRANSCODER_HW_ACCEL` (`none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
 - `--full-rebuild` forces no-cache rebuild.
@@ -173,6 +180,7 @@ If default ports are occupied, it picks free ports.
 - Room online-audio mode also depends on ffmpeg for conversion.
 - Listen Together online downloads use `rustfin-youtube-agent` with `yt-dlp` fallback and a JavaScript runtime (`node`) for modern YouTube signature handling.
 - Some YouTube videos cannot be embedded or downloaded due to provider restrictions.
+- Library path browse/host directory listing is resolved on the server host through the directory-picker helper/API, not from browser-local filesystem paths.
 
 ## Key Environment Variables
 
@@ -187,14 +195,21 @@ Common runtime variables:
 - `RUSTFIN_PG_DB` (compose default: `rustfin`)
 - `RUSTFIN_NATIVE_RUST_BUILD` (`1` default; set `0` to compile Rust binaries inside Docker)
 - `RUSTFIN_NATIVE_LINUX_TARGET` (optional Linux target triple override for native Rust cross-build)
-- `RUSTFIN_NATIVE_RUST_BUILD_STRICT` (`0` default; set `1` to fail instead of fallback when native prerequisites are missing)
+- `RUSTFIN_NATIVE_RUST_BUILD_STRICT` (`1` default; set `0` to allow fallback when native prerequisites are missing)
+- `RUSTFIN_NATIVE_GNU_COMPAT_BUILD` (`1` default; enforce Debian-compatible glibc target via zig for native Linux GNU builds)
+- `RUSTFIN_NATIVE_GNU_GLIBC_VERSION` (`2.36` default; target glibc version for native GNU compatibility builds)
 - `RUSTFIN_AUTO_HW_ACCEL` (`1` default; Linux-only auto `/dev/dri` passthrough)
 - `RUSTFIN_TRANSCODER_HW_ACCEL` (`auto` default; `none|nvenc|vaapi|qsv|videotoolbox`)
+- `RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL` (`0` in base compose; auto-overlay path sets `1` by default)
+- `RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS` (default `1800`)
+- `RUSTFIN_STREAM_TOKEN_TTL_SECONDS` (default `21600`)
 - `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
 - `RUSTFIN_BACKEND_PORT`
 - `RUSTFIN_UI_PORT`
 - `RUSTFIN_PUBLIC_HOST`
 - `RUSTFIN_MEDIA_PATH`
+- `RUSTFIN_MEDIA_HOST_PATH`
+- `RUSTFIN_MEDIA_CONTAINER_ROOT`
 - `RUSTFIN_TMDB_KEY`
 - `RUSTFIN_TMDB_AGENT_URL`
 - `RUSTFIN_TMDB_AGENT_TOKEN`
@@ -208,6 +223,7 @@ Common runtime variables:
 - `RUSTFIN_WHISPER_MODEL_PATH`
 - `RUSTFIN_WHISPER_MODEL_URL`
 - `RUSTFIN_SECRETS_ENV_FILE`
+- `RUSTFIN_DIRECTORY_PICKER_HELPER_URL`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`
 - `RUSTFIN_FFMPEG_PATH`
 - `RUSTFIN_FFPROBE_PATH`
@@ -267,7 +283,7 @@ E2E harness:
 
 ## Known Limitations
 
-- `Play Together` room creation UI is present, but room creation is currently marked as coming soon.
+- `Play Together` currently supports Chess only; additional game types are not implemented yet.
 - Third-party website behavior in web rooms depends on iframe/embed policies.
 - YouTube availability is subject to regional/content restrictions and provider-side policy.
 - PDF import in Create Together is text-extraction based; scanned/image-only PDFs may not extract usable text.

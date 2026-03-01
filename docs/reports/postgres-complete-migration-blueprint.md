@@ -177,7 +177,6 @@ Update:
 - `scripts/start.sh`
 - `scripts/stop.sh`
 - `scripts/clean_install.sh`
-- `scripts/clean_install.ps1`
 
 Concrete updates:
 - Add PG health wait (`pg_isready` or TCP + SQL probe).
@@ -324,7 +323,6 @@ Define hard rollback window (for example 24-72h).
 - `/Users/iwanteague/Desktop/Rustyfin/docker-compose.yml`
 - `/Users/iwanteague/Desktop/Rustyfin/scripts/start.sh`
 - `/Users/iwanteague/Desktop/Rustyfin/scripts/clean_install.sh`
-- `/Users/iwanteague/Desktop/Rustyfin/scripts/clean_install.ps1`
 - `/Users/iwanteague/Desktop/Rustyfin/tests/lib/harness.sh`
 - `/Users/iwanteague/Desktop/Rustyfin/crates/server/tests/integration.rs`
 - `/Users/iwanteague/Desktop/Rustyfin/README.md`
@@ -346,4 +344,3 @@ Given current coupling, this should be done as a dedicated migration epic branch
 - Stage D: production cutover
 
 Do not attempt this as opportunistic small PRs; schema and query semantics are too interconnected.
-

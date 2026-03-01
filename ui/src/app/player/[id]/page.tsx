@@ -108,12 +108,15 @@ function buildDirectUnsupportedMessage(contentType: string): string {
   return `Direct Play is not supported for this media type in your browser (${contentType}). Use Transcode (HLS), which is slower but compatible. To use Direct Play, add support for this media type.`;
 }
 
-function ensureAudibleVideo(video: HTMLVideoElement): void {
-  if (video.muted || video.defaultMuted) {
-    video.muted = false;
-    video.defaultMuted = false;
+function normalizeVideoVolume(video: HTMLVideoElement): void {
+  // Preserve user mute/unmute choice; only normalize invalid volume values.
+  if (!Number.isFinite(video.volume)) {
+    video.volume = 1;
+    return;
   }
-  if (!Number.isFinite(video.volume) || video.volume <= 0.01) {
+  if (video.volume < 0) {
+    video.volume = 0;
+  } else if (video.volume > 1) {
     video.volume = 1;
   }
 }
@@ -147,6 +150,30 @@ function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: numbe
   }
 }
 
+function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: number): void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
+  const details = (levelData as { details?: Record<string, unknown> } | null)?.details;
+  if (!details) return;
+  const currentTotal =
+    typeof details.totalduration === 'number' && Number.isFinite(details.totalduration)
+      ? details.totalduration
+      : 0;
+  if (currentTotal < durationSeconds) {
+    details.totalduration = durationSeconds;
+    details.edge = durationSeconds;
+  }
+}
+
+function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): () => void {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return () => {};
+  }
+  const tick = () => applyKnownDurationToHlsMediaSource(hls, durationSeconds);
+  tick();
+  const timer = window.setInterval(tick, 500);
+  return () => window.clearInterval(timer);
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -178,6 +205,15 @@ export default function PlayerPage() {
 
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
+      const stopDurationEnforcer =
+        (hlsRef.current as { __stopKnownDurationEnforcer?: () => void }).__stopKnownDurationEnforcer;
+      if (typeof stopDurationEnforcer === 'function') {
+        try {
+          stopDurationEnforcer();
+        } catch {
+          // no-op
+        }
+      }
       try {
         hlsRef.current.destroy();
       } catch {
@@ -257,7 +293,7 @@ export default function PlayerPage() {
       return;
     }
     const shouldResumePlayback = !video.paused;
-    ensureAudibleVideo(video);
+    normalizeVideoVolume(video);
     const selectedTargetHeight =
       targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
     const knownDurationSeconds = Math.max(
@@ -315,24 +351,63 @@ export default function PlayerPage() {
           maxBufferSize: 256 * 1000 * 1000,
           backBufferLength: 180,
           startFragPrefetch: true,
+          manifestLoadingTimeOut: 45000,
+          levelLoadingTimeOut: 45000,
+          fragLoadingTimeOut: 45000,
+          manifestLoadingMaxRetry: 10,
+          levelLoadingMaxRetry: 10,
+          fragLoadingMaxRetry: 8,
+          manifestLoadingRetryDelay: 1000,
+          levelLoadingRetryDelay: 1000,
+          fragLoadingRetryDelay: 1000,
+          manifestLoadingMaxRetryTimeout: 10000,
+          levelLoadingMaxRetryTimeout: 10000,
+          fragLoadingMaxRetryTimeout: 8000,
         });
+        const stopDurationEnforcer = installKnownDurationEnforcer(hls, knownDurationSeconds);
+        (hls as { __stopKnownDurationEnforcer?: () => void }).__stopKnownDurationEnforcer =
+          stopDurationEnforcer;
         hlsRef.current = hls;
+        let networkRecoveries = 0;
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+          window.setTimeout(() => {
+            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+          }, 0);
           if (shouldResumePlayback) {
-            ensureAudibleVideo(video);
+            normalizeVideoVolume(video);
             void video.play().catch(() => {});
           } else {
             video.pause();
           }
         });
-        hls.on(Hls.Events.LEVEL_LOADED, () => {
+        hls.on(Hls.Events.LEVEL_LOADED, (_event: any, data: any) => {
+          forceKnownDurationInLevelDetails(data, knownDurationSeconds);
           applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+          window.setTimeout(() => {
+            applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
+          }, 0);
         });
         hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
-          if (data?.fatal) {
-            setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
+          if (!data?.fatal) return;
+          const errorType = data?.type;
+          if (errorType === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 10) {
+            networkRecoveries += 1;
+            try {
+              hls.startLoad();
+              return;
+            } catch {
+              // fall through to error
+            }
+          } else if (errorType === Hls.ErrorTypes.MEDIA_ERROR) {
+            try {
+              hls.recoverMediaError();
+              return;
+            } catch {
+              // fall through to error
+            }
           }
+          setError(`HLS playback error: ${data.details || 'fatal stream error'}`);
         });
         hls.attachMedia(video);
         hls.loadSource(data.hls_url);
@@ -363,7 +438,7 @@ export default function PlayerPage() {
       setError('Player is not ready yet.');
       return;
     }
-    ensureAudibleVideo(video);
+    normalizeVideoVolume(video);
 
     setStartingDirect(true);
     setError('');
@@ -540,14 +615,14 @@ export default function PlayerPage() {
           playsInline
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
-            ensureAudibleVideo(video);
+            normalizeVideoVolume(video);
             setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
           }}
           onPlay={(event) => {
-            ensureAudibleVideo(event.currentTarget);
+            normalizeVideoVolume(event.currentTarget);
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
