@@ -21,9 +21,17 @@ use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::user_pipeline;
 
-const STREAM_TOKEN_TTL_SECONDS: i64 = 90;
+const DEFAULT_STREAM_TOKEN_TTL_SECONDS: i64 = 6 * 60 * 60;
 const MAX_AVATAR_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 const USER_AVATAR_DIR: &str = "user_avatars";
+
+fn stream_token_ttl_seconds() -> i64 {
+    std::env::var("RUSTFIN_STREAM_TOKEN_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 300)
+        .unwrap_or(DEFAULT_STREAM_TOKEN_TTL_SECONDS)
+}
 
 #[derive(Debug, Clone)]
 struct StreamRequestIdentity {
@@ -1700,12 +1708,31 @@ async fn get_item_playback(
             ApiError::Conflict("No playable file mapped to this item; rescan library.".into())
         })?;
 
+    let mut duration_ms = item.duration_ms.filter(|value| *value > 0);
+    if let Some(file) = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    {
+        let media_path = std::path::Path::new(&file.path);
+        if media_path.exists() && media_path.is_file() {
+            if let Ok(info) = rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path).await {
+                let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
+                if probed_duration_ms > 0 {
+                    duration_ms = Some(probed_duration_ms);
+                }
+            }
+        }
+        if duration_ms.is_none() {
+            duration_ms = file.duration_ms.filter(|value| *value > 0);
+        }
+    }
+
     let token = issue_stream_token(
         &auth.user_id,
         &auth.role,
         Some(&file_id),
         None,
-        STREAM_TOKEN_TTL_SECONDS,
+        stream_token_ttl_seconds(),
         &state.jwt_secret,
     )?;
 
@@ -1715,7 +1742,7 @@ async fn get_item_playback(
         direct_url: format!("/stream/file/{file_id}?st={token}"),
         hls_start_url: "/api/v1/playback/sessions".to_string(),
         media_info_url: format!("/api/v1/playback/info/{file_id}"),
-        duration_ms: item.duration_ms,
+        duration_ms,
     }))
 }
 
@@ -1940,7 +1967,7 @@ async fn create_playback_session(
         &auth.role,
         Some(&body.file_id),
         Some(&session_id),
-        STREAM_TOKEN_TTL_SECONDS,
+        stream_token_ttl_seconds(),
         &state.jwt_secret,
     )?;
     let hls_url = format!("/stream/hls/{session_id}/master.m3u8?st={stream_token}");
@@ -2207,7 +2234,7 @@ async fn hls_master(
             &authorized.role,
             Some(&authorized.file_id),
             Some(&sid),
-            STREAM_TOKEN_TTL_SECONDS,
+            stream_token_ttl_seconds(),
             &state.jwt_secret,
         )?,
     };

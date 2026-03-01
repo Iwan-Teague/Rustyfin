@@ -68,6 +68,8 @@ NATIVE_RUST_BUILD="${RUSTFIN_NATIVE_RUST_BUILD:-1}"
 NATIVE_RUST_BUILD_STRICT="${RUSTFIN_NATIVE_RUST_BUILD_STRICT:-1}"
 RUSTFIN_NATIVE_GNU_COMPAT_BUILD="${RUSTFIN_NATIVE_GNU_COMPAT_BUILD:-1}"
 RUSTFIN_NATIVE_GNU_GLIBC_VERSION="${RUSTFIN_NATIVE_GNU_GLIBC_VERSION:-2.36}"
+RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
+RUSTFIN_STREAM_TOKEN_TTL_SECONDS="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -206,11 +208,15 @@ maybe_enable_linux_hwaccel_overlay() {
     echo "    environment:"
     echo "      - RUSTFIN_TRANSCODER_HW_ACCEL=\${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
     echo "      - RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=\${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
+    echo "      - RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS=\${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
+    echo "      - RUSTFIN_STREAM_TOKEN_TTL_SECONDS=\${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
   } > "$overlay_file"
 
   COMPOSE_FILES+=("$overlay_file")
   export RUSTFIN_TRANSCODER_HW_ACCEL="${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
   export RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
+  export RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
+  export RUSTFIN_STREAM_TOKEN_TTL_SECONDS="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
   info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode, strict requirement on)."
   if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
     info "Applied supplemental GPU group IDs inside container: ${dri_group_ids[*]}"
@@ -1173,6 +1179,8 @@ info "Edge TLS cert: $RUSTFIN_EDGE_TLS_CERT"
 info "Database mode: ${db_mode}"
 info "Database target: ${db_target_log}"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
+info "Transcode idle timeout: ${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS}s"
+info "Stream token TTL: ${RUSTFIN_STREAM_TOKEN_TTL_SECONDS}s"
 if [[ "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" ]]; then
   info "Native GNU libc compatibility mode: enabled (glibc ${RUSTFIN_NATIVE_GNU_GLIBC_VERSION})"
 fi

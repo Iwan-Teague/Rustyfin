@@ -191,6 +191,11 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    let transcode_idle_timeout_secs: u64 = std::env::var("RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v >= 60)
+        .unwrap_or(30 * 60);
     let ffmpeg_path = std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
     let ffprobe_path =
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string());
@@ -278,6 +283,7 @@ async fn main() -> anyhow::Result<()> {
         ffprobe_path: ffprobe_path.clone().into(),
         transcode_dir: transcode_dir.into(),
         max_concurrent: max_transcodes,
+        idle_timeout_secs: transcode_idle_timeout_secs,
         hw_accel: selected_hw_accel.clone(),
         hw_device_path: selected_hw_device_path.clone(),
         ..Default::default()
