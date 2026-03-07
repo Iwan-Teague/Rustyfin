@@ -20,7 +20,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 base64 = "0.22"
 whisper-rs = "0.12"
 num_cpus = "1.16"
+glob = "0.3"
 
 [features]
 default = []
-gpu-opencl = ["whisper-rs/opencl"]
+gpu-opencl = ["whisper-rs/opencl", "whisper-rs/_gpu"]
+gpu-cuda = ["whisper-rs/cuda"]
+gpu-hip = ["whisper-rs/hipblas"]
+gpu-all = ["gpu-opencl", "gpu-cuda", "gpu-hip"]

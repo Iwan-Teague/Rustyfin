@@ -61,9 +61,10 @@ Rust build runtime behavior:
 - On Linux hosts, `start.sh` auto-attaches `/dev/dri` to the `rustfin` container when present (unless `RUSTFIN_AUTO_HW_ACCEL=0`).
 - Use `RUSTFIN_TRANSCODER_HW_ACCEL` to force hardware mode (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
 - Transcription GPU path:
-  - `RUSTFIN_TRANSCRIPTION_GPU_MODE=auto|off|opencl` (default `auto`).
-  - On Linux with `/dev/dri`, `auto` enables transcription OpenCL path and mounts GPU devices into `rustfin-transcription-agent`.
-  - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` can be used to force agent cargo features (for example `gpu-opencl`).
+  - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`, where `auto` resolves to `opencl`).
+  - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default (no CPU fallback; transcription requests are rejected if GPU backend is unavailable).
+  - `start.sh` attempts GPU device mapping for both `/dev/dri` (Intel/AMD) and `/dev/nvidia*` (NVIDIA) for `rustfin-transcription-agent`.
+  - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` controls agent backend build features (for example `gpu-opencl`, `gpu-cuda`, `gpu-hip`).
 
 Primary containers:
 - `postgres` (PostgreSQL database)

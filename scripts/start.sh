@@ -50,10 +50,14 @@ Options:
   RUSTFIN_TRANSCODER_HW_ACCEL
                      Transcoder mode: auto (default), none, nvenc, vaapi, qsv, or videotoolbox.
   RUSTFIN_TRANSCRIPTION_GPU_MODE
-                     Transcription GPU mode: auto (default), off, or opencl.
-                     In auto mode on Linux with /dev/dri, start.sh enables OpenCL build/runtime for transcription-agent.
+                     Transcription GPU mode: opencl (default), cuda, hip, or auto.
+                     'auto' resolves to opencl for cross-vendor GPU support.
+                     Transcription is GPU-required by default (no CPU fallback).
+  RUSTFIN_TRANSCRIPTION_REQUIRE_GPU
+                     Set to 1 (default) to reject transcription when GPU backend is unavailable.
   RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
-                     Optional extra cargo features for rustfin-transcription-agent (for example: gpu-opencl).
+                     Optional extra cargo features for rustfin-transcription-agent
+                     (for example: gpu-opencl, gpu-cuda, gpu-hip).
   RUSTFIN_BACKEND_BIND_IP
                      Backend host bind IP for Docker publishing (default: 127.0.0.1).
                      Keep loopback for VPN-only/private deployments.
@@ -141,10 +145,16 @@ case "$RUSTFIN_AUTO_HW_ACCEL" in
   *) die "Invalid RUSTFIN_AUTO_HW_ACCEL='$RUSTFIN_AUTO_HW_ACCEL' (expected 0 or 1)" ;;
 esac
 
-RUSTFIN_TRANSCRIPTION_GPU_MODE="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-auto}"
+RUSTFIN_TRANSCRIPTION_GPU_MODE="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-opencl}"
 case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
-  auto|off|opencl) ;;
-  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, off, or opencl)" ;;
+  auto|opencl|cuda|hip|hipblas|off) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, opencl, cuda, or hip)" ;;
+esac
+
+RUSTFIN_TRANSCRIPTION_REQUIRE_GPU="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:-1}"
+case "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU" in
+  0|1) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_REQUIRE_GPU='$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU' (expected 0 or 1)" ;;
 esac
 
 RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
@@ -185,31 +195,39 @@ RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD=0
 maybe_enable_linux_hwaccel_overlay() {
   local host_os
   host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  local transcription_gpu_mode="$RUSTFIN_TRANSCRIPTION_GPU_MODE"
+  if [[ "$transcription_gpu_mode" == "auto" ]]; then
+    transcription_gpu_mode="opencl"
+  elif [[ "$transcription_gpu_mode" == "hipblas" ]]; then
+    transcription_gpu_mode="hip"
+  fi
+
+  local has_dri=0
+  [[ -d "/dev/dri" ]] && has_dri=1
+
+  local has_nvidia=0
+  if compgen -G "/dev/nvidia[0-9]*" >/dev/null 2>&1; then
+    has_nvidia=1
+  fi
+
   if [[ "$host_os" != "linux" ]]; then
-    if [[ "$RUSTFIN_TRANSCRIPTION_GPU_MODE" == "opencl" ]]; then
-      warn "Transcription GPU mode 'opencl' requested on non-Linux host; keeping CPU transcription path."
+    if [[ "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU" == "1" ]]; then
+      warn "GPU-required transcription is enabled, but non-Linux host auto-device mapping is unavailable. Transcription requests will fail until GPU mapping/backends are provided."
     fi
     return
   fi
 
-  local has_dri=0
-  if [[ -d "/dev/dri" ]]; then
-    has_dri=1
-  fi
-
-  local -a dri_group_ids=()
+  local -a gpu_group_ids=()
   local dev=""
   local gid=""
-  if [[ "$has_dri" == "1" ]]; then
-    for dev in /dev/dri/renderD* /dev/dri/card*; do
-      [[ -e "$dev" ]] || continue
-      gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
-      [[ -n "$gid" ]] || continue
-      if unique_append_number "$gid" "${dri_group_ids[@]}"; then
-        dri_group_ids+=("$gid")
-      fi
-    done
-  fi
+  for dev in /dev/dri/renderD* /dev/dri/card* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/nvidia[0-9]*; do
+    [[ -e "$dev" ]] || continue
+    gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
+    [[ -n "$gid" ]] || continue
+    if unique_append_number "$gid" "${gpu_group_ids[@]}"; then
+      gpu_group_ids+=("$gid")
+    fi
+  done
 
   local enable_transcoder_hw=0
   if [[ "$RUSTFIN_AUTO_HW_ACCEL" == "1" && "$has_dri" == "1" ]]; then
@@ -218,42 +236,59 @@ maybe_enable_linux_hwaccel_overlay() {
     warn "Onboard GPU auto-detect: /dev/dri not present on host; transcoding will use CPU unless manually configured."
   fi
 
-  local enable_transcription_gpu=0
-  case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
-    off) enable_transcription_gpu=0 ;;
+  local enable_transcription_gpu=1
+  case "$transcription_gpu_mode" in
     opencl)
-      enable_transcription_gpu=1
       if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
         RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-opencl"
       fi
-      if [[ "$has_dri" != "1" ]]; then
-        warn "Transcription GPU mode 'opencl' requested but /dev/dri is missing; OpenCL may not find a usable device."
+      ;;
+    cuda)
+      if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
+        RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-cuda"
       fi
       ;;
-    auto)
-      if [[ "$has_dri" == "1" ]]; then
-        enable_transcription_gpu=1
-        if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
-          RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-opencl"
-        fi
+    hip)
+      if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
+        RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-hip"
       fi
+      ;;
+    *)
+      die "Unsupported transcription GPU mode '$transcription_gpu_mode'"
       ;;
   esac
 
   if [[ "$enable_transcription_gpu" == "1" ]]; then
     TRANSCRIPTION_GPU_ENABLED=1
-    TRANSCRIPTION_GPU_REASON="${RUSTFIN_TRANSCRIPTION_GPU_MODE}"
+    TRANSCRIPTION_GPU_REASON="$transcription_gpu_mode"
+    RUSTFIN_TRANSCRIPTION_GPU_MODE="$transcription_gpu_mode"
+    export RUSTFIN_TRANSCRIPTION_GPU_MODE
     export RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
+    export RUSTFIN_TRANSCRIPTION_REQUIRE_GPU
   fi
 
   if [[ "$COMPOSE_FILES_SET_BY_USER" == "true" ]]; then
     if [[ "$enable_transcoder_hw" == "1" || "$enable_transcription_gpu" == "1" ]]; then
-      warn "Auto GPU overlay skipped because custom compose files were provided; ensure your compose files map /dev/dri and required group IDs."
+      warn "Auto GPU overlay skipped because custom compose files were provided; ensure your compose files map GPU devices for rustfin and rustfin-transcription-agent."
+    fi
+    if [[ "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU" == "1" && "$has_dri" != "1" && "$has_nvidia" != "1" ]]; then
+      warn "No local GPU device nodes detected; transcription requests will fail with GPU-required policy."
     fi
     return
   fi
 
   if [[ "$enable_transcoder_hw" != "1" && "$enable_transcription_gpu" != "1" ]]; then
+    return
+  fi
+
+  local overlay_has_service=0
+  if [[ "$enable_transcoder_hw" == "1" ]]; then
+    overlay_has_service=1
+  fi
+  if [[ "$enable_transcription_gpu" == "1" && ( "$has_dri" == "1" || "$has_nvidia" == "1" ) ]]; then
+    overlay_has_service=1
+  fi
+  if [[ "$overlay_has_service" != "1" ]]; then
     return
   fi
 
@@ -264,9 +299,9 @@ maybe_enable_linux_hwaccel_overlay() {
       echo "  rustfin:"
       echo "    devices:"
       echo "      - /dev/dri:/dev/dri"
-      if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+      if [[ ${#gpu_group_ids[@]} -gt 0 ]]; then
         echo "    group_add:"
-        for gid in "${dri_group_ids[@]}"; do
+        for gid in "${gpu_group_ids[@]}"; do
           echo "      - \"$gid\""
         done
       fi
@@ -276,13 +311,21 @@ maybe_enable_linux_hwaccel_overlay() {
       echo "      - RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS=\${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
       echo "      - RUSTFIN_STREAM_TOKEN_TTL_SECONDS=\${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
     fi
-    if [[ "$enable_transcription_gpu" == "1" && "$has_dri" == "1" ]]; then
+    if [[ "$enable_transcription_gpu" == "1" && ( "$has_dri" == "1" || "$has_nvidia" == "1" ) ]]; then
       echo "  rustfin-transcription-agent:"
       echo "    devices:"
-      echo "      - /dev/dri:/dev/dri"
-      if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+      if [[ "$has_dri" == "1" ]]; then
+        echo "      - /dev/dri:/dev/dri"
+      fi
+      if [[ "$has_nvidia" == "1" ]]; then
+        for dev in /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/nvidia[0-9]*; do
+          [[ -e "$dev" ]] || continue
+          echo "      - ${dev}:${dev}"
+        done
+      fi
+      if [[ ${#gpu_group_ids[@]} -gt 0 ]]; then
         echo "    group_add:"
-        for gid in "${dri_group_ids[@]}"; do
+        for gid in "${gpu_group_ids[@]}"; do
           echo "      - \"$gid\""
         done
       fi
@@ -298,10 +341,13 @@ maybe_enable_linux_hwaccel_overlay() {
     info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode, strict requirement on)."
   fi
   if [[ "$enable_transcription_gpu" == "1" ]]; then
-    info "Transcription GPU mode enabled (${RUSTFIN_TRANSCRIPTION_GPU_MODE}); transcription-agent will build with features: ${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES}"
+    info "Transcription GPU-only mode enabled (${RUSTFIN_TRANSCRIPTION_GPU_MODE}); transcription-agent features: ${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES}"
   fi
-  if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
-    info "Applied supplemental GPU group IDs inside container: ${dri_group_ids[*]}"
+  if [[ "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU" == "1" && "$has_dri" != "1" && "$has_nvidia" != "1" ]]; then
+    warn "No GPU device nodes were detected on host; transcription requests will be rejected until GPU mapping/driver runtime is available."
+  fi
+  if [[ ${#gpu_group_ids[@]} -gt 0 ]]; then
+    info "Applied supplemental GPU group IDs inside container: ${gpu_group_ids[*]}"
   fi
 }
 
@@ -613,6 +659,7 @@ user_backend_port="${RUSTFIN_BACKEND_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
 user_transcription_gpu_mode="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-}"
+user_transcription_require_gpu="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:-}"
 user_transcription_features="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
 user_database_url="${RUSTFIN_DATABASE_URL:-}"
 user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
@@ -641,6 +688,7 @@ fi
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
 [[ -n "$user_transcription_gpu_mode" ]] && RUSTFIN_TRANSCRIPTION_GPU_MODE="$user_transcription_gpu_mode"
+[[ -n "$user_transcription_require_gpu" ]] && RUSTFIN_TRANSCRIPTION_REQUIRE_GPU="$user_transcription_require_gpu"
 [[ -n "$user_transcription_features" ]] && RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="$user_transcription_features"
 [[ -n "$user_database_url" ]] && RUSTFIN_DATABASE_URL="$user_database_url"
 [[ -n "$user_browser_backend_origin" ]] && RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
@@ -654,9 +702,18 @@ elif [[ -n "${RUSTFIN_YOUTUBE_COOKIE:-}" && "$youtube_cookie_source" == "unset" 
 fi
 
 case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
-  auto|off|opencl) ;;
-  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, off, or opencl)" ;;
+  auto|opencl|cuda|hip|hipblas|off) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, opencl, cuda, or hip)" ;;
 esac
+case "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU" in
+  0|1) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_REQUIRE_GPU='$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU' (expected 0 or 1)" ;;
+esac
+
+if [[ "$RUSTFIN_TRANSCRIPTION_GPU_MODE" == "off" ]]; then
+  warn "RUSTFIN_TRANSCRIPTION_GPU_MODE=off is deprecated in this GPU-required transcription pipeline; forcing mode=opencl."
+  RUSTFIN_TRANSCRIPTION_GPU_MODE="opencl"
+fi
 
 case "$RUSTFIN_RUST_BUILD_PROFILE" in
   ''|*[!A-Za-z0-9_-]*)
@@ -1231,6 +1288,7 @@ export RUSTFIN_BACKEND_PORT="$backend_port"
 export RUSTFIN_UI_PORT="$ui_port"
 export RUSTFIN_BACKEND_BIND_IP="$backend_bind_ip"
 export RUSTFIN_TRANSCRIPTION_GPU_MODE
+export RUSTFIN_TRANSCRIPTION_REQUIRE_GPU
 export RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
 
 public_host="${RUSTFIN_PUBLIC_HOST:-}"
@@ -1285,6 +1343,7 @@ info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
 info "Transcode idle timeout: ${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS}s"
 info "Stream token TTL: ${RUSTFIN_STREAM_TOKEN_TTL_SECONDS}s"
 info "Transcription GPU mode: ${RUSTFIN_TRANSCRIPTION_GPU_MODE}"
+info "Transcription GPU required: ${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU}"
 if [[ -n "${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}" ]]; then
   info "Transcription agent cargo features: ${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES}"
 fi
@@ -1476,6 +1535,7 @@ docker_compose "${compose_args[@]}"
   printf "RUSTYFIN_BROWSER_BACKEND_ORIGIN=%q\n" "$RUSTYFIN_BROWSER_BACKEND_ORIGIN"
   printf "RUSTFIN_WS_ALLOWED_ORIGINS=%q\n" "$RUSTFIN_WS_ALLOWED_ORIGINS"
   printf "RUSTFIN_TRANSCRIPTION_GPU_MODE=%q\n" "$RUSTFIN_TRANSCRIPTION_GPU_MODE"
+  printf "RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=%q\n" "$RUSTFIN_TRANSCRIPTION_REQUIRE_GPU"
   printf "RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES=%q\n" "${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
 } > "$RUNTIME_ENV_FILE"
 chmod 600 "$RUNTIME_ENV_FILE" 2>/dev/null || true

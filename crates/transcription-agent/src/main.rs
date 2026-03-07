@@ -12,6 +12,7 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -23,6 +24,34 @@ const TARGET_SAMPLE_RATE_HZ: u32 = 16_000;
 const MIN_MODEL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TRANSCRIBE_SECONDS: u64 = 120;
 
+#[derive(Debug, Clone, Copy)]
+enum TranscriptionGpuMode {
+    OpenCl,
+    Cuda,
+    Hip,
+}
+
+impl TranscriptionGpuMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenCl => "opencl",
+            Self::Cuda => "cuda",
+            Self::Hip => "hip",
+        }
+    }
+}
+
+fn parse_gpu_mode(raw: &str) -> anyhow::Result<TranscriptionGpuMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "opencl" | "auto" | "off" => Ok(TranscriptionGpuMode::OpenCl),
+        "cuda" => Ok(TranscriptionGpuMode::Cuda),
+        "hip" | "hipblas" => Ok(TranscriptionGpuMode::Hip),
+        other => Err(anyhow::anyhow!(
+            "invalid RUSTFIN_TRANSCRIPTION_GPU_MODE '{other}' (expected opencl, cuda, hip, or auto)"
+        )),
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     model_path: PathBuf,
@@ -30,6 +59,10 @@ struct AppState {
     model_init_lock: Arc<tokio::sync::Mutex<()>>,
     http: reqwest::Client,
     agent_token: Option<String>,
+    gpu_mode: TranscriptionGpuMode,
+    gpu_required: bool,
+    gpu_ready: bool,
+    gpu_error_message: Option<String>,
     workers: WorkerRegistry,
     inference_permits: Arc<tokio::sync::Semaphore>,
     inference_acquire_timeout: Duration,
@@ -220,10 +253,9 @@ fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>, max_threa
         return;
     };
 
-    let context = match WhisperContext::new_with_params(
-        model_path_str,
-        WhisperContextParameters::default(),
-    ) {
+    let mut context_params = WhisperContextParameters::default();
+    context_params.use_gpu(true);
+    let context = match WhisperContext::new_with_params(model_path_str, context_params) {
         Ok(ctx) => ctx,
         Err(err) => {
             while let Ok(cmd) = rx.recv() {
@@ -386,6 +418,118 @@ fn parse_env_u64(name: &str, default: u64, min: u64, max: u64) -> u64 {
     }
 }
 
+fn parse_env_bool(name: &str, default: bool) -> bool {
+    let Some(raw) = std::env::var(name).ok() else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => {
+            warn!(env = %name, value = %raw, "invalid boolean env value; using default");
+            default
+        }
+    }
+}
+
+fn discover_gpu_device_nodes() -> Vec<String> {
+    let mut paths = Vec::new();
+    for pattern in ["/dev/dri/renderD*", "/dev/nvidia[0-9]*"] {
+        let Ok(entries) = glob::glob(pattern) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            paths.push(entry.display().to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn run_command_capture(binary: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(binary)
+        .args(args)
+        .output()
+        .map_err(|e| format!("failed to run {binary}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        if stdout.is_empty() {
+            Ok(stderr)
+        } else {
+            Ok(stdout)
+        }
+    } else if stderr.is_empty() {
+        Err(format!(
+            "{binary} exited with status {}; output: {}",
+            output.status, stdout
+        ))
+    } else {
+        Err(format!("{binary} failed: {stderr}"))
+    }
+}
+
+fn detect_gpu_backend_ready(mode: TranscriptionGpuMode) -> Result<(), String> {
+    let compiled = match mode {
+        TranscriptionGpuMode::OpenCl => cfg!(feature = "gpu-opencl"),
+        TranscriptionGpuMode::Cuda => cfg!(feature = "gpu-cuda"),
+        TranscriptionGpuMode::Hip => cfg!(feature = "gpu-hip"),
+    };
+    if !compiled {
+        return Err(format!(
+            "transcription-agent is not compiled with {} GPU backend support",
+            mode.as_str()
+        ));
+    }
+
+    let gpu_nodes = discover_gpu_device_nodes();
+    if gpu_nodes.is_empty() {
+        return Err(
+            "no GPU device nodes found in container (/dev/dri/renderD* or /dev/nvidia[0-9]*)"
+                .to_string(),
+        );
+    }
+
+    match mode {
+        TranscriptionGpuMode::OpenCl => {
+            let output = run_command_capture("clinfo", &["-l"])?;
+            if !output.to_ascii_lowercase().contains("gpu") {
+                return Err(
+                    "OpenCL runtime is present but no GPU-class OpenCL device is reported"
+                        .to_string(),
+                );
+            }
+        }
+        TranscriptionGpuMode::Cuda => {
+            let _ = run_command_capture("nvidia-smi", &["-L"])?;
+        }
+        TranscriptionGpuMode::Hip => {
+            let _ = run_command_capture("rocminfo", &[])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_gpu_ready(state: &AppState) -> Result<(), AppError> {
+    if !state.gpu_required {
+        return Ok(());
+    }
+    if state.gpu_ready {
+        return Ok(());
+    }
+    let detail = state
+        .gpu_error_message
+        .clone()
+        .unwrap_or_else(|| "no usable GPU backend is available for transcription".to_string());
+    Err(ApiError::BadRequest(format!(
+        "transcription requires a GPU ({}) and cannot run on CPU fallback: {detail}",
+        state.gpu_mode.as_str()
+    ))
+    .into())
+}
+
 async fn ensure_model_available(state: &AppState) -> Result<(), AppError> {
     if state.model_path.exists() {
         return Ok(());
@@ -459,6 +603,7 @@ async fn start_session(
         "transcription-agent",
     )?;
     normalize_identifier(&body.session_id, "session_id")?;
+    ensure_gpu_ready(&state)?;
     ensure_model_available(&state).await?;
     Ok(Json(SessionControlResponse { ok: true }))
 }
@@ -517,6 +662,7 @@ async fn transcribe_chunk(
         return Err(ApiError::BadRequest("sample_rate_hz is out of supported range".into()).into());
     }
 
+    ensure_gpu_ready(&state)?;
     ensure_model_available(&state).await?;
 
     let pcm_i16 = decode_pcm_s16le(&body.pcm_s16le_base64)?;
@@ -612,9 +758,19 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_BIND").unwrap_or_else(|_| "0.0.0.0:8102".into());
     let cache_dir = std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".into());
-    let requested_gpu_mode =
-        std::env::var("RUSTFIN_TRANSCRIPTION_GPU_MODE").unwrap_or_else(|_| "auto".into());
-    let opencl_compiled = cfg!(feature = "gpu-opencl");
+    let requested_gpu_mode_raw =
+        std::env::var("RUSTFIN_TRANSCRIPTION_GPU_MODE").unwrap_or_else(|_| "opencl".into());
+    let gpu_mode = parse_gpu_mode(&requested_gpu_mode_raw)?;
+    let gpu_required = parse_env_bool("RUSTFIN_TRANSCRIPTION_REQUIRE_GPU", true);
+    let compiled_gpu_backends = format!(
+        "opencl={},cuda={},hip={}",
+        cfg!(feature = "gpu-opencl"),
+        cfg!(feature = "gpu-cuda"),
+        cfg!(feature = "gpu-hip")
+    );
+    let gpu_probe = detect_gpu_backend_ready(gpu_mode);
+    let gpu_ready = gpu_probe.is_ok();
+    let gpu_error_message = gpu_probe.err();
     let cpu_count = num_cpus::get().max(1);
     let default_parallel_inferences = (cpu_count / 2).clamp(1, 4);
     let max_parallel_inferences = parse_env_usize(
@@ -668,12 +824,26 @@ async fn main() -> anyhow::Result<()> {
         max_workers_per_session,
         max_threads_per_worker,
         acquire_timeout_ms,
-        requested_gpu_mode,
-        opencl_compiled,
+        requested_gpu_mode = gpu_mode.as_str(),
+        gpu_required,
+        gpu_ready,
+        compiled_gpu_backends,
         "transcription-agent resource limits configured"
     );
-    if requested_gpu_mode == "opencl" && !opencl_compiled {
-        warn!("transcription GPU mode requested but this transcription-agent binary was not compiled with OpenCL support; using CPU path");
+    if let Some(reason) = gpu_error_message.as_ref() {
+        if gpu_required {
+            warn!(
+                requested_gpu_mode = gpu_mode.as_str(),
+                %reason,
+                "transcription GPU requirement is not satisfied; transcription start/chunk requests will be rejected"
+            );
+        } else {
+            warn!(
+                requested_gpu_mode = gpu_mode.as_str(),
+                %reason,
+                "transcription GPU probe failed; CPU fallback is currently allowed by configuration"
+            );
+        }
     }
 
     let state = AppState {
@@ -685,6 +855,10 @@ async fn main() -> anyhow::Result<()> {
             .build()
             .context("failed to build http client")?,
         agent_token,
+        gpu_mode,
+        gpu_required,
+        gpu_ready,
+        gpu_error_message,
         workers: WorkerRegistry::new(max_workers, max_workers_per_session, max_threads_per_worker),
         inference_permits: Arc::new(tokio::sync::Semaphore::new(max_parallel_inferences)),
         inference_acquire_timeout: Duration::from_millis(acquire_timeout_ms),
