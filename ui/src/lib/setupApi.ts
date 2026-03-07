@@ -233,14 +233,12 @@ export async function putSetupMetadata(metadata: {
 export async function getSetupNetwork() {
   return setupJson<{
     allow_remote_access: boolean;
-    enable_automatic_port_mapping: boolean;
     trusted_proxies: string[];
   }>('/setup/network');
 }
 
 export async function putSetupNetwork(network: {
   allow_remote_access: boolean;
-  enable_automatic_port_mapping: boolean;
   trusted_proxies: string[];
 }) {
   return setupJson<{ ok: boolean; setup_state: string }>('/setup/network', {

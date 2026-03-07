@@ -49,7 +49,6 @@ export default function SetupWizard() {
 
   // Network state
   const [allowRemote, setAllowRemote] = useState(false);
-  const [autoPort, setAutoPort] = useState(false);
 
 
   useEffect(() => {
@@ -177,7 +176,6 @@ export default function SetupWizard() {
     try {
       await putSetupNetwork({
         allow_remote_access: allowRemote,
-        enable_automatic_port_mapping: autoPort,
         trusted_proxies: [],
       });
       setStep('complete');
@@ -477,7 +475,7 @@ export default function SetupWizard() {
         <section className="panel space-y-6 p-6 sm:p-7">
           <h2 className="text-2xl font-semibold sm:text-3xl">Network Settings</h2>
           <p className="text-sm muted">
-            Configure remote access and network options.
+            Configure remote access policy. Rustyfin does not perform router port forwarding.
           </p>
           <form onSubmit={(e) => { e.preventDefault(); handleNetwork(); }} className="space-y-4">
             <label className="panel-soft flex cursor-pointer items-center gap-3 px-4 py-3">
@@ -488,15 +486,6 @@ export default function SetupWizard() {
                 className="h-4 w-4 rounded border-white/30 bg-black/20 [accent-color:var(--purple)]"
               />
               <span className="text-sm">Allow remote access to this server</span>
-            </label>
-            <label className="panel-soft flex cursor-pointer items-center gap-3 px-4 py-3">
-              <input
-                type="checkbox"
-                checked={autoPort}
-                onChange={(e) => setAutoPort(e.target.checked)}
-                className="h-4 w-4 rounded border-white/30 bg-black/20 [accent-color:var(--purple)]"
-              />
-              <span className="text-sm">Enable automatic port mapping (UPnP)</span>
             </label>
             <button
               type="submit"
