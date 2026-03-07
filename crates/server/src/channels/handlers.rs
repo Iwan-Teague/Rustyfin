@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path as StdPath;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::fs;
 use tracing::warn;
 
@@ -24,6 +26,94 @@ use super::protocol::{
 const MAX_MESSAGE_CHARS: usize = 2000;
 const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 const CHANNEL_UPLOADS_DIR: &str = "channel_uploads";
+const TRANSCRIPTION_FINALIZE_MIN_GRACE_MS: u64 = 900;
+const TRANSCRIPTION_FINALIZE_QUIET_WINDOW_MS: u64 = 250;
+const TRANSCRIPTION_FINALIZE_MAX_WAIT_MS: u64 = 25_000;
+
+fn transcription_in_flight_chunks() -> &'static Mutex<HashMap<String, usize>> {
+    static COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mark_transcription_chunk_started(session_id: &str) {
+    if let Ok(mut guard) = transcription_in_flight_chunks().lock() {
+        let counter = guard.entry(session_id.to_string()).or_insert(0);
+        *counter += 1;
+    }
+}
+
+fn mark_transcription_chunk_finished(session_id: &str) {
+    if let Ok(mut guard) = transcription_in_flight_chunks().lock()
+        && let Some(counter) = guard.get_mut(session_id)
+    {
+        if *counter <= 1 {
+            guard.remove(session_id);
+        } else {
+            *counter -= 1;
+        }
+    }
+}
+
+fn transcription_in_flight_count(session_id: &str) -> usize {
+    transcription_in_flight_chunks()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(session_id).copied())
+        .unwrap_or(0)
+}
+
+struct TranscriptionChunkInFlightGuard {
+    session_id: String,
+}
+
+impl TranscriptionChunkInFlightGuard {
+    fn new(session_id: &str) -> Self {
+        mark_transcription_chunk_started(session_id);
+        Self {
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+impl Drop for TranscriptionChunkInFlightGuard {
+    fn drop(&mut self) {
+        mark_transcription_chunk_finished(&self.session_id);
+    }
+}
+
+async fn wait_for_transcription_chunks_to_settle(session_id: &str) {
+    let started_at = Instant::now();
+    let min_grace = Duration::from_millis(TRANSCRIPTION_FINALIZE_MIN_GRACE_MS);
+    let quiet_window = Duration::from_millis(TRANSCRIPTION_FINALIZE_QUIET_WINDOW_MS);
+    let max_wait = Duration::from_millis(TRANSCRIPTION_FINALIZE_MAX_WAIT_MS);
+    let mut last_non_zero_at: Option<Instant> = None;
+
+    loop {
+        let in_flight = transcription_in_flight_count(session_id);
+        if in_flight > 0 {
+            last_non_zero_at = Some(Instant::now());
+        }
+
+        let grace_elapsed = started_at.elapsed() >= min_grace;
+        let quiet_elapsed = last_non_zero_at
+            .map(|at| at.elapsed() >= quiet_window)
+            .unwrap_or(grace_elapsed);
+        if grace_elapsed && in_flight == 0 && quiet_elapsed {
+            break;
+        }
+
+        if started_at.elapsed() >= max_wait {
+            warn!(
+                session_id = %session_id,
+                in_flight,
+                waited_ms = started_at.elapsed().as_millis() as u64,
+                "timed out waiting for in-flight transcription chunks; finalizing transcript anyway"
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
+}
 
 // ── Request / response types ─────────────────────────────────────────────────
 
@@ -1000,12 +1090,18 @@ fn build_transcript_markdown(
         return out;
     }
 
+    let session_started_ms = session.started_ts.saturating_mul(1000);
     for entry in entries {
+        let relative_start_ms = entry.started_ts_ms.saturating_sub(session_started_ms);
+        let relative_end_ms = entry
+            .ended_ts_ms
+            .max(entry.started_ts_ms)
+            .saturating_sub(session_started_ms);
         let _ = writeln!(
             out,
             "[{} - {}] {}: {}",
-            format_ms(entry.started_ts_ms),
-            format_ms(entry.ended_ts_ms),
+            format_ms(relative_start_ms),
+            format_ms(relative_end_ms),
             entry.username,
             entry.text.trim()
         );
@@ -1325,6 +1421,7 @@ pub async fn transcribe_chunk(
         )
         .into());
     }
+    let _in_flight_guard = TranscriptionChunkInFlightGuard::new(&running.id);
 
     let segments = transcription_agent::transcribe_chunk(
         &state,
@@ -1435,6 +1532,10 @@ pub async fn stop_transcription(
                 message: Some("finalizing transcript".to_string()),
             },
         });
+
+    // Give clients time to flush their final buffered audio chunks and let
+    // in-flight transcriptions finish before we seal the transcript output.
+    wait_for_transcription_chunks_to_settle(&running.id).await;
 
     if let Err(err) = transcription_agent::stop_session(&state, &running.id).await {
         let _ = rustfin_db::repo::channel_transcripts::fail_session(
@@ -1673,4 +1774,58 @@ pub async fn delete_transcription_session(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcription_chunk_guard_tracks_in_flight_counts() {
+        let session_id = "session-test";
+        assert_eq!(transcription_in_flight_count(session_id), 0);
+        {
+            let _guard = TranscriptionChunkInFlightGuard::new(session_id);
+            assert_eq!(transcription_in_flight_count(session_id), 1);
+        }
+        assert_eq!(transcription_in_flight_count(session_id), 0);
+    }
+
+    #[test]
+    fn transcript_markdown_uses_session_relative_timestamps() {
+        let channel = rustfin_db::repo::channels::ChannelRow {
+            id: "ch-1".to_string(),
+            name: "Voice 1".to_string(),
+            kind: "voice".to_string(),
+            position: 0,
+            is_private: false,
+            created_by: "u-admin".to_string(),
+            created_ts: 1_700_000_000,
+        };
+        let session = rustfin_db::repo::channel_transcripts::TranscriptSessionRow {
+            id: "s-1".to_string(),
+            channel_id: channel.id.clone(),
+            status: "completed".to_string(),
+            started_by_user_id: "u-admin".to_string(),
+            started_by_username: "admin".to_string(),
+            started_ts: 1_700_000_000,
+            ended_ts: Some(1_700_000_120),
+            output_path: Some("/tmp/t.md".to_string()),
+            failure_reason: None,
+        };
+        let entries = vec![rustfin_db::repo::channel_transcripts::TranscriptEntryRow {
+            id: "e-1".to_string(),
+            session_id: session.id.clone(),
+            channel_id: channel.id.clone(),
+            user_id: "u-2".to_string(),
+            username: "alice".to_string(),
+            started_ts_ms: 1_700_000_001_500,
+            ended_ts_ms: 1_700_000_002_000,
+            text: "hello there".to_string(),
+            created_ts: 1_700_000_002,
+        }];
+
+        let markdown = build_transcript_markdown(&channel, &session, &entries);
+        assert!(markdown.contains("[00:00:01.500 - 00:00:02.000] alice: hello there"));
+    }
 }
