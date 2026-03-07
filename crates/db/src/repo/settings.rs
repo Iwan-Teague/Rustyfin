@@ -59,7 +59,6 @@ pub async fn insert_defaults(pool: &DbPool) -> Result<(), sqlx::Error> {
         ("metadata_language", "en"),
         ("metadata_region", "GB"),
         ("allow_remote_access", "false"),
-        ("enable_automatic_port_mapping", "false"),
         ("trusted_proxies", "[]"),
     ];
     for (key, value) in defaults {

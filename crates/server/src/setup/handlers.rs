@@ -894,7 +894,6 @@ pub async fn put_setup_metadata(
 #[derive(Serialize, Deserialize)]
 pub struct SetupNetwork {
     allow_remote_access: bool,
-    enable_automatic_port_mapping: bool,
     trusted_proxies: Vec<String>,
 }
 
@@ -914,12 +913,6 @@ pub async fn get_setup_network(_guard: SetupReadGuard, State(state): State<AppSt
         .unwrap_or_else(|| "false".to_string())
         == "true";
 
-    let auto_port = rustfin_db::repo::settings::get(&state.db, "enable_automatic_port_mapping")
-        .await
-        .unwrap_or(Some("false".to_string()))
-        .unwrap_or_else(|| "false".to_string())
-        == "true";
-
     let proxies_json = rustfin_db::repo::settings::get(&state.db, "trusted_proxies")
         .await
         .unwrap_or(Some("[]".to_string()))
@@ -931,7 +924,6 @@ pub async fn get_setup_network(_guard: SetupReadGuard, State(state): State<AppSt
         StatusCode::OK,
         Json(SetupNetwork {
             allow_remote_access: allow_remote,
-            enable_automatic_port_mapping: auto_port,
             trusted_proxies: proxies,
         }),
     )
@@ -973,14 +965,6 @@ pub async fn put_setup_network(
     set!(
         "allow_remote_access",
         if body.allow_remote_access {
-            "true"
-        } else {
-            "false"
-        }
-    );
-    set!(
-        "enable_automatic_port_mapping",
-        if body.enable_automatic_port_mapping {
             "true"
         } else {
             "false"

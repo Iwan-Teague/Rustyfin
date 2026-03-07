@@ -24,7 +24,7 @@ services:
         RUST_BUILD_PROFILE: ${RUSTFIN_RUST_BUILD_PROFILE:-dev}
         NATIVE_BIN_DIR: ${RUSTFIN_NATIVE_BIN_DIR:-.native-bins}
     ports:
-      - "${RUSTFIN_BACKEND_PORT:-8096}:8096"
+      - "${RUSTFIN_BACKEND_BIND_IP:-127.0.0.1}:${RUSTFIN_BACKEND_PORT:-8096}:8096"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -163,9 +163,13 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 
 - Backend default host port: `8096` (HTTP)
 - UI default host port: `3000` (HTTPS via edge)
+- Backend host bind default: `127.0.0.1` (loopback-only by default)
 
 `start.sh` auto-detects LAN IP, prints LAN URLs, and writes runtime values to `.rustyfin.runtime.env`.
 If default ports are occupied, it picks free ports.
+
+Rustyfin does not perform automatic router port mapping (UPnP/NAT-PMP).  
+Remote access should be handled by your network/VPN layer.
 
 ## Setup and Authentication
 
@@ -205,6 +209,7 @@ Common runtime variables:
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS` (default `21600`)
 - `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
 - `RUSTFIN_BACKEND_PORT`
+- `RUSTFIN_BACKEND_BIND_IP` (default `127.0.0.1`)
 - `RUSTFIN_UI_PORT`
 - `RUSTFIN_PUBLIC_HOST`
 - `RUSTFIN_MEDIA_PATH`

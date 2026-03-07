@@ -2300,7 +2300,6 @@ async fn setup_full_wizard_flow() {
         .add_header(owner_hdr.clone(), owner_val.clone())
         .json(&json!({
             "allow_remote_access": false,
-            "enable_automatic_port_mapping": false,
             "trusted_proxies": []
         }))
         .await;
