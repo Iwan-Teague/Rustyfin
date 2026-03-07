@@ -43,6 +43,28 @@ interface LibraryEditState {
   tmdb_fetch_reviews: boolean;
 }
 
+interface MusicImportState {
+  source: string;
+  artist: string;
+  album: string;
+  title: string;
+  importing: boolean;
+}
+
+interface MusicImportResponse {
+  library_id: string;
+  video_id: string;
+  artist: string;
+  album: string;
+  title: string;
+  file_path: string;
+  duration_ms?: number | null;
+  scan_job: {
+    id: string;
+    status: string;
+  };
+}
+
 interface Job {
   id: string;
   kind: string;
@@ -200,6 +222,7 @@ export default function AdminPage() {
 
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [libraryEdits, setLibraryEdits] = useState<Record<string, LibraryEditState>>({});
+  const [musicImports, setMusicImports] = useState<Record<string, MusicImportState>>({});
   const [logJobs, setLogJobs] = useState<Job[]>([]);
   const [tmdbJobs, setTmdbJobs] = useState<Job[]>([]);
   const [activeJobs, setActiveJobs] = useState<Job[]>([]);
@@ -641,6 +664,70 @@ export default function AdminPage() {
       await loadData();
     } catch (err: unknown) {
       setErr(clientErrorMessage(err, 'Failed to start TMDB sync'));
+    }
+  }
+
+  function getMusicImportState(libraryId: string): MusicImportState {
+    return musicImports[libraryId] ?? defaultMusicImportState();
+  }
+
+  function setMusicImportField<K extends keyof MusicImportState>(
+    libraryId: string,
+    key: K,
+    value: MusicImportState[K],
+  ) {
+    setMusicImports((prev) => ({
+      ...prev,
+      [libraryId]: {
+        ...(prev[libraryId] ?? defaultMusicImportState()),
+        [key]: value,
+      },
+    }));
+  }
+
+  async function importMusicToLibrary(libraryId: string) {
+    const current = getMusicImportState(libraryId);
+    const source = current.source.trim();
+    const artist = current.artist.trim();
+    const title = current.title.trim();
+    const album = current.album.trim();
+
+    if (!source || !artist || !title) {
+      setErr('YouTube source, artist, and title are required for music import');
+      return;
+    }
+
+    setMusicImportField(libraryId, 'importing', true);
+    try {
+      const response = await apiJson<MusicImportResponse>(
+        `/libraries/${libraryId}/music/import-youtube`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            source,
+            artist,
+            album,
+            title,
+          }),
+        },
+      );
+      setMusicImports((prev) => ({
+        ...prev,
+        [libraryId]: {
+          ...defaultMusicImportState(),
+          importing: false,
+          artist: response.artist,
+          album: response.album,
+          title: response.title,
+        },
+      }));
+      setOk(
+        `Imported "${response.title}" by ${response.artist} to ${response.album}. Library scan job queued.`,
+      );
+      await loadData();
+    } catch (err: unknown) {
+      setMusicImportField(libraryId, 'importing', false);
+      setErr(clientErrorMessage(err, 'Failed to import YouTube audio into library'));
     }
   }
 
@@ -1835,6 +1922,61 @@ export default function AdminPage() {
                         </p>
                       </div>
                     </form>
+                    {lib.kind === 'music' && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          void importMusicToLibrary(lib.id);
+                        }}
+                        className="panel-soft space-y-2 rounded-lg border border-[var(--border)] px-3 py-3"
+                      >
+                        <p className="text-sm font-semibold">Import Song From YouTube</p>
+                        <p className="text-xs muted">
+                          Keep artist and title separate. Example: artist = Tory Lanez, title = The
+                          Color Violet.
+                        </p>
+                        <input
+                          value={getMusicImportState(lib.id).source}
+                          onChange={(e) => setMusicImportField(lib.id, 'source', e.target.value)}
+                          placeholder="YouTube URL or 11-character video ID"
+                          className="input w-full px-3 py-2 text-sm"
+                          required
+                        />
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                          <input
+                            value={getMusicImportState(lib.id).artist}
+                            onChange={(e) => setMusicImportField(lib.id, 'artist', e.target.value)}
+                            placeholder="Artist"
+                            className="input w-full px-3 py-2 text-sm"
+                            required
+                          />
+                          <input
+                            value={getMusicImportState(lib.id).album}
+                            onChange={(e) => setMusicImportField(lib.id, 'album', e.target.value)}
+                            placeholder="Album (defaults to Singles)"
+                            className="input w-full px-3 py-2 text-sm"
+                          />
+                          <input
+                            value={getMusicImportState(lib.id).title}
+                            onChange={(e) => setMusicImportField(lib.id, 'title', e.target.value)}
+                            placeholder="Song title"
+                            className="input w-full px-3 py-2 text-sm"
+                            required
+                          />
+                        </div>
+                        <div className="flex items-center justify-end">
+                          <button
+                            type="submit"
+                            className="btn-primary px-3 py-1.5 text-sm disabled:opacity-60"
+                            disabled={getMusicImportState(lib.id).importing}
+                          >
+                            {getMusicImportState(lib.id).importing
+                              ? 'Importing...'
+                              : 'Download + Add'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
                     <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
                       <p className="text-sm muted">
                         {lib.kind} · {lib.item_count} items
@@ -2318,4 +2460,14 @@ export default function AdminPage() {
       )}
     </div>
   );
+}
+
+function defaultMusicImportState(): MusicImportState {
+  return {
+    source: '',
+    artist: '',
+    album: 'Singles',
+    title: '',
+    importing: false,
+  };
 }

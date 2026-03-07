@@ -8,7 +8,8 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::path::Path as StdPath;
+use std::path::{Path as StdPath, PathBuf};
+use std::time::Duration;
 use tokio::fs;
 use tracing::warn;
 
@@ -24,6 +25,8 @@ use crate::user_pipeline;
 const DEFAULT_STREAM_TOKEN_TTL_SECONDS: i64 = 6 * 60 * 60;
 const MAX_AVATAR_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 const USER_AVATAR_DIR: &str = "user_avatars";
+const YOUTUBE_AGENT_IMPORT_TIMEOUT_SECONDS: u64 = 240;
+const MAX_MUSIC_METADATA_LEN: usize = 180;
 
 fn stream_token_ttl_seconds() -> i64 {
     std::env::var("RUSTFIN_STREAM_TOKEN_TTL_SECONDS")
@@ -129,6 +132,10 @@ fn api_router() -> Router<AppState> {
         .route("/libraries/{id}/scan", post(scan_library))
         .route("/libraries/{id}/tmdb-sync", post(sync_library_tmdb))
         .route("/libraries/{id}/items", get(list_library_items))
+        .route(
+            "/libraries/{id}/music/import-youtube",
+            post(import_library_music_from_youtube),
+        )
         // Items
         .route("/items/{id}", get(get_item))
         .route("/items/{id}/playback", get(get_item_playback))
@@ -910,6 +917,445 @@ struct LibraryPathResponse {
     is_read_only: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportLibraryMusicFromYoutubeRequest {
+    source: String,
+    artist: String,
+    #[serde(default)]
+    album: Option<String>,
+    title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ImportLibraryMusicFromYoutubeResponse {
+    library_id: String,
+    video_id: String,
+    artist: String,
+    album: String,
+    title: String,
+    file_path: String,
+    duration_ms: Option<u64>,
+    scan_job: JobResponse,
+}
+
+#[derive(Debug)]
+struct DownloadedLibraryImportAudio {
+    file_path: PathBuf,
+    duration_ms: Option<u64>,
+    video_id: String,
+    import_scope_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct YouTubeAgentLibraryImportRequest<'a> {
+    room_id: &'a str,
+    video_id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct YouTubeAgentLibraryImportResponse {
+    file_path: String,
+    duration_ms: Option<u64>,
+}
+
+fn path_contains_component(path: &StdPath, component: &str) -> bool {
+    let expected = std::ffi::OsStr::new(component);
+    path.components().any(|part| part.as_os_str() == expected)
+}
+
+fn normalize_music_segment(raw: &str, field: &str) -> Result<String, AppError> {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            out.push(' ');
+        } else {
+            out.push(ch);
+        }
+    }
+
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let out = out.trim_matches([' ', '.']).to_string();
+    if out.is_empty() {
+        return Err(
+            ApiError::BadRequest(format!("{field} is required and must not be empty")).into(),
+        );
+    }
+    if out == "." || out == ".." {
+        return Err(ApiError::BadRequest(format!("{field} must be a valid name")).into());
+    }
+    if out.chars().count() > MAX_MUSIC_METADATA_LEN {
+        return Err(ApiError::BadRequest(format!(
+            "{field} must be <= {MAX_MUSIC_METADATA_LEN} characters"
+        ))
+        .into());
+    }
+    Ok(out)
+}
+
+fn strip_known_youtube_title_suffixes(raw: &str) -> String {
+    const SUFFIXES: &[&str] = &[
+        "(official video)",
+        "(official music video)",
+        "(official audio)",
+        "(audio)",
+        "(lyrics)",
+        "[official video]",
+        "[official music video]",
+        "[official audio]",
+        "[audio]",
+        "[lyrics]",
+    ];
+
+    let mut out = raw.trim().to_string();
+    loop {
+        let lowered = out.to_ascii_lowercase();
+        let mut removed = false;
+        for suffix in SUFFIXES {
+            if lowered.ends_with(suffix) {
+                let keep_len = out.len().saturating_sub(suffix.len());
+                out = out[..keep_len].trim_end().to_string();
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    out
+}
+
+fn strip_artist_prefix(title: &str, artist: &str) -> String {
+    let lowered_title = title.to_ascii_lowercase();
+    let lowered_artist = artist.to_ascii_lowercase();
+    for sep in [" - ", " – ", " — ", ": "] {
+        let prefix = format!("{lowered_artist}{sep}");
+        if lowered_title.starts_with(&prefix) {
+            let skip = artist.chars().count() + sep.chars().count();
+            return title
+                .chars()
+                .skip(skip)
+                .collect::<String>()
+                .trim()
+                .to_string();
+        }
+    }
+    title.to_string()
+}
+
+fn normalize_track_title(raw: &str, artist: &str) -> Result<String, AppError> {
+    let without_ext = raw.trim().trim_end_matches(".mp3");
+    let stripped_suffixes = strip_known_youtube_title_suffixes(without_ext);
+    let without_artist = strip_artist_prefix(&stripped_suffixes, artist);
+    normalize_music_segment(&without_artist, "title")
+}
+
+fn normalize_album(raw: Option<&str>) -> Result<String, AppError> {
+    match raw {
+        Some(value) if !value.trim().is_empty() => normalize_music_segment(value, "album"),
+        _ => Ok("Singles".to_string()),
+    }
+}
+
+fn choose_music_library_root(
+    paths: &[rustfin_db::repo::libraries::LibraryPathRow],
+) -> Result<PathBuf, AppError> {
+    for path in paths {
+        let candidate = StdPath::new(path.path.trim());
+        if candidate.is_absolute() && candidate.exists() && candidate.is_dir() {
+            return Ok(candidate.to_path_buf());
+        }
+    }
+    Err(ApiError::BadRequest(
+        "music library does not have a usable directory path on this server".into(),
+    )
+    .into())
+}
+
+fn normalize_import_scope_id(library_id: &str) -> String {
+    let clean_library_id: String = library_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let mut scope = format!("libimp_{clean_library_id}_{}", &unique[..10]);
+    if scope.len() > 128 {
+        scope.truncate(128);
+    }
+    if !scope
+        .chars()
+        .next()
+        .map(|ch| ch.is_ascii_alphanumeric())
+        .unwrap_or(false)
+    {
+        scope.insert(0, 'l');
+    }
+    scope
+}
+
+async fn reconcile_agent_download_path_for_import(
+    state: &AppState,
+    import_scope_id: &str,
+    raw_path: &StdPath,
+) -> PathBuf {
+    if fs::metadata(raw_path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        return raw_path.to_path_buf();
+    }
+
+    if !path_contains_component(raw_path, import_scope_id) {
+        return raw_path.to_path_buf();
+    }
+
+    let Some(file_name) = raw_path.file_name() else {
+        return raw_path.to_path_buf();
+    };
+
+    let remapped = state
+        .watch_party_audio_dir
+        .join(import_scope_id)
+        .join(file_name);
+    if fs::metadata(&remapped)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        return remapped;
+    }
+
+    raw_path.to_path_buf()
+}
+
+async fn canonical_watch_party_audio_root_for_validation(
+    state: &AppState,
+) -> Result<PathBuf, AppError> {
+    fs::create_dir_all(&state.watch_party_audio_dir)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!(
+                "failed to ensure watch-party audio root directory: {e}"
+            ))
+        })?;
+    state.watch_party_audio_dir.canonicalize().map_err(|e| {
+        ApiError::Internal(format!(
+            "failed to canonicalize watch-party audio root for validation: {e}"
+        ))
+        .into()
+    })
+}
+
+async fn canonical_import_scope_dir_for_validation(
+    state: &AppState,
+    import_scope_id: &str,
+) -> Result<PathBuf, AppError> {
+    let scope_dir = state.watch_party_audio_dir.join(import_scope_id);
+    fs::create_dir_all(&scope_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to ensure import scope directory: {e}")))?;
+    scope_dir.canonicalize().map_err(|e| {
+        ApiError::Internal(format!(
+            "failed to canonicalize import scope directory for validation: {e}"
+        ))
+        .into()
+    })
+}
+
+fn validate_import_audio_scope(
+    canonical_file: &StdPath,
+    canonical_scope_root: &StdPath,
+    canonical_cache_root: &StdPath,
+    import_scope_id: &str,
+) -> Result<(), AppError> {
+    if canonical_file.starts_with(canonical_scope_root) {
+        return Ok(());
+    }
+    if canonical_file.starts_with(canonical_cache_root)
+        && path_contains_component(canonical_file, import_scope_id)
+    {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden(format!(
+        "youtube-agent returned a file path outside import scope (file={}, scope_root={}, cache_root={}, scope_id={})",
+        canonical_file.display(),
+        canonical_scope_root.display(),
+        canonical_cache_root.display(),
+        import_scope_id
+    ))
+    .into())
+}
+
+async fn download_youtube_audio_for_library_import(
+    state: &AppState,
+    library_id: &str,
+    source: &str,
+) -> Result<DownloadedLibraryImportAudio, AppError> {
+    let video_id = crate::watch_party::youtube::extract_youtube_video_id_from_input(source)
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "source must be a valid YouTube URL or 11-character video ID".into(),
+            )
+        })?;
+    let import_scope_id = normalize_import_scope_id(library_id);
+    let request_url = format!(
+        "{}/api/v1/download/audio",
+        state.youtube_agent_url.trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(YOUTUBE_AGENT_IMPORT_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("failed to build youtube-agent client: {e}")))?;
+
+    let mut request = client
+        .post(&request_url)
+        .json(&YouTubeAgentLibraryImportRequest {
+            room_id: &import_scope_id,
+            video_id: &video_id,
+        });
+    if let Some(token) = state
+        .youtube_agent_token
+        .as_ref()
+        .filter(|token| !token.is_empty())
+    {
+        request = request.header("x-agent-token", token);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("youtube-agent request failed: {e}")))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "<failed to read youtube-agent response>".to_string());
+    if !status.is_success() {
+        let sanitized = body_text.replace('\n', " ").trim().to_string();
+        return Err(ApiError::BadRequest(format!(
+            "failed to download YouTube audio via youtube-agent: {sanitized}"
+        ))
+        .into());
+    }
+
+    let payload: YouTubeAgentLibraryImportResponse =
+        serde_json::from_str(&body_text).map_err(|e| {
+            ApiError::Internal(format!(
+                "youtube-agent returned invalid JSON payload for download response: {e}"
+            ))
+        })?;
+    let file_path = reconcile_agent_download_path_for_import(
+        state,
+        &import_scope_id,
+        StdPath::new(&payload.file_path),
+    )
+    .await;
+
+    let file_meta = fs::metadata(&file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("downloaded audio path missing from disk: {e}")))?;
+    if !file_meta.is_file() {
+        return Err(ApiError::Internal(
+            "youtube-agent returned a path that is not a regular file".into(),
+        )
+        .into());
+    }
+
+    let canonical_file = file_path.canonicalize().map_err(|e| {
+        ApiError::Internal(format!("failed to canonicalize downloaded audio path: {e}"))
+    })?;
+    let canonical_scope_root =
+        canonical_import_scope_dir_for_validation(state, &import_scope_id).await?;
+    let canonical_cache_root = canonical_watch_party_audio_root_for_validation(state).await?;
+    validate_import_audio_scope(
+        &canonical_file,
+        &canonical_scope_root,
+        &canonical_cache_root,
+        &import_scope_id,
+    )?;
+
+    Ok(DownloadedLibraryImportAudio {
+        file_path,
+        duration_ms: payload.duration_ms,
+        video_id,
+        import_scope_id,
+    })
+}
+
+async fn pick_unique_target_mp3_path(
+    album_dir: &StdPath,
+    title: &str,
+) -> Result<PathBuf, AppError> {
+    let base_name = normalize_music_segment(title, "title")?;
+    for attempt in 0..1000 {
+        let file_name = if attempt == 0 {
+            format!("{base_name}.mp3")
+        } else {
+            format!("{base_name} ({}).mp3", attempt + 1)
+        };
+        let candidate = album_dir.join(file_name);
+        match fs::metadata(&candidate).await {
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(err) => {
+                return Err(ApiError::Internal(format!(
+                    "failed to inspect target file path: {err}"
+                ))
+                .into());
+            }
+        }
+    }
+
+    Err(ApiError::BadRequest(
+        "could not allocate a unique filename in the target album directory".into(),
+    )
+    .into())
+}
+
+async fn move_downloaded_audio_to_target(
+    source_path: &StdPath,
+    target_path: &StdPath,
+) -> Result<(), AppError> {
+    match fs::rename(source_path, target_path).await {
+        Ok(()) => Ok(()),
+        Err(err)
+            if err.kind() == std::io::ErrorKind::CrossesDevices
+                || err.raw_os_error() == Some(18) =>
+        {
+            fs::copy(source_path, target_path)
+                .await
+                .map_err(|e| ApiError::Internal(format!("failed to copy downloaded audio: {e}")))?;
+            fs::remove_file(source_path).await.map_err(|e| {
+                ApiError::Internal(format!("failed to remove source audio after copy: {e}"))
+            })?;
+            Ok(())
+        }
+        Err(err) => Err(ApiError::Internal(format!(
+            "failed to move downloaded audio into the library: {err}"
+        ))
+        .into()),
+    }
+}
+
+async fn cleanup_import_scope_dir(state: &AppState, import_scope_id: &str) {
+    let path = state.watch_party_audio_dir.join(import_scope_id);
+    if let Err(err) = fs::remove_dir_all(&path).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(
+            scope_id = %import_scope_id,
+            error = %err,
+            "failed to clean temporary import scope directory"
+        );
+    }
+}
+
 fn validate_and_normalize_paths(paths: &[String]) -> Result<Vec<String>, AppError> {
     if paths.is_empty() {
         return Err(ApiError::BadRequest("at least one path required".into()).into());
@@ -1401,6 +1847,101 @@ async fn scan_library(
     Ok((axum::http::StatusCode::ACCEPTED, Json(job_to_response(job))))
 }
 
+async fn import_library_music_from_youtube(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportLibraryMusicFromYoutubeRequest>,
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<ImportLibraryMusicFromYoutubeResponse>,
+    ),
+    AppError,
+> {
+    let library = rustfin_db::repo::libraries::get_library(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("library not found".into()))?;
+    ensure_library_access(&auth, &state, &library.id).await?;
+
+    if library.kind != "music" {
+        return Err(ApiError::BadRequest(
+            "YouTube music import is only supported for music libraries".into(),
+        )
+        .into());
+    }
+
+    let source = body.source.trim();
+    if source.is_empty() {
+        return Err(ApiError::BadRequest("source is required".into()).into());
+    }
+
+    let artist = normalize_music_segment(&body.artist, "artist")?;
+    let album = normalize_album(body.album.as_deref())?;
+    let title = normalize_track_title(&body.title, &artist)?;
+
+    let library_paths = rustfin_db::repo::libraries::get_library_paths(&state.db, &library.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let library_root = choose_music_library_root(&library_paths)?;
+
+    let downloaded = download_youtube_audio_for_library_import(&state, &library.id, source).await?;
+    let import_scope_id = downloaded.import_scope_id.clone();
+
+    let import_result = async {
+        let album_dir = library_root.join(&artist).join(&album);
+        fs::create_dir_all(&album_dir)
+            .await
+            .map_err(|e| ApiError::Internal(format!("failed to create album directory: {e}")))?;
+
+        let target_path = pick_unique_target_mp3_path(&album_dir, &title).await?;
+        move_downloaded_audio_to_target(&downloaded.file_path, &target_path).await?;
+
+        let scan_job =
+            crate::library_scan::enqueue_library_scan(&state, &library.id, &library.kind).await?;
+
+        Ok::<(PathBuf, rustfin_db::repo::jobs::JobRow), AppError>((target_path, scan_job))
+    }
+    .await;
+
+    cleanup_import_scope_dir(&state, &import_scope_id).await;
+
+    let (target_path, scan_job) = import_result?;
+
+    crate::audit_log::record_event(
+        &state,
+        "libraries.music.import_youtube",
+        serde_json::json!({
+            "scope": "libraries",
+            "action": "music_import_youtube",
+            "user_id": auth.user_id,
+            "user_role": auth.role,
+            "library_id": library.id,
+            "artist": artist.clone(),
+            "album": album.clone(),
+            "title": title.clone(),
+            "video_id": downloaded.video_id.clone(),
+            "file_path": target_path.to_string_lossy(),
+        }),
+    )
+    .await;
+
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(ImportLibraryMusicFromYoutubeResponse {
+            library_id: library.id,
+            video_id: downloaded.video_id,
+            artist,
+            album,
+            title,
+            file_path: target_path.to_string_lossy().to_string(),
+            duration_ms: downloaded.duration_ms,
+            scan_job: job_to_response(scan_job),
+        }),
+    ))
+}
+
 async fn sync_library_tmdb(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -1420,7 +1961,7 @@ async fn sync_library_tmdb(
 // Jobs
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct JobResponse {
     id: String,
     kind: String,

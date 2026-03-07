@@ -15,6 +15,7 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
 
 - Libraries
   - Movie, TV, and music libraries with deep directory scanning.
+  - Music library YouTube import workflow (download MP3 into artist/album folders with explicit metadata fields).
   - Per-library access control per user.
   - TMDB metadata enrichment (configurable in Admin).
   - Per-library TMDB management:
@@ -38,8 +39,10 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
     - Shared paint-style canvas with synchronized strokes.
     - Import `.txt`, `.md`, `.pdf` (text extraction) and export `.txt`, `.md`, `.pdf`, `.png`.
   - Play Together:
-    - Shared chess game with synchronized state.
-    - Local player seats (white/black), AI opponent mode, promotion choice, legal-move indicators, and board reset flows.
+    - Shared Chess, Connect Four, and Battleship games with synchronized state.
+    - Chess supports local player seats (white/black), AI opponent mode, promotion choice, legal-move indicators, and board reset flows.
+    - Connect Four supports red/yellow seats, turn-validated drops, win/draw detection, and reset confirmation flows.
+    - Battleship supports blue/red seats, auto ship placement, ready-up flow, turn-validated firing, sink/win detection, and reset confirmation flows.
   - Room permissions, invites, password-protected rooms, and reconfiguration.
   - Empty room auto-cleanup after 5 minutes.
 - Channels
@@ -299,7 +302,7 @@ E2E harness:
 
 ## Known Limitations
 
-- `Play Together` currently supports Chess only; additional game types are not implemented yet.
+- `Play Together` supports Chess, Connect Four, and Battleship.
 - Third-party website behavior in web rooms depends on iframe/embed policies.
 - YouTube availability is subject to regional/content restrictions and provider-side policy.
 - PDF import in Create Together is text-extraction based; scanned/image-only PDFs may not extract usable text.

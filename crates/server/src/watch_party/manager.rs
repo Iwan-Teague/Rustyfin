@@ -4,12 +4,21 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chess::{Board, BoardStatus, ChessMove, Color, MoveGen, Piece, Square};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use tokio::sync::{RwLock, broadcast};
 
 use super::protocol::{AudioRepeatMode, CreateCanvasStroke, ServerMessage, YouTubeSearchEntry};
 
 const MAX_ACTIVE_ROOMS: usize = 512;
 const EMPTY_ROOM_TTL_SECONDS: i64 = 5 * 60;
+const CONNECT_FOUR_ROWS: usize = 6;
+const CONNECT_FOUR_COLS: usize = 7;
+const CONNECT_FOUR_CELLS: usize = CONNECT_FOUR_ROWS * CONNECT_FOUR_COLS;
+const BATTLESHIP_BOARD_SIZE: usize = 10;
+const BATTLESHIP_BOARD_CELLS: usize = BATTLESHIP_BOARD_SIZE * BATTLESHIP_BOARD_SIZE;
+const BATTLESHIP_SHIP_SIZES: [u8; 5] = [5, 4, 3, 3, 2];
+const BATTLESHIP_TOTAL_SHIP_CELLS: u16 = 17;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlaybackState {
@@ -134,14 +143,116 @@ impl Default for ChessState {
 }
 
 #[derive(Debug, Clone)]
+pub struct ConnectFourState {
+    pub board: [u8; CONNECT_FOUR_CELLS],
+    pub turn: String,
+    pub status: String,
+    pub winner_color: Option<String>,
+    pub red_user_id: Option<String>,
+    pub yellow_user_id: Option<String>,
+    pub last_move_row: Option<u8>,
+    pub last_move_col: Option<u8>,
+    pub reset_requested_red: bool,
+    pub reset_requested_yellow: bool,
+    pub updated_ts_ms: i64,
+}
+
+impl Default for ConnectFourState {
+    fn default() -> Self {
+        Self {
+            board: [0; CONNECT_FOUR_CELLS],
+            turn: "red".to_string(),
+            status: "active".to_string(),
+            winner_color: None,
+            red_user_id: None,
+            yellow_user_id: None,
+            last_move_row: None,
+            last_move_col: None,
+            reset_requested_red: false,
+            reset_requested_yellow: false,
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BattleshipLastShot {
+    pub by_color: String,
+    pub x: u8,
+    pub y: u8,
+    pub result: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BattleshipState {
+    pub phase: String,
+    pub status: String,
+    pub turn_color: String,
+    pub winner_color: Option<String>,
+    pub blue_user_id: Option<String>,
+    pub red_user_id: Option<String>,
+    pub blue_ready: bool,
+    pub red_ready: bool,
+    pub blue_ships: [u8; BATTLESHIP_BOARD_CELLS],
+    pub red_ships: [u8; BATTLESHIP_BOARD_CELLS],
+    pub blue_shots: [u8; BATTLESHIP_BOARD_CELLS],
+    pub red_shots: [u8; BATTLESHIP_BOARD_CELLS],
+    pub remaining_ship_cells_blue: u16,
+    pub remaining_ship_cells_red: u16,
+    pub last_shot: Option<BattleshipLastShot>,
+    pub reset_requested_blue: bool,
+    pub reset_requested_red: bool,
+    pub updated_ts_ms: i64,
+}
+
+impl Default for BattleshipState {
+    fn default() -> Self {
+        Self {
+            phase: "setup".to_string(),
+            status: "setup".to_string(),
+            turn_color: "blue".to_string(),
+            winner_color: None,
+            blue_user_id: None,
+            red_user_id: None,
+            blue_ready: false,
+            red_ready: false,
+            blue_ships: [0; BATTLESHIP_BOARD_CELLS],
+            red_ships: [0; BATTLESHIP_BOARD_CELLS],
+            blue_shots: [0; BATTLESHIP_BOARD_CELLS],
+            red_shots: [0; BATTLESHIP_BOARD_CELLS],
+            remaining_ship_cells_blue: 0,
+            remaining_ship_cells_red: 0,
+            last_shot: None,
+            reset_requested_blue: false,
+            reset_requested_red: false,
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PlayState {
     pub active_game: String,
     pub chess: ChessState,
+    pub connect_four: ConnectFourState,
+    pub battleship: BattleshipState,
     pub updated_ts_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChessResetOutcome {
+    Applied,
+    AwaitingOtherPlayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectFourResetOutcome {
+    Applied,
+    AwaitingOtherPlayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BattleshipResetOutcome {
     Applied,
     AwaitingOtherPlayer,
 }
@@ -152,6 +263,8 @@ impl Default for PlayState {
         Self {
             active_game: "chess".to_string(),
             chess: ChessState::default(),
+            connect_four: ConnectFourState::default(),
+            battleship: BattleshipState::default(),
             updated_ts_ms: now_ms,
         }
     }
@@ -512,8 +625,10 @@ impl RoomRuntime {
         };
 
         let normalized = game.trim().to_ascii_lowercase();
-        if normalized != "chess" {
-            return Err("only chess is currently supported in play-together rooms".to_string());
+        if !matches!(normalized.as_str(), "chess" | "connect_four" | "battleship") {
+            return Err(
+                "invalid play game; expected one of: chess, connect_four, battleship".to_string(),
+            );
         }
 
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -521,6 +636,8 @@ impl RoomRuntime {
         guard.active_game = normalized;
         guard.updated_ts_ms = now_ms;
         guard.chess.updated_ts_ms = now_ms;
+        guard.connect_four.updated_ts_ms = now_ms;
+        guard.battleship.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
         drop(guard);
         self.touch_activity().await;
@@ -884,6 +1001,557 @@ impl RoomRuntime {
         drop(guard);
         self.touch_activity().await;
         Ok(true)
+    }
+
+    pub async fn set_connect_four_players(
+        &self,
+        actor_user_id: &str,
+        red_user_id: Option<String>,
+        yellow_user_id: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let red = red_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let yellow = yellow_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if red.is_some() && red == yellow {
+            return Err("red and yellow seats must be assigned to different users".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+
+        let current_red = guard.connect_four.red_user_id.clone();
+        let current_yellow = guard.connect_four.yellow_user_id.clone();
+        validate_chess_seat_change("red", current_red.as_deref(), red.as_deref(), actor_user_id)?;
+        validate_chess_seat_change(
+            "yellow",
+            current_yellow.as_deref(),
+            yellow.as_deref(),
+            actor_user_id,
+        )?;
+
+        let mut next_state = ConnectFourState::default();
+        next_state.red_user_id = red;
+        next_state.yellow_user_id = yellow;
+        next_state.updated_ts_ms = now_ms;
+        guard.connect_four = next_state;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn request_connect_four_reset(
+        &self,
+        requester_user_id: &str,
+    ) -> Result<(Option<PlayState>, ConnectFourResetOutcome), String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok((None, ConnectFourResetOutcome::Applied)),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "connect_four" {
+            return Err("active play game is not connect_four".to_string());
+        }
+
+        let red = guard.connect_four.red_user_id.clone();
+        let yellow = guard.connect_four.yellow_user_id.clone();
+        let has_red = red.is_some();
+        let has_yellow = yellow.is_some();
+
+        if !has_red && !has_yellow {
+            let mut next_state = ConnectFourState::default();
+            next_state.red_user_id = red;
+            next_state.yellow_user_id = yellow;
+            next_state.updated_ts_ms = now_ms;
+            guard.connect_four = next_state;
+            guard.updated_ts_ms = now_ms;
+            let snapshot = guard.clone();
+            drop(guard);
+            self.touch_activity().await;
+            return Ok((Some(snapshot), ConnectFourResetOutcome::Applied));
+        }
+
+        let requester_is_red = red.as_deref() == Some(requester_user_id);
+        let requester_is_yellow = yellow.as_deref() == Some(requester_user_id);
+        if !requester_is_red && !requester_is_yellow {
+            return Err("only active players can request a board reset".to_string());
+        }
+
+        let two_players_assigned = has_red && has_yellow && red != yellow;
+        if two_players_assigned {
+            if requester_is_red {
+                guard.connect_four.reset_requested_red = true;
+            }
+            if requester_is_yellow {
+                guard.connect_four.reset_requested_yellow = true;
+            }
+
+            if !(guard.connect_four.reset_requested_red
+                && guard.connect_four.reset_requested_yellow)
+            {
+                guard.connect_four.updated_ts_ms = now_ms;
+                guard.updated_ts_ms = now_ms;
+                let snapshot = guard.clone();
+                drop(guard);
+                self.touch_activity().await;
+                return Ok((Some(snapshot), ConnectFourResetOutcome::AwaitingOtherPlayer));
+            }
+        }
+
+        let mut next_state = ConnectFourState::default();
+        next_state.red_user_id = red;
+        next_state.yellow_user_id = yellow;
+        next_state.updated_ts_ms = now_ms;
+        guard.connect_four = next_state;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok((Some(snapshot), ConnectFourResetOutcome::Applied))
+    }
+
+    pub async fn apply_connect_four_drop(
+        &self,
+        user_id: &str,
+        column: usize,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        if column >= CONNECT_FOUR_COLS {
+            return Err("column out of range".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "connect_four" {
+            return Err("active play game is not connect_four".to_string());
+        }
+        if guard.connect_four.status != "active" {
+            return Err("connect four game is not active".to_string());
+        }
+
+        let (turn_code, turn_name) = if guard.connect_four.turn == "yellow" {
+            (2_u8, "yellow")
+        } else {
+            (1_u8, "red")
+        };
+        let assigned_user = if turn_code == 1 {
+            guard.connect_four.red_user_id.as_deref()
+        } else {
+            guard.connect_four.yellow_user_id.as_deref()
+        };
+        if let Some(assigned_user_id) = assigned_user {
+            if assigned_user_id != user_id {
+                return Err(format!(
+                    "only the assigned {turn_name} player may move right now"
+                ));
+            }
+        }
+
+        let mut placed_row = None;
+        for row in (0..CONNECT_FOUR_ROWS).rev() {
+            let idx = row * CONNECT_FOUR_COLS + column;
+            if guard.connect_four.board[idx] == 0 {
+                guard.connect_four.board[idx] = turn_code;
+                placed_row = Some(row);
+                break;
+            }
+        }
+
+        let Some(row) = placed_row else {
+            return Err("selected column is full".to_string());
+        };
+
+        if connect_four_has_winning_line(&guard.connect_four.board, row, column, turn_code) {
+            guard.connect_four.status = "win".to_string();
+            guard.connect_four.winner_color = Some(turn_name.to_string());
+        } else if guard.connect_four.board.iter().all(|cell| *cell != 0) {
+            guard.connect_four.status = "draw".to_string();
+            guard.connect_four.winner_color = None;
+        } else {
+            guard.connect_four.turn = if turn_code == 1 {
+                "yellow".to_string()
+            } else {
+                "red".to_string()
+            };
+        }
+
+        guard.connect_four.last_move_row = Some(row as u8);
+        guard.connect_four.last_move_col = Some(column as u8);
+        guard.connect_four.reset_requested_red = false;
+        guard.connect_four.reset_requested_yellow = false;
+        guard.connect_four.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn set_battleship_players(
+        &self,
+        actor_user_id: &str,
+        blue_user_id: Option<String>,
+        red_user_id: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let blue = blue_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let red = red_user_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if blue.is_some() && blue == red {
+            return Err("blue and red seats must be assigned to different users".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+
+        let current_blue = guard.battleship.blue_user_id.clone();
+        let current_red = guard.battleship.red_user_id.clone();
+        validate_chess_seat_change(
+            "blue",
+            current_blue.as_deref(),
+            blue.as_deref(),
+            actor_user_id,
+        )?;
+        validate_chess_seat_change("red", current_red.as_deref(), red.as_deref(), actor_user_id)?;
+
+        let mut next_state = BattleshipState::default();
+        next_state.blue_user_id = blue;
+        next_state.red_user_id = red;
+        next_state.updated_ts_ms = now_ms;
+        guard.battleship = next_state;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn battleship_auto_place(
+        &self,
+        actor_user_id: &str,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+        if guard.battleship.phase != "setup" {
+            return Err("battleship board can only be configured during setup".to_string());
+        }
+
+        let actor_color = battleship_color_for_user(&guard.battleship, actor_user_id)
+            .ok_or_else(|| "only assigned players can place battleship ships".to_string())?;
+        let seed = chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .unsigned_abs()
+            ^ (actor_user_id.bytes().fold(0_u64, |acc, byte| {
+                acc.wrapping_mul(131).wrapping_add(byte as u64)
+            }));
+        let ships = generate_battleship_ships(seed)?;
+
+        if actor_color == "blue" {
+            guard.battleship.blue_ships = ships;
+            guard.battleship.blue_shots = [0; BATTLESHIP_BOARD_CELLS];
+            guard.battleship.blue_ready = false;
+            guard.battleship.remaining_ship_cells_blue = BATTLESHIP_TOTAL_SHIP_CELLS;
+        } else {
+            guard.battleship.red_ships = ships;
+            guard.battleship.red_shots = [0; BATTLESHIP_BOARD_CELLS];
+            guard.battleship.red_ready = false;
+            guard.battleship.remaining_ship_cells_red = BATTLESHIP_TOTAL_SHIP_CELLS;
+        }
+
+        guard.battleship.status = "setup".to_string();
+        guard.battleship.last_shot = None;
+        clear_battleship_reset_requests(&mut guard.battleship);
+        guard.battleship.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn battleship_set_ready(
+        &self,
+        actor_user_id: &str,
+        ready: bool,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+        if guard.battleship.phase == "finished" {
+            return Err("battleship game is finished; reset to start a new game".to_string());
+        }
+
+        let actor_color = battleship_color_for_user(&guard.battleship, actor_user_id)
+            .ok_or_else(|| "only assigned players can change ready state".to_string())?;
+
+        if ready {
+            if actor_color == "blue" {
+                if count_ship_cells(&guard.battleship.blue_ships) != BATTLESHIP_TOTAL_SHIP_CELLS {
+                    return Err("blue board must be placed before setting ready".to_string());
+                }
+                guard.battleship.blue_ready = true;
+            } else {
+                if count_ship_cells(&guard.battleship.red_ships) != BATTLESHIP_TOTAL_SHIP_CELLS {
+                    return Err("red board must be placed before setting ready".to_string());
+                }
+                guard.battleship.red_ready = true;
+            }
+        } else if actor_color == "blue" {
+            guard.battleship.blue_ready = false;
+        } else {
+            guard.battleship.red_ready = false;
+        }
+
+        let both_assigned =
+            guard.battleship.blue_user_id.is_some() && guard.battleship.red_user_id.is_some();
+        if both_assigned && guard.battleship.blue_ready && guard.battleship.red_ready {
+            guard.battleship.phase = "active".to_string();
+            guard.battleship.status = "active".to_string();
+            guard.battleship.turn_color = if now_ms % 2 == 0 {
+                "blue".to_string()
+            } else {
+                "red".to_string()
+            };
+        } else {
+            guard.battleship.phase = "setup".to_string();
+            guard.battleship.status = "setup".to_string();
+        }
+
+        clear_battleship_reset_requests(&mut guard.battleship);
+        guard.battleship.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn battleship_fire(
+        &self,
+        actor_user_id: &str,
+        x: u8,
+        y: u8,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        if x as usize >= BATTLESHIP_BOARD_SIZE || y as usize >= BATTLESHIP_BOARD_SIZE {
+            return Err("shot coordinates are out of range".to_string());
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+        if guard.battleship.phase != "active" || guard.battleship.status != "active" {
+            return Err("battleship game is not active".to_string());
+        }
+
+        let actor_color = battleship_color_for_user(&guard.battleship, actor_user_id)
+            .ok_or_else(|| "only assigned players can fire in battleship".to_string())?;
+        if guard.battleship.turn_color != actor_color {
+            return Err("it is not your turn".to_string());
+        }
+
+        let target_idx = y as usize * BATTLESHIP_BOARD_SIZE + x as usize;
+        let (result, did_win) = if actor_color == "blue" {
+            let target_ships = guard.battleship.red_ships;
+            if guard.battleship.red_shots[target_idx] != 0 {
+                return Err("that coordinate has already been targeted".to_string());
+            }
+
+            if target_ships[target_idx] == 0 {
+                guard.battleship.red_shots[target_idx] = 1;
+                ("miss".to_string(), false)
+            } else {
+                guard.battleship.red_shots[target_idx] = 2;
+                if guard.battleship.remaining_ship_cells_red > 0 {
+                    guard.battleship.remaining_ship_cells_red -= 1;
+                }
+                let ship_id = target_ships[target_idx];
+                if guard.battleship.remaining_ship_cells_red == 0 {
+                    ("win".to_string(), true)
+                } else if is_battleship_ship_sunk(
+                    &target_ships,
+                    &guard.battleship.red_shots,
+                    ship_id,
+                ) {
+                    ("sunk".to_string(), false)
+                } else {
+                    ("hit".to_string(), false)
+                }
+            }
+        } else {
+            let target_ships = guard.battleship.blue_ships;
+            if guard.battleship.blue_shots[target_idx] != 0 {
+                return Err("that coordinate has already been targeted".to_string());
+            }
+
+            if target_ships[target_idx] == 0 {
+                guard.battleship.blue_shots[target_idx] = 1;
+                ("miss".to_string(), false)
+            } else {
+                guard.battleship.blue_shots[target_idx] = 2;
+                if guard.battleship.remaining_ship_cells_blue > 0 {
+                    guard.battleship.remaining_ship_cells_blue -= 1;
+                }
+                let ship_id = target_ships[target_idx];
+                if guard.battleship.remaining_ship_cells_blue == 0 {
+                    ("win".to_string(), true)
+                } else if is_battleship_ship_sunk(
+                    &target_ships,
+                    &guard.battleship.blue_shots,
+                    ship_id,
+                ) {
+                    ("sunk".to_string(), false)
+                } else {
+                    ("hit".to_string(), false)
+                }
+            }
+        };
+
+        if did_win {
+            guard.battleship.phase = "finished".to_string();
+            guard.battleship.status = "finished".to_string();
+            guard.battleship.winner_color = Some(actor_color.to_string());
+        }
+
+        guard.battleship.last_shot = Some(BattleshipLastShot {
+            by_color: actor_color.to_string(),
+            x,
+            y,
+            result,
+        });
+
+        if guard.battleship.phase == "active" {
+            guard.battleship.turn_color = if actor_color == "blue" {
+                "red".to_string()
+            } else {
+                "blue".to_string()
+            };
+        }
+
+        clear_battleship_reset_requests(&mut guard.battleship);
+        guard.battleship.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn request_battleship_reset(
+        &self,
+        requester_user_id: &str,
+    ) -> Result<(Option<PlayState>, BattleshipResetOutcome), String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok((None, BattleshipResetOutcome::Applied)),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+
+        let blue = guard.battleship.blue_user_id.clone();
+        let red = guard.battleship.red_user_id.clone();
+        let has_blue = blue.is_some();
+        let has_red = red.is_some();
+
+        if !has_blue && !has_red {
+            let mut next_state = BattleshipState::default();
+            next_state.blue_user_id = blue;
+            next_state.red_user_id = red;
+            next_state.updated_ts_ms = now_ms;
+            guard.battleship = next_state;
+            guard.updated_ts_ms = now_ms;
+            let snapshot = guard.clone();
+            drop(guard);
+            self.touch_activity().await;
+            return Ok((Some(snapshot), BattleshipResetOutcome::Applied));
+        }
+
+        let requester_is_blue = blue.as_deref() == Some(requester_user_id);
+        let requester_is_red = red.as_deref() == Some(requester_user_id);
+        if !requester_is_blue && !requester_is_red {
+            return Err("only active players can request a board reset".to_string());
+        }
+
+        let two_players_assigned = has_blue && has_red && blue != red;
+        if two_players_assigned {
+            if requester_is_blue {
+                guard.battleship.reset_requested_blue = true;
+            }
+            if requester_is_red {
+                guard.battleship.reset_requested_red = true;
+            }
+
+            if !(guard.battleship.reset_requested_blue && guard.battleship.reset_requested_red) {
+                guard.battleship.updated_ts_ms = now_ms;
+                guard.updated_ts_ms = now_ms;
+                let snapshot = guard.clone();
+                drop(guard);
+                self.touch_activity().await;
+                return Ok((Some(snapshot), BattleshipResetOutcome::AwaitingOtherPlayer));
+            }
+        }
+
+        let mut next_state = BattleshipState::default();
+        next_state.blue_user_id = blue;
+        next_state.red_user_id = red;
+        next_state.updated_ts_ms = now_ms;
+        guard.battleship = next_state;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok((Some(snapshot), BattleshipResetOutcome::Applied))
     }
 
     pub async fn set_youtube_search_state(
@@ -1403,6 +2071,145 @@ fn clear_chess_reset_requests(chess: &mut ChessState) {
     chess.reset_requested_black = false;
 }
 
+fn connect_four_has_winning_line(
+    board: &[u8; CONNECT_FOUR_CELLS],
+    row: usize,
+    col: usize,
+    token: u8,
+) -> bool {
+    const DIRECTIONS: [(isize, isize); 4] = [(1, 0), (0, 1), (1, 1), (1, -1)];
+    for (dx, dy) in DIRECTIONS {
+        let mut count = 1;
+        count += connect_four_count_direction(board, row, col, token, dx, dy);
+        count += connect_four_count_direction(board, row, col, token, -dx, -dy);
+        if count >= 4 {
+            return true;
+        }
+    }
+    false
+}
+
+fn connect_four_count_direction(
+    board: &[u8; CONNECT_FOUR_CELLS],
+    row: usize,
+    col: usize,
+    token: u8,
+    dx: isize,
+    dy: isize,
+) -> i32 {
+    let mut steps = 0_i32;
+    let mut x = col as isize + dx;
+    let mut y = row as isize + dy;
+
+    while x >= 0 && x < CONNECT_FOUR_COLS as isize && y >= 0 && y < CONNECT_FOUR_ROWS as isize {
+        let idx = y as usize * CONNECT_FOUR_COLS + x as usize;
+        if board[idx] != token {
+            break;
+        }
+        steps += 1;
+        x += dx;
+        y += dy;
+    }
+    steps
+}
+
+fn battleship_color_for_user(state: &BattleshipState, user_id: &str) -> Option<&'static str> {
+    if state.blue_user_id.as_deref() == Some(user_id) {
+        Some("blue")
+    } else if state.red_user_id.as_deref() == Some(user_id) {
+        Some("red")
+    } else {
+        None
+    }
+}
+
+fn clear_battleship_reset_requests(state: &mut BattleshipState) {
+    state.reset_requested_blue = false;
+    state.reset_requested_red = false;
+}
+
+fn count_ship_cells(ships: &[u8; BATTLESHIP_BOARD_CELLS]) -> u16 {
+    ships.iter().filter(|cell| **cell != 0).count() as u16
+}
+
+fn generate_battleship_ships(seed: u64) -> Result<[u8; BATTLESHIP_BOARD_CELLS], String> {
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    for _ in 0..256 {
+        let mut board = [0_u8; BATTLESHIP_BOARD_CELLS];
+        let mut placed_all = true;
+        for (ship_offset, size) in BATTLESHIP_SHIP_SIZES.iter().enumerate() {
+            let ship_id = (ship_offset as u8) + 1;
+            let mut placed_ship = false;
+            for _ in 0..512 {
+                let horizontal = rng.gen_bool(0.5);
+                let max_x = if horizontal {
+                    BATTLESHIP_BOARD_SIZE - (*size as usize)
+                } else {
+                    BATTLESHIP_BOARD_SIZE - 1
+                };
+                let max_y = if horizontal {
+                    BATTLESHIP_BOARD_SIZE - 1
+                } else {
+                    BATTLESHIP_BOARD_SIZE - (*size as usize)
+                };
+                let x = rng.gen_range(0..=max_x);
+                let y = rng.gen_range(0..=max_y);
+
+                let mut valid = true;
+                for i in 0..(*size as usize) {
+                    let px = if horizontal { x + i } else { x };
+                    let py = if horizontal { y } else { y + i };
+                    let idx = py * BATTLESHIP_BOARD_SIZE + px;
+                    if board[idx] != 0 {
+                        valid = false;
+                        break;
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+
+                for i in 0..(*size as usize) {
+                    let px = if horizontal { x + i } else { x };
+                    let py = if horizontal { y } else { y + i };
+                    let idx = py * BATTLESHIP_BOARD_SIZE + px;
+                    board[idx] = ship_id;
+                }
+                placed_ship = true;
+                break;
+            }
+
+            if !placed_ship {
+                placed_all = false;
+                break;
+            }
+        }
+
+        if placed_all {
+            return Ok(board);
+        }
+    }
+
+    Err("failed to generate a valid battleship board layout".to_string())
+}
+
+fn is_battleship_ship_sunk(
+    ships: &[u8; BATTLESHIP_BOARD_CELLS],
+    shots: &[u8; BATTLESHIP_BOARD_CELLS],
+    ship_id: u8,
+) -> bool {
+    if ship_id == 0 {
+        return false;
+    }
+    for (idx, cell_ship_id) in ships.iter().enumerate() {
+        if *cell_ship_id == ship_id && shots[idx] != 2 {
+            return false;
+        }
+    }
+    true
+}
+
 fn validate_chess_seat_change(
     seat_name: &str,
     current: Option<&str>,
@@ -1701,5 +2508,34 @@ mod tests {
             "expected projected position >= 9500ms, got {}",
             updated.position_ms
         );
+    }
+
+    #[test]
+    fn connect_four_detects_winning_line() {
+        let mut board = [0_u8; CONNECT_FOUR_CELLS];
+        board[5 * CONNECT_FOUR_COLS + 1] = 1;
+        board[4 * CONNECT_FOUR_COLS + 1] = 1;
+        board[3 * CONNECT_FOUR_COLS + 1] = 1;
+        board[2 * CONNECT_FOUR_COLS + 1] = 1;
+
+        assert!(connect_four_has_winning_line(&board, 2, 1, 1));
+    }
+
+    #[test]
+    fn battleship_layout_places_expected_ships() {
+        let ships = generate_battleship_ships(42).expect("layout");
+        assert_eq!(count_ship_cells(&ships), BATTLESHIP_TOTAL_SHIP_CELLS);
+
+        let mut lengths: Vec<usize> = (1_u8..=5)
+            .map(|ship_id| ships.iter().filter(|cell| **cell == ship_id).count())
+            .collect();
+        lengths.sort_unstable();
+
+        let mut expected: Vec<usize> = BATTLESHIP_SHIP_SIZES
+            .iter()
+            .map(|size| *size as usize)
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(lengths, expected);
     }
 }
