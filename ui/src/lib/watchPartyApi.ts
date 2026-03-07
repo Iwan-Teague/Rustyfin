@@ -353,11 +353,53 @@ export type WsChessState = {
   updated_ts_ms: number;
 };
 
+export type WsConnectFourState = {
+  board_rows: string[];
+  turn: 'red' | 'yellow' | string;
+  status: 'active' | 'win' | 'draw' | string;
+  winner_color?: 'red' | 'yellow' | string | null;
+  red_user_id?: string | null;
+  yellow_user_id?: string | null;
+  last_move_row?: number | null;
+  last_move_col?: number | null;
+  reset_requested_red?: boolean;
+  reset_requested_yellow?: boolean;
+  updated_ts_ms: number;
+};
+
+export type WsBattleshipLastShot = {
+  by_color: 'blue' | 'red' | string;
+  x: number;
+  y: number;
+  result: 'miss' | 'hit' | 'sunk' | 'win' | string;
+};
+
+export type WsBattleshipState = {
+  phase: 'setup' | 'active' | 'finished' | string;
+  status: 'setup' | 'active' | 'finished' | string;
+  turn_color: 'blue' | 'red' | string;
+  winner_color?: 'blue' | 'red' | string | null;
+  blue_user_id?: string | null;
+  red_user_id?: string | null;
+  blue_ready?: boolean;
+  red_ready?: boolean;
+  blue_grid_rows: string[];
+  red_grid_rows: string[];
+  remaining_ship_cells_blue: number;
+  remaining_ship_cells_red: number;
+  last_shot?: WsBattleshipLastShot | null;
+  reset_requested_blue?: boolean;
+  reset_requested_red?: boolean;
+  updated_ts_ms: number;
+};
+
 export type WsPlayStateMessage = {
   type: 'play_state';
   room_id: string;
-  active_game: 'chess' | string;
+  active_game: 'chess' | 'connect_four' | 'battleship' | string;
   chess: WsChessState;
+  connect_four: WsConnectFourState;
+  battleship: WsBattleshipState;
   updated_ts_ms: number;
   server_ts_ms: number;
   members: WsPresenceMember[];

@@ -115,6 +115,27 @@ pub enum ClientMessage {
         promotion: Option<String>,
     },
     ChessReset,
+    ConnectFourSetPlayers {
+        red_user_id: Option<String>,
+        yellow_user_id: Option<String>,
+    },
+    ConnectFourDrop {
+        column: usize,
+    },
+    ConnectFourReset,
+    BattleshipSetPlayers {
+        blue_user_id: Option<String>,
+        red_user_id: Option<String>,
+    },
+    BattleshipAutoPlace,
+    BattleshipSetReady {
+        ready: bool,
+    },
+    BattleshipFire {
+        x: u8,
+        y: u8,
+    },
+    BattleshipReset,
     Ping,
     Pong,
 }
@@ -197,6 +218,49 @@ pub struct ChessState {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConnectFourState {
+    pub board_rows: Vec<String>,
+    pub turn: String,
+    pub status: String,
+    pub winner_color: Option<String>,
+    pub red_user_id: Option<String>,
+    pub yellow_user_id: Option<String>,
+    pub last_move_row: Option<u8>,
+    pub last_move_col: Option<u8>,
+    pub reset_requested_red: bool,
+    pub reset_requested_yellow: bool,
+    pub updated_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BattleshipLastShot {
+    pub by_color: String,
+    pub x: u8,
+    pub y: u8,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BattleshipState {
+    pub phase: String,
+    pub status: String,
+    pub turn_color: String,
+    pub winner_color: Option<String>,
+    pub blue_user_id: Option<String>,
+    pub red_user_id: Option<String>,
+    pub blue_ready: bool,
+    pub red_ready: bool,
+    pub blue_grid_rows: Vec<String>,
+    pub red_grid_rows: Vec<String>,
+    pub remaining_ship_cells_blue: u16,
+    pub remaining_ship_cells_red: u16,
+    pub last_shot: Option<BattleshipLastShot>,
+    pub reset_requested_blue: bool,
+    pub reset_requested_red: bool,
+    pub updated_ts_ms: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     State {
@@ -272,6 +336,8 @@ pub enum ServerMessage {
         room_id: String,
         active_game: String,
         chess: ChessState,
+        connect_four: ConnectFourState,
+        battleship: BattleshipState,
         updated_ts_ms: i64,
         server_ts_ms: i64,
         members: Vec<PresenceMember>,

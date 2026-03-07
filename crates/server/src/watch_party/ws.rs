@@ -19,8 +19,10 @@ use crate::state::AppState;
 use super::manager::{AudioAction, ChessResetOutcome, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::protocol::{
+    BattleshipLastShot as ProtocolBattleshipLastShot, BattleshipState as ProtocolBattleshipState,
     ChessLegalMove as ProtocolChessLegalMove, ChessState as ProtocolChessState, ClientMessage,
-    CreateCanvasStroke, PresenceMember, QueueEntry, ServerMessage, YouTubeSearchEntry,
+    ConnectFourState as ProtocolConnectFourState, CreateCanvasStroke, PresenceMember, QueueEntry,
+    ServerMessage, YouTubeSearchEntry,
 };
 use super::youtube::{
     is_valid_youtube_video_id, normalize_web_room_url, perform_youtube_search,
@@ -325,7 +327,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         connected: true,
     });
 
-    if let Err(err) = send_current_state(&mut socket, &state, &runtime, &context.room_id).await {
+    if let Err(err) = send_current_state_for_user(
+        &mut socket,
+        &state,
+        &runtime,
+        &context.room_id,
+        Some(&context.user_id),
+    )
+    .await
+    {
         warn!(
             room_id = %context.room_id,
             user_id = %context.user_id,
@@ -358,7 +368,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
                             message,
                             ServerMessage::RoomEnded | ServerMessage::RoomReconfigured { .. }
                         );
-                        if send_server_message(&mut socket, &message).await.is_err() {
+                        if matches!(message, ServerMessage::PlayState { .. }) {
+                            if send_current_state_for_user(&mut socket, &state, &runtime, &context.room_id, Some(&context.user_id))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        } else if send_server_message(&mut socket, &message).await.is_err() {
                             break;
                         }
                         if is_terminal {
@@ -366,7 +383,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        if send_current_state(&mut socket, &state, &runtime, &context.room_id).await.is_err() {
+                        if send_current_state_for_user(&mut socket, &state, &runtime, &context.room_id, Some(&context.user_id)).await.is_err() {
                             break;
                         }
                     }
@@ -853,6 +870,21 @@ fn normalize_canvas_stroke_id(raw: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+async fn list_active_member_ids(
+    state: &AppState,
+    room_id: &str,
+) -> Result<HashSet<String>, AppError> {
+    let members = rustfin_db::repo::watch_party::list_members(&state.db, room_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(members
+        .into_iter()
+        .filter(|member| member.status != "left" && member.status != "declined")
+        .map(|member| member.user_id)
+        .collect())
+}
+
 async fn handle_client_message(
     state: &AppState,
     runtime: &RoomRuntime,
@@ -904,7 +936,14 @@ async fn handle_client_message(
                     "rejecting play command: permission denied"
                 );
                 send_error(socket, "play/pause is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
             if context.room_mode == "youtube" {
@@ -962,7 +1001,14 @@ async fn handle_client_message(
                     "rejecting pause command: permission denied"
                 );
                 send_error(socket, "play/pause is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
             if context.room_mode == "youtube" {
@@ -1020,7 +1066,14 @@ async fn handle_client_message(
                     "rejecting seek command: permission denied"
                 );
                 send_error(socket, "seek is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
             if context.room_mode == "youtube" {
@@ -1061,7 +1114,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "skip is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1089,7 +1149,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "skip is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1117,7 +1184,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "play track is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1152,7 +1226,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "track end handling is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1187,13 +1268,27 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "reordering queue is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
             let Some(new_queue) = runtime.reorder_audio_queue(from_index, to_index).await else {
                 send_error(socket, "invalid queue indexes").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
 
@@ -1223,7 +1318,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "shuffle control is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1245,7 +1347,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "repeat control is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1373,7 +1482,14 @@ async fn handle_client_message(
                     "video is already queued or currently playing in this room",
                 )
                 .await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
             info!(
@@ -1460,7 +1576,14 @@ async fn handle_client_message(
 
             let Some(queued_video_id) = runtime.youtube_queue_video_at(queue_index).await else {
                 send_error(socket, "invalid queue index").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
 
@@ -1483,7 +1606,14 @@ async fn handle_client_message(
 
             let Some(video_id) = runtime.play_youtube_queue_index_now(queue_index).await else {
                 send_error(socket, "invalid queue index").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
 
@@ -1519,7 +1649,14 @@ async fn handle_client_message(
 
             let Some(queue) = runtime.remove_youtube_queue_index(queue_index).await else {
                 send_error(socket, "invalid queue index").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
 
@@ -1551,7 +1688,14 @@ async fn handle_client_message(
 
             let Some(queue) = runtime.move_youtube_queue_item(from_index, to_index).await else {
                 send_error(socket, "invalid queue indexes").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             };
 
@@ -1620,7 +1764,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1648,7 +1799,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1679,7 +1837,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1715,7 +1880,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1771,7 +1943,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1830,7 +2009,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1875,7 +2061,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1908,7 +2101,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1936,7 +2136,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -1974,7 +2181,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -2004,7 +2218,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "editing is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -2027,16 +2248,26 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "changing game is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
+            let normalized_game = game.trim().to_ascii_lowercase();
             runtime
-                .set_play_game(game)
+                .set_play_game(normalized_game.clone())
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
-            schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
+            if normalized_game == "chess" {
+                schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
+            }
             Ok(())
         }
         ClientMessage::ChessSetPlayers {
@@ -2064,21 +2295,18 @@ async fn handle_client_message(
                     "assigning chess players is not allowed for this user",
                 )
                 .await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
-            let members = rustfin_db::repo::watch_party::list_members(&state.db, &context.room_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-            let is_valid_member = |user_id: &str| {
-                members.iter().any(|member| {
-                    member.user_id == user_id
-                        && member.status != "left"
-                        && member.status != "declined"
-                })
-            };
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
 
             let normalized_white = white_user_id
                 .as_deref()
@@ -2092,16 +2320,30 @@ async fn handle_client_message(
                 .map(str::to_string);
 
             if let Some(ref user_id) = normalized_white {
-                if !is_valid_member(user_id) {
+                if !active_member_ids.contains(user_id) {
                     send_error(socket, "white player must be a current room member").await?;
-                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
                     return Ok(());
                 }
             }
             if let Some(ref user_id) = normalized_black {
-                if !is_valid_member(user_id) {
+                if !active_member_ids.contains(user_id) {
                     send_error(socket, "black player must be a current room member").await?;
-                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
                     return Ok(());
                 }
             }
@@ -2136,7 +2378,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "configuring chess AI is not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -2166,7 +2415,14 @@ async fn handle_client_message(
             }
             if !can_play_pause(&role, &policy) {
                 send_error(socket, "chess moves are not allowed for this user").await?;
-                send_current_state(socket, state, runtime, &context.room_id).await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -2180,7 +2436,14 @@ async fn handle_client_message(
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
-                    send_current_state(socket, state, runtime, &context.room_id).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
                 }
             }
             Ok(())
@@ -2206,6 +2469,415 @@ async fn handle_client_message(
             if matches!(reset_outcome, ChessResetOutcome::Applied) {
                 schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
             }
+            Ok(())
+        }
+        ClientMessage::ConnectFourSetPlayers {
+            red_user_id,
+            yellow_user_id,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "connect_four_set_players is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(
+                    socket,
+                    "assigning connect four players is not allowed for this user",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
+            let normalized_red = red_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized_yellow = yellow_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            if let Some(ref user_id) = normalized_red {
+                if !active_member_ids.contains(user_id) {
+                    send_error(socket, "red player must be a current room member").await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+            if let Some(ref user_id) = normalized_yellow {
+                if !active_member_ids.contains(user_id) {
+                    send_error(socket, "yellow player must be a current room member").await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+
+            runtime
+                .set_connect_four_players(&context.user_id, normalized_red, normalized_yellow)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ConnectFourDrop { column } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "connect_four_drop is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "connect four moves are not allowed for this user").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            match runtime
+                .apply_connect_four_drop(&context.user_id, column)
+                .await
+            {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::ConnectFourReset => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "connect_four_reset is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let (_, reset_outcome) = runtime
+                .request_connect_four_reset(&context.user_id)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            let _ = reset_outcome;
+            Ok(())
+        }
+        ClientMessage::BattleshipSetPlayers {
+            blue_user_id,
+            red_user_id,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_set_players is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(
+                    socket,
+                    "assigning battleship players is not allowed for this user",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
+            let normalized_blue = blue_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let normalized_red = red_user_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            if let Some(ref user_id) = normalized_blue {
+                if !active_member_ids.contains(user_id) {
+                    send_error(socket, "blue player must be a current room member").await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+            if let Some(ref user_id) = normalized_red {
+                if !active_member_ids.contains(user_id) {
+                    send_error(socket, "red player must be a current room member").await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+
+            runtime
+                .set_battleship_players(&context.user_id, normalized_blue, normalized_red)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::BattleshipAutoPlace => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_auto_place is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "battleship setup is not allowed for this user").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            match runtime.battleship_auto_place(&context.user_id).await {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::BattleshipSetReady { ready } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_set_ready is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "battleship setup is not allowed for this user").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            match runtime.battleship_set_ready(&context.user_id, ready).await {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::BattleshipFire { x, y } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_fire is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "battleship moves are not allowed for this user").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            match runtime.battleship_fire(&context.user_id, x, y).await {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::BattleshipReset => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_reset is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let (_, reset_outcome) = runtime
+                .request_battleship_reset(&context.user_id)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            let _ = reset_outcome;
             Ok(())
         }
         ClientMessage::SearchYouTube { query } => {
@@ -2303,18 +2975,19 @@ pub(crate) async fn broadcast_current_state(
     runtime: &RoomRuntime,
     room_id: &str,
 ) -> Result<(), AppError> {
-    let message = build_state_message(state, runtime, room_id).await?;
+    let message = build_state_message(state, runtime, room_id, None).await?;
     let _ = runtime.tx.send(message);
     Ok(())
 }
 
-async fn send_current_state(
+async fn send_current_state_for_user(
     socket: &mut WebSocket,
     state: &AppState,
     runtime: &RoomRuntime,
     room_id: &str,
+    viewer_user_id: Option<&str>,
 ) -> Result<(), AppError> {
-    let message = build_state_message(state, runtime, room_id).await?;
+    let message = build_state_message(state, runtime, room_id, viewer_user_id).await?;
     send_server_message(socket, &message).await
 }
 
@@ -2343,6 +3016,7 @@ async fn build_state_message(
     state: &AppState,
     runtime: &RoomRuntime,
     room_id: &str,
+    viewer_user_id: Option<&str>,
 ) -> Result<ServerMessage, AppError> {
     if runtime.room_mode == "audio" {
         return build_audio_state_message(state, runtime, room_id).await;
@@ -2357,7 +3031,7 @@ async fn build_state_message(
         return build_create_state_message(state, runtime, room_id).await;
     }
     if runtime.room_mode == "play" {
-        return build_play_state_message(state, runtime, room_id).await;
+        return build_play_state_message(state, runtime, room_id, viewer_user_id).await;
     }
 
     let snapshot = runtime.snapshot_state().await;
@@ -2437,6 +3111,7 @@ async fn build_play_state_message(
     state: &AppState,
     runtime: &RoomRuntime,
     room_id: &str,
+    viewer_user_id: Option<&str>,
 ) -> Result<ServerMessage, AppError> {
     let play_state = runtime
         .snapshot_play_state()
@@ -2453,6 +3128,32 @@ async fn build_play_state_message(
             promotion: mv.get_promotion().map(chess_promotion_piece_to_code),
         })
         .collect();
+    let connect_four_rows = encode_connect_four_rows(&play_state.connect_four.board);
+    let viewer_is_blue = viewer_user_id
+        .zip(play_state.battleship.blue_user_id.as_deref())
+        .is_some_and(|(viewer, blue)| viewer == blue);
+    let viewer_is_red = viewer_user_id
+        .zip(play_state.battleship.red_user_id.as_deref())
+        .is_some_and(|(viewer, red)| viewer == red);
+
+    let (hide_blue_ships, hide_red_ships) = if viewer_is_blue {
+        (false, true)
+    } else if viewer_is_red {
+        (true, false)
+    } else {
+        (true, true)
+    };
+
+    let battleship_blue_rows = encode_battleship_rows(
+        &play_state.battleship.blue_ships,
+        &play_state.battleship.blue_shots,
+        hide_blue_ships,
+    );
+    let battleship_red_rows = encode_battleship_rows(
+        &play_state.battleship.red_ships,
+        &play_state.battleship.red_shots,
+        hide_red_ships,
+    );
 
     let member_summaries = build_presence_members(state, room_id, &connected).await?;
 
@@ -2489,10 +3190,96 @@ async fn build_play_state_message(
             legal_moves,
             updated_ts_ms: play_state.chess.updated_ts_ms,
         },
+        connect_four: ProtocolConnectFourState {
+            board_rows: connect_four_rows,
+            turn: play_state.connect_four.turn,
+            status: play_state.connect_four.status,
+            winner_color: play_state.connect_four.winner_color,
+            red_user_id: play_state.connect_four.red_user_id,
+            yellow_user_id: play_state.connect_four.yellow_user_id,
+            last_move_row: play_state.connect_four.last_move_row,
+            last_move_col: play_state.connect_four.last_move_col,
+            reset_requested_red: play_state.connect_four.reset_requested_red,
+            reset_requested_yellow: play_state.connect_four.reset_requested_yellow,
+            updated_ts_ms: play_state.connect_four.updated_ts_ms,
+        },
+        battleship: ProtocolBattleshipState {
+            phase: play_state.battleship.phase,
+            status: play_state.battleship.status,
+            turn_color: play_state.battleship.turn_color,
+            winner_color: play_state.battleship.winner_color,
+            blue_user_id: play_state.battleship.blue_user_id,
+            red_user_id: play_state.battleship.red_user_id,
+            blue_ready: play_state.battleship.blue_ready,
+            red_ready: play_state.battleship.red_ready,
+            blue_grid_rows: battleship_blue_rows,
+            red_grid_rows: battleship_red_rows,
+            remaining_ship_cells_blue: play_state.battleship.remaining_ship_cells_blue,
+            remaining_ship_cells_red: play_state.battleship.remaining_ship_cells_red,
+            last_shot: play_state
+                .battleship
+                .last_shot
+                .map(|shot| ProtocolBattleshipLastShot {
+                    by_color: shot.by_color,
+                    x: shot.x,
+                    y: shot.y,
+                    result: shot.result,
+                }),
+            reset_requested_blue: play_state.battleship.reset_requested_blue,
+            reset_requested_red: play_state.battleship.reset_requested_red,
+            updated_ts_ms: play_state.battleship.updated_ts_ms,
+        },
         updated_ts_ms: play_state.updated_ts_ms,
         server_ts_ms: now_ms,
         members: member_summaries,
     })
+}
+
+fn encode_connect_four_rows(board: &[u8]) -> Vec<String> {
+    if board.len() != 42 {
+        return vec![".......".to_string(); 6];
+    }
+    (0..6)
+        .map(|row| {
+            let start = row * 7;
+            board[start..start + 7]
+                .iter()
+                .map(|cell| match cell {
+                    1 => 'r',
+                    2 => 'y',
+                    _ => '.',
+                })
+                .collect::<String>()
+        })
+        .collect()
+}
+
+fn encode_battleship_rows(ships: &[u8], shots: &[u8], hide_unhit_ships: bool) -> Vec<String> {
+    if ships.len() != 100 || shots.len() != 100 {
+        return vec!["..........".to_string(); 10];
+    }
+    (0..10)
+        .map(|row| {
+            let start = row * 10;
+            (0..10)
+                .map(|offset| {
+                    let idx = start + offset;
+                    match shots[idx] {
+                        2 => 'x',
+                        1 => 'o',
+                        _ if ships[idx] != 0 => {
+                            if hide_unhit_ships {
+                                '.'
+                            } else {
+                                's'
+                            }
+                        }
+                        _ => '.',
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect()
 }
 
 fn schedule_delayed_chess_ai_move(state: AppState, room_id: String) {

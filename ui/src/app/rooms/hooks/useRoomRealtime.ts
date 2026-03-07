@@ -202,8 +202,14 @@ export function useRoomRealtime({
           }
 
           if (payload.type === 'play_state') {
+            const statusSummary =
+              payload.active_game === 'connect_four'
+                ? `${payload.connect_four.status}:${payload.connect_four.turn}`
+                : payload.active_game === 'battleship'
+                  ? `${payload.battleship.status}:${payload.battleship.turn_color}`
+                  : `${payload.chess.status}:${payload.chess.turn}`;
             appendDebug(
-              `play state game=${payload.active_game} status=${payload.chess.status} turn=${payload.chess.turn}`,
+              `play state game=${payload.active_game} state=${statusSummary}`,
             );
             setPlayState(payload);
             setRoomState((prev) => (prev ? { ...prev, members: payload.members } : prev));
