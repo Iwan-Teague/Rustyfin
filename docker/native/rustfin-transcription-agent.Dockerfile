@@ -1,6 +1,7 @@
 FROM debian:bookworm-slim
 
 ARG NATIVE_BIN_DIR=.tmp/native-bins
+ARG RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES=
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
@@ -17,6 +18,7 @@ EXPOSE 8102
 
 ENV RUSTFIN_TRANSCRIPTION_AGENT_BIND=0.0.0.0:8102
 ENV RUSTFIN_CACHE_DIR=/cache
+ENV RUSTFIN_TRANSCRIPTION_GPU_MODE=auto
 ENV RUSTFIN_WHISPER_MODEL_PATH=/cache/whisper/ggml-small.en.bin
 ENV RUSTFIN_WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 ENV RUSTFIN_TRANSCRIPTION_MAX_PARALLEL_INFERENCES=3

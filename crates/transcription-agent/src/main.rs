@@ -612,6 +612,9 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_BIND").unwrap_or_else(|_| "0.0.0.0:8102".into());
     let cache_dir = std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".into());
+    let requested_gpu_mode =
+        std::env::var("RUSTFIN_TRANSCRIPTION_GPU_MODE").unwrap_or_else(|_| "auto".into());
+    let opencl_compiled = cfg!(feature = "gpu-opencl");
     let cpu_count = num_cpus::get().max(1);
     let default_parallel_inferences = (cpu_count / 2).clamp(1, 4);
     let max_parallel_inferences = parse_env_usize(
@@ -665,8 +668,13 @@ async fn main() -> anyhow::Result<()> {
         max_workers_per_session,
         max_threads_per_worker,
         acquire_timeout_ms,
+        requested_gpu_mode,
+        opencl_compiled,
         "transcription-agent resource limits configured"
     );
+    if requested_gpu_mode == "opencl" && !opencl_compiled {
+        warn!("transcription GPU mode requested but this transcription-agent binary was not compiled with OpenCL support; using CPU path");
+    }
 
     let state = AppState {
         model_path,
