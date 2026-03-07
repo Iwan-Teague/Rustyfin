@@ -48,6 +48,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    clinfo \
     curl \
     libclblast1 \
     ocl-icd-libopencl1 \
@@ -63,7 +64,8 @@ EXPOSE 8102
 
 ENV RUSTFIN_TRANSCRIPTION_AGENT_BIND=0.0.0.0:8102
 ENV RUSTFIN_CACHE_DIR=/cache
-ENV RUSTFIN_TRANSCRIPTION_GPU_MODE=auto
+ENV RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl
+ENV RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1
 ENV RUSTFIN_WHISPER_MODEL_PATH=/cache/whisper/ggml-small.en.bin
 ENV RUSTFIN_WHISPER_MODEL_URL=https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 ENV RUSTFIN_TRANSCRIPTION_MAX_PARALLEL_INFERENCES=3

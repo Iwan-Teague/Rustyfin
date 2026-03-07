@@ -3145,6 +3145,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "glob",
  "num_cpus",
  "reqwest",
  "rustfin-core",
