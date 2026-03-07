@@ -43,12 +43,16 @@ struct ApiErrorEnvelope {
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorBody {
     message: String,
+    #[serde(default)]
+    details: serde_json::Value,
 }
 
 fn map_agent_error(prefix: &str, status: reqwest::StatusCode, body: &[u8]) -> ApiError {
-    let message = serde_json::from_slice::<ApiErrorEnvelope>(body)
-        .map(|v| v.error.message)
-        .unwrap_or_else(|_| String::from_utf8_lossy(body).trim().to_string());
+    let parsed = serde_json::from_slice::<ApiErrorEnvelope>(body).ok();
+    let message = parsed
+        .as_ref()
+        .map(|v| v.error.message.clone())
+        .unwrap_or_else(|| String::from_utf8_lossy(body).trim().to_string());
     let message = if message.is_empty() {
         format!("{prefix}: status {status}")
     } else {
@@ -60,6 +64,18 @@ fn map_agent_error(prefix: &str, status: reqwest::StatusCode, body: &[u8]) -> Ap
         ApiError::Unauthorized(message)
     } else if status == reqwest::StatusCode::FORBIDDEN {
         ApiError::Forbidden(message)
+    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after_seconds = parsed
+            .and_then(|v| {
+                v.error
+                    .details
+                    .get("retry_after_seconds")
+                    .and_then(|n| n.as_u64())
+            })
+            .unwrap_or(2);
+        ApiError::TooManyRequests {
+            retry_after_seconds,
+        }
     } else {
         ApiError::Internal(message)
     }

@@ -77,6 +77,7 @@ Rustyfin runs as a multi-service stack in Docker Compose:
 - `rustfin-transcription-agent` (Rust Whisper transcription API)
   - Dedicated voice transcription microservice for channels.
   - Lazily loads/downloads Whisper model, runs per-session-per-user worker contexts, and returns timestamped transcript segments.
+  - Enforces transcription resource limits (parallel inference, worker caps, per-session worker caps) to prevent runaway CPU/RAM spikes in large calls.
 - `rustfin-ui` (Next.js App Router frontend)
   - Browser client for all product areas.
 - `rustfin-edge` (Caddy TLS edge)
@@ -225,8 +226,13 @@ Common runtime variables:
 - `RUSTFIN_YTDLP_PATH`
 - `RUSTFIN_TRANSCRIPTION_AGENT_URL`
 - `RUSTFIN_TRANSCRIPTION_AGENT_TOKEN`
-- `RUSTFIN_WHISPER_MODEL_PATH`
-- `RUSTFIN_WHISPER_MODEL_URL`
+- `RUSTFIN_WHISPER_MODEL_PATH` (default `/cache/whisper/ggml-small.en.bin`)
+- `RUSTFIN_WHISPER_MODEL_URL` (default `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin`)
+- `RUSTFIN_TRANSCRIPTION_MAX_PARALLEL_INFERENCES` (default `3`)
+- `RUSTFIN_TRANSCRIPTION_MAX_WORKERS` (default `6`)
+- `RUSTFIN_TRANSCRIPTION_MAX_WORKERS_PER_SESSION` (default `8`)
+- `RUSTFIN_TRANSCRIPTION_THREADS_PER_WORKER` (default `2`)
+- `RUSTFIN_TRANSCRIPTION_ACQUIRE_TIMEOUT_MS` (default `2500`)
 - `RUSTFIN_SECRETS_ENV_FILE`
 - `RUSTFIN_DIRECTORY_PICKER_HELPER_URL`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`

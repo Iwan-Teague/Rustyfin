@@ -673,13 +673,23 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
 
   const sendTranscriptionChunk = useCallback(
     async (channelId: string, payload: VoiceTranscribeChunkRequest) => {
-      for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const maxAttempts = 5;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           await uploadVoiceTranscriptionChunk(channelId, payload);
           return;
         } catch (err) {
-          if (attempt < 2) {
-            await new Promise((resolve) => setTimeout(resolve, 250));
+          const message =
+            err instanceof Error ? err.message.toLowerCase() : '';
+          const retryableCapacityError =
+            message.includes('too many requests') ||
+            message.includes('capacity') ||
+            message.includes('retry');
+          const shouldRetry =
+            attempt < maxAttempts && (retryableCapacityError || attempt <= 2);
+          if (shouldRetry) {
+            const backoffMs = 200 * attempt;
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
             continue;
           }
           console.warn(
