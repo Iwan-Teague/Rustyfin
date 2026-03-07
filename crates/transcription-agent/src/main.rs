@@ -31,6 +31,8 @@ struct AppState {
     http: reqwest::Client,
     agent_token: Option<String>,
     workers: WorkerRegistry,
+    inference_permits: Arc<tokio::sync::Semaphore>,
+    inference_acquire_timeout: Duration,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +87,9 @@ struct SegmentOffset {
 #[derive(Clone)]
 struct WorkerRegistry {
     inner: Arc<Mutex<HashMap<String, WorkerHandle>>>,
+    max_workers: usize,
+    max_workers_per_session: usize,
+    max_threads_per_worker: i32,
 }
 
 #[derive(Clone)]
@@ -116,9 +121,16 @@ fn normalize_identifier(raw: &str, label: &str) -> Result<String, AppError> {
 }
 
 impl WorkerRegistry {
-    fn new() -> Self {
+    fn new(
+        max_workers: usize,
+        max_workers_per_session: usize,
+        max_threads_per_worker: i32,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            max_workers,
+            max_workers_per_session,
+            max_threads_per_worker: max_threads_per_worker.clamp(1, 8),
         }
     }
 
@@ -141,12 +153,32 @@ impl WorkerRegistry {
             return Ok(handle);
         }
 
+        let session_prefix = format!("{session_id}::");
+        let session_worker_count = guard
+            .keys()
+            .filter(|existing| existing.starts_with(&session_prefix))
+            .count();
+        if session_worker_count >= self.max_workers_per_session {
+            return Err(ApiError::BadRequest(format!(
+                "transcription capacity reached for this session (max {} dedicated speaker workers); try again",
+                self.max_workers_per_session
+            ))
+            .into());
+        }
+        if guard.len() >= self.max_workers {
+            return Err(ApiError::TooManyRequests {
+                retry_after_seconds: 2,
+            }
+            .into());
+        }
+
         let (tx, rx) = mpsc::channel::<WorkerCommand>();
         let worker_model_path = model_path.to_path_buf();
+        let max_threads_per_worker = self.max_threads_per_worker;
         let worker_name = format!("whisper-{session_id}-{user_id}");
         std::thread::Builder::new()
             .name(worker_name)
-            .spawn(move || worker_loop(worker_model_path, rx))
+            .spawn(move || worker_loop(worker_model_path, rx, max_threads_per_worker))
             .map_err(|e| ApiError::Internal(format!("failed to spawn whisper worker: {e}")))?;
 
         let handle = WorkerHandle { tx };
@@ -175,7 +207,7 @@ impl WorkerRegistry {
     }
 }
 
-fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>) {
+fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>, max_threads: i32) {
     let Some(model_path_str) = model_path.to_str() else {
         while let Ok(cmd) = rx.recv() {
             match cmd {
@@ -215,7 +247,8 @@ fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>) {
                 language,
                 respond_to,
             } => {
-                let result = transcribe_audio_chunk(&context, &audio_f32, language.as_deref());
+                let result =
+                    transcribe_audio_chunk(&context, &audio_f32, language.as_deref(), max_threads);
                 let _ = respond_to.send(result);
             }
         }
@@ -226,6 +259,7 @@ fn transcribe_audio_chunk(
     context: &WhisperContext,
     audio_f32: &[f32],
     language: Option<&str>,
+    max_threads: i32,
 ) -> Result<Vec<SegmentOffset>, String> {
     if audio_f32.is_empty() {
         return Ok(Vec::new());
@@ -236,7 +270,7 @@ fn transcribe_audio_chunk(
         .map_err(|e| format!("failed to create whisper state: {e}"))?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_translate(false);
-    params.set_n_threads(num_cpus::get().clamp(1, 8) as i32);
+    params.set_n_threads(max_threads.clamp(1, 8));
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
@@ -324,6 +358,32 @@ fn resample_linear(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
         output.push((s0 as f64 + (s1 as f64 - s0 as f64) * frac) as f32);
     }
     output
+}
+
+fn parse_env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
+    let Some(raw) = std::env::var(name).ok() else {
+        return default.clamp(min, max);
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(value) => value.clamp(min, max),
+        Err(_) => {
+            warn!(env = %name, value = %raw, "invalid integer env value; using default");
+            default.clamp(min, max)
+        }
+    }
+}
+
+fn parse_env_u64(name: &str, default: u64, min: u64, max: u64) -> u64 {
+    let Some(raw) = std::env::var(name).ok() else {
+        return default.clamp(min, max);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(value) => value.clamp(min, max),
+        Err(_) => {
+            warn!(env = %name, value = %raw, "invalid integer env value; using default");
+            default.clamp(min, max)
+        }
+    }
 }
 
 async fn ensure_model_available(state: &AppState) -> Result<(), AppError> {
@@ -479,6 +539,16 @@ async fn transcribe_chunk(
         pcm_f32 = resample_linear(&pcm_f32, body.sample_rate_hz, TARGET_SAMPLE_RATE_HZ);
     }
 
+    let _permit = tokio::time::timeout(
+        state.inference_acquire_timeout,
+        state.inference_permits.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiError::TooManyRequests {
+        retry_after_seconds: 2,
+    })?
+    .map_err(|_| ApiError::Internal("transcription capacity limiter is unavailable".into()))?;
+
     let worker = state
         .workers
         .get_or_spawn(&session_id, &user_id, &state.model_path)?;
@@ -542,13 +612,44 @@ async fn main() -> anyhow::Result<()> {
     let bind =
         std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_BIND").unwrap_or_else(|_| "0.0.0.0:8102".into());
     let cache_dir = std::env::var("RUSTFIN_CACHE_DIR").unwrap_or_else(|_| "/cache".into());
+    let cpu_count = num_cpus::get().max(1);
+    let default_parallel_inferences = (cpu_count / 2).clamp(1, 4);
+    let max_parallel_inferences = parse_env_usize(
+        "RUSTFIN_TRANSCRIPTION_MAX_PARALLEL_INFERENCES",
+        default_parallel_inferences,
+        1,
+        16,
+    );
+    let max_workers = parse_env_usize(
+        "RUSTFIN_TRANSCRIPTION_MAX_WORKERS",
+        (max_parallel_inferences * 2).clamp(2, 24),
+        1,
+        64,
+    );
+    let max_workers_per_session =
+        parse_env_usize("RUSTFIN_TRANSCRIPTION_MAX_WORKERS_PER_SESSION", 8, 1, 64);
+    let max_threads_per_worker =
+        parse_env_usize("RUSTFIN_TRANSCRIPTION_THREADS_PER_WORKER", 2, 1, 8) as i32;
+    let acquire_timeout_ms = parse_env_u64(
+        "RUSTFIN_TRANSCRIPTION_ACQUIRE_TIMEOUT_MS",
+        2_500,
+        100,
+        30_000,
+    );
+
     let model_path = std::env::var("RUSTFIN_WHISPER_MODEL_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(cache_dir).join("whisper/ggml-base.en.bin"));
+        .unwrap_or_else(|_| PathBuf::from(cache_dir).join("whisper/ggml-small.en.bin"));
     let model_url = std::env::var("RUSTFIN_WHISPER_MODEL_URL")
         .ok()
         .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            Some(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
+                    .to_string(),
+            )
+        });
     let agent_token = normalize_secret(std::env::var("RUSTFIN_TRANSCRIPTION_AGENT_TOKEN").ok());
 
     if !model_path.exists() {
@@ -557,6 +658,15 @@ async fn main() -> anyhow::Result<()> {
             "whisper model is not present at startup; it will be downloaded lazily on first use"
         );
     }
+
+    info!(
+        max_parallel_inferences,
+        max_workers,
+        max_workers_per_session,
+        max_threads_per_worker,
+        acquire_timeout_ms,
+        "transcription-agent resource limits configured"
+    );
 
     let state = AppState {
         model_path,
@@ -567,7 +677,9 @@ async fn main() -> anyhow::Result<()> {
             .build()
             .context("failed to build http client")?,
         agent_token,
-        workers: WorkerRegistry::new(),
+        workers: WorkerRegistry::new(max_workers, max_workers_per_session, max_threads_per_worker),
+        inference_permits: Arc::new(tokio::sync::Semaphore::new(max_parallel_inferences)),
+        inference_acquire_timeout: Duration::from_millis(acquire_timeout_ms),
     };
 
     let app = Router::new()
