@@ -49,6 +49,11 @@ Options:
                      Set to 0 to disable Linux auto-attach of /dev/dri for onboard GPU decode.
   RUSTFIN_TRANSCODER_HW_ACCEL
                      Transcoder mode: auto (default), none, nvenc, vaapi, qsv, or videotoolbox.
+  RUSTFIN_TRANSCRIPTION_GPU_MODE
+                     Transcription GPU mode: auto (default), off, or opencl.
+                     In auto mode on Linux with /dev/dri, start.sh enables OpenCL build/runtime for transcription-agent.
+  RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
+                     Optional extra cargo features for rustfin-transcription-agent (for example: gpu-opencl).
   RUSTFIN_BACKEND_BIND_IP
                      Backend host bind IP for Docker publishing (default: 127.0.0.1).
                      Keep loopback for VPN-only/private deployments.
@@ -136,6 +141,14 @@ case "$RUSTFIN_AUTO_HW_ACCEL" in
   *) die "Invalid RUSTFIN_AUTO_HW_ACCEL='$RUSTFIN_AUTO_HW_ACCEL' (expected 0 or 1)" ;;
 esac
 
+RUSTFIN_TRANSCRIPTION_GPU_MODE="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-auto}"
+case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
+  auto|off|opencl) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, off, or opencl)" ;;
+esac
+
+RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
+
 compose_flags=()
 compose_cmd_display="docker compose"
 refresh_compose_invocation() {
@@ -165,69 +178,132 @@ unique_append_number() {
   return 0
 }
 
-maybe_enable_linux_hwaccel_overlay() {
-  if [[ "$RUSTFIN_AUTO_HW_ACCEL" != "1" ]]; then
-    return
-  fi
-  if [[ "$COMPOSE_FILES_SET_BY_USER" == "true" ]]; then
-    return
-  fi
+TRANSCRIPTION_GPU_ENABLED=0
+TRANSCRIPTION_GPU_REASON=""
+RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD=0
 
+maybe_enable_linux_hwaccel_overlay() {
   local host_os
   host_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   if [[ "$host_os" != "linux" ]]; then
+    if [[ "$RUSTFIN_TRANSCRIPTION_GPU_MODE" == "opencl" ]]; then
+      warn "Transcription GPU mode 'opencl' requested on non-Linux host; keeping CPU transcription path."
+    fi
     return
   fi
 
-  if [[ ! -d "/dev/dri" ]]; then
-    warn "Onboard GPU auto-detect: /dev/dri not present on host; transcoding will use CPU unless manually configured."
-    return
+  local has_dri=0
+  if [[ -d "/dev/dri" ]]; then
+    has_dri=1
   fi
 
   local -a dri_group_ids=()
   local dev=""
   local gid=""
-  for dev in /dev/dri/renderD* /dev/dri/card*; do
-    [[ -e "$dev" ]] || continue
-    gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
-    [[ -n "$gid" ]] || continue
-    if unique_append_number "$gid" "${dri_group_ids[@]}"; then
-      dri_group_ids+=("$gid")
+  if [[ "$has_dri" == "1" ]]; then
+    for dev in /dev/dri/renderD* /dev/dri/card*; do
+      [[ -e "$dev" ]] || continue
+      gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
+      [[ -n "$gid" ]] || continue
+      if unique_append_number "$gid" "${dri_group_ids[@]}"; then
+        dri_group_ids+=("$gid")
+      fi
+    done
+  fi
+
+  local enable_transcoder_hw=0
+  if [[ "$RUSTFIN_AUTO_HW_ACCEL" == "1" && "$has_dri" == "1" ]]; then
+    enable_transcoder_hw=1
+  elif [[ "$RUSTFIN_AUTO_HW_ACCEL" == "1" && "$has_dri" != "1" ]]; then
+    warn "Onboard GPU auto-detect: /dev/dri not present on host; transcoding will use CPU unless manually configured."
+  fi
+
+  local enable_transcription_gpu=0
+  case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
+    off) enable_transcription_gpu=0 ;;
+    opencl)
+      enable_transcription_gpu=1
+      if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
+        RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-opencl"
+      fi
+      if [[ "$has_dri" != "1" ]]; then
+        warn "Transcription GPU mode 'opencl' requested but /dev/dri is missing; OpenCL may not find a usable device."
+      fi
+      ;;
+    auto)
+      if [[ "$has_dri" == "1" ]]; then
+        enable_transcription_gpu=1
+        if [[ -z "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
+          RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="gpu-opencl"
+        fi
+      fi
+      ;;
+  esac
+
+  if [[ "$enable_transcription_gpu" == "1" ]]; then
+    TRANSCRIPTION_GPU_ENABLED=1
+    TRANSCRIPTION_GPU_REASON="${RUSTFIN_TRANSCRIPTION_GPU_MODE}"
+    export RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
+  fi
+
+  if [[ "$COMPOSE_FILES_SET_BY_USER" == "true" ]]; then
+    if [[ "$enable_transcoder_hw" == "1" || "$enable_transcription_gpu" == "1" ]]; then
+      warn "Auto GPU overlay skipped because custom compose files were provided; ensure your compose files map /dev/dri and required group IDs."
     fi
-  done
+    return
+  fi
+
+  if [[ "$enable_transcoder_hw" != "1" && "$enable_transcription_gpu" != "1" ]]; then
+    return
+  fi
 
   local overlay_file="$SAFE_TMP_DIR/docker-compose.hwaccel.auto.yml"
   {
     echo "services:"
-    echo "  rustfin:"
-    echo "    devices:"
-    echo "      - /dev/dri:/dev/dri"
-    if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
-      echo "    group_add:"
-      for gid in "${dri_group_ids[@]}"; do
-        echo "      - \"$gid\""
-      done
+    if [[ "$enable_transcoder_hw" == "1" ]]; then
+      echo "  rustfin:"
+      echo "    devices:"
+      echo "      - /dev/dri:/dev/dri"
+      if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+        echo "    group_add:"
+        for gid in "${dri_group_ids[@]}"; do
+          echo "      - \"$gid\""
+        done
+      fi
+      echo "    environment:"
+      echo "      - RUSTFIN_TRANSCODER_HW_ACCEL=\${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
+      echo "      - RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=\${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
+      echo "      - RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS=\${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
+      echo "      - RUSTFIN_STREAM_TOKEN_TTL_SECONDS=\${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
     fi
-    echo "    environment:"
-    echo "      - RUSTFIN_TRANSCODER_HW_ACCEL=\${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
-    echo "      - RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL=\${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
-    echo "      - RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS=\${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
-    echo "      - RUSTFIN_STREAM_TOKEN_TTL_SECONDS=\${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
+    if [[ "$enable_transcription_gpu" == "1" && "$has_dri" == "1" ]]; then
+      echo "  rustfin-transcription-agent:"
+      echo "    devices:"
+      echo "      - /dev/dri:/dev/dri"
+      if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
+        echo "    group_add:"
+        for gid in "${dri_group_ids[@]}"; do
+          echo "      - \"$gid\""
+        done
+      fi
+    fi
   } > "$overlay_file"
 
   COMPOSE_FILES+=("$overlay_file")
-  export RUSTFIN_TRANSCODER_HW_ACCEL="${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
-  export RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
-  export RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
-  export RUSTFIN_STREAM_TOKEN_TTL_SECONDS="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
-  info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode, strict requirement on)."
+  if [[ "$enable_transcoder_hw" == "1" ]]; then
+    export RUSTFIN_TRANSCODER_HW_ACCEL="${RUSTFIN_TRANSCODER_HW_ACCEL:-auto}"
+    export RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-1}"
+    export RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-1800}"
+    export RUSTFIN_STREAM_TOKEN_TTL_SECONDS="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-21600}"
+    info "Onboard GPU support enabled: mapped /dev/dri into rustfin container (auto hw accel mode, strict requirement on)."
+  fi
+  if [[ "$enable_transcription_gpu" == "1" ]]; then
+    info "Transcription GPU mode enabled (${RUSTFIN_TRANSCRIPTION_GPU_MODE}); transcription-agent will build with features: ${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES}"
+  fi
   if [[ ${#dri_group_ids[@]} -gt 0 ]]; then
     info "Applied supplemental GPU group IDs inside container: ${dri_group_ids[*]}"
   fi
 }
-
-maybe_enable_linux_hwaccel_overlay
-refresh_compose_invocation
 
 BUILD_STATE_FILE="$SAFE_TMP_DIR/build-fingerprints.env"
 
@@ -536,6 +612,8 @@ user_backend_bind_ip="${RUSTFIN_BACKEND_BIND_IP:-}"
 user_backend_port="${RUSTFIN_BACKEND_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
+user_transcription_gpu_mode="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-}"
+user_transcription_features="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
 user_database_url="${RUSTFIN_DATABASE_URL:-}"
 user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
 user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
@@ -562,6 +640,8 @@ fi
 [[ -n "$user_backend_port" ]] && RUSTFIN_BACKEND_PORT="$user_backend_port"
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
+[[ -n "$user_transcription_gpu_mode" ]] && RUSTFIN_TRANSCRIPTION_GPU_MODE="$user_transcription_gpu_mode"
+[[ -n "$user_transcription_features" ]] && RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="$user_transcription_features"
 [[ -n "$user_database_url" ]] && RUSTFIN_DATABASE_URL="$user_database_url"
 [[ -n "$user_browser_backend_origin" ]] && RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
 [[ -n "$user_ws_allowed_origins" ]] && RUSTFIN_WS_ALLOWED_ORIGINS="$user_ws_allowed_origins"
@@ -572,6 +652,11 @@ if [[ -n "$user_youtube_cookie" ]]; then
 elif [[ -n "${RUSTFIN_YOUTUBE_COOKIE:-}" && "$youtube_cookie_source" == "unset" ]]; then
   youtube_cookie_source="loaded env"
 fi
+
+case "$RUSTFIN_TRANSCRIPTION_GPU_MODE" in
+  auto|off|opencl) ;;
+  *) die "Invalid RUSTFIN_TRANSCRIPTION_GPU_MODE='$RUSTFIN_TRANSCRIPTION_GPU_MODE' (expected auto, off, or opencl)" ;;
+esac
 
 case "$RUSTFIN_RUST_BUILD_PROFILE" in
   ''|*[!A-Za-z0-9_-]*)
@@ -589,6 +674,9 @@ case "$NATIVE_RUST_BUILD_STRICT" in
   0|1) ;;
   *) die "Invalid strict native build toggle '$NATIVE_RUST_BUILD_STRICT' (expected 0 or 1)" ;;
 esac
+
+maybe_enable_linux_hwaccel_overlay
+refresh_compose_invocation
 
 RUSTFIN_NATIVE_TARGET=""
 RUSTFIN_NATIVE_BIN_DIR=""
@@ -608,6 +696,10 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   export RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE="docker/native/rustfin-transcription-agent.Dockerfile"
   export RUSTFIN_NATIVE_GNU_COMPAT_BUILD
   export RUSTFIN_NATIVE_GNU_GLIBC_VERSION
+  if [[ "$TRANSCRIPTION_GPU_ENABLED" == "1" ]]; then
+    export RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE="crates/transcription-agent/Dockerfile"
+    RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD=1
+  fi
 
   # Native Linux cross-build requirements:
   # - Non-Linux hosts: requires zig + cargo-zigbuild.
@@ -677,6 +769,7 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
     unset RUSTFIN_TMDB_AGENT_DOCKERFILE
     unset RUSTFIN_YOUTUBE_AGENT_DOCKERFILE
     unset RUSTFIN_TRANSCRIPTION_AGENT_DOCKERFILE
+    RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD=0
   fi
 fi
 
@@ -1137,6 +1230,8 @@ fi
 export RUSTFIN_BACKEND_PORT="$backend_port"
 export RUSTFIN_UI_PORT="$ui_port"
 export RUSTFIN_BACKEND_BIND_IP="$backend_bind_ip"
+export RUSTFIN_TRANSCRIPTION_GPU_MODE
+export RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
 
 public_host="${RUSTFIN_PUBLIC_HOST:-}"
 if [[ -z "$public_host" ]]; then
@@ -1189,6 +1284,10 @@ info "Database target: ${db_target_log}"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
 info "Transcode idle timeout: ${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS}s"
 info "Stream token TTL: ${RUSTFIN_STREAM_TOKEN_TTL_SECONDS}s"
+info "Transcription GPU mode: ${RUSTFIN_TRANSCRIPTION_GPU_MODE}"
+if [[ -n "${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}" ]]; then
+  info "Transcription agent cargo features: ${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES}"
+fi
 if [[ "$RUSTFIN_NATIVE_GNU_COMPAT_BUILD" == "1" ]]; then
   info "Native GNU libc compatibility mode: enabled (glibc ${RUSTFIN_NATIVE_GNU_GLIBC_VERSION})"
 fi
@@ -1197,6 +1296,9 @@ if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
   info "Rust binary build mode: native host cross-compile -> Docker copy"
   info "Native Linux target: $RUSTFIN_NATIVE_TARGET"
   info "Native binary output dir: $RUSTFIN_NATIVE_BIN_DIR_ABS"
+  if [[ "$RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD" == "1" ]]; then
+    info "Transcription agent build mode: Docker builder stage (GPU/OpenCL path)"
+  fi
 else
   warn "Rust binary build mode: Docker builder stages (--docker-rust-build)"
 fi
@@ -1223,14 +1325,19 @@ fi
 if [[ "$BUILD" == "true" ]]; then
   if [[ "$NO_CACHE_BUILD" == "true" ]]; then
     if [[ "$NATIVE_RUST_BUILD" == "1" ]]; then
+      native_rust_services=(
+        rustfin
+        rustfin-calendar
+        rustfin-tmdb-agent
+        rustfin-youtube-agent
+      )
+      if [[ "$RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD" != "1" ]]; then
+        native_rust_services+=(rustfin-transcription-agent)
+      fi
       build_native_rust_bins \
         "$RUSTFIN_NATIVE_TARGET" \
         "$RUSTFIN_NATIVE_BIN_DIR_ABS" \
-        rustfin \
-        rustfin-calendar \
-        rustfin-tmdb-agent \
-        rustfin-transcription-agent \
-        rustfin-youtube-agent
+        "${native_rust_services[@]}"
     fi
 
     info "Rebuilding all Docker images..."
@@ -1321,8 +1428,13 @@ if [[ "$BUILD" == "true" ]]; then
         native_rust_changed_services=()
         for service in "${changed_services[@]}"; do
           case "$service" in
-            rustfin|rustfin-calendar|rustfin-tmdb-agent|rustfin-transcription-agent|rustfin-youtube-agent)
+            rustfin|rustfin-calendar|rustfin-tmdb-agent|rustfin-youtube-agent)
               native_rust_changed_services+=("$service")
+              ;;
+            rustfin-transcription-agent)
+              if [[ "$RUSTFIN_TRANSCRIPTION_AGENT_FORCE_DOCKER_BUILD" != "1" ]]; then
+                native_rust_changed_services+=("$service")
+              fi
               ;;
           esac
         done
@@ -1363,6 +1475,8 @@ docker_compose "${compose_args[@]}"
   printf "RUSTFIN_MEDIA_PATH=%q\n" "$RUSTFIN_MEDIA_PATH"
   printf "RUSTYFIN_BROWSER_BACKEND_ORIGIN=%q\n" "$RUSTYFIN_BROWSER_BACKEND_ORIGIN"
   printf "RUSTFIN_WS_ALLOWED_ORIGINS=%q\n" "$RUSTFIN_WS_ALLOWED_ORIGINS"
+  printf "RUSTFIN_TRANSCRIPTION_GPU_MODE=%q\n" "$RUSTFIN_TRANSCRIPTION_GPU_MODE"
+  printf "RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES=%q\n" "${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
 } > "$RUNTIME_ENV_FILE"
 chmod 600 "$RUNTIME_ENV_FILE" 2>/dev/null || true
 

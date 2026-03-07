@@ -33,6 +33,7 @@ declare -a BINS=()
 RUST_TOOLCHAIN="${RUSTFIN_NATIVE_RUST_TOOLCHAIN:-stable}"
 RUSTFIN_NATIVE_GNU_COMPAT_BUILD="${RUSTFIN_NATIVE_GNU_COMPAT_BUILD:-1}"
 RUSTFIN_NATIVE_GNU_GLIBC_VERSION="${RUSTFIN_NATIVE_GNU_GLIBC_VERSION:-2.36}"
+RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -209,6 +210,9 @@ build_one() {
     cmd+=(--profile "$PROFILE")
   fi
   cmd+=(--bin "$bin")
+  if [[ "$bin" == "rustfin-transcription-agent" && -n "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES" ]]; then
+    cmd+=(--features "$RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES")
+  fi
 
   echo "[native-build] building ${bin} (${TARGET_TRIPLE}, profile=${PROFILE})"
   if [[ "$use_zigbuild" == "true" ]]; then

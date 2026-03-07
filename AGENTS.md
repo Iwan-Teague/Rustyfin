@@ -60,6 +60,10 @@ Rust build runtime behavior:
   - Set `RUSTFIN_NATIVE_RUST_BUILD_STRICT=0` to allow fallback to Docker Rust build mode.
 - On Linux hosts, `start.sh` auto-attaches `/dev/dri` to the `rustfin` container when present (unless `RUSTFIN_AUTO_HW_ACCEL=0`).
 - Use `RUSTFIN_TRANSCODER_HW_ACCEL` to force hardware mode (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
+- Transcription GPU path:
+  - `RUSTFIN_TRANSCRIPTION_GPU_MODE=auto|off|opencl` (default `auto`).
+  - On Linux with `/dev/dri`, `auto` enables transcription OpenCL path and mounts GPU devices into `rustfin-transcription-agent`.
+  - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` can be used to force agent cargo features (for example `gpu-opencl`).
 
 Primary containers:
 - `postgres` (PostgreSQL database)

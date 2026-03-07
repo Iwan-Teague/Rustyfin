@@ -78,6 +78,7 @@ Rustyfin runs as a multi-service stack in Docker Compose:
   - Dedicated voice transcription microservice for channels.
   - Lazily loads/downloads Whisper model, runs per-session-per-user worker contexts, and returns timestamped transcript segments.
   - Enforces transcription resource limits (parallel inference, worker caps, per-session worker caps) to prevent runaway CPU/RAM spikes in large calls.
+  - Optional Linux OpenCL GPU acceleration path (auto-detected via `/dev/dri`) with CPU fallback.
 - `rustfin-ui` (Next.js App Router frontend)
   - Browser client for all product areas.
 - `rustfin-edge` (Caddy TLS edge)
@@ -206,6 +207,8 @@ Common runtime variables:
 - `RUSTFIN_AUTO_HW_ACCEL` (`1` default; Linux-only auto `/dev/dri` passthrough)
 - `RUSTFIN_TRANSCODER_HW_ACCEL` (`auto` default; `none|nvenc|vaapi|qsv|videotoolbox`)
 - `RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL` (`0` in base compose; auto-overlay path sets `1` by default)
+- `RUSTFIN_TRANSCRIPTION_GPU_MODE` (`auto` default; `auto|off|opencl`)
+- `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` (optional; set to `gpu-opencl` to force OpenCL build path)
 - `RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS` (default `1800`)
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS` (default `21600`)
 - `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
