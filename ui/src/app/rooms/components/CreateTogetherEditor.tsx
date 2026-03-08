@@ -583,6 +583,7 @@ export default function CreateTogetherEditor({
   const [activeTool, setActiveTool] = useState<ActiveTool>('text');
   const [canvasPointerMode, setCanvasPointerMode] = useState<'draw' | 'pan'>('draw');
   const [canvasDragging, setCanvasDragging] = useState(false);
+  const [confirmClearCanvasOpen, setConfirmClearCanvasOpen] = useState(false);
   const [documentName, setDocumentName] = useState('Untitled Document');
   const [pages, setPages] = useState<RichDocPage[]>([makeEmptyPage()]);
   const [pageSize, setPageSize] = useState<PageSize>(FIXED_PAGE_SIZE);
@@ -1355,6 +1356,7 @@ export default function CreateTogetherEditor({
     if (!canEdit) return;
     setCanvasStrokes([]);
     clearCanvasState();
+    setConfirmClearCanvasOpen(false);
   };
 
   const handleDownloadText = (format: 'txt' | 'md') => {
@@ -1791,7 +1793,7 @@ export default function CreateTogetherEditor({
             <button
               type="button"
               className="btn-secondary px-3 py-2 text-sm"
-              onClick={handleCanvasClear}
+              onClick={() => setConfirmClearCanvasOpen(true)}
               disabled={!canEdit}
             >
               Clear
@@ -1841,7 +1843,7 @@ export default function CreateTogetherEditor({
               className="btn-secondary px-3 py-2 text-sm"
               onClick={resetCanvasViewport}
             >
-              Reset View
+              Recentre View
             </button>
           </div>
 
@@ -1867,6 +1869,37 @@ export default function CreateTogetherEditor({
           <p className="text-xs muted">{canvasMessage}</p>
         </div>
       )}
+
+      {confirmClearCanvasOpen ? (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]">
+          <div className="panel w-full max-w-md space-y-4 rounded-2xl border border-[var(--border)] p-6">
+            <div className="space-y-2">
+              <h2 className="text-lg font-semibold">Clear Canvas</h2>
+              <p className="text-sm muted">
+                Remove every stroke from this shared canvas for everyone in the room? This cannot
+                be undone.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmClearCanvasOpen(false)}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCanvasClear}
+                className="rounded-xl bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600"
+              >
+                Clear canvas
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {localMessage && <div className="notice-ok rounded-xl px-3 py-2 text-xs">{localMessage}</div>}
     </section>
