@@ -287,6 +287,10 @@ export default function VoiceEngine({
     }
   }
 
+  function shouldInitiatePeer(remoteUserId: string): boolean {
+    return currentUserId.localeCompare(remoteUserId) < 0;
+  }
+
   function teardownLocalMicPipeline() {
     localMicSourceRef.current?.disconnect();
     localMicGainNodeRef.current?.disconnect();
@@ -360,6 +364,13 @@ export default function VoiceEngine({
   function addLocalTracks(pc: RTCPeerConnection) {
     const outboundStream = getOutboundStream();
     if (!outboundStream) {
+      ensureReceiveAudio(pc);
+      return;
+    }
+    const existingAudioSender = pc
+      .getSenders()
+      .find((sender) => sender.track?.kind === 'audio');
+    if (existingAudioSender) {
       ensureReceiveAudio(pc);
       return;
     }
@@ -502,37 +513,40 @@ export default function VoiceEngine({
     return pc;
   }
 
-  // On mount: initiate connections to existing members
-  useEffect(() => {
-    let cancelled = false;
+  async function initiatePeerConnection(userId: string) {
+    if (userId === currentUserId) return;
+    if (!shouldInitiatePeer(userId)) return;
+    if (peersRef.current.has(userId)) return;
 
-    async function initiateConnections() {
-      for (const member of existingMembers) {
-        if (member.user_id === currentUserId) continue;
-        const pc = createPeer(member.user_id);
-        addLocalTracks(pc);
+    const pc = createPeer(userId);
+    addLocalTracks(pc);
 
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          if (!cancelled) {
-            sendWs({
-              type: 'rtc_offer',
-              to_user_id: member.user_id,
-              channel_id: channelId,
-              sdp: JSON.stringify(pc.localDescription),
-            });
-          }
-        } catch (err) {
-          console.error('VoiceEngine: failed to create offer for', member.user_id, err);
-        }
-      }
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendWs({
+        type: 'rtc_offer',
+        to_user_id: userId,
+        channel_id: channelId,
+        sdp: JSON.stringify(pc.localDescription),
+      });
+    } catch (err) {
+      console.error('VoiceEngine: failed to create offer for', userId, err);
+      closePeer(userId);
     }
+  }
 
-    initiateConnections();
+  useEffect(() => {
+    for (const member of existingMembers) {
+      if (member.user_id === currentUserId) continue;
+      if (peersRef.current.has(member.user_id)) continue;
+      void initiatePeerConnection(member.user_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingMembers, currentUserId, channelId]);
 
+  useEffect(() => {
     return () => {
-      cancelled = true;
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
       audioElementsRef.current.forEach((el) => {
@@ -716,8 +730,9 @@ export default function VoiceEngine({
 
         if (!e.joined) {
           closePeer(e.user_id);
+        } else {
+          void initiatePeerConnection(e.user_id);
         }
-        // If joined=true: they will send an offer to us; we wait
       } else if (e.type === 'rtc_offer') {
         if (e.channel_id !== channelId) return;
 
