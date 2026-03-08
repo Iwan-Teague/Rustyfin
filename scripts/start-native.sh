@@ -537,8 +537,9 @@ if [[ -z "${RUSTFIN_DATABASE_URL:-}" ]]; then
   pg_user="${RUSTFIN_PG_USER:-rustfin}"
   pg_password="${RUSTFIN_PG_PASSWORD:-rustfin}"
   pg_db="${RUSTFIN_PG_DB:-rustfin}"
-  export RUSTFIN_DATABASE_URL="postgresql://${pg_user}:${pg_password}@127.0.0.1:5432/${pg_db}"
+  RUSTFIN_DATABASE_URL="postgresql://${pg_user}:${pg_password}@127.0.0.1:5432/${pg_db}"
 fi
+export RUSTFIN_DATABASE_URL
 
 db_target_lc="$(printf '%s' "$RUSTFIN_DATABASE_URL" | tr '[:upper:]' '[:lower:]')"
 if [[ "$db_target_lc" != postgres://* && "$db_target_lc" != postgresql://* ]]; then
