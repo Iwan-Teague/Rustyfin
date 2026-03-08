@@ -114,6 +114,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "028_upgrade_integer_columns_to_bigint",
         include_str!("../migrations_pg/028_upgrade_integer_columns_to_bigint.sql"),
     ),
+    (
+        "029_servers_minecraft",
+        include_str!("../migrations_pg/029_servers_minecraft.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.

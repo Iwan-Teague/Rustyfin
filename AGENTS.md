@@ -9,6 +9,7 @@ Rustyfin is a Docker-first local media platform with:
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`)
 - Next.js frontend (`ui`)
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`)
+- A new `Servers` product area for native game-server management, starting with Minecraft instance records and management APIs/UI
 
 ## Core Rules
 

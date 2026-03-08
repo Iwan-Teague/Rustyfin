@@ -29,6 +29,10 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
   - Direct Play (HTTP range) and HLS transcode modes.
   - Playback progress tracking.
   - Secure stream token handling for scoped streaming URLs.
+- Servers
+  - New `Servers` area for native game server management.
+  - First implementation slice adds PostgreSQL-backed Minecraft instance records, event history, and a Rust API/UI management surface.
+  - Native Debian 12 lifecycle control, provisioning, and import flows are planned to land on top of this foundation.
 - Rooms (formerly watch-party)
   - Watch Together: local media, YouTube embed, and shared web room.
   - Listen Together:
@@ -101,6 +105,7 @@ Supporting host process:
 - `crates/metadata` - metadata provider integration and merge logic.
 - `crates/transcoder` - ffmpeg/ffprobe orchestration and HLS session logic.
 - `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
+- `crates/server/src/servers` - game server management HTTP surface.
 - `crates/calendar` - standalone calendar service API.
 - `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.

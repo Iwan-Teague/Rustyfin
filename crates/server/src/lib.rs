@@ -11,6 +11,7 @@ pub mod error;
 pub mod host_directories;
 pub mod library_scan;
 pub mod routes;
+pub mod servers;
 pub mod setup;
 pub mod state;
 pub mod streaming;
