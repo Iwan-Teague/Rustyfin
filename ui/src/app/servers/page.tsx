@@ -176,7 +176,7 @@ export default function ServersPage() {
           if (current && rows.some((row) => row.id === current)) {
             return current;
           }
-          return rows[0]?.id ?? null;
+          return null;
         });
       } catch (err: unknown) {
         if (!cancelled) {
