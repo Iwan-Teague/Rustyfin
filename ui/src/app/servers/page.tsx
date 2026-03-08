@@ -1366,9 +1366,9 @@ export default function ServersPage() {
       ) : null}
 
       {hostBrowser.open ? (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 px-4 py-6">
-          <div className="panel flex w-full max-w-3xl flex-col gap-4 rounded-2xl p-5 sm:p-6">
-            <div className="flex items-center justify-between gap-3">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center overflow-y-auto bg-black/70 p-4 sm:p-6">
+          <div className="panel my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col gap-4 overflow-hidden rounded-2xl p-5 sm:max-h-[calc(100vh-3rem)] sm:p-6">
+            <div className="flex shrink-0 items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold">Browse Backend Directories</h2>
                 <p className="text-sm muted">
@@ -1385,25 +1385,27 @@ export default function ServersPage() {
             </div>
 
             {hostBrowser.roots.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {hostBrowser.roots.map((rootPath) => (
-                  <button
-                    key={rootPath}
-                    type="button"
-                    onClick={() => navigateHostDirectory(rootPath)}
-                    className={`btn-ghost px-2.5 py-1 text-xs ${
-                      hostBrowser.currentPath.startsWith(rootPath)
-                        ? 'border-[var(--orange-soft)] text-[var(--orange-soft)]'
-                        : ''
-                    }`}
-                  >
-                    {rootPath}
-                  </button>
-                ))}
+              <div className="max-h-24 shrink-0 overflow-y-auto">
+                <div className="flex flex-wrap gap-2">
+                  {hostBrowser.roots.map((rootPath) => (
+                    <button
+                      key={rootPath}
+                      type="button"
+                      onClick={() => navigateHostDirectory(rootPath)}
+                      className={`btn-ghost px-2.5 py-1 text-xs ${
+                        hostBrowser.currentPath.startsWith(rootPath)
+                          ? 'border-[var(--orange-soft)] text-[var(--orange-soft)]'
+                          : ''
+                      }`}
+                    >
+                      {rootPath}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
 
-            <div className="panel-soft rounded-xl border border-[var(--border)] px-3 py-2 flex items-center gap-2">
+            <div className="panel-soft flex shrink-0 items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2">
               <button
                 type="button"
                 onClick={() => navigateHostDirectory(hostBrowser.parentPath)}
@@ -1421,10 +1423,10 @@ export default function ServersPage() {
             </div>
 
             {hostBrowser.error ? (
-              <p className="text-sm text-red-300">{hostBrowser.error}</p>
+              <p className="shrink-0 text-sm text-red-300">{hostBrowser.error}</p>
             ) : null}
 
-            <div className="panel-soft min-h-[260px] overflow-auto rounded-xl border border-[var(--border)] p-2">
+            <div className="panel-soft min-h-[260px] flex-1 overflow-auto rounded-xl border border-[var(--border)] p-2">
               {hostBrowser.loading ? (
                 <p className="px-2 py-2 text-sm muted">Loading directories…</p>
               ) : hostBrowser.directories.length === 0 ? (
@@ -1447,7 +1449,7 @@ export default function ServersPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={closeHostDirectoryBrowser}
