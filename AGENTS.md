@@ -4,7 +4,7 @@ This file defines repo-specific operating rules for coding agents and contributo
 
 ## Project Summary
 
-Rustyfin is a Docker-first local media platform with:
+Rustyfin is a native-Debian-first local media platform with:
 - Rust backend (`crates/server`, Axum + PostgreSQL)
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`)
 - Next.js frontend (`ui`)
@@ -51,12 +51,20 @@ Rustyfin is a Docker-first local media platform with:
 
 ## Runtime and Scripts
 
-- Start stack: `./scripts/start.sh`
-- Stop stack: `./scripts/stop.sh`
+- Start Docker/runtime stack: `./scripts/start.sh`
+- Stop Docker/runtime stack: `./scripts/stop.sh`
+- Start native Debian host runtime: `./scripts/start-native.sh`
+- Stop native Debian host runtime: `./scripts/stop-native.sh`
+- Install native Debian prerequisites: `./scripts/install_native_debian.sh`
 - Clean install/reset: `./scripts/clean_install.sh`
 
 Rust build runtime behavior:
 - `start.sh` defaults to native host Rust binary compilation for Linux targets, then Docker images copy the prebuilt binaries.
+- `start-native.sh` is the preferred production/home-server path on Debian 12:
+  - builds Rust services directly on the host
+  - builds the Next.js UI directly on the host
+  - runs PostgreSQL/Caddy/Node/Rust services natively instead of through Docker
+  - writes logs/pids under `.tmp/native-runtime/`
 - To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
 - On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
 - Native prerequisite strict mode defaults to `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1` (fail-fast).
@@ -69,7 +77,7 @@ Rust build runtime behavior:
   - `start.sh` attempts GPU device mapping for both `/dev/dri` (Intel/AMD) and `/dev/nvidia*` (NVIDIA) for `rustfin-transcription-agent`.
   - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` controls agent backend build features (for example `gpu-opencl`, `gpu-cuda`, `gpu-hip`).
 
-Primary containers:
+Primary Docker containers:
 - `postgres` (PostgreSQL database)
 - `rustfin` (main API)
 - `rustfin-calendar` (calendar service)

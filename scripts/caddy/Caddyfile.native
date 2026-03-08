@@ -1,0 +1,16 @@
+{
+  admin off
+}
+
+# Native Debian host HTTPS edge for UI + API proxying.
+:{$RUSTFIN_UI_PORT} {
+  tls {$RUSTFIN_EDGE_TLS_CERT} {$RUSTFIN_EDGE_TLS_KEY}
+
+  @calendar path /api/v1/calendar/*
+  reverse_proxy @calendar 127.0.0.1:{$RUSTFIN_CALENDAR_PORT}
+
+  @backend path /api/* /stream/* /health
+  reverse_proxy @backend 127.0.0.1:{$RUSTFIN_BACKEND_PORT}
+
+  reverse_proxy 127.0.0.1:{$RUSTFIN_UI_INTERNAL_PORT}
+}
