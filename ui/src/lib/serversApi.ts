@@ -60,6 +60,34 @@ export type MinecraftServerEvent = {
   created_ts: number;
 };
 
+export type ServerLogLine = {
+  ts_ms?: number | null;
+  priority?: string | null;
+  message: string;
+};
+
+export type MinecraftServerLogsResponse = {
+  unit_name: string;
+  lines: ServerLogLine[];
+};
+
+export type DiscoveryCandidate = {
+  path: string;
+  name: string;
+  world_name?: string | null;
+  motd?: string | null;
+  server_properties_present: boolean;
+  eula_present: boolean;
+  top_level_jars: string[];
+  last_modified_ts?: number | null;
+};
+
+export type MinecraftDiscoveryScanResponse = {
+  roots: string[];
+  scanned_root?: string | null;
+  candidates: DiscoveryCandidate[];
+};
+
 export type MinecraftServerAction = 'start' | 'stop' | 'restart';
 
 export type MinecraftServerActionResponse = {
@@ -128,6 +156,12 @@ export function listMinecraftServerEvents(id: string, limit = 20) {
   );
 }
 
+export function listMinecraftServerLogs(id: string, limit = 80) {
+  return apiJson<MinecraftServerLogsResponse>(
+    `/servers/minecraft/instances/${id}/logs?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
 export function createMinecraftServer(payload: CreateMinecraftServerPayload) {
   return apiJson<MinecraftServer>('/servers/minecraft/instances', {
     method: 'POST',
@@ -155,6 +189,17 @@ export function importMinecraftServer(id: string, sourcePath: string) {
     method: 'POST',
     body: JSON.stringify({ source_path: sourcePath }),
   });
+}
+
+export function scanMinecraftDiscoveryCandidates(rootPath?: string, limit = 64) {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (rootPath?.trim()) {
+    params.set('root_path', rootPath.trim());
+  }
+  return apiJson<MinecraftDiscoveryScanResponse>(
+    `/servers/minecraft/discovery/scan?${params.toString()}`,
+  );
 }
 
 export function listBackendHostDirectories(path?: string) {

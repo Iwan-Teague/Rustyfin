@@ -31,7 +31,15 @@ pub fn servers_router() -> Router<AppState> {
             get(super::handlers::list_minecraft_server_events),
         )
         .route(
+            "/minecraft/instances/{id}/logs",
+            get(super::handlers::list_minecraft_server_logs),
+        )
+        .route(
             "/minecraft/instances/{id}/actions/{action}",
             post(super::handlers::request_minecraft_server_action),
+        )
+        .route(
+            "/minecraft/discovery/scan",
+            get(super::handlers::scan_minecraft_discovery_candidates),
         )
 }

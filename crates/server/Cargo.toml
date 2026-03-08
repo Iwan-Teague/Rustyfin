@@ -12,6 +12,7 @@ rustfin-core = { path = "../core" }
 rustfin-db = { path = "../db" }
 rustfin-metadata = { path = "../metadata" }
 rustfin-scanner = { path = "../scanner" }
+rustfin-servers-host = { path = "../servers-host" }
 rustfin-transcoder = { path = "../transcoder" }
 axum = { workspace = true }
 tower = { workspace = true }

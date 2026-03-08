@@ -3089,6 +3089,7 @@ dependencies = [
  "rustfin-db",
  "rustfin-metadata",
  "rustfin-scanner",
+ "rustfin-servers-host",
  "rustfin-transcoder",
  "serde",
  "serde_json",
@@ -3103,6 +3104,32 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "rustfin-servers-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "rustfin-core",
+ "rustfin-servers-host",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "rustfin-servers-host"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rustfin-core",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

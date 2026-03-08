@@ -8,8 +8,9 @@ use tokio::time::{Duration, sleep};
 
 use super::runtime::{
     ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult, ServerLifecycleAction,
-    SystemdUnitStatus, daemon_reload, import_existing_instance, provision_managed_instance,
-    query_unit_status, run_lifecycle_action, sync_unit_enabled,
+    ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse, SystemdUnitStatus,
+    import_existing_instance, provision_managed_instance, query_unit_logs, query_unit_status,
+    run_lifecycle_action, scan_discovery_candidates,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -137,6 +138,17 @@ pub struct CreateMinecraftServerRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ListServerEventsQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListServerLogsQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiscoveryScanQuery {
+    pub root_path: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -499,7 +511,7 @@ async fn refresh_runtime_status(
     state: &AppState,
     current: &rustfin_db::repo::servers::MinecraftServerRow,
 ) -> Result<rustfin_db::repo::servers::MinecraftServerRow, AppError> {
-    let projection = match query_unit_status(&current.systemd_unit_name).await {
+    let projection = match query_unit_status(state, &current.systemd_unit_name).await {
         Ok(status) => apply_runtime_status_projection(current, &status),
         Err(error) => apply_runtime_error_projection(current, &error),
     };
@@ -552,7 +564,7 @@ async fn run_server_lifecycle_job(
     )
     .await;
 
-    let command_result = run_lifecycle_action(&unit_name, action).await;
+    let command_result = run_lifecycle_action(&state, &unit_name, action).await;
     sleep(Duration::from_millis(350)).await;
 
     let refreshed = match rustfin_db::repo::servers::get_minecraft_server_by_id(
@@ -696,20 +708,7 @@ async fn run_managed_provision_job(
     };
 
     let spec = build_managed_provision_spec(&current);
-    let result = match provision_managed_instance(&spec).await {
-        Ok(result) => {
-            if let Err(error) = daemon_reload().await {
-                Err(error)
-            } else if let Err(error) =
-                sync_unit_enabled(&spec.systemd_unit_name, spec.autostart).await
-            {
-                Err(error)
-            } else {
-                Ok(result)
-            }
-        }
-        Err(error) => Err(error),
-    };
+    let result = provision_managed_instance(&state, &spec).await;
 
     match result {
         Ok(result) => match apply_provisioning_success(&state, &current, &result).await {
@@ -862,20 +861,7 @@ async fn run_import_job(
         managed,
         source_path: source_path.clone(),
     };
-    let result = match import_existing_instance(&spec).await {
-        Ok(result) => {
-            if let Err(error) = daemon_reload().await {
-                Err(error)
-            } else if let Err(error) =
-                sync_unit_enabled(&spec.managed.systemd_unit_name, spec.managed.autostart).await
-            {
-                Err(error)
-            } else {
-                Ok(result)
-            }
-        }
-        Err(error) => Err(error),
-    };
+    let result = import_existing_instance(&state, &spec).await;
 
     match result {
         Ok(result) => match apply_provisioning_success(&state, &current, &result).await {
@@ -1117,6 +1103,51 @@ pub async fn list_minecraft_server_events(
             })
             .collect(),
     ))
+}
+
+pub async fn list_minecraft_server_logs(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+    Query(query): Query<ListServerLogsQuery>,
+) -> Result<Json<ServersAgentLogsResponse>, AppError> {
+    let Some(row) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    let limit = query.limit.unwrap_or(80).clamp(1, 500) as u32;
+    let logs = query_unit_logs(&state, &row.systemd_unit_name, limit)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(logs))
+}
+
+pub async fn scan_minecraft_discovery_candidates(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Query(query): Query<DiscoveryScanQuery>,
+) -> Result<Json<ServersAgentDiscoveryScanResponse>, AppError> {
+    let root_path = query.root_path.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let limit = query.limit.unwrap_or(64).clamp(1, 200) as u32;
+    let response = scan_discovery_candidates(&state, root_path, limit)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(response))
 }
 
 pub async fn request_minecraft_server_action(
