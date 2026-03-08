@@ -6,6 +6,10 @@ use crate::state::AppState;
 pub fn servers_router() -> Router<AppState> {
     Router::new()
         .route(
+            "/minecraft/capabilities",
+            get(super::handlers::get_minecraft_runtime_capabilities),
+        )
+        .route(
             "/minecraft/instances",
             get(super::handlers::list_minecraft_servers)
                 .post(super::handlers::create_minecraft_server),

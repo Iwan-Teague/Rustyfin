@@ -7,11 +7,11 @@ use serde_json::json;
 use tokio::time::{Duration, sleep};
 
 use super::runtime::{
-    ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult, ServerLifecycleAction,
-    ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse, SystemdUnitStatus,
-    delete_managed_instance, import_existing_instance, probe_minecraft_server,
+    ImportProvisionSpec, ManagedProvisionSpec, MinecraftRuntimeCapabilities, ProvisioningResult,
+    ServerLifecycleAction, ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse,
+    SystemdUnitStatus, delete_managed_instance, import_existing_instance, probe_minecraft_server,
     provision_managed_instance, query_unit_logs, query_unit_status, run_lifecycle_action,
-    scan_discovery_candidates,
+    runtime_capabilities, scan_discovery_candidates,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -102,6 +102,17 @@ pub struct MinecraftServerOperationResponse {
 pub struct MinecraftServerDeleteResponse {
     pub deleted_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MinecraftRuntimeCapabilitiesResponse {
+    pub host_mode: String,
+    pub status_supported: bool,
+    pub lifecycle_supported: bool,
+    pub provision_supported: bool,
+    pub import_supported: bool,
+    pub delete_supported: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +363,20 @@ fn can_delete_server(
     server: &rustfin_db::repo::servers::MinecraftServerRow,
 ) -> bool {
     auth.role == "admin" || auth.user_id == server.owner_user_id
+}
+
+fn capabilities_to_response(
+    capabilities: MinecraftRuntimeCapabilities,
+) -> MinecraftRuntimeCapabilitiesResponse {
+    MinecraftRuntimeCapabilitiesResponse {
+        host_mode: capabilities.host_mode.to_string(),
+        status_supported: capabilities.status_supported,
+        lifecycle_supported: capabilities.lifecycle_supported,
+        provision_supported: capabilities.provision_supported,
+        import_supported: capabilities.import_supported,
+        delete_supported: capabilities.delete_supported,
+        reason: capabilities.reason,
+    }
 }
 
 fn build_managed_provision_spec(
@@ -1072,6 +1097,13 @@ pub async fn list_minecraft_servers(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     Ok(Json(rows.into_iter().map(row_to_response).collect()))
+}
+
+pub async fn get_minecraft_runtime_capabilities(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Result<Json<MinecraftRuntimeCapabilitiesResponse>, AppError> {
+    Ok(Json(capabilities_to_response(runtime_capabilities(&state))))
 }
 
 pub async fn get_minecraft_server(

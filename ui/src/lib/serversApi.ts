@@ -108,6 +108,16 @@ export type MinecraftServerDeleteResponse = {
   message: string;
 };
 
+export type MinecraftRuntimeCapabilities = {
+  host_mode: string;
+  status_supported: boolean;
+  lifecycle_supported: boolean;
+  provision_supported: boolean;
+  import_supported: boolean;
+  delete_supported: boolean;
+  reason?: string | null;
+};
+
 export type HostDirectoryListEntry = {
   name: string;
   path: string;
@@ -145,6 +155,10 @@ export type CreateMinecraftServerPayload = {
 
 export function listMinecraftServers() {
   return apiJson<MinecraftServer[]>('/servers/minecraft/instances');
+}
+
+export function getMinecraftRuntimeCapabilities() {
+  return apiJson<MinecraftRuntimeCapabilities>('/servers/minecraft/capabilities');
 }
 
 export function getMinecraftServer(id: string) {
