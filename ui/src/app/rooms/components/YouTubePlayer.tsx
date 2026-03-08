@@ -132,6 +132,7 @@ export default function YouTubePlayer({
   const pendingSearchAckTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchPanelRef = useRef<HTMLDivElement | null>(null);
   const searchResultsListRef = useRef<HTMLUListElement | null>(null);
+  const lastSyncedSharedSearchQueryRef = useRef<string | null>(null);
   const pendingQueueTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const queueLookupFailedRef = useRef<Set<string>>(new Set());
   const currentVideoLookupInFlightRef = useRef<string | null>(null);
@@ -233,11 +234,22 @@ export default function YouTubePlayer({
   }, [ytState?.queue, ytState?.video_id, pendingQueueById, clearPendingQueueMarker]);
 
   useEffect(() => {
-    if (!ytState) return;
+    if (lastSyncedSharedSearchQueryRef.current === null) {
+      lastSyncedSharedSearchQueryRef.current = sharedSearchQuery;
+      if (sharedSearchQuery) {
+        setSearchInput(sharedSearchQuery);
+      }
+      return;
+    }
 
-    if (sharedSearchQuery && sharedSearchQuery !== searchInput) {
+    if (sharedSearchQuery !== lastSyncedSharedSearchQueryRef.current) {
+      lastSyncedSharedSearchQueryRef.current = sharedSearchQuery;
       setSearchInput(sharedSearchQuery);
     }
+  }, [sharedSearchQuery]);
+
+  useEffect(() => {
+    if (!ytState) return;
 
     if (searchResults.length > 0) {
       setQueueMetaById((prev) => {
@@ -258,7 +270,7 @@ export default function YouTubePlayer({
       });
       logDebug(`youtube shared search update query="${sharedSearchQuery}" results=${searchResults.length}`);
     }
-  }, [ytState, sharedSearchQuery, searchResults, searchInput, clearPendingSearchAck, logDebug]);
+  }, [ytState, sharedSearchQuery, searchResults, clearPendingSearchAck, logDebug]);
 
   const handlePlayerStateChange = useCallback((event: { target: YT.Player; data: number }) => {
     if (applyingRemoteRef.current) return;
