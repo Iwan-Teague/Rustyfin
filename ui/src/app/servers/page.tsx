@@ -560,28 +560,30 @@ export default function ServersPage() {
         </div>
       ) : null}
 
-      <div className="relative z-10 -mb-3 flex flex-wrap items-end gap-2">
-        <button
-          type="button"
-          disabled
-          className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors disabled:opacity-100 ${
-            activeGameTab === 'minecraft'
-              ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-              : ''
-          }`}
-        >
-          Minecraft
-        </button>
-        <button
-          type="button"
-          disabled
-          className="px-5 py-2.5 text-sm font-medium rounded-t-lg opacity-60 border border-b-0 border-[var(--border)]/50 bg-[var(--surface)]/40"
-        >
-          More soon
-        </button>
-      </div>
+      <section className="panel relative mt-[42px] flex flex-col gap-4 p-5 pt-[34px] sm:p-6 sm:pt-[38px]">
+        <div className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6">
+          <div className="flex flex-wrap items-end gap-2">
+            <button
+              type="button"
+              disabled
+              className={`rounded-t-lg border border-b-0 px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-100 ${
+                activeGameTab === 'minecraft'
+                  ? 'border-[var(--border)] bg-[var(--surface)]'
+                  : 'border-[var(--border)]/50 bg-[var(--surface)]/40 opacity-60'
+              }`}
+            >
+              Minecraft
+            </button>
+            <button
+              type="button"
+              disabled
+              className="rounded-t-lg border border-b-0 border-[var(--border)]/50 bg-[var(--surface)]/40 px-5 py-2.5 text-sm font-medium opacity-60"
+            >
+              More soon
+            </button>
+          </div>
+        </div>
 
-      <section className="panel flex flex-col gap-4 p-5 pt-6 sm:p-6 sm:pt-7">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold">Known servers</h2>
