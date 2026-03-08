@@ -1,14 +1,14 @@
 # Rustyfin
 
-Rustyfin is a local-first home server platform for media playback, live rooms, channels, and calendar planning.
+Rustyfin is a local-first home server platform for media playback, live rooms, channels, calendar planning, and native game server management.
 
-It combines a Rust backend (Axum + PostgreSQL), a Next.js UI, and a Docker-first runtime that works on one device or across your LAN.
+It combines a Rust backend (Axum + PostgreSQL), a Next.js UI, and a Debian 12 native host runtime. Docker remains available as an optional developer/runtime path, but the intended production host is native Debian 12.
 
 ## Recommended Host OS
 
 The intended server host for Rustyfin is **Debian 12 (headless/minimal install)**.
 
-- Recommended for stability, low overhead, and predictable Docker runtime behavior.
+- Recommended for stability, low overhead, and predictable native host runtime behavior.
 - A desktop environment is not required for normal server operation.
 
 ## Current Product Surface
@@ -62,7 +62,19 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
 
 ## Runtime Architecture
 
-Rustyfin runs as a multi-service stack in Docker Compose:
+Rustyfin supports two runtime shapes:
+
+- Native Debian 12 host runtime
+  - Preferred path for production/home-server deployment.
+  - Rust services run as native host processes.
+  - PostgreSQL and Caddy run on the host.
+  - Next.js UI runs as a native standalone Node process.
+  - `rustfin-servers-agent` can run natively on the same host to own privileged Minecraft host operations.
+- Docker Compose runtime
+  - Optional path for developer workflows, containerized testing, or isolated local runs.
+  - Reuses the same Rust services and Next.js UI, but packages them into images/containers.
+
+Docker runtime services:
 
 - `postgres` (PostgreSQL database)
   - Default DB backend for Docker runtime (`start.sh` default).
@@ -94,7 +106,7 @@ Rustyfin runs as a multi-service stack in Docker Compose:
 
 Supporting host process:
 
-- Native directory picker helper (started by `scripts/start.sh`)
+- Native directory picker helper (started by `scripts/start.sh` or `scripts/start-native.sh`)
   - Opens host OS folder picker for library path selection.
 - Optional native `rustfin-servers-agent` (recommended for `Servers`)
   - Runs on the Debian host outside the main Rustyfin backend runtime.
@@ -117,10 +129,44 @@ Supporting host process:
 - `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.
 - `ui` - Next.js frontend.
-- `scripts` - operational scripts (`start.sh`, `stop.sh`, `clean_install.sh`, packaging helpers).
+- `scripts` - operational scripts (`start.sh`, `stop.sh`, `start-native.sh`, `stop-native.sh`, `install_native_debian.sh`, `clean_install.sh`, packaging helpers).
   - Shell-only scripts (`.sh`); PowerShell (`.ps1`) scripts are not part of this repository.
 - `tests` - test harness and E2E suites.
 - `docs` - reports, plans, references, and setup wizard artifacts.
+
+## Quick Start (Native Debian 12 Host)
+
+Install native Debian 12 dependencies:
+
+```bash
+./scripts/install_native_debian.sh
+```
+
+Start native host runtime:
+
+```bash
+./scripts/start-native.sh
+```
+
+Stop native host runtime:
+
+```bash
+./scripts/stop-native.sh
+```
+
+### `start-native.sh` notes
+
+- Builds Rust services directly on the Debian host.
+- Builds the Next.js UI directly on the host and runs the standalone server natively.
+- Uses host PostgreSQL instead of a containerized database.
+- Uses host Caddy for HTTPS edge proxying.
+- Defaults to local PostgreSQL at:
+  - `postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin`
+- Defaults to native `rustfin-servers-agent` enabled for privileged Minecraft lifecycle/provision/import/discovery operations.
+- Writes runtime values to:
+  - `.rustyfin.runtime.env`
+- Stores native runtime logs and pid files under:
+  - `.tmp/native-runtime/`
 
 ## Quick Start (Docker)
 
@@ -183,7 +229,7 @@ After `clean_install.sh`, next `start.sh` requires full setup wizard again.
 - UI default host port: `3000` (HTTPS via edge)
 - Backend host bind default: `127.0.0.1` (loopback-only by default)
 
-`start.sh` auto-detects LAN IP, prints LAN URLs, and writes runtime values to `.rustyfin.runtime.env`.
+`start.sh` and `start-native.sh` auto-detect LAN IP, print LAN URLs, and write runtime values to `.rustyfin.runtime.env`.
 If default ports are occupied, it picks free ports.
 
 Rustyfin does not perform automatic router port mapping (UPnP/NAT-PMP).  
@@ -284,7 +330,7 @@ cargo test
 
 Database note:
 
-- Docker runtime is PostgreSQL-only via compose + `start.sh`.
+- Runtime is PostgreSQL-only for both native and Docker paths.
 - PostgreSQL migrations are in `crates/db/migrations_pg/`.
 - Operational cutover document:
   - `docs/reports/postgres-cutover-runbook.md`
