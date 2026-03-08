@@ -7,7 +7,9 @@ use serde_json::json;
 use tokio::time::{Duration, sleep};
 
 use super::runtime::{
-    ServerLifecycleAction, SystemdUnitStatus, query_unit_status, run_lifecycle_action,
+    ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult, ServerLifecycleAction,
+    SystemdUnitStatus, daemon_reload, import_existing_instance, provision_managed_instance,
+    query_unit_status, run_lifecycle_action, sync_unit_enabled,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -51,10 +53,19 @@ pub struct MinecraftServerResponse {
     pub updated_ts: i64,
     pub server_distribution: String,
     pub minecraft_version: String,
+    pub java_path: String,
     pub world_name: String,
     pub gamemode: String,
     pub difficulty: String,
+    pub hardcore: bool,
+    pub motd: String,
+    pub min_memory_mb: i64,
     pub max_memory_mb: i64,
+    pub online_mode: bool,
+    pub pvp: bool,
+    pub allow_flight: bool,
+    pub enable_command_block: bool,
+    pub white_list_enabled: bool,
     pub current_user_role: Option<String>,
 }
 
@@ -74,6 +85,13 @@ pub struct ServerInstanceEventResponse {
 pub struct MinecraftServerActionResponse {
     pub job_id: String,
     pub requested_action: String,
+    pub message: String,
+    pub instance: MinecraftServerResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MinecraftServerOperationResponse {
+    pub job_id: String,
     pub message: String,
     pub instance: MinecraftServerResponse,
 }
@@ -120,6 +138,11 @@ pub struct CreateMinecraftServerRequest {
 #[derive(Debug, Deserialize)]
 pub struct ListServerEventsQuery {
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportMinecraftServerRequest {
+    pub source_path: String,
 }
 
 #[derive(Debug)]
@@ -283,6 +306,7 @@ fn validate_create_request(
 
 #[derive(Debug)]
 struct RuntimeProjection {
+    install_mode: Option<String>,
     desired_state: String,
     observed_state: String,
     health_state: String,
@@ -303,12 +327,44 @@ fn can_control_server(
         || matches!(server.current_user_role.as_deref(), Some("manager"))
 }
 
+fn build_managed_provision_spec(
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> ManagedProvisionSpec {
+    ManagedProvisionSpec {
+        instance_id: server.id.clone(),
+        display_name: server.display_name.clone(),
+        install_mode: server.install_mode.clone(),
+        instance_root: server.instance_root.clone(),
+        server_work_dir: server.server_work_dir.clone(),
+        systemd_unit_name: server.systemd_unit_name.clone(),
+        listen_host: server.listen_host.clone(),
+        listen_port: server.listen_port,
+        autostart: server.autostart,
+        server_distribution: server.server_distribution.clone(),
+        minecraft_version: server.minecraft_version.clone(),
+        java_path: server.java_path.clone(),
+        world_name: server.world_name.clone(),
+        gamemode: server.gamemode.clone(),
+        difficulty: server.difficulty.clone(),
+        hardcore: server.hardcore,
+        motd: server.motd.clone(),
+        min_memory_mb: server.min_memory_mb,
+        max_memory_mb: server.max_memory_mb,
+        online_mode: server.online_mode,
+        pvp: server.pvp,
+        allow_flight: server.allow_flight,
+        enable_command_block: server.enable_command_block,
+        white_list_enabled: server.white_list_enabled,
+    }
+}
+
 fn apply_runtime_status_projection(
     current: &rustfin_db::repo::servers::MinecraftServerRow,
     status: &SystemdUnitStatus,
 ) -> RuntimeProjection {
     let now = chrono::Utc::now().timestamp();
     let mut projection = RuntimeProjection {
+        install_mode: None,
         desired_state: current.desired_state.clone(),
         observed_state: current.observed_state.clone(),
         health_state: current.health_state.clone(),
@@ -396,6 +452,7 @@ fn apply_runtime_error_projection(
     error: &str,
 ) -> RuntimeProjection {
     RuntimeProjection {
+        install_mode: None,
         desired_state: current.desired_state.clone(),
         observed_state: current.observed_state.clone(),
         health_state: "error".to_string(),
@@ -417,6 +474,7 @@ async fn persist_runtime_projection(
         &state.db,
         &current.id,
         rustfin_db::repo::servers::UpdateMinecraftServerRuntimeParams {
+            install_mode: projection.install_mode.as_deref(),
             desired_state: &projection.desired_state,
             observed_state: &projection.observed_state,
             health_state: &projection.health_state,
@@ -567,6 +625,353 @@ async fn run_server_lifecycle_job(
     }
 }
 
+async fn apply_provisioning_success(
+    state: &AppState,
+    current: &rustfin_db::repo::servers::MinecraftServerRow,
+    result: &ProvisioningResult,
+) -> Result<rustfin_db::repo::servers::MinecraftServerRow, AppError> {
+    let projection = RuntimeProjection {
+        install_mode: Some(result.install_mode.clone()),
+        desired_state: "stopped".to_string(),
+        observed_state: "stopped".to_string(),
+        health_state: "ready".to_string(),
+        current_player_count: 0,
+        last_ready_ts: Some(chrono::Utc::now().timestamp()),
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: current.last_exit_code,
+        last_error_summary: None,
+    };
+    persist_runtime_projection(state, current, &projection).await
+}
+
+async fn run_managed_provision_job(
+    state: AppState,
+    instance_id: String,
+    job_id: String,
+    actor_user_id: String,
+) {
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.1, None).await;
+    record_server_event(
+        &state,
+        &instance_id,
+        Some(&job_id),
+        Some(&actor_user_id),
+        "info",
+        "provision_started",
+        "Managed Minecraft provisioning started.",
+    )
+    .await;
+
+    let current = match rustfin_db::repo::servers::get_minecraft_server_by_id(
+        &state.db,
+        &instance_id,
+    )
+    .await
+    {
+        Ok(Some(server)) => server,
+        Ok(None) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some("server instance not found"),
+            )
+            .await;
+            return;
+        }
+        Err(error) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&format!("db error: {error}")),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let spec = build_managed_provision_spec(&current);
+    let result = match provision_managed_instance(&spec).await {
+        Ok(result) => {
+            if let Err(error) = daemon_reload().await {
+                Err(error)
+            } else if let Err(error) =
+                sync_unit_enabled(&spec.systemd_unit_name, spec.autostart).await
+            {
+                Err(error)
+            } else {
+                Ok(result)
+            }
+        }
+        Err(error) => Err(error),
+    };
+
+    match result {
+        Ok(result) => match apply_provisioning_success(&state, &current, &result).await {
+            Ok(updated) => {
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "info",
+                    "provision_completed",
+                    &format!(
+                        "Managed server files and unit were provisioned at {}.",
+                        result.work_dir
+                    ),
+                )
+                .await;
+                crate::audit_log::record_event(
+                    &state,
+                    "servers.minecraft.provision.complete",
+                    json!({
+                        "instance_id": updated.id,
+                        "display_name": updated.display_name,
+                        "systemd_unit_name": updated.systemd_unit_name,
+                        "server_work_dir": result.work_dir,
+                    }),
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "completed",
+                    1.0,
+                    None,
+                )
+                .await;
+            }
+            Err(error) => {
+                let message =
+                    format!("provision succeeded but state persistence failed: {error:?}");
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "error",
+                    "provision_persist_failed",
+                    &message,
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "failed",
+                    1.0,
+                    Some(&message),
+                )
+                .await;
+            }
+        },
+        Err(error) => {
+            let projection = RuntimeProjection {
+                install_mode: None,
+                desired_state: current.desired_state.clone(),
+                observed_state: "failed".to_string(),
+                health_state: "error".to_string(),
+                current_player_count: current.current_player_count,
+                last_ready_ts: current.last_ready_ts,
+                last_started_ts: current.last_started_ts,
+                last_stopped_ts: current.last_stopped_ts,
+                last_exit_code: current.last_exit_code,
+                last_error_summary: Some(error.clone()),
+            };
+            let _ = persist_runtime_projection(&state, &current, &projection).await;
+            record_server_event(
+                &state,
+                &instance_id,
+                Some(&job_id),
+                Some(&actor_user_id),
+                "error",
+                "provision_failed",
+                &format!("Managed provisioning failed: {error}"),
+            )
+            .await;
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&error),
+            )
+            .await;
+        }
+    }
+}
+
+async fn run_import_job(
+    state: AppState,
+    instance_id: String,
+    job_id: String,
+    actor_user_id: String,
+    source_path: String,
+) {
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.1, None).await;
+    record_server_event(
+        &state,
+        &instance_id,
+        Some(&job_id),
+        Some(&actor_user_id),
+        "info",
+        "import_started",
+        &format!("Importing existing Minecraft server from {}.", source_path),
+    )
+    .await;
+
+    let current = match rustfin_db::repo::servers::get_minecraft_server_by_id(
+        &state.db,
+        &instance_id,
+    )
+    .await
+    {
+        Ok(Some(server)) => server,
+        Ok(None) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some("server instance not found"),
+            )
+            .await;
+            return;
+        }
+        Err(error) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&format!("db error: {error}")),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let managed = build_managed_provision_spec(&current);
+    let spec = ImportProvisionSpec {
+        managed,
+        source_path: source_path.clone(),
+    };
+    let result = match import_existing_instance(&spec).await {
+        Ok(result) => {
+            if let Err(error) = daemon_reload().await {
+                Err(error)
+            } else if let Err(error) =
+                sync_unit_enabled(&spec.managed.systemd_unit_name, spec.managed.autostart).await
+            {
+                Err(error)
+            } else {
+                Ok(result)
+            }
+        }
+        Err(error) => Err(error),
+    };
+
+    match result {
+        Ok(result) => match apply_provisioning_success(&state, &current, &result).await {
+            Ok(updated) => {
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "info",
+                    "import_completed",
+                    &format!(
+                        "Existing Minecraft server imported from {} into {}.",
+                        source_path, result.work_dir
+                    ),
+                )
+                .await;
+                crate::audit_log::record_event(
+                    &state,
+                    "servers.minecraft.import.complete",
+                    json!({
+                        "instance_id": updated.id,
+                        "display_name": updated.display_name,
+                        "systemd_unit_name": updated.systemd_unit_name,
+                        "import_source_path": source_path,
+                        "server_work_dir": result.work_dir,
+                    }),
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "completed",
+                    1.0,
+                    None,
+                )
+                .await;
+            }
+            Err(error) => {
+                let message = format!("import succeeded but state persistence failed: {error:?}");
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "error",
+                    "import_persist_failed",
+                    &message,
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "failed",
+                    1.0,
+                    Some(&message),
+                )
+                .await;
+            }
+        },
+        Err(error) => {
+            let projection = RuntimeProjection {
+                install_mode: None,
+                desired_state: current.desired_state.clone(),
+                observed_state: "failed".to_string(),
+                health_state: "error".to_string(),
+                current_player_count: current.current_player_count,
+                last_ready_ts: current.last_ready_ts,
+                last_started_ts: current.last_started_ts,
+                last_stopped_ts: current.last_stopped_ts,
+                last_exit_code: current.last_exit_code,
+                last_error_summary: Some(error.clone()),
+            };
+            let _ = persist_runtime_projection(&state, &current, &projection).await;
+            record_server_event(
+                &state,
+                &instance_id,
+                Some(&job_id),
+                Some(&actor_user_id),
+                "error",
+                "import_failed",
+                &format!("Minecraft import failed: {error}"),
+            )
+            .await;
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&error),
+            )
+            .await;
+        }
+    }
+}
+
 fn row_to_response(row: rustfin_db::repo::servers::MinecraftServerRow) -> MinecraftServerResponse {
     MinecraftServerResponse {
         id: row.id,
@@ -601,10 +1006,19 @@ fn row_to_response(row: rustfin_db::repo::servers::MinecraftServerRow) -> Minecr
         updated_ts: row.updated_ts,
         server_distribution: row.server_distribution,
         minecraft_version: row.minecraft_version,
+        java_path: row.java_path,
         world_name: row.world_name,
         gamemode: row.gamemode,
         difficulty: row.difficulty,
+        hardcore: row.hardcore,
+        motd: row.motd,
+        min_memory_mb: row.min_memory_mb,
         max_memory_mb: row.max_memory_mb,
+        online_mode: row.online_mode,
+        pvp: row.pvp,
+        allow_flight: row.allow_flight,
+        enable_command_block: row.enable_command_block,
+        white_list_enabled: row.white_list_enabled,
         current_user_role: row.current_user_role,
     }
 }
@@ -748,6 +1162,7 @@ pub async fn request_minecraft_server_action(
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let transitional = RuntimeProjection {
+        install_mode: None,
         desired_state: action.desired_state().to_string(),
         observed_state: action.transitional_observed_state().to_string(),
         health_state: "pending".to_string(),
@@ -813,6 +1228,206 @@ pub async fn request_minecraft_server_action(
                 "{} requested. Rustyfin is reconciling the native systemd unit now.",
                 action.as_str()
             ),
+            instance: row_to_response(updated),
+        }),
+    ))
+}
+
+pub async fn provision_minecraft_server(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<MinecraftServerOperationResponse>), AppError> {
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    if !can_control_server(&auth, &current) {
+        return Err(ApiError::Forbidden(
+            "you do not have permission to provision this server".into(),
+        )
+        .into());
+    }
+
+    let job_payload = json!({
+        "instance_id": current.id,
+        "display_name": current.display_name,
+        "operation": "provision",
+        "systemd_unit_name": current.systemd_unit_name,
+    });
+    let job = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        "servers.minecraft.provision",
+        Some(&job_payload.to_string()),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let transitional = RuntimeProjection {
+        install_mode: None,
+        desired_state: current.desired_state.clone(),
+        observed_state: "provisioning".to_string(),
+        health_state: "pending".to_string(),
+        current_player_count: current.current_player_count,
+        last_ready_ts: current.last_ready_ts,
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: current.last_exit_code,
+        last_error_summary: None,
+    };
+    let updated = persist_runtime_projection(&state, &current, &transitional).await?;
+
+    record_server_event(
+        &state,
+        &updated.id,
+        Some(&job.id),
+        Some(&auth.user_id),
+        "info",
+        "provision_queued",
+        "Managed Minecraft provisioning queued.",
+    )
+    .await;
+
+    crate::audit_log::record_event(
+        &state,
+        "servers.minecraft.provision",
+        json!({
+            "instance_id": updated.id,
+            "display_name": updated.display_name,
+            "requested_by": auth.username,
+        }),
+    )
+    .await;
+
+    let state_clone = state.clone();
+    let instance_id = updated.id.clone();
+    let job_id = job.id.clone();
+    let actor_user_id = auth.user_id.clone();
+    tokio::spawn(async move {
+        run_managed_provision_job(state_clone, instance_id, job_id, actor_user_id).await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MinecraftServerOperationResponse {
+            job_id: job.id,
+            message: "Managed provisioning queued. Rustyfin is creating the server files and systemd unit now.".to_string(),
+            instance: row_to_response(updated),
+        }),
+    ))
+}
+
+pub async fn import_minecraft_server(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+    Json(req): Json<ImportMinecraftServerRequest>,
+) -> Result<(StatusCode, Json<MinecraftServerOperationResponse>), AppError> {
+    let source_path = req.source_path.trim();
+    if source_path.is_empty() {
+        return Err(ApiError::BadRequest("source_path is required".into()).into());
+    }
+
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    if !can_control_server(&auth, &current) {
+        return Err(ApiError::Forbidden(
+            "you do not have permission to import into this server".into(),
+        )
+        .into());
+    }
+
+    let job_payload = json!({
+        "instance_id": current.id,
+        "display_name": current.display_name,
+        "operation": "import",
+        "source_path": source_path,
+        "systemd_unit_name": current.systemd_unit_name,
+    });
+    let job = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        "servers.minecraft.import",
+        Some(&job_payload.to_string()),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let transitional = RuntimeProjection {
+        install_mode: None,
+        desired_state: current.desired_state.clone(),
+        observed_state: "importing".to_string(),
+        health_state: "pending".to_string(),
+        current_player_count: current.current_player_count,
+        last_ready_ts: current.last_ready_ts,
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: current.last_exit_code,
+        last_error_summary: None,
+    };
+    let updated = persist_runtime_projection(&state, &current, &transitional).await?;
+
+    record_server_event(
+        &state,
+        &updated.id,
+        Some(&job.id),
+        Some(&auth.user_id),
+        "info",
+        "import_queued",
+        &format!("Import queued for source path {}.", source_path),
+    )
+    .await;
+
+    crate::audit_log::record_event(
+        &state,
+        "servers.minecraft.import",
+        json!({
+            "instance_id": updated.id,
+            "display_name": updated.display_name,
+            "requested_by": auth.username,
+            "source_path": source_path,
+        }),
+    )
+    .await;
+
+    let state_clone = state.clone();
+    let instance_id = updated.id.clone();
+    let job_id = job.id.clone();
+    let actor_user_id = auth.user_id.clone();
+    let source_path_owned = source_path.to_string();
+    tokio::spawn(async move {
+        run_import_job(
+            state_clone,
+            instance_id,
+            job_id,
+            actor_user_id,
+            source_path_owned,
+        )
+        .await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MinecraftServerOperationResponse {
+            job_id: job.id,
+            message: "Import queued. Rustyfin is copying the existing server into its managed instance now.".to_string(),
             instance: row_to_response(updated),
         }),
     ))

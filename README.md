@@ -31,8 +31,8 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
   - Secure stream token handling for scoped streaming URLs.
 - Servers
   - New `Servers` area for native game server management.
-  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, and native start/stop/restart controls through the Rust API/UI surface.
-  - Provisioning, systemd unit rendering, and import flows are planned to land on top of this foundation.
+  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, native start/stop/restart controls, managed provisioning, and existing-server import through the Rust API/UI surface.
+  - Rustyfin now renders native Debian 12 systemd units for Minecraft instances and can copy an existing host server directory into its managed instance path.
 - Rooms (formerly watch-party)
   - Watch Together: local media, YouTube embed, and shared web room.
   - Listen Together:
@@ -106,6 +106,7 @@ Supporting host process:
 - `crates/transcoder` - ffmpeg/ffprobe orchestration and HLS session logic.
 - `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
 - `crates/server/src/servers` - game server management HTTP surface.
+  - includes native lifecycle control, managed provisioning, import, and systemd-facing runtime helpers for Minecraft.
 - `crates/calendar` - standalone calendar service API.
 - `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.
@@ -223,6 +224,11 @@ Common runtime variables:
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS` (default `21600`)
 - `RUSTFIN_TEST_DATABASE_URL` (optional test DB target override for integration/E2E harness)
 - `RUSTFIN_BACKEND_PORT`
+- `RUSTFIN_SERVERS_SYSTEMCTL_BIN` (optional; defaults to `systemctl`)
+- `RUSTFIN_SERVERS_SYSTEMD_UNIT_DIR` (optional; defaults to `/etc/systemd/system`)
+- `RUSTFIN_SERVERS_ARTIFACT_CACHE_ROOT` (optional; defaults to `/var/cache/rustyfin-servers/minecraft/artifacts`)
+- `RUSTFIN_SERVERS_IMPORT_ROOTS` (optional `:`-separated list of allowed import source roots; falls back to `RUSTFIN_DIRECTORY_BROWSE_ROOTS`)
+- `RUSTFIN_SERVERS_SYSTEM_USER` / `RUSTFIN_SERVERS_SYSTEM_GROUP` (optional; written into rendered Minecraft systemd units when set)
 - `RUSTFIN_BACKEND_BIND_IP` (default `127.0.0.1`)
 - `RUSTFIN_UI_PORT`
 - `RUSTFIN_PUBLIC_HOST`

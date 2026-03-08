@@ -19,6 +19,14 @@ pub fn servers_router() -> Router<AppState> {
             get(super::handlers::refresh_minecraft_server_status),
         )
         .route(
+            "/minecraft/instances/{id}/provision",
+            post(super::handlers::provision_minecraft_server),
+        )
+        .route(
+            "/minecraft/instances/{id}/import",
+            post(super::handlers::import_minecraft_server),
+        )
+        .route(
             "/minecraft/instances/{id}/events",
             get(super::handlers::list_minecraft_server_events),
         )
