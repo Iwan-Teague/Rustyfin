@@ -289,6 +289,7 @@ fn api_router() -> Router<AppState> {
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
+        .nest("/servers", crate::servers::router::servers_router())
         .nest(
             "/watch-party",
             crate::watch_party::router::watch_party_router(),

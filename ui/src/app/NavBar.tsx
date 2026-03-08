@@ -34,6 +34,7 @@ export default function NavBar() {
     { href: '/libraries', label: 'Libraries' },
     { href: '/channels', label: 'Channels' },
     { href: '/rooms', label: 'Rooms' },
+    { href: '/servers', label: 'Servers' },
     { href: '/calendar', label: 'Calendar' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];

@@ -8,6 +8,7 @@ pub mod jobs;
 pub mod libraries;
 pub mod media_files;
 pub mod playstate;
+pub mod servers;
 pub mod settings;
 pub mod setup_session;
 pub mod users;
