@@ -1,6 +1,6 @@
 # Rustyfin Efficiency Deep Dive (Pass 2)
 Date: 2026-02-26  
-Author: Codex
+Author: Rustyfin Engineering Audit
 
 ## Executive Summary
 Rustyfin is functionally rich and architecture-aligned with your Rust-first direction, but performance and maintainability are now constrained by three patterns:
