@@ -6,10 +6,12 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
 import {
+  deleteMinecraftServer,
   DiscoveryCandidate,
   MinecraftServerAction,
   MinecraftServer,
   MinecraftServerActionResponse,
+  MinecraftServerDeleteResponse,
   MinecraftServerLogsResponse,
   MinecraftServerEvent,
   MinecraftServerOperationResponse,
@@ -181,8 +183,10 @@ export default function ServersPage() {
   const [importing, setImporting] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [deletingServerId, setDeletingServerId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [deleteConfirmServer, setDeleteConfirmServer] = useState<MinecraftServer | null>(null);
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
   const [importSourcePath, setImportSourcePath] = useState('');
   const [hostBrowser, setHostBrowser] = useState<HostDirectoryBrowserState>({
@@ -536,6 +540,22 @@ export default function ServersPage() {
     }
   }
 
+  async function handleDeleteServer(server: MinecraftServer) {
+    setDeletingServerId(server.id);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const response: MinecraftServerDeleteResponse = await deleteMinecraftServer(server.id);
+      setDeleteConfirmServer(null);
+      await refreshServers();
+      setSuccessMessage(response.message);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to delete Minecraft server'));
+    } finally {
+      setDeletingServerId(null);
+    }
+  }
+
   const managementServer = servers.find((server) => server.id === managementServerId) ?? null;
 
   if (authLoading || !me) {
@@ -603,6 +623,7 @@ export default function ServersPage() {
             {servers.map((server) => {
               const expanded = selectedServerId === server.id;
               const indicator = getServerIndicator(server);
+              const canDelete = me.role === 'admin' || me.id === server.owner_user_id;
               const canStart =
                 server.observed_state !== 'running' &&
                 server.observed_state !== 'starting' &&
@@ -681,6 +702,16 @@ export default function ServersPage() {
                           >
                             {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
                           </button>
+                          {canDelete ? (
+                            <button
+                              type="button"
+                              className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50"
+                              disabled={deletingServerId !== null || actionLoading !== null}
+                              onClick={() => setDeleteConfirmServer(server)}
+                            >
+                              Delete
+                            </button>
+                          ) : null}
                         </div>
                         <button
                           type="button"
@@ -1289,6 +1320,50 @@ export default function ServersPage() {
           )}
         </section>
       </div>
+
+      {deleteConfirmServer ? (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]">
+          <div className="panel w-full max-w-md space-y-4 rounded-2xl border border-[var(--border)] p-6">
+            <div className="space-y-2">
+              <h2 className="text-lg font-semibold">Delete Server</h2>
+              <p className="text-sm muted">
+                Delete this Minecraft server record and remove its managed host files? This action
+                is destructive and cannot be undone.
+              </p>
+            </div>
+
+            <div className="panel-soft rounded-xl px-4 py-3 text-sm">
+              <div className="font-medium text-white">{deleteConfirmServer.display_name}</div>
+              <div className="mt-1 text-xs muted">
+                {deleteConfirmServer.server_distribution} {deleteConfirmServer.minecraft_version}
+                {' · '}
+                {deleteConfirmServer.world_name}
+                {' · '}
+                Port {deleteConfirmServer.listen_port}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmServer(null)}
+                className="btn-ghost px-4 py-2 text-sm"
+                disabled={deletingServerId === deleteConfirmServer.id}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDeleteServer(deleteConfirmServer)}
+                className="rounded-xl bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-50"
+                disabled={deletingServerId === deleteConfirmServer.id}
+              >
+                {deletingServerId === deleteConfirmServer.id ? 'Deleting…' : 'Delete server'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {hostBrowser.open ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 px-4 py-6">

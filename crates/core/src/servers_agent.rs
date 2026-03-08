@@ -122,6 +122,12 @@ pub struct ServersAgentImportRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServersAgentDeleteRequest {
+    pub unit_name: String,
+    pub instance_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersAgentLogsRequest {
     pub unit_name: String,
     pub limit: Option<u32>,

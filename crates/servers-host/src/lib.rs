@@ -73,13 +73,17 @@ fn artifact_cache_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/var/cache/rustyfin-servers/minecraft/artifacts"))
 }
 
-fn managed_instances_root() -> Option<PathBuf> {
+fn instance_root_base_path() -> PathBuf {
     std::env::var("RUSTFIN_SERVERS_INSTANCE_ROOT")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .and_then(|path| std::fs::canonicalize(path).ok())
+        .unwrap_or_else(|| PathBuf::from("/srv/rustyfin-servers/minecraft/instances"))
+}
+
+fn managed_instances_root() -> Option<PathBuf> {
+    std::fs::canonicalize(instance_root_base_path()).ok()
 }
 
 fn unit_service_user() -> Option<String> {
@@ -255,6 +259,79 @@ pub async fn query_unit_status(unit_name: &str) -> Result<SystemdUnitStatus, Str
         };
         Err(detail)
     }
+}
+
+fn is_missing_unit_error(detail: &str) -> bool {
+    let normalized = detail.trim().to_ascii_lowercase();
+    normalized.contains("not loaded")
+        || normalized.contains("no such file")
+        || normalized.contains("could not be found")
+        || normalized.contains("unit ") && normalized.contains(" not found")
+}
+
+fn validate_managed_instance_root(instance_root: &Path) -> Result<(), String> {
+    let base_root = instance_root_base_path();
+    if !instance_root.starts_with(&base_root) {
+        return Err(format!(
+            "refusing to delete instance root outside managed base path: {}",
+            instance_root.display()
+        ));
+    }
+    if instance_root == base_root {
+        return Err("refusing to delete the managed instances base root".to_string());
+    }
+    Ok(())
+}
+
+pub async fn delete_managed_instance(unit_name: &str, instance_root: &str) -> Result<(), String> {
+    ensure_native_runtime_supported()?;
+
+    if let Err(error) = run_systemctl(&["stop", unit_name]).await {
+        if !is_missing_unit_error(&error) {
+            return Err(format!(
+                "failed to stop systemd unit before delete: {error}"
+            ));
+        }
+    }
+
+    if let Err(error) = run_systemctl(&["disable", unit_name]).await {
+        if !is_missing_unit_error(&error) {
+            return Err(format!(
+                "failed to disable systemd unit before delete: {error}"
+            ));
+        }
+    }
+
+    let unit_path = systemd_unit_dir().join(unit_name.trim());
+    let instance_root = PathBuf::from(instance_root.trim());
+    validate_managed_instance_root(&instance_root)?;
+
+    tokio::task::spawn_blocking(move || {
+        if unit_path.exists() {
+            std::fs::remove_file(&unit_path).map_err(|error| {
+                format!(
+                    "failed to remove systemd unit file {}: {error}",
+                    unit_path.display()
+                )
+            })?;
+        }
+
+        if instance_root.exists() {
+            std::fs::remove_dir_all(&instance_root).map_err(|error| {
+                format!(
+                    "failed to remove managed instance root {}: {error}",
+                    instance_root.display()
+                )
+            })?;
+        }
+
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|error| format!("delete task failed: {error}"))??;
+
+    daemon_reload().await?;
+    Ok(())
 }
 
 fn normalize_probe_host(host: &str) -> String {
@@ -1345,5 +1422,29 @@ mod tests {
             ]
         });
         assert_eq!(super::flatten_description(&value), "Welcome to Rustyfin");
+    }
+
+    #[test]
+    fn delete_root_validation_rejects_base_root() {
+        let root = std::path::PathBuf::from("/srv/rustyfin-servers/minecraft/instances");
+        let error = super::validate_managed_instance_root(&root).expect_err("base root must fail");
+        assert!(error.contains("base root"));
+    }
+
+    #[test]
+    fn delete_root_validation_accepts_child_instance_root() {
+        let root = std::path::PathBuf::from("/srv/rustyfin-servers/minecraft/instances/instance-1");
+        super::validate_managed_instance_root(&root).expect("child instance root should pass");
+    }
+
+    #[test]
+    fn missing_unit_error_detection_catches_common_systemd_messages() {
+        assert!(super::is_missing_unit_error(
+            "Unit rustyfin-minecraft-123.service could not be found."
+        ));
+        assert!(super::is_missing_unit_error(
+            "Unit rustyfin.service not loaded."
+        ));
+        assert!(super::is_missing_unit_error("No such file or directory"));
     }
 }
