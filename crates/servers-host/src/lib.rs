@@ -39,6 +39,16 @@ struct VanillaServerDownload {
     url: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeRuntimeCapabilities {
+    pub status_supported: bool,
+    pub lifecycle_supported: bool,
+    pub provision_supported: bool,
+    pub import_supported: bool,
+    pub delete_supported: bool,
+    pub reason: Option<String>,
+}
+
 fn systemctl_bin() -> String {
     std::env::var("RUSTFIN_SERVERS_SYSTEMCTL_BIN")
         .ok()
@@ -135,6 +145,61 @@ fn ensure_native_runtime_supported() -> Result<(), String> {
         Ok(())
     } else {
         Err("Minecraft native runtime control is only supported on Linux hosts".to_string())
+    }
+}
+
+pub fn detect_native_runtime_capabilities() -> NativeRuntimeCapabilities {
+    if !cfg!(target_os = "linux") {
+        return NativeRuntimeCapabilities {
+            status_supported: false,
+            lifecycle_supported: false,
+            provision_supported: false,
+            import_supported: false,
+            delete_supported: false,
+            reason: Some("Minecraft native runtime control requires a Linux host".to_string()),
+        };
+    }
+
+    let systemctl = systemctl_bin();
+    if std::process::Command::new(&systemctl)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return NativeRuntimeCapabilities {
+            status_supported: false,
+            lifecycle_supported: false,
+            provision_supported: false,
+            import_supported: false,
+            delete_supported: true,
+            reason: Some(
+                "This runtime does not expose systemctl, so start/stop/provision/import controls are unavailable here."
+                    .to_string(),
+            ),
+        };
+    }
+
+    if !Path::new("/run/systemd/system").exists() {
+        return NativeRuntimeCapabilities {
+            status_supported: false,
+            lifecycle_supported: false,
+            provision_supported: false,
+            import_supported: false,
+            delete_supported: true,
+            reason: Some(
+                "This runtime is not booted with systemd, so start/stop/provision/import controls are unavailable here."
+                    .to_string(),
+            ),
+        };
+    }
+
+    NativeRuntimeCapabilities {
+        status_supported: true,
+        lifecycle_supported: true,
+        provision_supported: true,
+        import_supported: true,
+        delete_supported: true,
+        reason: None,
     }
 }
 

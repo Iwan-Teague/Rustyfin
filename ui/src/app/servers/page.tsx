@@ -9,6 +9,7 @@ import {
   deleteMinecraftServer,
   DiscoveryCandidate,
   MinecraftServerAction,
+  MinecraftRuntimeCapabilities,
   MinecraftServer,
   MinecraftServerActionResponse,
   MinecraftServerDeleteResponse,
@@ -17,6 +18,7 @@ import {
   MinecraftServerOperationResponse,
   ServerLogLine,
   createMinecraftServer,
+  getMinecraftRuntimeCapabilities,
   HostDirectoryListEntry,
   listMinecraftServerLogs,
   listMinecraftServerEvents,
@@ -187,6 +189,7 @@ export default function ServersPage() {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [deleteConfirmServer, setDeleteConfirmServer] = useState<MinecraftServer | null>(null);
+  const [runtimeCapabilities, setRuntimeCapabilities] = useState<MinecraftRuntimeCapabilities | null>(null);
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
   const [importSourcePath, setImportSourcePath] = useState('');
   const [hostBrowser, setHostBrowser] = useState<HostDirectoryBrowserState>({
@@ -217,9 +220,13 @@ export default function ServersPage() {
 
     (async () => {
       try {
-        const rows = await listMinecraftServers();
+        const [rows, capabilities] = await Promise.all([
+          listMinecraftServers(),
+          getMinecraftRuntimeCapabilities(),
+        ]);
         if (cancelled) return;
         setServers(rows);
+        setRuntimeCapabilities(capabilities);
         setSelectedServerId((current) => {
           if (current && rows.some((row) => row.id === current)) {
             return current;
@@ -258,11 +265,14 @@ export default function ServersPage() {
     let cancelled = false;
     void (async () => {
       try {
-        await Promise.all([
-          refreshSelectedServerStatus(selectedServerId, true),
+        const tasks: Array<Promise<unknown>> = [
           loadSelectedServerEvents(selectedServerId, true),
           loadSelectedServerLogs(selectedServerId, true),
-        ]);
+        ];
+        if (runtimeCapabilities?.status_supported ?? true) {
+          tasks.unshift(refreshSelectedServerStatus(selectedServerId, true));
+        }
+        await Promise.all(tasks);
       } catch (err: unknown) {
         if (!cancelled) {
           setError(clientErrorMessage(err, 'Failed to refresh selected server status'));
@@ -272,7 +282,9 @@ export default function ServersPage() {
 
     const interval = window.setInterval(() => {
       if (cancelled) return;
-      void refreshSelectedServerStatus(selectedServerId, false);
+      if (runtimeCapabilities?.status_supported ?? true) {
+        void refreshSelectedServerStatus(selectedServerId, false);
+      }
       void loadSelectedServerEvents(selectedServerId, false);
       void loadSelectedServerLogs(selectedServerId, false);
     }, 5000);
@@ -281,7 +293,7 @@ export default function ServersPage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [me, selectedServerId]);
+  }, [me, runtimeCapabilities?.status_supported, selectedServerId]);
 
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -580,6 +592,12 @@ export default function ServersPage() {
         </div>
       ) : null}
 
+      {runtimeCapabilities?.reason ? (
+        <div className="panel-soft animate-rise border border-amber-400/30 px-5 py-4 text-sm text-amber-100">
+          {runtimeCapabilities.reason}
+        </div>
+      ) : null}
+
       <section className="panel relative mt-[42px] flex flex-col gap-4 p-5 pt-[20px] sm:p-6 sm:pt-[24px]">
         <div className="absolute left-4 right-4 top-[-16px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
           <div className="flex flex-wrap items-end gap-2">
@@ -623,17 +641,23 @@ export default function ServersPage() {
             {servers.map((server) => {
               const expanded = selectedServerId === server.id;
               const indicator = getServerIndicator(server);
+              const lifecycleSupported = runtimeCapabilities?.lifecycle_supported ?? true;
+              const statusSupported = runtimeCapabilities?.status_supported ?? true;
+              const deleteSupported = runtimeCapabilities?.delete_supported ?? true;
               const canDelete = me.role === 'admin' || me.id === server.owner_user_id;
               const canStart =
+                lifecycleSupported &&
                 server.observed_state !== 'running' &&
                 server.observed_state !== 'starting' &&
                 server.observed_state !== 'restarting';
               const canRestart =
-                server.observed_state === 'running' || server.health_state === 'healthy';
+                lifecycleSupported &&
+                (server.observed_state === 'running' || server.health_state === 'healthy');
               const canStop =
-                server.observed_state === 'running' ||
-                server.observed_state === 'starting' ||
-                server.observed_state === 'restarting';
+                lifecycleSupported &&
+                (server.observed_state === 'running' ||
+                  server.observed_state === 'starting' ||
+                  server.observed_state === 'restarting');
               return (
                 <div
                   key={server.id}
@@ -673,8 +697,9 @@ export default function ServersPage() {
                           <button
                             type="button"
                             className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={statusRefreshing || actionLoading !== null}
+                            disabled={statusRefreshing || actionLoading !== null || !statusSupported}
                             onClick={() => void refreshSelectedServerStatus(server.id, true)}
+                            title={!statusSupported ? runtimeCapabilities?.reason ?? 'Status refresh unavailable here' : undefined}
                           >
                             {statusRefreshing && expanded ? 'Refreshing…' : 'Refresh Status'}
                           </button>
@@ -706,8 +731,9 @@ export default function ServersPage() {
                             <button
                               type="button"
                               className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50"
-                              disabled={deletingServerId !== null || actionLoading !== null}
+                              disabled={deletingServerId !== null || actionLoading !== null || !deleteSupported}
                               onClick={() => setDeleteConfirmServer(server)}
+                              title={!deleteSupported ? runtimeCapabilities?.reason ?? 'Delete unavailable here' : undefined}
                             >
                               Delete
                             </button>
@@ -1174,7 +1200,13 @@ export default function ServersPage() {
                 <button
                   type="button"
                   className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
-                  disabled={!managementServer || provisioning || importing || actionLoading !== null}
+                  disabled={
+                    !managementServer ||
+                    provisioning ||
+                    importing ||
+                    actionLoading !== null ||
+                    !(runtimeCapabilities?.provision_supported ?? true)
+                  }
                   onClick={() => managementServer && void handleProvisionServer(managementServer)}
                 >
                   {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
@@ -1211,7 +1243,13 @@ export default function ServersPage() {
                   <button
                     type="button"
                     className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-                    disabled={!managementServer || importing || provisioning || actionLoading !== null}
+                    disabled={
+                      !managementServer ||
+                      importing ||
+                      provisioning ||
+                      actionLoading !== null ||
+                      !(runtimeCapabilities?.import_supported ?? true)
+                    }
                     onClick={() => managementServer && void handleImportServer(managementServer)}
                   >
                     {importing ? 'Importing…' : 'Import Existing Server'}

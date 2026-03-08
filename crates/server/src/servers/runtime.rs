@@ -15,6 +15,42 @@ fn use_servers_agent(state: &AppState) -> bool {
         .is_some()
 }
 
+#[derive(Debug, Clone)]
+pub struct MinecraftRuntimeCapabilities {
+    pub host_mode: &'static str,
+    pub status_supported: bool,
+    pub lifecycle_supported: bool,
+    pub provision_supported: bool,
+    pub import_supported: bool,
+    pub delete_supported: bool,
+    pub reason: Option<String>,
+}
+
+pub fn runtime_capabilities(state: &AppState) -> MinecraftRuntimeCapabilities {
+    if use_servers_agent(state) {
+        MinecraftRuntimeCapabilities {
+            host_mode: "agent",
+            status_supported: true,
+            lifecycle_supported: true,
+            provision_supported: true,
+            import_supported: true,
+            delete_supported: true,
+            reason: None,
+        }
+    } else {
+        let caps = rustfin_servers_host::detect_native_runtime_capabilities();
+        MinecraftRuntimeCapabilities {
+            host_mode: "local",
+            status_supported: caps.status_supported,
+            lifecycle_supported: caps.lifecycle_supported,
+            provision_supported: caps.provision_supported,
+            import_supported: caps.import_supported,
+            delete_supported: caps.delete_supported,
+            reason: caps.reason,
+        }
+    }
+}
+
 pub async fn run_lifecycle_action(
     state: &AppState,
     unit_name: &str,
