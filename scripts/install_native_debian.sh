@@ -54,6 +54,25 @@ else
   RUN_POSTGRES=(sudo -u postgres)
 fi
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  RUSTFIN_NATIVE_USER="${SUDO_USER:-root}"
+else
+  RUSTFIN_NATIVE_USER="${USER:-$(id -un)}"
+fi
+
+RUSTFIN_NATIVE_USER_HOME="$(getent passwd "$RUSTFIN_NATIVE_USER" | cut -d: -f6 || true)"
+[[ -n "$RUSTFIN_NATIVE_USER_HOME" ]] || die "Unable to resolve home directory for user: $RUSTFIN_NATIVE_USER"
+
+if [[ "$RUSTFIN_NATIVE_USER" == "root" ]]; then
+  RUN_NATIVE_USER=()
+else
+  if [[ "$(id -u)" -eq 0 ]]; then
+    RUN_NATIVE_USER=(runuser -u "$RUSTFIN_NATIVE_USER" --)
+  else
+    RUN_NATIVE_USER=()
+  fi
+fi
+
 info "Installing Debian 12 native runtime dependencies..."
 "${RUN_ROOT[@]}" apt-get update
 "${RUN_ROOT[@]}" apt-get install -y \
@@ -87,14 +106,18 @@ info "Installing Debian 12 native runtime dependencies..."
   python3-pip \
   python3-venv
 
-if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
-  info "Installing Rust toolchain via rustup..."
-  curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+if [[ ! -x "${RUSTFIN_NATIVE_USER_HOME}/.cargo/bin/cargo" ]] || [[ ! -x "${RUSTFIN_NATIVE_USER_HOME}/.cargo/bin/rustc" ]]; then
+  info "Installing Rust toolchain via rustup for user ${RUSTFIN_NATIVE_USER}..."
+  if [[ "${#RUN_NATIVE_USER[@]}" -gt 0 ]]; then
+    "${RUN_NATIVE_USER[@]}" bash -lc 'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal'
+  else
+    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
+  fi
 fi
 
-if [[ -f "${HOME}/.cargo/env" ]]; then
+if [[ -f "${RUSTFIN_NATIVE_USER_HOME}/.cargo/env" ]]; then
   # shellcheck disable=SC1090
-  source "${HOME}/.cargo/env"
+  source "${RUSTFIN_NATIVE_USER_HOME}/.cargo/env"
 fi
 
 command -v cargo >/dev/null 2>&1 || die "cargo was not installed successfully"
@@ -142,5 +165,5 @@ fi
 
 success "Debian 12 native host prerequisites are installed."
 success "Next steps:"
-echo "  1. source ~/.cargo/env"
+echo "  1. source ${RUSTFIN_NATIVE_USER_HOME}/.cargo/env"
 echo "  2. ./scripts/start-native.sh"
