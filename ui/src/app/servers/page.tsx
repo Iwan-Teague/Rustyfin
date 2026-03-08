@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { useAuth } from '@/lib/auth';
@@ -229,11 +229,6 @@ export default function ServersPage() {
     };
   }, [me, selectedServerId]);
 
-  const selectedServer = useMemo(
-    () => servers.find((server) => server.id === selectedServerId) ?? null,
-    [servers, selectedServerId],
-  );
-
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
@@ -374,21 +369,19 @@ export default function ServersPage() {
     }
   }
 
-  async function handleRequestAction(action: MinecraftServerAction) {
-    if (!selectedServer) return;
+  async function handleRequestAction(server: MinecraftServer, action: MinecraftServerAction) {
+    setSelectedServerId(server.id);
     setActionLoading(action);
     setError('');
     setSuccessMessage('');
     try {
-      const response: MinecraftServerActionResponse = await requestMinecraftServerAction(
-        selectedServer.id,
-        action,
-      );
+      const response: MinecraftServerActionResponse = await requestMinecraftServerAction(server.id, action);
       upsertServer(response.instance);
       setSuccessMessage(response.message);
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
+        loadSelectedServerLogs(response.instance.id, false),
       ]);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, `Failed to ${action} server`));
@@ -397,18 +390,19 @@ export default function ServersPage() {
     }
   }
 
-  async function handleProvisionServer() {
-    if (!selectedServer) return;
+  async function handleProvisionServer(server: MinecraftServer) {
+    setSelectedServerId(server.id);
     setProvisioning(true);
     setError('');
     setSuccessMessage('');
     try {
-      const response: MinecraftServerOperationResponse = await provisionMinecraftServer(selectedServer.id);
+      const response: MinecraftServerOperationResponse = await provisionMinecraftServer(server.id);
       upsertServer(response.instance);
       setSuccessMessage(response.message);
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
+        loadSelectedServerLogs(response.instance.id, false),
       ]);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to provision Minecraft server'));
@@ -417,19 +411,19 @@ export default function ServersPage() {
     }
   }
 
-  async function handleImportServer() {
-    if (!selectedServer) return;
+  async function handleImportServer(server: MinecraftServer) {
     if (!importSourcePath.trim()) {
       setError('Import source path is required');
       return;
     }
 
+    setSelectedServerId(server.id);
     setImporting(true);
     setError('');
     setSuccessMessage('');
     try {
       const response: MinecraftServerOperationResponse = await importMinecraftServer(
-        selectedServer.id,
+        server.id,
         importSourcePath.trim(),
       );
       upsertServer(response.instance);
@@ -437,6 +431,7 @@ export default function ServersPage() {
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
+        loadSelectedServerLogs(response.instance.id, false),
       ]);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to import Minecraft server'));
@@ -524,409 +519,470 @@ export default function ServersPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[1.1fr_1.25fr_1.1fr]">
-        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-semibold">Known servers</h2>
-              <p className="text-sm muted">Visible instances for your account.</p>
-            </div>
-            <span className="chip">{servers.length}</span>
+      <section className="panel flex flex-col gap-4 p-5 sm:p-6">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold">Known servers</h2>
+            <p className="text-sm muted">Visible instances for your account.</p>
           </div>
+          <span className="chip">{servers.length}</span>
+        </div>
 
-          {loading ? (
-            <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">Loading server records…</div>
-          ) : servers.length === 0 ? (
-            <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              No Minecraft servers exist yet.
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-              {servers.map((server) => {
-                const selected = selectedServerId === server.id;
-                return (
-                  <button
-                    key={server.id}
-                    type="button"
-                    onClick={() => setSelectedServerId(server.id)}
-                    className={`panel-soft rounded-xl px-4 py-4 text-left transition ${
-                      selected ? 'border-[var(--orange-soft)] bg-white/10' : ''
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="text-sm font-semibold text-white">{server.display_name}</div>
-                        <div className="text-xs muted">
+        {loading ? (
+          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">Loading server records…</div>
+        ) : servers.length === 0 ? (
+          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+            No Minecraft servers exist yet.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {servers.map((server) => {
+              const expanded = selectedServerId === server.id;
+              return (
+                <div
+                  key={server.id}
+                  className={`panel-soft rounded-xl px-4 py-4 transition ${
+                    expanded ? 'border-[var(--orange-soft)] bg-white/10' : ''
+                  }`}
+                >
+                  <div className="flex flex-col gap-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-lg font-semibold text-white">{server.display_name}</h3>
+                          <span className="chip">{titleCase(server.observed_state)}</span>
+                          <span className="chip">{titleCase(server.health_state)}</span>
+                          <span className="chip">{titleCase(server.install_mode)}</span>
+                          <span className="chip">Desired {titleCase(server.desired_state)}</span>
+                        </div>
+                        <div className="text-sm muted">
                           {server.server_distribution} {server.minecraft_version}
                         </div>
-                      </div>
-                      <span className="chip text-[11px]">{titleCase(server.observed_state)}</span>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs muted">
-                      <span className="chip">Port {server.listen_port}</span>
-                      <span className="chip">{server.world_name}</span>
-                      <span className="chip">
-                        {server.current_player_count}/{server.max_player_count ?? 0} players
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-semibold">Server detail</h2>
-              <p className="text-sm muted">Selected instance state and recent lifecycle events.</p>
-            </div>
-            {selectedServer ? <span className="chip chip-accent">{titleCase(selectedServer.health_state)}</span> : null}
-          </div>
-
-          {!selectedServer ? (
-            <div className="panel-soft flex flex-1 items-center justify-center rounded-xl px-4 py-10 text-sm muted">
-              Select a server on the left to inspect it.
-            </div>
-          ) : (
-            <>
-              <div className="panel-soft rounded-xl px-4 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-lg font-semibold text-white">{selectedServer.display_name}</h3>
-                    <span className="chip">{titleCase(selectedServer.observed_state)}</span>
-                    <span className="chip">{titleCase(selectedServer.install_mode)}</span>
-                    <span className="chip">Desired {titleCase(selectedServer.desired_state)}</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                      disabled={statusRefreshing || actionLoading !== null}
-                      onClick={() => void refreshSelectedServerStatus(selectedServer.id, true)}
-                    >
-                      {statusRefreshing ? 'Refreshing…' : 'Refresh Status'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
-                      disabled={actionLoading !== null}
-                      onClick={() => void handleRequestAction('start')}
-                    >
-                      {actionLoading === 'start' ? 'Starting…' : 'Start'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                      disabled={actionLoading !== null}
-                      onClick={() => void handleRequestAction('restart')}
-                    >
-                      {actionLoading === 'restart' ? 'Restarting…' : 'Restart'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                      disabled={actionLoading !== null}
-                      onClick={() => void handleRequestAction('stop')}
-                    >
-                      {actionLoading === 'stop' ? 'Stopping…' : 'Stop'}
-                    </button>
-                  </div>
-                </div>
-                <div className="mt-3 text-xs muted">
-                  Lifecycle controls target the native Debian 12 systemd unit for this instance. If the
-                  unit has not been provisioned or imported yet, status refresh will report that clearly.
-                </div>
-                <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-                  <div>
-                    <div className="muted">Owner</div>
-                    <div>{selectedServer.owner_display_name}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Runtime</div>
-                    <div>{titleCase(selectedServer.runtime_mode)}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Version</div>
-                    <div>
-                      {selectedServer.server_distribution} {selectedServer.minecraft_version}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="muted">World</div>
-                    <div>{selectedServer.world_name}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Gamemode</div>
-                    <div>{titleCase(selectedServer.gamemode)}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Difficulty</div>
-                    <div>{titleCase(selectedServer.difficulty)}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Port</div>
-                    <div>{selectedServer.listen_host}:{selectedServer.listen_port}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Memory</div>
-                    <div>{selectedServer.max_memory_mb} MB</div>
-                  </div>
-                  <div>
-                    <div className="muted">Systemd unit</div>
-                    <div className="break-all">{selectedServer.systemd_unit_name}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Health</div>
-                    <div>{titleCase(selectedServer.health_state)}</div>
-                  </div>
-                  <div className="sm:col-span-2">
-                    <div className="muted">Planned root</div>
-                    <div className="break-all">{selectedServer.instance_root}</div>
-                  </div>
-                  <div className="sm:col-span-2">
-                    <div className="muted">Last runtime error</div>
-                    <div>{selectedServer.last_error_summary || 'None'}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Last started</div>
-                    <div>{formatTs(selectedServer.last_started_ts)}</div>
-                  </div>
-                  <div>
-                    <div className="muted">Last stopped</div>
-                    <div>{formatTs(selectedServer.last_stopped_ts)}</div>
-                  </div>
-                </div>
-              </div>
-
-              {me.role === 'admin' ? (
-                <div className="grid gap-3 xl:grid-cols-3">
-                  <div className="panel-soft rounded-xl px-4 py-4">
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                        Managed Provision
-                      </h3>
-                      <p className="text-sm muted">
-                        Download the selected Minecraft server artifact, render `server.properties`,
-                        write `eula.txt`, and install a native systemd unit for this instance.
-                      </p>
-                    </div>
-                    <div className="mt-3 text-xs muted">
-                      Distribution: {selectedServer.server_distribution} {selectedServer.minecraft_version}
-                      {' · '}Java: {selectedServer.java_path}
-                    </div>
-                    <button
-                      type="button"
-                      className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
-                      disabled={provisioning || importing || actionLoading !== null}
-                      onClick={() => void handleProvisionServer()}
-                    >
-                      {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
-                    </button>
-                  </div>
-
-                  <div className="panel-soft rounded-xl px-4 py-4">
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                        Import Existing Server
-                      </h3>
-                      <p className="text-sm muted">
-                        Copy an existing Minecraft server directory from the host into Rustyfin’s
-                        managed instance path, normalize the server jar, and install the unit.
-                      </p>
-                    </div>
-                    <label className="mt-4 block space-y-2">
-                      <span className="text-sm font-medium text-white">Host source path</span>
-                      <input
-                        className="input rounded-xl px-4 py-3"
-                        value={importSourcePath}
-                        onChange={(event) => setImportSourcePath(event.target.value)}
-                        placeholder="/srv/minecraft/existing-world"
-                      />
-                    </label>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="btn-secondary px-4 py-2 text-sm"
-                        onClick={() => openHostDirectoryBrowser(importSourcePath)}
-                      >
-                        Browse Host Directories
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-                        disabled={importing || provisioning || actionLoading !== null}
-                        onClick={() => void handleImportServer()}
-                      >
-                        {importing ? 'Importing…' : 'Import Existing Server'}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="panel-soft rounded-xl px-4 py-4">
-                    <div className="space-y-2">
-                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                        Discovery Scan
-                      </h3>
-                      <p className="text-sm muted">
-                        Scan configured import roots on the Debian host for existing Minecraft
-                        directories, then move one straight into this Rustyfin-managed instance.
-                      </p>
-                    </div>
-                    <label className="mt-4 block space-y-2">
-                      <span className="text-sm font-medium text-white">Optional scan root</span>
-                      <input
-                        className="input rounded-xl px-4 py-3"
-                        value={discoveryRootPath}
-                        onChange={(event) => setDiscoveryRootPath(event.target.value)}
-                        placeholder="/srv/minecraft"
-                      />
-                    </label>
-                    {discoveryRoots.length > 0 ? (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {discoveryRoots.map((root) => (
-                          <button
-                            key={root}
-                            type="button"
-                            className="btn-ghost px-2.5 py-1 text-xs"
-                            onClick={() => {
-                              setDiscoveryRootPath(root);
-                              void handleDiscoveryScan(root);
-                            }}
-                          >
-                            {root}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-                        disabled={discoveryLoading}
-                        onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
-                      >
-                        {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
-                        disabled={discoveryLoading}
-                        onClick={() => void handleDiscoveryScan(undefined)}
-                      >
-                        Scan All Roots
-                      </button>
-                    </div>
-                    <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
-                      {discoveryCandidates.length === 0 ? (
-                        <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
-                          No discovery results yet.
+                        {server.description ? (
+                          <div className="max-w-3xl text-sm muted">{server.description}</div>
+                        ) : null}
+                        <div className="flex flex-wrap gap-2 text-xs muted">
+                          <span className="chip">Port {server.listen_port}</span>
+                          <span className="chip">{server.world_name}</span>
+                          <span className="chip">
+                            {server.current_player_count}/{server.max_player_count ?? 0} players
+                          </span>
+                          <span className="chip">{titleCase(server.runtime_mode)}</span>
                         </div>
-                      ) : (
-                        discoveryCandidates.map((candidate) => (
-                          <div
-                            key={candidate.path}
-                            className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate font-medium text-white" title={candidate.path}>
-                                  {candidate.name}
-                                </div>
-                                <div className="truncate text-xs muted" title={candidate.path}>
-                                  {candidate.path}
-                                </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={statusRefreshing || actionLoading !== null}
+                          onClick={() => void refreshSelectedServerStatus(server.id, true)}
+                        >
+                          {statusRefreshing && expanded ? 'Refreshing…' : 'Refresh Status'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null}
+                          onClick={() => void handleRequestAction(server, 'start')}
+                        >
+                          {actionLoading === 'start' && expanded ? 'Starting…' : 'Start'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null}
+                          onClick={() => void handleRequestAction(server, 'restart')}
+                        >
+                          {actionLoading === 'restart' && expanded ? 'Restarting…' : 'Restart'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null}
+                          onClick={() => void handleRequestAction(server, 'stop')}
+                        >
+                          {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost px-3 py-2 text-xs"
+                          onClick={() =>
+                            setSelectedServerId((current) => (current === server.id ? null : server.id))
+                          }
+                        >
+                          {expanded ? 'Hide details' : 'Show details'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {expanded ? (
+                      <>
+                        <div className="text-xs muted">
+                          Lifecycle controls target the native Debian 12 systemd unit for this instance.
+                          If the unit has not been provisioned or imported yet, status refresh will report that clearly.
+                        </div>
+
+                        <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                          <div>
+                            <div className="muted">Owner</div>
+                            <div>{server.owner_display_name}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Runtime</div>
+                            <div>{titleCase(server.runtime_mode)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Version</div>
+                            <div>{server.server_distribution} {server.minecraft_version}</div>
+                          </div>
+                          <div>
+                            <div className="muted">World</div>
+                            <div>{server.world_name}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Gamemode</div>
+                            <div>{titleCase(server.gamemode)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Difficulty</div>
+                            <div>{titleCase(server.difficulty)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Port</div>
+                            <div>{server.listen_host}:{server.listen_port}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Memory</div>
+                            <div>{server.min_memory_mb}-{server.max_memory_mb} MB</div>
+                          </div>
+                          <div>
+                            <div className="muted">Systemd unit</div>
+                            <div className="break-all">{server.systemd_unit_name}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Health</div>
+                            <div>{titleCase(server.health_state)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Last started</div>
+                            <div>{formatTs(server.last_started_ts)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Last stopped</div>
+                            <div>{formatTs(server.last_stopped_ts)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Last ready</div>
+                            <div>{formatTs(server.last_ready_ts)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Updated</div>
+                            <div>{formatTs(server.updated_ts)}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Advertised address</div>
+                            <div>
+                              {server.advertised_host
+                                ? `${server.advertised_host}:${server.advertised_port ?? server.listen_port}`
+                                : 'Not set'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="muted">Exit code</div>
+                            <div>{server.last_exit_code ?? 'Unknown'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">MOTD</div>
+                            <div>{server.motd || 'Not set'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Autostart</div>
+                            <div>{server.autostart ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Auto stop when empty</div>
+                            <div>
+                              {server.auto_stop_when_empty
+                                ? `Enabled${server.auto_stop_idle_minutes ? ` (${server.auto_stop_idle_minutes} min idle)` : ''}`
+                                : 'Disabled'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="muted">Online mode</div>
+                            <div>{server.online_mode ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">PVP</div>
+                            <div>{server.pvp ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Allow flight</div>
+                            <div>{server.allow_flight ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Command blocks</div>
+                            <div>{server.enable_command_block ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Whitelist</div>
+                            <div>{server.white_list_enabled ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Hardcore</div>
+                            <div>{server.hardcore ? 'Enabled' : 'Disabled'}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Work directory</div>
+                            <div className="break-all">{server.server_work_dir}</div>
+                          </div>
+                          <div>
+                            <div className="muted">Java path</div>
+                            <div className="break-all">{server.java_path}</div>
+                          </div>
+                          <div className="sm:col-span-2 xl:col-span-4">
+                            <div className="muted">Planned root</div>
+                            <div className="break-all">{server.instance_root}</div>
+                          </div>
+                          <div className="sm:col-span-2 xl:col-span-4">
+                            <div className="muted">Last runtime error</div>
+                            <div>{server.last_error_summary || 'None'}</div>
+                          </div>
+                        </div>
+
+                        {me.role === 'admin' ? (
+                          <div className="grid gap-3 xl:grid-cols-3">
+                            <div className="panel rounded-xl px-4 py-4">
+                              <div className="space-y-2">
+                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                  Managed Provision
+                                </h4>
+                                <p className="text-sm muted">
+                                  Download the selected Minecraft server artifact, render `server.properties`,
+                                  write `eula.txt`, and install a native systemd unit for this instance.
+                                </p>
+                              </div>
+                              <div className="mt-3 text-xs muted">
+                                Distribution: {server.server_distribution} {server.minecraft_version}
+                                {' · '}Java: {server.java_path}
                               </div>
                               <button
                                 type="button"
-                                className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                                onClick={() => setImportSourcePath(candidate.path)}
+                                className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
+                                disabled={provisioning || importing || actionLoading !== null}
+                                onClick={() => void handleProvisionServer(server)}
                               >
-                                Use Path
+                                {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
                               </button>
                             </div>
-                            <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
-                              {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
-                              {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
-                              <span className="chip">
-                                {candidate.server_properties_present ? 'server.properties' : 'jar only'}
-                              </span>
-                              {candidate.last_modified_ts ? (
-                                <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
+
+                            <div className="panel rounded-xl px-4 py-4">
+                              <div className="space-y-2">
+                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                  Import Existing Server
+                                </h4>
+                                <p className="text-sm muted">
+                                  Copy an existing Minecraft server directory from the host into Rustyfin’s
+                                  managed instance path, normalize the server jar, and install the unit.
+                                </p>
+                              </div>
+                              <label className="mt-4 block space-y-2">
+                                <span className="text-sm font-medium text-white">Host source path</span>
+                                <input
+                                  className="input rounded-xl px-4 py-3"
+                                  value={importSourcePath}
+                                  onChange={(event) => setImportSourcePath(event.target.value)}
+                                  placeholder="/srv/minecraft/existing-world"
+                                />
+                              </label>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="btn-secondary px-4 py-2 text-sm"
+                                  onClick={() => openHostDirectoryBrowser(importSourcePath)}
+                                >
+                                  Browse Host Directories
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                                  disabled={importing || provisioning || actionLoading !== null}
+                                  onClick={() => void handleImportServer(server)}
+                                >
+                                  {importing ? 'Importing…' : 'Import Existing Server'}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="panel rounded-xl px-4 py-4">
+                              <div className="space-y-2">
+                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                  Discovery Scan
+                                </h4>
+                                <p className="text-sm muted">
+                                  Scan configured import roots on the Debian host for existing Minecraft
+                                  directories, then move one straight into this Rustyfin-managed instance.
+                                </p>
+                              </div>
+                              <label className="mt-4 block space-y-2">
+                                <span className="text-sm font-medium text-white">Optional scan root</span>
+                                <input
+                                  className="input rounded-xl px-4 py-3"
+                                  value={discoveryRootPath}
+                                  onChange={(event) => setDiscoveryRootPath(event.target.value)}
+                                  placeholder="/srv/minecraft"
+                                />
+                              </label>
+                              {discoveryRoots.length > 0 ? (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {discoveryRoots.map((root) => (
+                                    <button
+                                      key={root}
+                                      type="button"
+                                      className="btn-ghost px-2.5 py-1 text-xs"
+                                      onClick={() => {
+                                        setDiscoveryRootPath(root);
+                                        void handleDiscoveryScan(root);
+                                      }}
+                                    >
+                                      {root}
+                                    </button>
+                                  ))}
+                                </div>
                               ) : null}
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                                  disabled={discoveryLoading}
+                                  onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
+                                >
+                                  {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+                                  disabled={discoveryLoading}
+                                  onClick={() => void handleDiscoveryScan(undefined)}
+                                >
+                                  Scan All Roots
+                                </button>
+                              </div>
+                              <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
+                                {discoveryCandidates.length === 0 ? (
+                                  <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
+                                    No discovery results yet.
+                                  </div>
+                                ) : (
+                                  discoveryCandidates.map((candidate) => (
+                                    <div
+                                      key={candidate.path}
+                                      className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
+                                    >
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className="truncate font-medium text-white" title={candidate.path}>
+                                            {candidate.name}
+                                          </div>
+                                          <div className="truncate text-xs muted" title={candidate.path}>
+                                            {candidate.path}
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="btn-primary shrink-0 px-3 py-1.5 text-xs"
+                                          onClick={() => setImportSourcePath(candidate.path)}
+                                        >
+                                          Use Path
+                                        </button>
+                                      </div>
+                                      <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
+                                        {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
+                                        {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
+                                        <span className="chip">
+                                          {candidate.server_properties_present ? 'server.properties' : 'jar only'}
+                                        </span>
+                                        {candidate.last_modified_ts ? (
+                                          <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
                             </div>
                           </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
+                        ) : null}
 
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="flex min-h-0 flex-col gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                      Recent events
-                    </h3>
-                    {eventsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
-                  </div>
-                  {selectedEvents.length === 0 ? (
-                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                      No lifecycle events recorded yet.
-                    </div>
-                  ) : (
-                    <div className="max-h-[20rem] space-y-3 overflow-y-auto pr-1">
-                      {selectedEvents.map((event) => (
-                        <div key={event.id} className="panel-soft rounded-xl px-4 py-3 text-sm">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="font-medium text-white">{event.message}</div>
-                            <span className="chip text-[11px]">{titleCase(event.level)}</span>
+                        <div className="grid gap-4 xl:grid-cols-2">
+                          <div className="flex min-h-0 flex-col gap-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                Recent events
+                              </h4>
+                              {eventsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                            </div>
+                            {selectedEvents.length === 0 ? (
+                              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                                No lifecycle events recorded yet.
+                              </div>
+                            ) : (
+                              <div className="max-h-[20rem] space-y-3 overflow-y-auto pr-1">
+                                {selectedEvents.map((event) => (
+                                  <div key={event.id} className="panel-soft rounded-xl px-4 py-3 text-sm">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="font-medium text-white">{event.message}</div>
+                                      <span className="chip text-[11px]">{titleCase(event.level)}</span>
+                                    </div>
+                                    <div className="mt-2 text-xs muted">
+                                      {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                          <div className="mt-2 text-xs muted">
-                            {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
+
+                          <div className="flex min-h-0 flex-col gap-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                Journald logs
+                              </h4>
+                              {logsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                            </div>
+                            {selectedLogs.length === 0 ? (
+                              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                                No host logs have been returned for this unit yet.
+                              </div>
+                            ) : (
+                              <div className="max-h-[20rem] space-y-2 overflow-y-auto pr-1">
+                                {selectedLogs.map((line, index) => (
+                                  <div
+                                    key={`${line.ts_ms ?? 'no-ts'}-${index}`}
+                                    className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
+                                  >
+                                    <div className="text-white">{line.message}</div>
+                                    <div className="mt-2 text-xs muted">
+                                      {formatTsMs(line.ts_ms)}
+                                      {line.priority ? ` · priority ${line.priority}` : ''}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex min-h-0 flex-col gap-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                      Journald logs
-                    </h3>
-                    {logsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                      </>
+                    ) : null}
                   </div>
-                  {selectedLogs.length === 0 ? (
-                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                      No host logs have been returned for this unit yet.
-                    </div>
-                  ) : (
-                    <div className="max-h-[20rem] space-y-2 overflow-y-auto pr-1">
-                      {selectedLogs.map((line, index) => (
-                        <div
-                          key={`${line.ts_ms ?? 'no-ts'}-${index}`}
-                          className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
-                        >
-                          <div className="text-white">{line.message}</div>
-                          <div className="mt-2 text-xs muted">
-                            {formatTsMs(line.ts_ms)}
-                            {line.priority ? ` · priority ${line.priority}` : ''}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              </div>
-            </>
-          )}
-        </section>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
-        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+      <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
           <div>
             <h2 className="text-xl font-semibold">Create Minecraft server</h2>
             <p className="text-sm muted">
@@ -1105,8 +1161,7 @@ export default function ServersPage() {
               </button>
             </div>
           )}
-        </section>
-      </div>
+      </section>
 
       {hostBrowser.open ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 px-4 py-6">
