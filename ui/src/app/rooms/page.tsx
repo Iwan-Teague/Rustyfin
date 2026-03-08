@@ -153,15 +153,39 @@ export default function WatchPartyPage() {
 
   useEffect(() => {
     if (!me) return;
-    const id = window.setInterval(() => {
+
+    let cancelled = false;
+
+    const refreshLivePanels = () => {
       if (document.visibilityState !== 'visible') return;
-      listPublicRooms()
-        .then(setPublicRooms)
-        .catch(() => {
-          // Non-fatal; room counts will refresh on next successful poll.
-        });
-    }, 5000);
-    return () => window.clearInterval(id);
+
+      void Promise.allSettled([listPublicRooms(), listWatchPartyInvites()]).then((results) => {
+        if (cancelled) return;
+
+        const [roomsResult, invitesResult] = results;
+        if (roomsResult.status === 'fulfilled') {
+          setPublicRooms(roomsResult.value);
+        }
+        if (invitesResult.status === 'fulfilled') {
+          setInvites(invitesResult.value);
+        }
+      });
+    };
+
+    const handleVisibilityOrFocus = () => {
+      refreshLivePanels();
+    };
+
+    const id = window.setInterval(refreshLivePanels, 3000);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
   }, [me]);
 
   useEffect(() => {
