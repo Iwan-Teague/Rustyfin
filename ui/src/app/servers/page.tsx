@@ -546,11 +546,6 @@ export default function ServersPage() {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       <header className="panel animate-rise space-y-4 p-6 sm:p-8">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="chip chip-accent">Servers</span>
-          <span className="chip">Minecraft</span>
-          <span className="chip">Debian 12 Native</span>
-        </div>
         <div className="space-y-2">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Game servers</h1>
           <p className="max-w-3xl text-sm muted sm:text-base">
