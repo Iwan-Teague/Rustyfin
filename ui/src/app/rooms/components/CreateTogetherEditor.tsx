@@ -60,8 +60,8 @@ const MIN_FONT_SIZE_PX = 8;
 const MAX_FONT_SIZE_PX = 72;
 const CANVAS_WIDTH = 1000;
 const CANVAS_HEIGHT = 560;
-const CANVAS_MIN_ZOOM = 0.4;
-const CANVAS_MAX_ZOOM = 6;
+const CANVAS_MIN_ZOOM = 0.01;
+const CANVAS_MAX_ZOOM = 2;
 const CANVAS_MAX_BYTES = 30 * 1024 * 1024;
 const CANVAS_MAX_PAN_OFFSET = 2_000_000;
 const CANVAS_WHEEL_ZOOM_SENSITIVITY = 0.0022;
@@ -1309,21 +1309,34 @@ export default function CreateTogetherEditor({
     };
   }, [handleCanvasWheel]);
 
+  const setCanvasZoomAroundPoint = useCallback((nextScaleRaw: number, anchor: Point) => {
+    const prev = canvasViewportRef.current;
+    const nextScale = clamp(nextScaleRaw, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
+    const worldX = (anchor.x - prev.offsetX) / prev.scale;
+    const worldY = (anchor.y - prev.offsetY) / prev.scale;
+    applyCanvasViewport({
+      scale: nextScale,
+      offsetX: anchor.x - worldX * nextScale,
+      offsetY: anchor.y - worldY * nextScale,
+    });
+  }, [applyCanvasViewport]);
+
   const adjustCanvasZoom = (multiplier: number) => {
     const canvas = canvasRef.current;
-    const prev = canvasViewportRef.current;
     const center = {
       x: (canvas?.width ?? CANVAS_WIDTH) / 2,
       y: (canvas?.height ?? CANVAS_HEIGHT) / 2,
     };
-    const nextScale = clamp(prev.scale * multiplier, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
-    const worldX = (center.x - prev.offsetX) / prev.scale;
-    const worldY = (center.y - prev.offsetY) / prev.scale;
-    applyCanvasViewport({
-      scale: nextScale,
-      offsetX: center.x - worldX * nextScale,
-      offsetY: center.y - worldY * nextScale,
-    });
+    setCanvasZoomAroundPoint(canvasViewportRef.current.scale * multiplier, center);
+  };
+
+  const handleCanvasZoomSliderChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const canvas = canvasRef.current;
+    const center = {
+      x: (canvas?.width ?? CANVAS_WIDTH) / 2,
+      y: (canvas?.height ?? CANVAS_HEIGHT) / 2,
+    };
+    setCanvasZoomAroundPoint(Number(event.target.value) / 100, center);
   };
 
   const resetCanvasViewport = () => {
@@ -1792,18 +1805,34 @@ export default function CreateTogetherEditor({
             </button>
             <button
               type="button"
-              className="btn-secondary px-2 py-1 text-sm"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
               onClick={() => adjustCanvasZoom(0.85)}
+              aria-label="Zoom out"
+              title="Zoom out"
             >
               -
             </button>
             <span className="rounded-md border border-white/10 px-2 py-1 text-xs muted">
               Zoom {Math.round(canvasViewport.scale * 100)}%
             </span>
+            <input
+              type="range"
+              min={1}
+              max={200}
+              step={1}
+              value={Math.round(canvasViewport.scale * 100)}
+              onChange={handleCanvasZoomSliderChange}
+              className="h-2 w-32 accent-white"
+              aria-label="Canvas zoom"
+              title="Canvas zoom"
+            />
+            <span className="w-12 text-right text-xs muted">1-200%</span>
             <button
               type="button"
-              className="btn-secondary px-2 py-1 text-sm"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
               onClick={() => adjustCanvasZoom(1.15)}
+              aria-label="Zoom in"
+              title="Zoom in"
             >
               +
             </button>
