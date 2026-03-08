@@ -126,6 +126,7 @@ export default function ServersPage() {
 
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const [managementServerId, setManagementServerId] = useState<string | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<MinecraftServerEvent[]>([]);
   const [selectedLogs, setSelectedLogs] = useState<ServerLogLine[]>([]);
   const [loading, setLoading] = useState(true);
@@ -177,6 +178,12 @@ export default function ServersPage() {
             return current;
           }
           return null;
+        });
+        setManagementServerId((current) => {
+          if (current && rows.some((row) => row.id === current)) {
+            return current;
+          }
+          return rows[0]?.id ?? null;
         });
       } catch (err: unknown) {
         if (!cancelled) {
@@ -301,6 +308,11 @@ export default function ServersPage() {
     const rows = await listMinecraftServers();
     setServers(rows);
     setSelectedServerId((current) => {
+      if (selectId && rows.some((row) => row.id === selectId)) return selectId;
+      if (current && rows.some((row) => row.id === current)) return current;
+      return null;
+    });
+    setManagementServerId((current) => {
       if (selectId && rows.some((row) => row.id === selectId)) return selectId;
       if (current && rows.some((row) => row.id === current)) return current;
       return rows[0]?.id ?? null;
@@ -480,6 +492,8 @@ export default function ServersPage() {
       setCreating(false);
     }
   }
+
+  const managementServer = servers.find((server) => server.id === managementServerId) ?? null;
 
   if (authLoading || !me) {
     return (
@@ -750,170 +764,6 @@ export default function ServersPage() {
                           </div>
                         </div>
 
-                        {me.role === 'admin' ? (
-                          <div className="grid gap-3 xl:grid-cols-3">
-                            <div className="panel rounded-xl px-4 py-4">
-                              <div className="space-y-2">
-                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                  Managed Provision
-                                </h4>
-                                <p className="text-sm muted">
-                                  Download the selected Minecraft server artifact, render `server.properties`,
-                                  write `eula.txt`, and install a native systemd unit for this instance.
-                                </p>
-                              </div>
-                              <div className="mt-3 text-xs muted">
-                                Distribution: {server.server_distribution} {server.minecraft_version}
-                                {' · '}Java: {server.java_path}
-                              </div>
-                              <button
-                                type="button"
-                                className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
-                                disabled={provisioning || importing || actionLoading !== null}
-                                onClick={() => void handleProvisionServer(server)}
-                              >
-                                {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
-                              </button>
-                            </div>
-
-                            <div className="panel rounded-xl px-4 py-4">
-                              <div className="space-y-2">
-                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                  Import Existing Server
-                                </h4>
-                                <p className="text-sm muted">
-                                  Copy an existing Minecraft server directory from the host into Rustyfin’s
-                                  managed instance path, normalize the server jar, and install the unit.
-                                </p>
-                              </div>
-                              <label className="mt-4 block space-y-2">
-                                <span className="text-sm font-medium text-white">Host source path</span>
-                                <input
-                                  className="input rounded-xl px-4 py-3"
-                                  value={importSourcePath}
-                                  onChange={(event) => setImportSourcePath(event.target.value)}
-                                  placeholder="/srv/minecraft/existing-world"
-                                />
-                              </label>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  className="btn-secondary px-4 py-2 text-sm"
-                                  onClick={() => openHostDirectoryBrowser(importSourcePath)}
-                                >
-                                  Browse Host Directories
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-                                  disabled={importing || provisioning || actionLoading !== null}
-                                  onClick={() => void handleImportServer(server)}
-                                >
-                                  {importing ? 'Importing…' : 'Import Existing Server'}
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="panel rounded-xl px-4 py-4">
-                              <div className="space-y-2">
-                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                  Discovery Scan
-                                </h4>
-                                <p className="text-sm muted">
-                                  Scan configured import roots on the Debian host for existing Minecraft
-                                  directories, then move one straight into this Rustyfin-managed instance.
-                                </p>
-                              </div>
-                              <label className="mt-4 block space-y-2">
-                                <span className="text-sm font-medium text-white">Optional scan root</span>
-                                <input
-                                  className="input rounded-xl px-4 py-3"
-                                  value={discoveryRootPath}
-                                  onChange={(event) => setDiscoveryRootPath(event.target.value)}
-                                  placeholder="/srv/minecraft"
-                                />
-                              </label>
-                              {discoveryRoots.length > 0 ? (
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                  {discoveryRoots.map((root) => (
-                                    <button
-                                      key={root}
-                                      type="button"
-                                      className="btn-ghost px-2.5 py-1 text-xs"
-                                      onClick={() => {
-                                        setDiscoveryRootPath(root);
-                                        void handleDiscoveryScan(root);
-                                      }}
-                                    >
-                                      {root}
-                                    </button>
-                                  ))}
-                                </div>
-                              ) : null}
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-                                  disabled={discoveryLoading}
-                                  onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
-                                >
-                                  {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
-                                  disabled={discoveryLoading}
-                                  onClick={() => void handleDiscoveryScan(undefined)}
-                                >
-                                  Scan All Roots
-                                </button>
-                              </div>
-                              <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
-                                {discoveryCandidates.length === 0 ? (
-                                  <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
-                                    No discovery results yet.
-                                  </div>
-                                ) : (
-                                  discoveryCandidates.map((candidate) => (
-                                    <div
-                                      key={candidate.path}
-                                      className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
-                                    >
-                                      <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                          <div className="truncate font-medium text-white" title={candidate.path}>
-                                            {candidate.name}
-                                          </div>
-                                          <div className="truncate text-xs muted" title={candidate.path}>
-                                            {candidate.path}
-                                          </div>
-                                        </div>
-                                        <button
-                                          type="button"
-                                          className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                                          onClick={() => setImportSourcePath(candidate.path)}
-                                        >
-                                          Use Path
-                                        </button>
-                                      </div>
-                                      <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
-                                        {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
-                                        {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
-                                        <span className="chip">
-                                          {candidate.server_properties_present ? 'server.properties' : 'jar only'}
-                                        </span>
-                                        {candidate.last_modified_ts ? (
-                                          <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  ))
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
-
                         <div className="grid gap-4 xl:grid-cols-2">
                           <div className="flex min-h-0 flex-col gap-3">
                             <div className="flex items-center justify-between gap-3">
@@ -982,186 +832,399 @@ export default function ServersPage() {
         )}
       </section>
 
-      <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+      <div className="grid gap-6 xl:grid-cols-2">
+        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+            <div>
+              <h2 className="text-xl font-semibold">Create Minecraft server</h2>
+              <p className="text-sm muted">
+                Draft creation is the entry point for brand-new Minecraft servers. Create the record
+                here, then use the management column to provision or import it on the Debian host.
+              </p>
+            </div>
+
+            {me.role !== 'admin' ? (
+              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                Only admins can create or manage server records.
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-white">Display name</span>
+                  <input
+                    className="input rounded-xl px-4 py-3"
+                    value={form.display_name}
+                    onChange={(event) => updateForm('display_name', event.target.value)}
+                    placeholder="Example: Family SMP"
+                  />
+                </label>
+
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-white">Description</span>
+                  <textarea
+                    className="input min-h-[5.5rem] rounded-xl px-4 py-3"
+                    value={form.description}
+                    onChange={(event) => updateForm('description', event.target.value)}
+                    placeholder="Optional notes about this server."
+                  />
+                </label>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Distribution</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.server_distribution}
+                      onChange={(event) =>
+                        updateForm('server_distribution', event.target.value as CreateFormState['server_distribution'])
+                      }
+                    >
+                      <option value="paper">Paper</option>
+                      <option value="vanilla">Vanilla</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Minecraft version</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.minecraft_version}
+                      onChange={(event) => updateForm('minecraft_version', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">World name</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.world_name}
+                      onChange={(event) => updateForm('world_name', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Port</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.listen_port}
+                      onChange={(event) => updateForm('listen_port', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Gamemode</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.gamemode}
+                      onChange={(event) =>
+                        updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
+                      }
+                    >
+                      <option value="survival">Survival</option>
+                      <option value="creative">Creative</option>
+                      <option value="adventure">Adventure</option>
+                      <option value="spectator">Spectator</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Difficulty</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.difficulty}
+                      onChange={(event) =>
+                        updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
+                      }
+                    >
+                      <option value="peaceful">Peaceful</option>
+                      <option value="easy">Easy</option>
+                      <option value="normal">Normal</option>
+                      <option value="hard">Hard</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Min memory (MB)</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.min_memory_mb}
+                      onChange={(event) => updateForm('min_memory_mb', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Max memory (MB)</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.max_memory_mb}
+                      onChange={(event) => updateForm('max_memory_mb', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Max players</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.max_player_count}
+                      onChange={(event) => updateForm('max_player_count', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2 sm:col-span-2">
+                    <span className="text-sm font-medium text-white">Message of the day</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.motd}
+                      onChange={(event) => updateForm('motd', event.target.value)}
+                      placeholder="Defaults to the display name if left blank."
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {TOGGLE_FIELDS.map(({ key, label }) => (
+                    <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={form[key]}
+                        onChange={(event) => updateForm(key, event.target.checked)}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                  <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={form.eula_accepted}
+                      onChange={(event) => updateForm('eula_accepted', event.target.checked)}
+                    />
+                    <span>I confirm the Minecraft EULA has been accepted.</span>
+                  </label>
+                </div>
+
+                <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                  Draft records appear in known servers immediately. Provisioning and import now live
+                  in the dedicated management column beside this form.
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-primary px-5 py-3 text-sm disabled:opacity-60"
+                  disabled={creating}
+                  onClick={() => void handleCreateServer()}
+                >
+                  {creating ? 'Creating…' : 'Create Draft Server'}
+                </button>
+              </div>
+            )}
+        </section>
+
+        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
           <div>
-            <h2 className="text-xl font-semibold">Create Minecraft server</h2>
+            <h2 className="text-xl font-semibold">Server management</h2>
             <p className="text-sm muted">
-              Draft creation is still the entry point for brand-new Minecraft servers. Managed
-              provisioning, import, lifecycle control, status refresh, and discovery now sit on top
-              of the same record model.
+              Provisioning and import act on a chosen server record. Discovery scan is host-wide and
+              feeds import paths into that target.
             </p>
           </div>
 
           {me.role !== 'admin' ? (
             <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              Only admins can create or manage server records.
+              Only admins can provision, import, or discover server data.
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
               <label className="space-y-2">
-                <span className="text-sm font-medium text-white">Display name</span>
-                <input
-                  className="input rounded-xl px-4 py-3"
-                  value={form.display_name}
-                  onChange={(event) => updateForm('display_name', event.target.value)}
-                  placeholder="Example: Family SMP"
-                />
+                <span className="text-sm font-medium text-white">Target server</span>
+                <select
+                  className="select rounded-xl px-4 py-3"
+                  value={managementServerId ?? ''}
+                  onChange={(event) => setManagementServerId(event.target.value || null)}
+                >
+                  <option value="">Choose a server record</option>
+                  {servers.map((server) => (
+                    <option key={server.id} value={server.id}>
+                      {server.display_name} · {server.server_distribution} {server.minecraft_version} · Port {server.listen_port}
+                    </option>
+                  ))}
+                </select>
               </label>
 
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-white">Description</span>
-                <textarea
-                  className="input min-h-[5.5rem] rounded-xl px-4 py-3"
-                  value={form.description}
-                  onChange={(event) => updateForm('description', event.target.value)}
-                  placeholder="Optional notes about this server."
-                />
-              </label>
+              {managementServer ? (
+                <div className="panel-soft rounded-xl px-4 py-3 text-sm">
+                  <div className="font-medium text-white">{managementServer.display_name}</div>
+                  <div className="mt-1 text-xs muted">
+                    {managementServer.server_distribution} {managementServer.minecraft_version}
+                    {' · '}
+                    {managementServer.world_name}
+                    {' · '}
+                    Port {managementServer.listen_port}
+                  </div>
+                </div>
+              ) : (
+                <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                  Choose a server record before provisioning or importing.
+                </div>
+              )}
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Distribution</span>
-                  <select
-                    className="select rounded-xl px-4 py-3"
-                    value={form.server_distribution}
-                    onChange={(event) =>
-                      updateForm('server_distribution', event.target.value as CreateFormState['server_distribution'])
-                    }
-                  >
-                    <option value="paper">Paper</option>
-                    <option value="vanilla">Vanilla</option>
-                  </select>
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Minecraft version</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={form.minecraft_version}
-                    onChange={(event) => updateForm('minecraft_version', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">World name</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={form.world_name}
-                    onChange={(event) => updateForm('world_name', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Port</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    type="number"
-                    value={form.listen_port}
-                    onChange={(event) => updateForm('listen_port', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Gamemode</span>
-                  <select
-                    className="select rounded-xl px-4 py-3"
-                    value={form.gamemode}
-                    onChange={(event) =>
-                      updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
-                    }
-                  >
-                    <option value="survival">Survival</option>
-                    <option value="creative">Creative</option>
-                    <option value="adventure">Adventure</option>
-                    <option value="spectator">Spectator</option>
-                  </select>
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Difficulty</span>
-                  <select
-                    className="select rounded-xl px-4 py-3"
-                    value={form.difficulty}
-                    onChange={(event) =>
-                      updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
-                    }
-                  >
-                    <option value="peaceful">Peaceful</option>
-                    <option value="easy">Easy</option>
-                    <option value="normal">Normal</option>
-                    <option value="hard">Hard</option>
-                  </select>
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Min memory (MB)</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    type="number"
-                    value={form.min_memory_mb}
-                    onChange={(event) => updateForm('min_memory_mb', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Max memory (MB)</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    type="number"
-                    value={form.max_memory_mb}
-                    onChange={(event) => updateForm('max_memory_mb', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Max players</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    type="number"
-                    value={form.max_player_count}
-                    onChange={(event) => updateForm('max_player_count', event.target.value)}
-                  />
-                </label>
-                <label className="space-y-2 sm:col-span-2">
-                  <span className="text-sm font-medium text-white">Message of the day</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={form.motd}
-                    onChange={(event) => updateForm('motd', event.target.value)}
-                    placeholder="Defaults to the display name if left blank."
-                  />
-                </label>
+              <div className="panel rounded-xl px-4 py-4">
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                    Managed Provision
+                  </h4>
+                  <p className="text-sm muted">
+                    Download the configured Minecraft artifact, render `server.properties`, write
+                    `eula.txt`, and install the native systemd unit for the target server.
+                  </p>
+                </div>
+                <div className="mt-3 text-xs muted">
+                  {managementServer
+                    ? `Distribution: ${managementServer.server_distribution} ${managementServer.minecraft_version} · Java: ${managementServer.java_path}`
+                    : 'Choose a target server first.'}
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
+                  disabled={!managementServer || provisioning || importing || actionLoading !== null}
+                  onClick={() => managementServer && void handleProvisionServer(managementServer)}
+                >
+                  {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
+                </button>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                {TOGGLE_FIELDS.map(({ key, label }) => (
-                  <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={form[key]}
-                      onChange={(event) => updateForm(key, event.target.checked)}
-                    />
-                    <span>{label}</span>
-                  </label>
-                ))}
-                <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm">
+              <div className="panel rounded-xl px-4 py-4">
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                    Import Existing Server
+                  </h4>
+                  <p className="text-sm muted">
+                    Copy an existing Minecraft server directory from the host into the managed target
+                    path, normalize the server jar, and install the native unit.
+                  </p>
+                </div>
+                <label className="mt-4 block space-y-2">
+                  <span className="text-sm font-medium text-white">Host source path</span>
                   <input
-                    type="checkbox"
-                    checked={form.eula_accepted}
-                    onChange={(event) => updateForm('eula_accepted', event.target.checked)}
+                    className="input rounded-xl px-4 py-3"
+                    value={importSourcePath}
+                    onChange={(event) => setImportSourcePath(event.target.value)}
+                    placeholder="/srv/minecraft/existing-world"
                   />
-                  <span>I confirm the Minecraft EULA has been accepted.</span>
                 </label>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn-secondary px-4 py-2 text-sm"
+                    onClick={() => openHostDirectoryBrowser(importSourcePath)}
+                  >
+                    Browse Host Directories
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                    disabled={!managementServer || importing || provisioning || actionLoading !== null}
+                    onClick={() => managementServer && void handleImportServer(managementServer)}
+                  >
+                    {importing ? 'Importing…' : 'Import Existing Server'}
+                  </button>
+                </div>
               </div>
 
-              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                Draft records can now be provisioned or bound to imported servers from the selected
-                instance detail panel.
+              <div className="panel rounded-xl px-4 py-4">
+                <div className="space-y-2">
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                    Discovery Scan
+                  </h4>
+                  <p className="text-sm muted">
+                    Scan configured import roots on the Debian host for existing Minecraft directories,
+                    then push a discovered path into the import field for the chosen target server.
+                  </p>
+                </div>
+                <label className="mt-4 block space-y-2">
+                  <span className="text-sm font-medium text-white">Optional scan root</span>
+                  <input
+                    className="input rounded-xl px-4 py-3"
+                    value={discoveryRootPath}
+                    onChange={(event) => setDiscoveryRootPath(event.target.value)}
+                    placeholder="/srv/minecraft"
+                  />
+                </label>
+                {discoveryRoots.length > 0 ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {discoveryRoots.map((root) => (
+                      <button
+                        key={root}
+                        type="button"
+                        className="btn-ghost px-2.5 py-1 text-xs"
+                        onClick={() => {
+                          setDiscoveryRootPath(root);
+                          void handleDiscoveryScan(root);
+                        }}
+                      >
+                        {root}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                    disabled={discoveryLoading}
+                    onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
+                  >
+                    {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+                    disabled={discoveryLoading}
+                    onClick={() => void handleDiscoveryScan(undefined)}
+                  >
+                    Scan All Roots
+                  </button>
+                </div>
+                <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
+                  {discoveryCandidates.length === 0 ? (
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
+                      No discovery results yet.
+                    </div>
+                  ) : (
+                    discoveryCandidates.map((candidate) => (
+                      <div
+                        key={candidate.path}
+                        className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-white" title={candidate.path}>
+                              {candidate.name}
+                            </div>
+                            <div className="truncate text-xs muted" title={candidate.path}>
+                              {candidate.path}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn-primary shrink-0 px-3 py-1.5 text-xs"
+                            onClick={() => setImportSourcePath(candidate.path)}
+                          >
+                            Use Path
+                          </button>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
+                          {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
+                          {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
+                          <span className="chip">
+                            {candidate.server_properties_present ? 'server.properties' : 'jar only'}
+                          </span>
+                          {candidate.last_modified_ts ? (
+                            <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-
-              <button
-                type="button"
-                className="btn-primary px-5 py-3 text-sm disabled:opacity-60"
-                disabled={creating}
-                onClick={() => void handleCreateServer()}
-              >
-                {creating ? 'Creating…' : 'Create Draft Server'}
-              </button>
             </div>
           )}
-      </section>
+        </section>
+      </div>
 
       {hostBrowser.open ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 px-4 py-6">
