@@ -51,6 +51,15 @@ export type MinecraftServerEvent = {
   created_ts: number;
 };
 
+export type MinecraftServerAction = 'start' | 'stop' | 'restart';
+
+export type MinecraftServerActionResponse = {
+  job_id: string;
+  requested_action: MinecraftServerAction;
+  message: string;
+  instance: MinecraftServer;
+};
+
 export type CreateMinecraftServerPayload = {
   display_name: string;
   description?: string;
@@ -82,6 +91,10 @@ export function getMinecraftServer(id: string) {
   return apiJson<MinecraftServer>(`/servers/minecraft/instances/${id}`);
 }
 
+export function refreshMinecraftServerStatus(id: string) {
+  return apiJson<MinecraftServer>(`/servers/minecraft/instances/${id}/status`);
+}
+
 export function listMinecraftServerEvents(id: string, limit = 20) {
   return apiJson<MinecraftServerEvent[]>(
     `/servers/minecraft/instances/${id}/events?limit=${encodeURIComponent(String(limit))}`,
@@ -93,4 +106,13 @@ export function createMinecraftServer(payload: CreateMinecraftServerPayload) {
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export function requestMinecraftServerAction(id: string, action: MinecraftServerAction) {
+  return apiJson<MinecraftServerActionResponse>(
+    `/servers/minecraft/instances/${id}/actions/${action}`,
+    {
+      method: 'POST',
+    },
+  );
 }

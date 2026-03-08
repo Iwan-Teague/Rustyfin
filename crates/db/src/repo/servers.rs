@@ -80,6 +80,30 @@ pub struct ServerInstanceEventRow {
     pub created_ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateMinecraftServerRuntimeParams<'a> {
+    pub desired_state: &'a str,
+    pub observed_state: &'a str,
+    pub health_state: &'a str,
+    pub current_player_count: i64,
+    pub last_ready_ts: Option<i64>,
+    pub last_started_ts: Option<i64>,
+    pub last_stopped_ts: Option<i64>,
+    pub last_exit_code: Option<i64>,
+    pub last_error_summary: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateServerInstanceEventParams<'a> {
+    pub instance_id: &'a str,
+    pub job_id: Option<&'a str>,
+    pub actor_user_id: Option<&'a str>,
+    pub level: &'a str,
+    pub event_kind: &'a str,
+    pub message: &'a str,
+    pub details_json: Option<&'a str>,
+}
+
 fn base_instances_root() -> String {
     std::env::var("RUSTFIN_SERVERS_INSTANCE_ROOT")
         .ok()
@@ -227,6 +251,19 @@ pub async fn get_accessible_minecraft_server(
         .bind(is_admin)
         .bind(user_id)
         .bind(instance_id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(decode_minecraft_server_row).transpose()
+}
+
+pub async fn get_minecraft_server_by_id(
+    pool: &DbPool,
+    instance_id: &str,
+) -> Result<Option<MinecraftServerRow>, sqlx::Error> {
+    let sql = minecraft_select_sql("WHERE si.game_kind = 'minecraft' AND si.id = $1");
+    let row = sqlx::query(&sql)
+        .bind(instance_id)
+        .bind("")
         .fetch_optional(pool)
         .await?;
     row.map(decode_minecraft_server_row).transpose()
@@ -404,4 +441,77 @@ pub async fn list_server_instance_events(
     rows.into_iter()
         .map(decode_server_instance_event_row)
         .collect()
+}
+
+pub async fn update_minecraft_server_runtime(
+    pool: &DbPool,
+    instance_id: &str,
+    params: UpdateMinecraftServerRuntimeParams<'_>,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result = sqlx::query(
+        "UPDATE server_instance
+         SET desired_state = $1,
+             observed_state = $2,
+             health_state = $3,
+             current_player_count = $4,
+             last_ready_ts = $5,
+             last_started_ts = $6,
+             last_stopped_ts = $7,
+             last_exit_code = $8,
+             last_error_summary = $9,
+             updated_ts = $10
+         WHERE id = $11",
+    )
+    .bind(params.desired_state)
+    .bind(params.observed_state)
+    .bind(params.health_state)
+    .bind(params.current_player_count)
+    .bind(params.last_ready_ts)
+    .bind(params.last_started_ts)
+    .bind(params.last_stopped_ts)
+    .bind(params.last_exit_code)
+    .bind(params.last_error_summary)
+    .bind(now)
+    .bind(instance_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn create_server_instance_event(
+    pool: &DbPool,
+    params: CreateServerInstanceEventParams<'_>,
+) -> Result<ServerInstanceEventRow, sqlx::Error> {
+    let row_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO server_instance_event (
+            id, instance_id, job_id, actor_user_id, level, event_kind, message, details_json, created_ts
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)",
+    )
+    .bind(&row_id)
+    .bind(params.instance_id)
+    .bind(params.job_id)
+    .bind(params.actor_user_id)
+    .bind(params.level)
+    .bind(params.event_kind)
+    .bind(params.message)
+    .bind(params.details_json.unwrap_or("{}"))
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(ServerInstanceEventRow {
+        id: row_id,
+        instance_id: params.instance_id.to_string(),
+        job_id: params.job_id.map(str::to_string),
+        actor_user_id: params.actor_user_id.map(str::to_string),
+        level: params.level.to_string(),
+        event_kind: params.event_kind.to_string(),
+        message: params.message.to_string(),
+        created_ts: now,
+    })
 }
