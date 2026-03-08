@@ -184,6 +184,14 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let servers_agent_url = std::env::var("RUSTFIN_SERVERS_AGENT_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let servers_agent_token = std::env::var("RUSTFIN_SERVERS_AGENT_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     // Transcoder config
     let transcode_dir = std::env::var("RUSTFIN_TRANSCODE_DIR")
@@ -339,6 +347,8 @@ async fn main() -> anyhow::Result<()> {
         youtube_agent_token,
         transcription_agent_url,
         transcription_agent_token,
+        servers_agent_url,
+        servers_agent_token,
         transcoder: session_mgr,
         ffmpeg_path: std::path::PathBuf::from(&ffmpeg_path),
         ffprobe_path: std::path::PathBuf::from(&ffprobe_path),

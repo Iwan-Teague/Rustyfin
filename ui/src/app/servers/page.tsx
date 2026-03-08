@@ -6,13 +6,17 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
 import {
+  DiscoveryCandidate,
   MinecraftServerAction,
   MinecraftServer,
   MinecraftServerActionResponse,
+  MinecraftServerLogsResponse,
   MinecraftServerEvent,
   MinecraftServerOperationResponse,
+  ServerLogLine,
   createMinecraftServer,
   HostDirectoryListEntry,
+  listMinecraftServerLogs,
   listMinecraftServerEvents,
   listBackendHostDirectories,
   listMinecraftServers,
@@ -20,6 +24,7 @@ import {
   provisionMinecraftServer,
   refreshMinecraftServerStatus,
   requestMinecraftServerAction,
+  scanMinecraftDiscoveryCandidates,
 } from '@/lib/serversApi';
 
 type CreateFormState = {
@@ -102,6 +107,11 @@ function formatTs(ts?: number | null) {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function formatTsMs(ts?: number | null) {
+  if (!ts) return 'Unknown';
+  return new Date(ts).toLocaleString();
+}
+
 function titleCase(value: string) {
   return value
     .split(/[_\s-]+/)
@@ -117,12 +127,15 @@ export default function ServersPage() {
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<MinecraftServerEvent[]>([]);
+  const [selectedLogs, setSelectedLogs] = useState<ServerLogLine[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [logsLoading, setLogsLoading] = useState(false);
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
   const [provisioning, setProvisioning] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -137,6 +150,9 @@ export default function ServersPage() {
     roots: [],
     directories: [],
   });
+  const [discoveryRootPath, setDiscoveryRootPath] = useState('');
+  const [discoveryRoots, setDiscoveryRoots] = useState<string[]>([]);
+  const [discoveryCandidates, setDiscoveryCandidates] = useState<DiscoveryCandidate[]>([]);
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -181,6 +197,7 @@ export default function ServersPage() {
   useEffect(() => {
     if (!me || !selectedServerId) {
       setSelectedEvents([]);
+      setSelectedLogs([]);
       return;
     }
 
@@ -190,6 +207,7 @@ export default function ServersPage() {
         await Promise.all([
           refreshSelectedServerStatus(selectedServerId, true),
           loadSelectedServerEvents(selectedServerId, true),
+          loadSelectedServerLogs(selectedServerId, true),
         ]);
       } catch (err: unknown) {
         if (!cancelled) {
@@ -202,6 +220,7 @@ export default function ServersPage() {
       if (cancelled) return;
       void refreshSelectedServerStatus(selectedServerId, false);
       void loadSelectedServerEvents(selectedServerId, false);
+      void loadSelectedServerLogs(selectedServerId, false);
     }, 5000);
 
     return () => {
@@ -309,6 +328,22 @@ export default function ServersPage() {
     }
   }
 
+  async function loadSelectedServerLogs(serverId: string, showSpinner = true) {
+    if (showSpinner) {
+      setLogsLoading(true);
+    }
+    try {
+      const response: MinecraftServerLogsResponse = await listMinecraftServerLogs(serverId, 80);
+      setSelectedLogs(response.lines);
+    } catch {
+      setSelectedLogs([]);
+    } finally {
+      if (showSpinner) {
+        setLogsLoading(false);
+      }
+    }
+  }
+
   async function refreshSelectedServerStatus(serverId: string, showSpinner = true) {
     if (showSpinner) {
       setStatusRefreshing(true);
@@ -321,6 +356,21 @@ export default function ServersPage() {
       if (showSpinner) {
         setStatusRefreshing(false);
       }
+    }
+  }
+
+  async function handleDiscoveryScan(rootPath?: string) {
+    setDiscoveryLoading(true);
+    setError('');
+    try {
+      const response = await scanMinecraftDiscoveryCandidates(rootPath, 64);
+      setDiscoveryRoots(response.roots);
+      setDiscoveryCandidates(response.candidates);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to scan for existing Minecraft servers'));
+      setDiscoveryCandidates([]);
+    } finally {
+      setDiscoveryLoading(false);
     }
   }
 
@@ -455,8 +505,9 @@ export default function ServersPage() {
         <div className="space-y-2">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Game servers</h1>
           <p className="max-w-3xl text-sm muted sm:text-base">
-            Rustyfin now tracks Minecraft server records in PostgreSQL, exposes native lifecycle controls
-            through the Rust API, and polls live runtime state into the UI. Provisioning and import land next.
+            Rustyfin now tracks Minecraft server records in PostgreSQL, uses a dedicated Rust
+            servers agent for privileged Debian host operations, and exposes lifecycle control,
+            discovery, import, status, and logs through one management surface.
           </p>
         </div>
       </header>
@@ -650,7 +701,7 @@ export default function ServersPage() {
               </div>
 
               {me.role === 'admin' ? (
-                <div className="grid gap-3 lg:grid-cols-2">
+                <div className="grid gap-3 xl:grid-cols-3">
                   <div className="panel-soft rounded-xl px-4 py-4">
                     <div className="space-y-2">
                       <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
@@ -712,35 +763,164 @@ export default function ServersPage() {
                       </button>
                     </div>
                   </div>
+
+                  <div className="panel-soft rounded-xl px-4 py-4">
+                    <div className="space-y-2">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                        Discovery Scan
+                      </h3>
+                      <p className="text-sm muted">
+                        Scan configured import roots on the Debian host for existing Minecraft
+                        directories, then move one straight into this Rustyfin-managed instance.
+                      </p>
+                    </div>
+                    <label className="mt-4 block space-y-2">
+                      <span className="text-sm font-medium text-white">Optional scan root</span>
+                      <input
+                        className="input rounded-xl px-4 py-3"
+                        value={discoveryRootPath}
+                        onChange={(event) => setDiscoveryRootPath(event.target.value)}
+                        placeholder="/srv/minecraft"
+                      />
+                    </label>
+                    {discoveryRoots.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {discoveryRoots.map((root) => (
+                          <button
+                            key={root}
+                            type="button"
+                            className="btn-ghost px-2.5 py-1 text-xs"
+                            onClick={() => {
+                              setDiscoveryRootPath(root);
+                              void handleDiscoveryScan(root);
+                            }}
+                          >
+                            {root}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                        disabled={discoveryLoading}
+                        onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
+                      >
+                        {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+                        disabled={discoveryLoading}
+                        onClick={() => void handleDiscoveryScan(undefined)}
+                      >
+                        Scan All Roots
+                      </button>
+                    </div>
+                    <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
+                      {discoveryCandidates.length === 0 ? (
+                        <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
+                          No discovery results yet.
+                        </div>
+                      ) : (
+                        discoveryCandidates.map((candidate) => (
+                          <div
+                            key={candidate.path}
+                            className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate font-medium text-white" title={candidate.path}>
+                                  {candidate.name}
+                                </div>
+                                <div className="truncate text-xs muted" title={candidate.path}>
+                                  {candidate.path}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                className="btn-primary shrink-0 px-3 py-1.5 text-xs"
+                                onClick={() => setImportSourcePath(candidate.path)}
+                              >
+                                Use Path
+                              </button>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
+                              {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
+                              {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
+                              <span className="chip">
+                                {candidate.server_properties_present ? 'server.properties' : 'jar only'}
+                              </span>
+                              {candidate.last_modified_ts ? (
+                                <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
-              <div className="flex min-h-0 flex-1 flex-col gap-3">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                    Recent events
-                  </h3>
-                  {eventsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="flex min-h-0 flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                      Recent events
+                    </h3>
+                    {eventsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                  </div>
+                  {selectedEvents.length === 0 ? (
+                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                      No lifecycle events recorded yet.
+                    </div>
+                  ) : (
+                    <div className="max-h-[20rem] space-y-3 overflow-y-auto pr-1">
+                      {selectedEvents.map((event) => (
+                        <div key={event.id} className="panel-soft rounded-xl px-4 py-3 text-sm">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="font-medium text-white">{event.message}</div>
+                            <span className="chip text-[11px]">{titleCase(event.level)}</span>
+                          </div>
+                          <div className="mt-2 text-xs muted">
+                            {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {selectedEvents.length === 0 ? (
-                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                    No lifecycle events recorded yet.
+
+                <div className="flex min-h-0 flex-col gap-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                      Journald logs
+                    </h3>
+                    {logsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
                   </div>
-                ) : (
-                  <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-                    {selectedEvents.map((event) => (
-                      <div key={event.id} className="panel-soft rounded-xl px-4 py-3 text-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="font-medium text-white">{event.message}</div>
-                          <span className="chip text-[11px]">{titleCase(event.level)}</span>
+                  {selectedLogs.length === 0 ? (
+                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                      No host logs have been returned for this unit yet.
+                    </div>
+                  ) : (
+                    <div className="max-h-[20rem] space-y-2 overflow-y-auto pr-1">
+                      {selectedLogs.map((line, index) => (
+                        <div
+                          key={`${line.ts_ms ?? 'no-ts'}-${index}`}
+                          className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
+                        >
+                          <div className="text-white">{line.message}</div>
+                          <div className="mt-2 text-xs muted">
+                            {formatTsMs(line.ts_ms)}
+                            {line.priority ? ` · priority ${line.priority}` : ''}
+                          </div>
                         </div>
-                        <div className="mt-2 text-xs muted">
-                          {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -750,8 +930,9 @@ export default function ServersPage() {
           <div>
             <h2 className="text-xl font-semibold">Create Minecraft server</h2>
             <p className="text-sm muted">
-              Draft creation is still the entry point for brand-new Minecraft servers. Native start, stop,
-              restart, and status refresh now sit on top of the same record model.
+              Draft creation is still the entry point for brand-new Minecraft servers. Managed
+              provisioning, import, lifecycle control, status refresh, and discovery now sit on top
+              of the same record model.
             </p>
           </div>
 
@@ -910,8 +1091,8 @@ export default function ServersPage() {
               </div>
 
               <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                Import existing servers, artifact download, server provisioning, and systemd unit rendering are
-                the next implementation steps after this lifecycle-enabled draft flow.
+                Draft records can now be provisioned or bound to imported servers from the selected
+                instance detail panel.
               </div>
 
               <button

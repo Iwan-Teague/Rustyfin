@@ -31,8 +31,8 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
   - Secure stream token handling for scoped streaming URLs.
 - Servers
   - New `Servers` area for native game server management.
-  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, native start/stop/restart controls, managed provisioning, and existing-server import through the Rust API/UI surface.
-  - Rustyfin now renders native Debian 12 systemd units for Minecraft instances and can copy an existing host server directory into its managed instance path.
+  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, native start/stop/restart controls, managed provisioning, existing-server import, journald log viewing, and discovery scans for host-side Minecraft directories through the Rust API/UI surface.
+  - Rustyfin now renders native Debian 12 systemd units for Minecraft instances, can copy an existing host server directory into its managed instance path, and can route privileged host operations through a dedicated Rust `rustfin-servers-agent`.
 - Rooms (formerly watch-party)
   - Watch Together: local media, YouTube embed, and shared web room.
   - Listen Together:
@@ -96,6 +96,10 @@ Supporting host process:
 
 - Native directory picker helper (started by `scripts/start.sh`)
   - Opens host OS folder picker for library path selection.
+- Optional native `rustfin-servers-agent` (recommended for `Servers`)
+  - Runs on the Debian host outside the main Rustyfin backend runtime.
+  - Owns privileged Minecraft host operations: `systemctl`, `journalctl`, managed provisioning/import, and discovery scans.
+  - The main Rustyfin API talks to it over an internal authenticated HTTP boundary using `RUSTFIN_SERVERS_AGENT_URL` and `RUSTFIN_SERVERS_AGENT_TOKEN`.
 
 ## Monorepo Layout
 
@@ -106,7 +110,9 @@ Supporting host process:
 - `crates/transcoder` - ffmpeg/ffprobe orchestration and HLS session logic.
 - `crates/server` - main API server (auth, libraries, playback, rooms, channels, admin).
 - `crates/server/src/servers` - game server management HTTP surface.
-  - includes native lifecycle control, managed provisioning, import, and systemd-facing runtime helpers for Minecraft.
+  - includes lifecycle orchestration, DB/audit/event handling, logs/discovery routes, and servers-agent client fallback logic for Minecraft.
+- `crates/servers-host` - shared native Debian host runtime for Minecraft `systemd`, journald, provisioning, import, and discovery operations.
+- `crates/servers-agent` - dedicated Rust agent exposing privileged Minecraft host operations over authenticated internal HTTP.
 - `crates/calendar` - standalone calendar service API.
 - `crates/youtube-agent` - standalone YouTube online-audio download/conversion API.
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.

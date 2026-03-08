@@ -6,6 +6,8 @@ members = [
     "crates/db",
     "crates/metadata",
     "crates/scanner",
+    "crates/servers-agent",
+    "crates/servers-host",
     "crates/tmdb-agent",
     "crates/transcription-agent",
     "crates/youtube-agent",
