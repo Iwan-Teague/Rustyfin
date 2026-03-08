@@ -643,9 +643,7 @@ export default function ServersPage() {
                         <div className="flex flex-wrap items-center gap-3 text-sm muted">
                           <span>{server.server_distribution} {server.minecraft_version}</span>
                           <span className="text-white/20">•</span>
-                          <span>World {server.world_name}</span>
-                          <span className="text-white/20">•</span>
-                          <span>{titleCase(server.runtime_mode)}</span>
+                          <span>{server.world_name}</span>
                         </div>
                       </div>
 
