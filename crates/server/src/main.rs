@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -392,6 +393,10 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to bind")?;
     info!(addr = %bind_addr, "server listening");
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

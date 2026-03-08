@@ -66,7 +66,12 @@ async function setupFetch(
   const token = getOwnerToken();
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
-    ...(token ? { 'X-Setup-Owner-Token': token } : {}),
+    ...(token
+      ? {
+          'X-Setup-Owner-Token': token,
+          'X-Setup-Remote-Token': token,
+        }
+      : {}),
     ...extraHeaders,
     ...((options.headers as Record<string, string>) || {}),
   };

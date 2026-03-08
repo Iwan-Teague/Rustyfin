@@ -12,12 +12,23 @@
 # Build outputs
 /build/
 /dist/
+coverage/
+playwright-report/
+test-results/
+.turbo/
+.eslintcache
+*.tgz
+*.tsbuildinfo
 
 # Logs and temporary files
 *.log
 *.tmp
 *.cache
 *.pid
+*.bak
+*.orig
+*.rej
+npm-debug.log*
 
 # OS
 .DS_Store
@@ -32,26 +43,19 @@ Thumbs.db
 # Environment files
 .env
 .env.local
+.env.*
+!.env.example
+!.env.sample
 
 # Local overrides and secrets
 docker-compose.override.yml
 
-# Next.js build outputs
-/ui/.next/
+# Node modules and frontend build artifacts
+node_modules/
+ui/node_modules/
 .next/
-
-# Ignore any other local build artifacts
-*.tgz
-npm-debug.log*
+/ui/.next/
 .yarn/cache
-# Node modules
-node_modules/
-ui/node_modules/
-
-# Ignore node modules and Next.js build
-node_modules/
-ui/node_modules/
-ui/.next/
 
 # Local test/runtime artifacts
 /.tmp/
