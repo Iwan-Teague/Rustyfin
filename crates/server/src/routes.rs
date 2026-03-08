@@ -1,6 +1,6 @@
 use axum::body::Body;
-use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::extract::{ConnectInfo, Multipart, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path as StdPath, PathBuf};
-use std::time::Duration;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use tokio::fs;
 use tracing::warn;
 
@@ -27,6 +28,133 @@ const MAX_AVATAR_UPLOAD_BYTES: usize = 5 * 1024 * 1024;
 const USER_AVATAR_DIR: &str = "user_avatars";
 const YOUTUBE_AGENT_IMPORT_TIMEOUT_SECONDS: u64 = 240;
 const MAX_MUSIC_METADATA_LEN: usize = 180;
+const LOGIN_INITIAL_ATTEMPTS: u64 = 5;
+const LOGIN_COOLDOWN_SECONDS: u64 = 30;
+const LOGIN_COOLDOWN_ATTEMPTS: u64 = 2;
+const LOGIN_BUCKET_IDLE_TTL_SECONDS: u64 = 30 * 60;
+
+#[derive(Debug, Clone)]
+struct LoginAttemptBucket {
+    remaining_attempts: u64,
+    cooldown_until: Option<Instant>,
+    last_seen: Instant,
+}
+
+static LOGIN_ATTEMPT_BUCKETS: LazyLock<tokio::sync::Mutex<HashMap<String, LoginAttemptBucket>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+fn extract_login_client_identity(
+    connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+    headers: &HeaderMap,
+) -> String {
+    if let Some(ci) = connect_info {
+        return format!("peer:{}", ci.0.ip());
+    }
+
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("xff:{v}"))
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| format!("xreal:{v}"))
+        })
+        .or_else(|| {
+            headers
+                .get(header::HOST)
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| format!("host:{v}"))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn login_attempt_key(
+    connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+    headers: &HeaderMap,
+    username: &str,
+) -> String {
+    format!(
+        "{}|{}",
+        username.trim().to_ascii_lowercase(),
+        extract_login_client_identity(connect_info, headers)
+    )
+}
+
+fn cooldown_retry_after_seconds(now: Instant, until: Instant) -> u64 {
+    if until <= now {
+        return 0;
+    }
+    let remaining = until.duration_since(now);
+    if remaining.subsec_nanos() > 0 {
+        remaining.as_secs() + 1
+    } else {
+        remaining.as_secs()
+    }
+}
+
+async fn enforce_login_rate_limit(
+    connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+    headers: &HeaderMap,
+    username: &str,
+) -> Result<String, AppError> {
+    let key = login_attempt_key(connect_info, headers, username);
+    let now = Instant::now();
+    let mut guard = LOGIN_ATTEMPT_BUCKETS.lock().await;
+
+    // Trim stale entries so this map does not grow forever.
+    let ttl = Duration::from_secs(LOGIN_BUCKET_IDLE_TTL_SECONDS);
+    guard.retain(|_, bucket| now.duration_since(bucket.last_seen) <= ttl);
+
+    let bucket = guard
+        .entry(key.clone())
+        .or_insert_with(|| LoginAttemptBucket {
+            remaining_attempts: LOGIN_INITIAL_ATTEMPTS,
+            cooldown_until: None,
+            last_seen: now,
+        });
+
+    if let Some(cooldown_until) = bucket.cooldown_until {
+        if now < cooldown_until {
+            let retry_after = cooldown_retry_after_seconds(now, cooldown_until);
+            return Err(ApiError::TooManyRequests {
+                retry_after_seconds: retry_after.max(1),
+            }
+            .into());
+        }
+
+        // Cooldown expired: allow two attempts in the next window.
+        bucket.cooldown_until = None;
+        bucket.remaining_attempts = LOGIN_COOLDOWN_ATTEMPTS;
+    }
+
+    if bucket.remaining_attempts == 0 {
+        let cooldown_until = now + Duration::from_secs(LOGIN_COOLDOWN_SECONDS);
+        bucket.cooldown_until = Some(cooldown_until);
+        bucket.last_seen = now;
+        return Err(ApiError::TooManyRequests {
+            retry_after_seconds: LOGIN_COOLDOWN_SECONDS,
+        }
+        .into());
+    }
+
+    bucket.remaining_attempts -= 1;
+    bucket.last_seen = now;
+    Ok(key)
+}
+
+async fn reset_login_rate_limit(key: &str) {
+    let mut guard = LOGIN_ATTEMPT_BUCKETS.lock().await;
+    guard.remove(key);
+}
 
 fn stream_token_ttl_seconds() -> i64 {
     std::env::var("RUSTFIN_STREAM_TOKEN_TTL_SECONDS")
@@ -257,8 +385,13 @@ struct LoginResponse {
 
 async fn auth_login(
     State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    let peer = ConnectInfo(peer_addr);
+    let login_limit_key = enforce_login_rate_limit(Some(&peer), &headers, &body.username).await?;
+
     let user = rustfin_db::repo::users::find_by_username(&state.db, &body.username)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
@@ -272,6 +405,7 @@ async fn auth_login(
     }
 
     let token = issue_token(&user.id, &user.username, &user.role, &state.jwt_secret)?;
+    reset_login_rate_limit(&login_limit_key).await;
 
     Ok(Json(LoginResponse {
         token,
@@ -3849,4 +3983,129 @@ async fn sse_events(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS,
+        enforce_login_rate_limit, extract_login_client_identity, login_attempt_key,
+        reset_login_rate_limit,
+    };
+    use axum::extract::ConnectInfo;
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use rustfin_core::error::ApiError;
+    use std::net::SocketAddr;
+    use std::sync::LazyLock;
+    use std::time::{Duration, Instant};
+
+    static LOGIN_LIMIT_TEST_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    fn base_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:3000"));
+        headers
+    }
+
+    async fn clear_login_buckets() {
+        LOGIN_ATTEMPT_BUCKETS.lock().await.clear();
+    }
+
+    #[test]
+    fn login_identity_prefers_peer_address_when_available() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.10, 198.51.100.5"),
+        );
+        let peer = ConnectInfo(
+            "127.0.0.1:43210"
+                .parse::<SocketAddr>()
+                .expect("valid socket addr"),
+        );
+        let identity = extract_login_client_identity(Some(&peer), &headers);
+        assert_eq!(identity, "peer:127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn login_limiter_allows_five_attempts_then_cooldown() {
+        let _guard = LOGIN_LIMIT_TEST_MUTEX.lock().await;
+        clear_login_buckets().await;
+
+        let headers = base_headers();
+        let username = "admin";
+        for _ in 0..LOGIN_INITIAL_ATTEMPTS {
+            let result = enforce_login_rate_limit(None, &headers, username).await;
+            assert!(result.is_ok());
+        }
+
+        let err = enforce_login_rate_limit(None, &headers, username)
+            .await
+            .expect_err("expected cooldown after initial budget");
+        match err.0 {
+            ApiError::TooManyRequests {
+                retry_after_seconds,
+            } => assert_eq!(retry_after_seconds, LOGIN_COOLDOWN_SECONDS),
+            other => panic!("expected TooManyRequests, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn login_limiter_allows_two_attempts_after_cooldown() {
+        let _guard = LOGIN_LIMIT_TEST_MUTEX.lock().await;
+        clear_login_buckets().await;
+
+        let headers = base_headers();
+        let username = "admin";
+        for _ in 0..LOGIN_INITIAL_ATTEMPTS {
+            enforce_login_rate_limit(None, &headers, username)
+                .await
+                .expect("attempt should pass");
+        }
+        let _ = enforce_login_rate_limit(None, &headers, username)
+            .await
+            .expect_err("cooldown should start after initial window is exhausted");
+
+        let key = login_attempt_key(None, &headers, username);
+        {
+            let mut buckets = LOGIN_ATTEMPT_BUCKETS.lock().await;
+            let bucket = buckets
+                .get_mut(&key)
+                .expect("bucket should exist after cooldown starts");
+            bucket.cooldown_until = Some(Instant::now() - Duration::from_secs(1));
+            bucket.last_seen = Instant::now();
+        }
+
+        enforce_login_rate_limit(None, &headers, username)
+            .await
+            .expect("first post-cooldown attempt should pass");
+        enforce_login_rate_limit(None, &headers, username)
+            .await
+            .expect("second post-cooldown attempt should pass");
+        let err = enforce_login_rate_limit(None, &headers, username)
+            .await
+            .expect_err("third attempt in post-cooldown window should be blocked");
+        match err.0 {
+            ApiError::TooManyRequests {
+                retry_after_seconds,
+            } => assert_eq!(retry_after_seconds, LOGIN_COOLDOWN_SECONDS),
+            other => panic!("expected TooManyRequests, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn login_limiter_resets_bucket_on_successful_auth() {
+        let _guard = LOGIN_LIMIT_TEST_MUTEX.lock().await;
+        clear_login_buckets().await;
+
+        let headers = base_headers();
+        let key = enforce_login_rate_limit(None, &headers, "admin")
+            .await
+            .expect("first attempt should pass");
+        assert!(LOGIN_ATTEMPT_BUCKETS.lock().await.contains_key(&key));
+
+        reset_login_rate_limit(&key).await;
+        assert!(!LOGIN_ATTEMPT_BUCKETS.lock().await.contains_key(&key));
+    }
 }

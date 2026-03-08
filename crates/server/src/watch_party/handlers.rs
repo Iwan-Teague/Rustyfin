@@ -13,6 +13,7 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tracing::warn;
 
 use crate::auth::{AdminUser, AuthUser, validate_stream_token};
 use crate::error::AppError;
@@ -447,6 +448,12 @@ fn room_audio_dir(state: &AppState, room_id: &str) -> PathBuf {
     state.watch_party_audio_dir.join(room_id)
 }
 
+async fn invalidate_runtime_presence_cache(state: &AppState, room_id: &str) {
+    if let Some(runtime) = state.watch_party.get_runtime(room_id).await {
+        runtime.invalidate_presence_members_cache().await;
+    }
+}
+
 async fn canonical_watch_party_audio_root_for_validation(
     state: &AppState,
 ) -> Result<PathBuf, AppError> {
@@ -534,13 +541,17 @@ fn validate_room_audio_scope(
         return Ok(());
     }
 
-    Err(ApiError::Forbidden(format!(
-        "youtube-agent returned a file path outside this room scope (file={}, room_root={}, cache_root={}, room_id={})",
-        canonical_file.display(),
-        canonical_room_root.display(),
-        canonical_cache_root.display(),
-        room_id
-    ))
+    warn!(
+        room_id = %room_id,
+        file = %canonical_file.display(),
+        room_root = %canonical_room_root.display(),
+        cache_root = %canonical_cache_root.display(),
+        "youtube-agent returned a file path outside room scope"
+    );
+
+    Err(ApiError::Forbidden(
+        "youtube-agent returned a file path outside this room scope".to_string(),
+    )
     .into())
 }
 
@@ -1706,7 +1717,7 @@ pub async fn reconfigure_room(
             let requested_audio_library_id =
                 body.audio_library_id.as_ref().map(|value| value.trim());
             let resolved_audio_library_id = match requested_audio_library_id {
-                Some(value) if value.is_empty() => None, // explicit clear
+                Some("") => None, // explicit clear
                 Some(value) => Some(value.to_string()),
                 None => room.audio_library_id.clone(),
             };
@@ -2137,6 +2148,7 @@ pub async fn join_room(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    invalidate_runtime_presence_cache(&state, &room_id).await;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
     Ok(Json(JoinRoomResponse { ok: true, role }))
@@ -2171,6 +2183,7 @@ pub async fn leave_room(
     if !updated {
         return Err(ApiError::NotFound("room membership not found".into()).into());
     }
+    invalidate_runtime_presence_cache(&state, &room_id).await;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -2250,6 +2263,7 @@ pub async fn decline_invite(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    invalidate_runtime_presence_cache(&state, &room_id).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -2394,6 +2408,9 @@ pub async fn invite_members(
         count += 1;
     }
 
+    if count > 0 {
+        invalidate_runtime_presence_cache(&state, &room_id).await;
+    }
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
     Ok(Json(InviteMembersResponse {

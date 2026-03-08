@@ -18,6 +18,7 @@ use crate::state::AppState;
 
 use super::manager::{AudioAction, ChessResetOutcome, CreateState, PlaybackAction, RoomRuntime};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
+use super::presence::build_presence_members;
 use super::protocol::{
     BattleshipLastShot as ProtocolBattleshipLastShot, BattleshipState as ProtocolBattleshipState,
     ChessLegalMove as ProtocolChessLegalMove, ChessState as ProtocolChessState, ClientMessage,
@@ -318,6 +319,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         let mut connected = runtime.connected_user_ids.write().await;
         connected.insert(context.user_id.clone());
     }
+    runtime.invalidate_presence_members_cache().await;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &context.room_id).await;
     runtime.touch_activity().await;
 
@@ -369,11 +371,29 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
                             ServerMessage::RoomEnded | ServerMessage::RoomReconfigured { .. }
                         );
                         if matches!(message, ServerMessage::PlayState { .. }) {
-                            if send_current_state_for_user(&mut socket, &state, &runtime, &context.room_id, Some(&context.user_id))
+                            if send_play_state_for_user_from_broadcast(
+                                &mut socket,
+                                &runtime,
+                                &message,
+                                &context.user_id,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                // Keep websocket sessions resilient if a targeted play-state
+                                // fanout fails transiently; recover by sending a full snapshot.
+                                if send_current_state_for_user(
+                                    &mut socket,
+                                    &state,
+                                    &runtime,
+                                    &context.room_id,
+                                    Some(&context.user_id),
+                                )
                                 .await
                                 .is_err()
-                            {
-                                break;
+                                {
+                                    break;
+                                }
                             }
                         } else if send_server_message(&mut socket, &message).await.is_err() {
                             break;
@@ -426,6 +446,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         let mut connected = runtime.connected_user_ids.write().await;
         connected.remove(&context.user_id);
     }
+    runtime.invalidate_presence_members_cache().await;
     let _ = runtime.tx.send(ServerMessage::Presence {
         user_id: context.user_id.clone(),
         connected: false,
@@ -2991,25 +3012,42 @@ async fn send_current_state_for_user(
     send_server_message(socket, &message).await
 }
 
-async fn build_presence_members(
-    state: &AppState,
-    room_id: &str,
-    connected: &HashSet<String>,
-) -> Result<Vec<PresenceMember>, AppError> {
-    let members = rustfin_db::repo::watch_party::list_members_with_usernames(&state.db, room_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+async fn send_play_state_for_user_from_broadcast(
+    socket: &mut WebSocket,
+    runtime: &RoomRuntime,
+    message: &ServerMessage,
+    viewer_user_id: &str,
+) -> Result<(), AppError> {
+    let (room_id, members, server_ts_ms) = match message {
+        ServerMessage::PlayState {
+            room_id,
+            members,
+            server_ts_ms,
+            ..
+        } => (room_id.as_str(), members.clone(), *server_ts_ms),
+        _ => {
+            return Err(ApiError::Internal(
+                "non-play state passed to play-state fanout handler".to_string(),
+            )
+            .into());
+        }
+    };
 
-    Ok(members
-        .into_iter()
-        .filter(|member| member.status != "declined" && member.status != "left")
-        .map(|member| PresenceMember {
-            connected: connected.contains(&member.user_id) && member.status == "joined",
-            user_id: member.user_id,
-            username: member.username,
-            role: member.role,
-        })
-        .collect())
+    let play_state = runtime
+        .snapshot_play_state()
+        .await
+        .ok_or_else(|| ApiError::Internal("play state not initialized".to_string()))?;
+    let connect_four_rows = encode_connect_four_rows(&play_state.connect_four.board);
+    let viewer_message = build_play_state_payload(
+        room_id,
+        play_state,
+        members,
+        server_ts_ms,
+        Some(viewer_user_id),
+        connect_four_rows,
+    )?;
+
+    send_server_message(socket, &viewer_message).await
 }
 
 async fn build_state_message(
@@ -3047,7 +3085,7 @@ async fn build_state_message(
         (snapshot.position_ms, snapshot.updated_ts_ms)
     };
 
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
 
     Ok(ServerMessage::State {
         room_id: room_id.to_string(),
@@ -3069,7 +3107,7 @@ async fn build_web_state_message(
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
 
     Ok(ServerMessage::WebState {
         room_id: room_id.to_string(),
@@ -3092,7 +3130,7 @@ async fn build_create_state_message(
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
 
     Ok(ServerMessage::CreateState {
         room_id: room_id.to_string(),
@@ -3119,6 +3157,26 @@ async fn build_play_state_message(
         .ok_or_else(|| ApiError::Internal("play state not initialized".into()))?;
     let connected = runtime.connected_user_ids.read().await.clone();
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let connect_four_rows = encode_connect_four_rows(&play_state.connect_four.board);
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
+    build_play_state_payload(
+        room_id,
+        play_state,
+        member_summaries,
+        now_ms,
+        viewer_user_id,
+        connect_four_rows,
+    )
+}
+
+fn build_play_state_payload(
+    room_id: &str,
+    play_state: super::manager::PlayState,
+    member_summaries: Vec<PresenceMember>,
+    now_ms: i64,
+    viewer_user_id: Option<&str>,
+    connect_four_rows: Vec<String>,
+) -> Result<ServerMessage, AppError> {
     let board = chess::Board::from_str(&play_state.chess.fen)
         .map_err(|_| ApiError::Internal("invalid chess board state".into()))?;
     let legal_moves = chess::MoveGen::new_legal(&board)
@@ -3128,34 +3186,8 @@ async fn build_play_state_message(
             promotion: mv.get_promotion().map(chess_promotion_piece_to_code),
         })
         .collect();
-    let connect_four_rows = encode_connect_four_rows(&play_state.connect_four.board);
-    let viewer_is_blue = viewer_user_id
-        .zip(play_state.battleship.blue_user_id.as_deref())
-        .is_some_and(|(viewer, blue)| viewer == blue);
-    let viewer_is_red = viewer_user_id
-        .zip(play_state.battleship.red_user_id.as_deref())
-        .is_some_and(|(viewer, red)| viewer == red);
-
-    let (hide_blue_ships, hide_red_ships) = if viewer_is_blue {
-        (false, true)
-    } else if viewer_is_red {
-        (true, false)
-    } else {
-        (true, true)
-    };
-
-    let battleship_blue_rows = encode_battleship_rows(
-        &play_state.battleship.blue_ships,
-        &play_state.battleship.blue_shots,
-        hide_blue_ships,
-    );
-    let battleship_red_rows = encode_battleship_rows(
-        &play_state.battleship.red_ships,
-        &play_state.battleship.red_shots,
-        hide_red_ships,
-    );
-
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let (battleship_blue_rows, battleship_red_rows) =
+        battleship_grid_rows_for_viewer(&play_state, viewer_user_id);
 
     Ok(ServerMessage::PlayState {
         room_id: room_id.to_string(),
@@ -3233,6 +3265,38 @@ async fn build_play_state_message(
         server_ts_ms: now_ms,
         members: member_summaries,
     })
+}
+
+fn battleship_grid_rows_for_viewer(
+    play_state: &super::manager::PlayState,
+    viewer_user_id: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    let viewer_is_blue = viewer_user_id
+        .zip(play_state.battleship.blue_user_id.as_deref())
+        .is_some_and(|(viewer, blue)| viewer == blue);
+    let viewer_is_red = viewer_user_id
+        .zip(play_state.battleship.red_user_id.as_deref())
+        .is_some_and(|(viewer, red)| viewer == red);
+
+    let (hide_blue_ships, hide_red_ships) = if viewer_is_blue {
+        (false, true)
+    } else if viewer_is_red {
+        (true, false)
+    } else {
+        (true, true)
+    };
+
+    let battleship_blue_rows = encode_battleship_rows(
+        &play_state.battleship.blue_ships,
+        &play_state.battleship.blue_shots,
+        hide_blue_ships,
+    );
+    let battleship_red_rows = encode_battleship_rows(
+        &play_state.battleship.red_ships,
+        &play_state.battleship.red_shots,
+        hide_red_ships,
+    );
+    (battleship_blue_rows, battleship_red_rows)
 }
 
 fn encode_connect_four_rows(board: &[u8]) -> Vec<String> {
@@ -3600,7 +3664,7 @@ async fn build_audio_state_message(
 
     let connected = runtime.connected_user_ids.read().await.clone();
 
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
 
     Ok(ServerMessage::AudioState {
         room_id: room_id.to_string(),
@@ -3643,7 +3707,7 @@ async fn build_youtube_state_message(
         (snapshot.position_ms, snapshot.updated_ts_ms)
     };
 
-    let member_summaries = build_presence_members(state, room_id, &connected).await?;
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
 
     Ok(ServerMessage::YouTubeState {
         room_id: room_id.to_string(),
@@ -3680,4 +3744,89 @@ async fn send_error(socket: &mut WebSocket, msg: &str) -> Result<(), AppError> {
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watch_party::manager::PlayState;
+
+    fn grid_cell(rows: &[String], row: usize, col: usize) -> char {
+        rows[row].as_bytes()[col] as char
+    }
+
+    #[test]
+    fn battleship_payload_masks_ships_by_viewer() {
+        let mut play_state = PlayState::default();
+        play_state.active_game = "battleship".to_string();
+        play_state.battleship.blue_user_id = Some("blue-user".to_string());
+        play_state.battleship.red_user_id = Some("red-user".to_string());
+
+        // Unhit ships for visibility checks.
+        play_state.battleship.blue_ships[0] = 1; // row 0 col 0
+        play_state.battleship.red_ships[1] = 1; // row 0 col 1
+        // A hit should remain visible to everyone.
+        play_state.battleship.red_ships[4] = 2; // row 0 col 4
+        play_state.battleship.red_shots[4] = 2;
+        // A miss should remain visible to everyone.
+        play_state.battleship.blue_shots[3] = 1; // row 0 col 3
+
+        let connect_four_rows = encode_connect_four_rows(&play_state.connect_four.board);
+        let members = Vec::new();
+
+        let blue_view = build_play_state_payload(
+            "room-1",
+            play_state.clone(),
+            members.clone(),
+            100,
+            Some("blue-user"),
+            connect_four_rows.clone(),
+        )
+        .expect("blue payload");
+        let ServerMessage::PlayState {
+            battleship: blue_state,
+            ..
+        } = blue_view
+        else {
+            panic!("expected play_state payload");
+        };
+        assert_eq!(grid_cell(&blue_state.blue_grid_rows, 0, 0), 's');
+        assert_eq!(grid_cell(&blue_state.red_grid_rows, 0, 1), '.');
+        assert_eq!(grid_cell(&blue_state.red_grid_rows, 0, 4), 'x');
+        assert_eq!(grid_cell(&blue_state.blue_grid_rows, 0, 3), 'o');
+
+        let red_view = build_play_state_payload(
+            "room-1",
+            play_state.clone(),
+            members.clone(),
+            100,
+            Some("red-user"),
+            connect_four_rows.clone(),
+        )
+        .expect("red payload");
+        let ServerMessage::PlayState {
+            battleship: red_state,
+            ..
+        } = red_view
+        else {
+            panic!("expected play_state payload");
+        };
+        assert_eq!(grid_cell(&red_state.blue_grid_rows, 0, 0), '.');
+        assert_eq!(grid_cell(&red_state.red_grid_rows, 0, 1), 's');
+        assert_eq!(grid_cell(&red_state.red_grid_rows, 0, 4), 'x');
+
+        let spectator_view =
+            build_play_state_payload("room-1", play_state, members, 100, None, connect_four_rows)
+                .expect("spectator payload");
+        let ServerMessage::PlayState {
+            battleship: spectator_state,
+            ..
+        } = spectator_view
+        else {
+            panic!("expected play_state payload");
+        };
+        assert_eq!(grid_cell(&spectator_state.blue_grid_rows, 0, 0), '.');
+        assert_eq!(grid_cell(&spectator_state.red_grid_rows, 0, 1), '.');
+        assert_eq!(grid_cell(&spectator_state.red_grid_rows, 0, 4), 'x');
+    }
 }

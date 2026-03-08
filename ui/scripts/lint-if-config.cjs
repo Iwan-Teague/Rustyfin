@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+const packageRoot = path.resolve(__dirname, '..');
+
 const configCandidates = [
   '.eslintrc',
   '.eslintrc.js',
@@ -14,21 +16,28 @@ const configCandidates = [
   'eslint.config.mjs',
 ];
 
-const hasConfig = configCandidates.some((name) =>
-  fs.existsSync(path.join(process.cwd(), name)),
-);
+const hasConfig = configCandidates.some((name) => fs.existsSync(path.join(packageRoot, name)));
 
 let hasEslint = true;
 try {
-  require.resolve('eslint');
+  require.resolve('eslint', { paths: [packageRoot] });
 } catch (_error) {
   hasEslint = false;
 }
 
-if (!hasEslint || !hasConfig) {
-  console.log('[info] Skipping UI lint: eslint or config missing');
-  process.exit(0);
+if (!hasConfig) {
+  console.error('[error] UI lint config missing. Add an ESLint config file and retry.');
+  process.exit(1);
 }
 
-const result = spawnSync('next', ['lint'], { stdio: 'inherit', shell: true });
+if (!hasEslint) {
+  console.error('[error] eslint dependency missing. Run `npm --prefix ui install` and retry.');
+  process.exit(1);
+}
+
+const result = spawnSync('next', ['lint'], {
+  stdio: 'inherit',
+  shell: true,
+  cwd: packageRoot,
+});
 process.exit(result.status ?? 1);

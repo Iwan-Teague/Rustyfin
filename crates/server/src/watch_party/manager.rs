@@ -239,6 +239,20 @@ pub struct PlayState {
     pub updated_ts_ms: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PresenceMemberSnapshot {
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone)]
+struct PresenceMembersCache {
+    updated_ts_ms: i64,
+    members: Vec<PresenceMemberSnapshot>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChessResetOutcome {
     Applied,
@@ -286,6 +300,7 @@ pub struct RoomRuntime {
     pub web_updated_ts_ms: RwLock<i64>,
     pub create_state: Option<RwLock<CreateState>>,
     pub play_state: Option<RwLock<PlayState>>,
+    presence_members_cache: RwLock<Option<PresenceMembersCache>>,
     pub connected_user_ids: RwLock<HashSet<String>>,
     pub tx: broadcast::Sender<ServerMessage>,
     pub last_activity_ts_ms: RwLock<i64>,
@@ -322,6 +337,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
             play_state: None,
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -355,6 +371,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
             play_state: None,
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -379,6 +396,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
             create_state: None,
             play_state: None,
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
@@ -404,6 +422,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(now_ms),
             create_state: None,
             play_state: None,
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -429,6 +448,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(now_ms),
             create_state: Some(RwLock::new(initial_state)),
             play_state: None,
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -454,6 +474,7 @@ impl RoomRuntime {
             web_updated_ts_ms: RwLock::new(now_ms),
             create_state: None,
             play_state: Some(RwLock::new(PlayState::default())),
+            presence_members_cache: RwLock::new(None),
             connected_user_ids: RwLock::new(HashSet::new()),
             tx,
             last_activity_ts_ms: RwLock::new(now_ms),
@@ -712,13 +733,14 @@ impl RoomRuntime {
         let ai_enabled = guard.chess.ai_enabled;
         let ai_difficulty = guard.chess.ai_difficulty.clone();
         let ai_color = guard.chess.ai_color.clone();
-        let mut next_chess = ChessState::default();
-        next_chess.white_user_id = white_user_id;
-        next_chess.black_user_id = black_user_id;
-        next_chess.ai_enabled = ai_enabled;
-        next_chess.ai_difficulty = ai_difficulty;
-        next_chess.ai_color = ai_color;
-        next_chess.updated_ts_ms = now_ms;
+        let next_chess = fresh_chess_state(
+            white_user_id,
+            black_user_id,
+            ai_enabled,
+            ai_difficulty,
+            ai_color,
+            now_ms,
+        );
         guard.active_game = "chess".to_string();
         guard.chess = next_chess;
         guard.updated_ts_ms = now_ms;
@@ -754,13 +776,14 @@ impl RoomRuntime {
             let ai_enabled = guard.chess.ai_enabled;
             let ai_difficulty = guard.chess.ai_difficulty.clone();
             let ai_color = guard.chess.ai_color.clone();
-            let mut next_chess = ChessState::default();
-            next_chess.white_user_id = white_user_id;
-            next_chess.black_user_id = black_user_id;
-            next_chess.ai_enabled = ai_enabled;
-            next_chess.ai_difficulty = ai_difficulty;
-            next_chess.ai_color = ai_color;
-            next_chess.updated_ts_ms = now_ms;
+            let next_chess = fresh_chess_state(
+                white_user_id,
+                black_user_id,
+                ai_enabled,
+                ai_difficulty,
+                ai_color,
+                now_ms,
+            );
             guard.active_game = "chess".to_string();
             guard.chess = next_chess;
             guard.updated_ts_ms = now_ms;
@@ -800,13 +823,14 @@ impl RoomRuntime {
         let ai_enabled = guard.chess.ai_enabled;
         let ai_difficulty = guard.chess.ai_difficulty.clone();
         let ai_color = guard.chess.ai_color.clone();
-        let mut next_chess = ChessState::default();
-        next_chess.white_user_id = white_user_id;
-        next_chess.black_user_id = black_user_id;
-        next_chess.ai_enabled = ai_enabled;
-        next_chess.ai_difficulty = ai_difficulty;
-        next_chess.ai_color = ai_color;
-        next_chess.updated_ts_ms = now_ms;
+        let next_chess = fresh_chess_state(
+            white_user_id,
+            black_user_id,
+            ai_enabled,
+            ai_difficulty,
+            ai_color,
+            now_ms,
+        );
         guard.active_game = "chess".to_string();
         guard.chess = next_chess;
         guard.updated_ts_ms = now_ms;
@@ -1038,10 +1062,7 @@ impl RoomRuntime {
             actor_user_id,
         )?;
 
-        let mut next_state = ConnectFourState::default();
-        next_state.red_user_id = red;
-        next_state.yellow_user_id = yellow;
-        next_state.updated_ts_ms = now_ms;
+        let next_state = fresh_connect_four_state(red, yellow, now_ms);
         guard.connect_four = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1071,10 +1092,7 @@ impl RoomRuntime {
         let has_yellow = yellow.is_some();
 
         if !has_red && !has_yellow {
-            let mut next_state = ConnectFourState::default();
-            next_state.red_user_id = red;
-            next_state.yellow_user_id = yellow;
-            next_state.updated_ts_ms = now_ms;
+            let next_state = fresh_connect_four_state(red, yellow, now_ms);
             guard.connect_four = next_state;
             guard.updated_ts_ms = now_ms;
             let snapshot = guard.clone();
@@ -1110,10 +1128,7 @@ impl RoomRuntime {
             }
         }
 
-        let mut next_state = ConnectFourState::default();
-        next_state.red_user_id = red;
-        next_state.yellow_user_id = yellow;
-        next_state.updated_ts_ms = now_ms;
+        let next_state = fresh_connect_four_state(red, yellow, now_ms);
         guard.connect_four = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1239,10 +1254,7 @@ impl RoomRuntime {
         )?;
         validate_chess_seat_change("red", current_red.as_deref(), red.as_deref(), actor_user_id)?;
 
-        let mut next_state = BattleshipState::default();
-        next_state.blue_user_id = blue;
-        next_state.red_user_id = red;
-        next_state.updated_ts_ms = now_ms;
+        let next_state = fresh_battleship_state(blue, red, now_ms);
         guard.battleship = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1505,10 +1517,7 @@ impl RoomRuntime {
         let has_red = red.is_some();
 
         if !has_blue && !has_red {
-            let mut next_state = BattleshipState::default();
-            next_state.blue_user_id = blue;
-            next_state.red_user_id = red;
-            next_state.updated_ts_ms = now_ms;
+            let next_state = fresh_battleship_state(blue, red, now_ms);
             guard.battleship = next_state;
             guard.updated_ts_ms = now_ms;
             let snapshot = guard.clone();
@@ -1542,10 +1551,7 @@ impl RoomRuntime {
             }
         }
 
-        let mut next_state = BattleshipState::default();
-        next_state.blue_user_id = blue;
-        next_state.red_user_id = red;
-        next_state.updated_ts_ms = now_ms;
+        let next_state = fresh_battleship_state(blue, red, now_ms);
         guard.battleship = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1910,6 +1916,36 @@ impl RoomRuntime {
         let mut activity = self.last_activity_ts_ms.write().await;
         *activity = chrono::Utc::now().timestamp_millis();
     }
+
+    pub async fn get_presence_members_cache(
+        &self,
+        now_ms: i64,
+        ttl_ms: i64,
+    ) -> Option<Vec<PresenceMemberSnapshot>> {
+        let cache = self.presence_members_cache.read().await;
+        let cache = cache.as_ref()?;
+        if now_ms.saturating_sub(cache.updated_ts_ms) > ttl_ms {
+            return None;
+        }
+        Some(cache.members.clone())
+    }
+
+    pub async fn set_presence_members_cache(
+        &self,
+        members: Vec<PresenceMemberSnapshot>,
+        now_ms: i64,
+    ) {
+        let mut cache = self.presence_members_cache.write().await;
+        *cache = Some(PresenceMembersCache {
+            updated_ts_ms: now_ms,
+            members,
+        });
+    }
+
+    pub async fn invalidate_presence_members_cache(&self) {
+        let mut cache = self.presence_members_cache.write().await;
+        *cache = None;
+    }
 }
 
 fn color_name(color: Color) -> &'static str {
@@ -1940,6 +1976,51 @@ fn normalize_ai_difficulty(raw: &str) -> Result<&'static str, String> {
         "medium" => Ok("medium"),
         "hard" => Ok("hard"),
         _ => Err("invalid AI difficulty; expected easy, medium, or hard".to_string()),
+    }
+}
+
+fn fresh_chess_state(
+    white_user_id: Option<String>,
+    black_user_id: Option<String>,
+    ai_enabled: bool,
+    ai_difficulty: String,
+    ai_color: Option<String>,
+    now_ms: i64,
+) -> ChessState {
+    ChessState {
+        white_user_id,
+        black_user_id,
+        ai_enabled,
+        ai_difficulty,
+        ai_color,
+        updated_ts_ms: now_ms,
+        ..ChessState::default()
+    }
+}
+
+fn fresh_connect_four_state(
+    red_user_id: Option<String>,
+    yellow_user_id: Option<String>,
+    now_ms: i64,
+) -> ConnectFourState {
+    ConnectFourState {
+        red_user_id,
+        yellow_user_id,
+        updated_ts_ms: now_ms,
+        ..ConnectFourState::default()
+    }
+}
+
+fn fresh_battleship_state(
+    blue_user_id: Option<String>,
+    red_user_id: Option<String>,
+    now_ms: i64,
+) -> BattleshipState {
+    BattleshipState {
+        blue_user_id,
+        red_user_id,
+        updated_ts_ms: now_ms,
+        ..BattleshipState::default()
     }
 }
 

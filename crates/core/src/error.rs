@@ -129,11 +129,19 @@ pub struct ErrorBody {
 
 impl From<&ApiError> for ErrorEnvelope {
     fn from(e: &ApiError) -> Self {
+        let message = match e {
+            ApiError::Internal(_) => "internal error".to_string(),
+            _ => e.to_string(),
+        };
+        let details = match e {
+            ApiError::Internal(_) => serde_json::Value::Object(serde_json::Map::new()),
+            _ => e.details(),
+        };
         Self {
             error: ErrorBody {
                 code: e.code().to_string(),
-                message: e.to_string(),
-                details: e.details(),
+                message,
+                details,
             },
         }
     }
@@ -148,5 +156,33 @@ impl From<&ApiErrorWithCode> for ErrorEnvelope {
                 details: e.details.clone(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiError, ErrorEnvelope};
+
+    #[test]
+    fn internal_errors_are_sanitized_in_response_envelope() {
+        let envelope = ErrorEnvelope::from(&ApiError::Internal(
+            "db credentials leaked in stack trace".to_string(),
+        ));
+        assert_eq!(envelope.error.code, "internal_error");
+        assert_eq!(envelope.error.message, "internal error");
+        assert_eq!(envelope.error.details, serde_json::json!({}));
+    }
+
+    #[test]
+    fn non_internal_errors_preserve_message_and_details() {
+        let envelope = ErrorEnvelope::from(&ApiError::TooManyRequests {
+            retry_after_seconds: 30,
+        });
+        assert_eq!(envelope.error.code, "too_many_requests");
+        assert_eq!(envelope.error.message, "too many requests");
+        assert_eq!(
+            envelope.error.details,
+            serde_json::json!({ "retry_after_seconds": 30 })
+        );
     }
 }
