@@ -1,6 +1,6 @@
 # Rustyfin Efficiency Deep Dive
 Date: 2026-02-26  
-Author: Codex (engineering audit + implementation pass)
+Author: Rustyfin Engineering Audit
 
 ## Scope
 This pass focused on:

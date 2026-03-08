@@ -8,7 +8,7 @@
   - `crates/server/src/auth.rs` (Bearer JWT validation)
   - `ui/src/lib/api.ts` (localStorage token + Authorization header)
   - `crates/db/src/migrate.rs` (hardcoded MIGRATIONS array)
-- Branch: `codex/watch-party`
+- Branch: `watch-party`
 - Baseline commands:
   - `cargo fmt --all` ✅
   - `cargo clippy --workspace --all-targets -- -D warnings` ✅
