@@ -269,6 +269,14 @@ fn is_missing_unit_error(detail: &str) -> bool {
         || normalized.contains("unit ") && normalized.contains(" not found")
 }
 
+fn is_systemctl_unavailable_error(detail: &str) -> bool {
+    let normalized = detail.trim().to_ascii_lowercase();
+    (normalized.contains("failed to launch systemctl")
+        && normalized.contains("no such file or directory"))
+        || normalized.contains("system has not been booted with systemd")
+        || normalized.contains("failed to connect to bus")
+}
+
 fn validate_managed_instance_root(instance_root: &Path) -> Result<(), String> {
     let base_root = instance_root_base_path();
     if !instance_root.starts_with(&base_root) {
@@ -285,20 +293,27 @@ fn validate_managed_instance_root(instance_root: &Path) -> Result<(), String> {
 
 pub async fn delete_managed_instance(unit_name: &str, instance_root: &str) -> Result<(), String> {
     ensure_native_runtime_supported()?;
+    let mut systemctl_available = true;
 
     if let Err(error) = run_systemctl(&["stop", unit_name]).await {
-        if !is_missing_unit_error(&error) {
+        if is_systemctl_unavailable_error(&error) {
+            systemctl_available = false;
+        } else if !is_missing_unit_error(&error) {
             return Err(format!(
                 "failed to stop systemd unit before delete: {error}"
             ));
         }
     }
 
-    if let Err(error) = run_systemctl(&["disable", unit_name]).await {
-        if !is_missing_unit_error(&error) {
-            return Err(format!(
-                "failed to disable systemd unit before delete: {error}"
-            ));
+    if systemctl_available {
+        if let Err(error) = run_systemctl(&["disable", unit_name]).await {
+            if is_systemctl_unavailable_error(&error) {
+                systemctl_available = false;
+            } else if !is_missing_unit_error(&error) {
+                return Err(format!(
+                    "failed to disable systemd unit before delete: {error}"
+                ));
+            }
         }
     }
 
@@ -330,7 +345,14 @@ pub async fn delete_managed_instance(unit_name: &str, instance_root: &str) -> Re
     .await
     .map_err(|error| format!("delete task failed: {error}"))??;
 
-    daemon_reload().await?;
+    if systemctl_available {
+        if let Err(error) = daemon_reload().await {
+            if !is_systemctl_unavailable_error(&error) {
+                return Err(format!("failed to reload systemd after delete: {error}"));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1446,5 +1468,18 @@ mod tests {
             "Unit rustyfin.service not loaded."
         ));
         assert!(super::is_missing_unit_error("No such file or directory"));
+    }
+
+    #[test]
+    fn systemctl_unavailable_detection_catches_launch_and_bus_failures() {
+        assert!(super::is_systemctl_unavailable_error(
+            "failed to launch systemctl daemon-reload: No such file or directory (os error 2)"
+        ));
+        assert!(super::is_systemctl_unavailable_error(
+            "System has not been booted with systemd as init system (PID 1). Can't operate."
+        ));
+        assert!(super::is_systemctl_unavailable_error(
+            "Failed to connect to bus: Host is down"
+        ));
     }
 }
