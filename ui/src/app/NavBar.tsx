@@ -46,12 +46,11 @@ export default function NavBar() {
 
   return (
     <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
-
       {/* ── Desktop bar (lg+): nav links left | logo centered | user right ── */}
-      <div className="relative hidden items-center lg:flex">
+      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-6 lg:gap-y-3">
 
         {/* Left: nav links */}
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-1 pr-2">
           {navLinks.map((link) => (
             <Link key={link.href} href={link.href} className="btn-ghost px-3 py-2 text-sm">
               {link.label}
@@ -59,16 +58,16 @@ export default function NavBar() {
           ))}
         </div>
 
-        {/* Center: logo (absolute so it doesn't affect flex layout) */}
+        {/* Center: logo */}
         <Link
           href="/"
-          className="absolute left-1/2 -translate-x-1/2 text-2xl font-semibold accent-logo"
+          className="justify-self-center px-3 text-center text-2xl font-semibold accent-logo"
         >
           Rustyfin
         </Link>
 
         {/* Right: voice indicator + user section */}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 pl-2">
           {voiceSession && (
             <div className="chip h-10 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
               <Link

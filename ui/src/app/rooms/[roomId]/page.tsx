@@ -219,20 +219,41 @@ export default function WatchPartyRoomPage() {
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
   const roomDisplayName = room?.room_name?.trim() || '';
-  const activeMembers =
-    (realtime.roomState?.members ??
-      realtime.audioState?.members ??
-      realtime.webState?.members ??
-      realtime.youtubeState?.members ??
-      realtime.createState?.members ??
-      realtime.playState?.members) ??
-    room?.members.map((member) => ({
-      user_id: member.user_id,
-      username: member.username,
-      role: member.role,
-      connected: member.status === 'joined',
-    })) ??
-    [];
+  const activeMembers = useMemo(
+    () =>
+      (
+        (realtime.roomState?.members ??
+          realtime.audioState?.members ??
+          realtime.webState?.members ??
+          realtime.youtubeState?.members ??
+          realtime.createState?.members ??
+          realtime.playState?.members) ??
+        room?.members.map((member) => ({
+          user_id: member.user_id,
+          username: member.username,
+          role: member.role,
+          connected: member.status === 'joined',
+        })) ??
+        []
+      )
+        .slice()
+        .sort((left, right) => {
+          if (left.connected !== right.connected) {
+            return left.connected ? -1 : 1;
+          }
+          return left.username.localeCompare(right.username, undefined, { sensitivity: 'base' });
+        }),
+    [
+      realtime.roomState?.members,
+      realtime.audioState?.members,
+      realtime.webState?.members,
+      realtime.youtubeState?.members,
+      realtime.createState?.members,
+      realtime.playState?.members,
+      room?.members,
+    ],
+  );
+  const connectedMemberCount = activeMembers.filter((member) => member.connected).length;
 
   const invitableUsers = useMemo(() => {
     if (!me) return [];
@@ -956,10 +977,20 @@ export default function WatchPartyRoomPage() {
       {joinedRole && (
         <div className="grid gap-5 md:grid-cols-2">
           <section className="panel flex h-[22rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
-            <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
+              <span className="chip border-emerald-400/35 bg-emerald-500/10 text-emerald-200">
+                {connectedMemberCount} live
+              </span>
+            </div>
             <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {activeMembers.map((member) => (
-                <li key={member.user_id} className="panel-soft rounded-xl px-3 py-2">
+                <li
+                  key={member.user_id}
+                  className={`panel-soft rounded-xl px-3 py-2 transition ${
+                    member.connected ? 'room-member-online' : 'room-member-offline'
+                  }`}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-medium">{member.username}</p>

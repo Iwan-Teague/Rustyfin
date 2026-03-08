@@ -103,6 +103,24 @@ a {
   border-radius: var(--radius-md);
 }
 
+.room-member-online {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(rgba(49, 57, 82, 0.82), rgba(49, 57, 82, 0.82)) padding-box,
+    linear-gradient(
+      110deg,
+      rgba(255, 145, 77, 0.95) 0%,
+      rgba(255, 117, 136, 0.92) 52%,
+      rgba(157, 116, 255, 0.95) 100%
+    ) border-box;
+  box-shadow: 0 12px 26px rgba(113, 74, 201, 0.16);
+}
+
+.room-member-offline {
+  border-color: rgba(215, 223, 255, 0.12);
+  background: rgba(49, 57, 82, 0.48);
+}
+
 .tile {
   background: var(--surface);
   border: 1px solid var(--border);

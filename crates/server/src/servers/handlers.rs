@@ -365,6 +365,15 @@ fn can_delete_server(
     auth.role == "admin" || auth.user_id == server.owner_user_id
 }
 
+fn requires_provisioning_before_lifecycle(
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> bool {
+    matches!(
+        server.observed_state.as_str(),
+        "draft" | "unprovisioned" | "provisioning" | "importing"
+    )
+}
+
 fn capabilities_to_response(
     capabilities: MinecraftRuntimeCapabilities,
 ) -> MinecraftRuntimeCapabilitiesResponse {
@@ -1259,6 +1268,21 @@ pub async fn request_minecraft_server_action(
             "you do not have permission to control this server".into(),
         )
         .into());
+    }
+
+    if requires_provisioning_before_lifecycle(&current) {
+        let message = match current.observed_state.as_str() {
+            "provisioning" => {
+                "this Minecraft server is still provisioning. Wait for provisioning to complete before starting it."
+            }
+            "importing" => {
+                "this Minecraft server is still importing. Wait for import to complete before starting it."
+            }
+            _ => {
+                "this Minecraft server has not been provisioned yet. Use Provision Managed Server or import an existing server first."
+            }
+        };
+        return Err(ApiError::BadRequest(message.into()).into());
     }
 
     let job_payload = json!({

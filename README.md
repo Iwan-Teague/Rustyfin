@@ -176,6 +176,7 @@ Stop native host runtime:
 - For Debian 12 boot persistence, install:
   - `./scripts/install_native_systemd.sh`
   - this installs and enables `rustyfin-native.service`
+  - it also installs a dedicated root-run `rustfin-servers-agent.service` so Minecraft provisioning/start/stop can manage systemd units and host files without interactive auth prompts
 
 ## Quick Start (Docker)
 

@@ -127,6 +127,30 @@ function titleCase(value: string) {
 }
 
 function getServerIndicator(server: MinecraftServer) {
+  if (server.observed_state === 'draft') {
+    return {
+      label: 'Draft',
+      dotClass: 'bg-slate-300 shadow-[0_0_14px_rgba(226,232,240,0.22)]',
+      textClass: 'text-slate-200',
+    };
+  }
+
+  if (server.observed_state === 'unprovisioned') {
+    return {
+      label: 'Needs Provisioning',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      textClass: 'text-amber-200',
+    };
+  }
+
+  if (server.observed_state === 'provisioning' || server.observed_state === 'importing') {
+    return {
+      label: titleCase(server.observed_state),
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      textClass: 'text-amber-200',
+    };
+  }
+
   if (server.observed_state === 'running' && server.health_state === 'healthy') {
     return {
       label: 'Online',
@@ -641,20 +665,28 @@ export default function ServersPage() {
             {servers.map((server) => {
               const expanded = selectedServerId === server.id;
               const indicator = getServerIndicator(server);
+              const needsProvisioning =
+                server.observed_state === 'draft' ||
+                server.observed_state === 'unprovisioned' ||
+                server.observed_state === 'provisioning' ||
+                server.observed_state === 'importing';
               const lifecycleSupported = runtimeCapabilities?.lifecycle_supported ?? true;
               const statusSupported = runtimeCapabilities?.status_supported ?? true;
               const deleteSupported = runtimeCapabilities?.delete_supported ?? true;
               const canDelete = me.role === 'admin' || me.id === server.owner_user_id;
               const canStart =
                 lifecycleSupported &&
+                !needsProvisioning &&
                 server.observed_state !== 'running' &&
                 server.observed_state !== 'starting' &&
                 server.observed_state !== 'restarting';
               const canRestart =
                 lifecycleSupported &&
+                !needsProvisioning &&
                 (server.observed_state === 'running' || server.health_state === 'healthy');
               const canStop =
                 lifecycleSupported &&
+                !needsProvisioning &&
                 (server.observed_state === 'running' ||
                   server.observed_state === 'starting' ||
                   server.observed_state === 'restarting');
@@ -708,6 +740,11 @@ export default function ServersPage() {
                             className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
                             disabled={actionLoading !== null || !canStart}
                             onClick={() => void handleRequestAction(server, 'start')}
+                            title={
+                              needsProvisioning
+                                ? 'Provision or import this Minecraft server before starting it.'
+                                : undefined
+                            }
                           >
                             {actionLoading === 'start' && expanded ? 'Starting…' : 'Start'}
                           </button>
@@ -716,6 +753,11 @@ export default function ServersPage() {
                             className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
                             disabled={actionLoading !== null || !canRestart}
                             onClick={() => void handleRequestAction(server, 'restart')}
+                            title={
+                              needsProvisioning
+                                ? 'Provision or import this Minecraft server before restarting it.'
+                                : undefined
+                            }
                           >
                             {actionLoading === 'restart' && expanded ? 'Restarting…' : 'Restart'}
                           </button>
@@ -724,6 +766,11 @@ export default function ServersPage() {
                             className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
                             disabled={actionLoading !== null || !canStop}
                             onClick={() => void handleRequestAction(server, 'stop')}
+                            title={
+                              needsProvisioning
+                                ? 'Provision or import this Minecraft server before stopping it.'
+                                : undefined
+                            }
                           >
                             {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
                           </button>

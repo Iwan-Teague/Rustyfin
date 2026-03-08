@@ -110,6 +110,12 @@ fn unit_service_group() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn unit_service_identity() -> Option<(String, String)> {
+    let user = unit_service_user()?;
+    let group = unit_service_group().unwrap_or_else(|| user.clone());
+    Some((user, group))
+}
+
 fn import_roots() -> Vec<PathBuf> {
     let raw = std::env::var("RUSTFIN_SERVERS_IMPORT_ROOTS")
         .ok()
@@ -691,6 +697,38 @@ fn render_systemd_unit(spec: &ManagedProvisionSpec) -> String {
     unit
 }
 
+fn apply_instance_ownership(instance_root: &Path) -> Result<(), String> {
+    let Some((user, group)) = unit_service_identity() else {
+        return Ok(());
+    };
+
+    let status = std::process::Command::new("chown")
+        .arg("-R")
+        .arg(format!("{user}:{group}"))
+        .arg(instance_root)
+        .status()
+        .map_err(|error| {
+            format!(
+                "failed to launch chown for {} -> {}:{}: {error}",
+                instance_root.display(),
+                user,
+                group
+            )
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "chown -R {}:{} {} exited with {}",
+            user,
+            group,
+            instance_root.display(),
+            status
+        ))
+    }
+}
+
 fn validate_import_source_path(path: &str) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -884,6 +922,8 @@ fn write_runtime_files(
             meta_dir.display()
         )
     })?;
+
+    apply_instance_ownership(&instance_root)?;
 
     Ok(ProvisioningResult {
         install_mode: spec.install_mode.clone(),
