@@ -60,6 +60,8 @@ type HostDirectoryBrowserState = {
   directories: HostDirectoryListEntry[];
 };
 
+type ServersGameTab = 'minecraft' | 'more-soon';
+
 const DEFAULT_FORM: CreateFormState = {
   display_name: '',
   description: '',
@@ -164,6 +166,7 @@ export default function ServersPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
 
+  const activeGameTab: ServersGameTab = 'minecraft';
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [managementServerId, setManagementServerId] = useState<string | null>(null);
@@ -545,17 +548,6 @@ export default function ServersPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-      <header className="panel animate-rise space-y-4 p-6 sm:p-8">
-        <div className="space-y-2">
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Game servers</h1>
-          <p className="max-w-3xl text-sm muted sm:text-base">
-            Rustyfin now tracks Minecraft server records in PostgreSQL, uses a dedicated Rust
-            servers agent for privileged Debian host operations, and exposes lifecycle control,
-            discovery, import, status, and logs through one management surface.
-          </p>
-        </div>
-      </header>
-
       {error ? (
         <div className="panel-soft animate-rise border border-red-400/30 px-5 py-4 text-sm text-red-200">
           {error}
@@ -568,7 +560,28 @@ export default function ServersPage() {
         </div>
       ) : null}
 
-      <section className="panel flex flex-col gap-4 p-5 sm:p-6">
+      <div className="relative z-10 -mb-3 flex flex-wrap items-end gap-2">
+        <button
+          type="button"
+          disabled
+          className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors disabled:opacity-100 ${
+            activeGameTab === 'minecraft'
+              ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
+              : ''
+          }`}
+        >
+          Minecraft
+        </button>
+        <button
+          type="button"
+          disabled
+          className="px-5 py-2.5 text-sm font-medium rounded-t-lg opacity-60 border border-b-0 border-[var(--border)]/50 bg-[var(--surface)]/40"
+        >
+          More soon
+        </button>
+      </div>
+
+      <section className="panel flex flex-col gap-4 p-5 pt-6 sm:p-6 sm:pt-7">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-semibold">Known servers</h2>
