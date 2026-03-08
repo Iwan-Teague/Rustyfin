@@ -96,6 +96,7 @@ pub struct UpdateMinecraftServerRuntimeParams<'a> {
     pub observed_state: &'a str,
     pub health_state: &'a str,
     pub current_player_count: i64,
+    pub max_player_count: Option<i64>,
     pub last_ready_ts: Option<i64>,
     pub last_started_ts: Option<i64>,
     pub last_stopped_ts: Option<i64>,
@@ -476,19 +477,21 @@ pub async fn update_minecraft_server_runtime(
              observed_state = $3,
              health_state = $4,
              current_player_count = $5,
-             last_ready_ts = $6,
-             last_started_ts = $7,
-             last_stopped_ts = $8,
-             last_exit_code = $9,
-             last_error_summary = $10,
-             updated_ts = $11
-         WHERE id = $12",
+             max_player_count = COALESCE($6, max_player_count),
+             last_ready_ts = $7,
+             last_started_ts = $8,
+             last_stopped_ts = $9,
+             last_exit_code = $10,
+             last_error_summary = $11,
+             updated_ts = $12
+         WHERE id = $13",
     )
     .bind(params.install_mode)
     .bind(params.desired_state)
     .bind(params.observed_state)
     .bind(params.health_state)
     .bind(params.current_player_count)
+    .bind(params.max_player_count)
     .bind(params.last_ready_ts)
     .bind(params.last_started_ts)
     .bind(params.last_stopped_ts)

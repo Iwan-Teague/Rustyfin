@@ -12,10 +12,10 @@ use rustfin_core::{
     axum_error::AppError,
     error::ApiError,
     servers_agent::{
-        ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
+        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
         ServersAgentDiscoveryScanResponse, ServersAgentImportRequest, ServersAgentLifecycleRequest,
-        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProvisionRequest,
-        ServersAgentStatusRequest, SystemdUnitStatus,
+        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProbeRequest,
+        ServersAgentProvisionRequest, ServersAgentStatusRequest, SystemdUnitStatus,
     },
 };
 use tracing_subscriber::EnvFilter;
@@ -55,6 +55,18 @@ async fn run_lifecycle(
         .await
         .map_err(ApiError::BadRequest)?;
     Ok(Json(ServersAgentAckResponse { ok: true }))
+}
+
+async fn probe(
+    State(state): State<AgentState>,
+    headers: HeaderMap,
+    Json(req): Json<ServersAgentProbeRequest>,
+) -> Result<Json<MinecraftServerProbe>, AppError> {
+    require_agent_auth(&headers, &state)?;
+    let result = rustfin_servers_host::probe_minecraft_server(req.host.trim(), req.port)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(result))
 }
 
 async fn provision(
@@ -120,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/minecraft/status", post(get_status))
+        .route("/v1/minecraft/probe", post(probe))
         .route("/v1/minecraft/lifecycle", post(run_lifecycle))
         .route("/v1/minecraft/provision", post(provision))
         .route("/v1/minecraft/import", post(import))

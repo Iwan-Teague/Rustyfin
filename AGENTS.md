@@ -10,7 +10,7 @@ Rustyfin is a Docker-first local media platform with:
 - Next.js frontend (`ui`)
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`)
 - A new `Servers` product area for native game-server management, starting with Minecraft instance records and management APIs/UI
-  - Current `Servers` slice includes native Minecraft lifecycle control (`start`, `stop`, `restart`, status refresh), managed provisioning, existing-server import, journald log viewing, discovery scans for existing Minecraft directories, and host systemd unit rendering when Rustyfin is running in its supported native Debian deployment mode.
+  - Current `Servers` slice includes native Minecraft lifecycle control (`start`, `stop`, `restart`, status refresh), live readiness/player-count probing, managed provisioning, existing-server import, journald log viewing, discovery scans for existing Minecraft directories, and host systemd unit rendering when Rustyfin is running in its supported native Debian deployment mode.
   - Privileged Minecraft host operations are now split behind a dedicated Rust `rustfin-servers-agent`; keep the main backend focused on orchestration, authorization, jobs, and DB/audit updates.
 
 ## Core Rules

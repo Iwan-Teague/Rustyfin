@@ -1,6 +1,6 @@
 pub use rustfin_core::servers_agent::{
-    DiscoveryCandidate, ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult,
-    ServerLifecycleAction, ServerLogLine, ServersAgentDiscoveryScanResponse,
+    DiscoveryCandidate, ImportProvisionSpec, ManagedProvisionSpec, MinecraftServerProbe,
+    ProvisioningResult, ServerLifecycleAction, ServerLogLine, ServersAgentDiscoveryScanResponse,
     ServersAgentLogsResponse, SystemdUnitStatus,
 };
 
@@ -52,6 +52,20 @@ pub async fn provision_managed_instance(
             .map_err(|error| error.to_string())
     } else {
         rustfin_servers_host::provision_managed_instance(spec).await
+    }
+}
+
+pub async fn probe_minecraft_server(
+    state: &AppState,
+    host: &str,
+    port: u16,
+) -> Result<MinecraftServerProbe, String> {
+    if use_servers_agent(state) {
+        super::agent_client::probe_minecraft_server(state, host, port)
+            .await
+            .map_err(|error| error.to_string())
+    } else {
+        rustfin_servers_host::probe_minecraft_server(host, port).await
     }
 }
 

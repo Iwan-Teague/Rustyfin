@@ -100,6 +100,12 @@ pub struct ServersAgentStatusRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServersAgentProbeRequest {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersAgentLifecycleRequest {
     pub unit_name: String,
     pub action: ServerLifecycleAction,
@@ -130,6 +136,15 @@ pub struct ServersAgentDiscoveryScanRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersAgentAckResponse {
     pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinecraftServerProbe {
+    pub version_name: Option<String>,
+    pub protocol_version: Option<i32>,
+    pub online_players: i64,
+    pub max_players: Option<i64>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,7 +31,7 @@ The intended server host for Rustyfin is **Debian 12 (headless/minimal install)*
   - Secure stream token handling for scoped streaming URLs.
 - Servers
   - New `Servers` area for native game server management.
-  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, native start/stop/restart controls, managed provisioning, existing-server import, journald log viewing, and discovery scans for host-side Minecraft directories through the Rust API/UI surface.
+  - Current implementation adds PostgreSQL-backed Minecraft instance records, event history, status refresh, live Minecraft readiness/player-count probing, native start/stop/restart controls, managed provisioning, existing-server import, journald log viewing, and discovery scans for host-side Minecraft directories through the Rust API/UI surface.
   - Rustyfin now renders native Debian 12 systemd units for Minecraft instances, can copy an existing host server directory into its managed instance path, and can route privileged host operations through a dedicated Rust `rustfin-servers-agent`.
 - Rooms (formerly watch-party)
   - Watch Together: local media, YouTube embed, and shared web room.

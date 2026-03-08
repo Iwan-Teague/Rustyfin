@@ -1,10 +1,10 @@
 use rustfin_core::{
     error::ApiError,
     servers_agent::{
-        ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
+        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
         ServersAgentDiscoveryScanResponse, ServersAgentImportRequest, ServersAgentLifecycleRequest,
-        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProvisionRequest,
-        ServersAgentStatusRequest, SystemdUnitStatus,
+        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProbeRequest,
+        ServersAgentProvisionRequest, ServersAgentStatusRequest, SystemdUnitStatus,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,23 @@ pub async fn run_lifecycle_action(
     )
     .await?;
     Ok(())
+}
+
+pub async fn probe_minecraft_server(
+    state: &AppState,
+    host: &str,
+    port: u16,
+) -> Result<MinecraftServerProbe, ApiError> {
+    post_json(
+        state,
+        "/v1/minecraft/probe",
+        &ServersAgentProbeRequest {
+            host: host.to_string(),
+            port,
+        },
+        "failed to probe Minecraft server via servers agent",
+    )
+    .await
 }
 
 pub async fn provision_managed_instance(
