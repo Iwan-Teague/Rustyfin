@@ -120,6 +120,46 @@ function titleCase(value: string) {
     .join(' ');
 }
 
+function getServerIndicator(server: MinecraftServer) {
+  if (server.observed_state === 'running' && server.health_state === 'healthy') {
+    return {
+      label: 'Online',
+      dotClass: 'bg-emerald-400 shadow-[0_0_14px_rgba(74,222,128,0.45)]',
+      textClass: 'text-emerald-200',
+    };
+  }
+
+  if (server.observed_state === 'starting' || server.observed_state === 'restarting') {
+    return {
+      label: titleCase(server.observed_state),
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      textClass: 'text-amber-200',
+    };
+  }
+
+  if (server.observed_state === 'stopping') {
+    return {
+      label: 'Stopping',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      textClass: 'text-amber-200',
+    };
+  }
+
+  if (server.health_state === 'error' || server.observed_state === 'error') {
+    return {
+      label: 'Error',
+      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      textClass: 'text-rose-200',
+    };
+  }
+
+  return {
+    label: 'Offline',
+    dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+    textClass: 'text-rose-200',
+  };
+}
+
 export default function ServersPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -552,6 +592,17 @@ export default function ServersPage() {
           <div className="space-y-4">
             {servers.map((server) => {
               const expanded = selectedServerId === server.id;
+              const indicator = getServerIndicator(server);
+              const canStart =
+                server.observed_state !== 'running' &&
+                server.observed_state !== 'starting' &&
+                server.observed_state !== 'restarting';
+              const canRestart =
+                server.observed_state === 'running' || server.health_state === 'healthy';
+              const canStop =
+                server.observed_state === 'running' ||
+                server.observed_state === 'starting' ||
+                server.observed_state === 'restarting';
               return (
                 <div
                   key={server.id}
@@ -560,64 +611,69 @@ export default function ServersPage() {
                   }`}
                 >
                   <div className="flex flex-col gap-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex flex-wrap items-center gap-3">
                           <h3 className="text-lg font-semibold text-white">{server.display_name}</h3>
-                          <span className="chip">{titleCase(server.observed_state)}</span>
-                          <span className="chip">{titleCase(server.health_state)}</span>
-                          <span className="chip">{titleCase(server.install_mode)}</span>
-                          <span className="chip">Desired {titleCase(server.desired_state)}</span>
-                        </div>
-                        <div className="text-sm muted">
-                          {server.server_distribution} {server.minecraft_version}
+                          <span
+                            className={`inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium ${indicator.textClass}`}
+                          >
+                            <span className={`h-2.5 w-2.5 rounded-full ${indicator.dotClass}`} />
+                            {indicator.label}
+                          </span>
+                          <span className="chip">Port {server.listen_port}</span>
+                          <span className="chip">
+                            {server.current_player_count}/{server.max_player_count ?? 0} players
+                          </span>
+                          <span className="chip">{server.server_distribution} {server.minecraft_version}</span>
                         </div>
                         {server.description ? (
                           <div className="max-w-3xl text-sm muted">{server.description}</div>
                         ) : null}
-                        <div className="flex flex-wrap gap-2 text-xs muted">
-                          <span className="chip">Port {server.listen_port}</span>
-                          <span className="chip">{server.world_name}</span>
-                          <span className="chip">
-                            {server.current_player_count}/{server.max_player_count ?? 0} players
-                          </span>
-                          <span className="chip">{titleCase(server.runtime_mode)}</span>
+                        <div className="flex flex-wrap items-center gap-3 text-sm muted">
+                          <span>{server.server_distribution} {server.minecraft_version}</span>
+                          <span className="text-white/20">•</span>
+                          <span>World {server.world_name}</span>
+                          <span className="text-white/20">•</span>
+                          <span>{titleCase(server.runtime_mode)}</span>
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                          disabled={statusRefreshing || actionLoading !== null}
-                          onClick={() => void refreshSelectedServerStatus(server.id, true)}
-                        >
-                          {statusRefreshing && expanded ? 'Refreshing…' : 'Refresh Status'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
-                          disabled={actionLoading !== null}
-                          onClick={() => void handleRequestAction(server, 'start')}
-                        >
-                          {actionLoading === 'start' && expanded ? 'Starting…' : 'Start'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                          disabled={actionLoading !== null}
-                          onClick={() => void handleRequestAction(server, 'restart')}
-                        >
-                          {actionLoading === 'restart' && expanded ? 'Restarting…' : 'Restart'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                          disabled={actionLoading !== null}
-                          onClick={() => void handleRequestAction(server, 'stop')}
-                        >
-                          {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
-                        </button>
+                      <div className="flex min-w-fit flex-col items-end gap-2 self-start">
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                            disabled={statusRefreshing || actionLoading !== null}
+                            onClick={() => void refreshSelectedServerStatus(server.id, true)}
+                          >
+                            {statusRefreshing && expanded ? 'Refreshing…' : 'Refresh Status'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                            disabled={actionLoading !== null || !canStart}
+                            onClick={() => void handleRequestAction(server, 'start')}
+                          >
+                            {actionLoading === 'start' && expanded ? 'Starting…' : 'Start'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                            disabled={actionLoading !== null || !canRestart}
+                            onClick={() => void handleRequestAction(server, 'restart')}
+                          >
+                            {actionLoading === 'restart' && expanded ? 'Restarting…' : 'Restart'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                            disabled={actionLoading !== null || !canStop}
+                            onClick={() => void handleRequestAction(server, 'stop')}
+                          >
+                            {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
+                          </button>
+                        </div>
                         <button
                           type="button"
                           className="btn-ghost px-3 py-2 text-xs"
