@@ -124,11 +124,20 @@ fn base_instances_root() -> String {
 }
 
 fn default_java_path() -> String {
-    std::env::var("RUSTFIN_SERVERS_DEFAULT_JAVA")
+    if let Some(configured) = std::env::var("RUSTFIN_SERVERS_DEFAULT_JAVA")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "/usr/bin/java".to_string())
+    {
+        return configured;
+    }
+
+    let managed_java = "/opt/rustyfin/java/current/bin/java";
+    if std::path::Path::new(managed_java).is_file() {
+        return managed_java.to_string();
+    }
+
+    "/usr/bin/java".to_string()
 }
 
 fn slugify_display_name(value: &str) -> String {

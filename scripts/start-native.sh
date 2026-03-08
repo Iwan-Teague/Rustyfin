@@ -137,6 +137,10 @@ if [[ -f "$RUNTIME_ENV_FILE" ]]; then
   source "$RUNTIME_ENV_FILE" || true
 fi
 
+if [[ -z "${RUSTFIN_SERVERS_DEFAULT_JAVA:-}" ]] && [[ -x /opt/rustyfin/java/current/bin/java ]]; then
+  export RUSTFIN_SERVERS_DEFAULT_JAVA=/opt/rustyfin/java/current/bin/java
+fi
+
 [[ -n "$user_backend_port" ]] && RUSTFIN_BACKEND_PORT="$user_backend_port"
 [[ -n "$user_calendar_port" ]] && RUSTFIN_CALENDAR_PORT="$user_calendar_port"
 [[ -n "$user_tmdb_port" ]] && RUSTFIN_TMDB_AGENT_PORT="$user_tmdb_port"
