@@ -8,7 +8,10 @@ use rustfin_core::servers_agent::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::time::{Duration, timeout};
 
 #[derive(Debug, Deserialize)]
 struct VanillaVersionManifest {
@@ -252,6 +255,183 @@ pub async fn query_unit_status(unit_name: &str) -> Result<SystemdUnitStatus, Str
         };
         Err(detail)
     }
+}
+
+fn normalize_probe_host(host: &str) -> String {
+    match host.trim() {
+        "" | "0.0.0.0" | "::" | "[::]" | "::0" | "*" => "127.0.0.1".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn flatten_description(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.to_string(),
+        Value::Array(values) => values
+            .iter()
+            .map(flatten_description)
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>()
+            .join(""),
+        Value::Object(map) => {
+            let mut text = String::new();
+            if let Some(Value::String(value)) = map.get("text") {
+                text.push_str(value);
+            }
+            if let Some(extra) = map.get("extra") {
+                text.push_str(&flatten_description(extra));
+            }
+            text
+        }
+        _ => String::new(),
+    }
+}
+
+fn write_varint(buffer: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let mut temp = (value & 0b0111_1111) as u8;
+        value >>= 7;
+        if value != 0 {
+            temp |= 0b1000_0000;
+        }
+        buffer.push(temp);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+async fn read_varint(stream: &mut TcpStream) -> Result<i32, String> {
+    let mut num_read = 0;
+    let mut result = 0i32;
+    loop {
+        let byte = stream
+            .read_u8()
+            .await
+            .map_err(|error| format!("failed to read varint byte: {error}"))?;
+        let value = (byte & 0b0111_1111) as i32;
+        result |= value << (7 * num_read);
+        num_read += 1;
+        if num_read > 5 {
+            return Err("minecraft status varint was too large".to_string());
+        }
+        if (byte & 0b1000_0000) == 0 {
+            break;
+        }
+    }
+    Ok(result)
+}
+
+#[derive(Debug, Deserialize)]
+struct MinecraftStatusResponse {
+    #[serde(default)]
+    version: Option<MinecraftStatusVersion>,
+    #[serde(default)]
+    players: Option<MinecraftStatusPlayers>,
+    #[serde(default)]
+    description: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MinecraftStatusVersion {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    protocol: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MinecraftStatusPlayers {
+    #[serde(default)]
+    max: Option<i64>,
+    #[serde(default)]
+    online: Option<i64>,
+}
+
+pub async fn probe_minecraft_server(
+    host: &str,
+    port: u16,
+) -> Result<rustfin_core::servers_agent::MinecraftServerProbe, String> {
+    let target_host = normalize_probe_host(host);
+    let mut stream = timeout(
+        Duration::from_secs(3),
+        TcpStream::connect((target_host.as_str(), port)),
+    )
+    .await
+    .map_err(|_| format!("minecraft status probe to {target_host}:{port} timed out"))?
+    .map_err(|error| {
+        format!("failed to connect to Minecraft server at {target_host}:{port}: {error}")
+    })?;
+
+    let protocol_version = std::env::var("RUSTFIN_SERVERS_MINECRAFT_STATUS_PROTOCOL")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i32>().ok())
+        .unwrap_or(760);
+
+    let mut handshake = Vec::new();
+    write_varint(&mut handshake, 0);
+    write_varint(&mut handshake, protocol_version);
+    write_varint(&mut handshake, target_host.len() as i32);
+    handshake.extend_from_slice(target_host.as_bytes());
+    handshake.extend_from_slice(&port.to_be_bytes());
+    write_varint(&mut handshake, 1);
+
+    let mut handshake_packet = Vec::new();
+    write_varint(&mut handshake_packet, handshake.len() as i32);
+    handshake_packet.extend_from_slice(&handshake);
+
+    timeout(Duration::from_secs(3), stream.write_all(&handshake_packet))
+        .await
+        .map_err(|_| "minecraft status handshake write timed out".to_string())?
+        .map_err(|error| format!("failed to write Minecraft handshake: {error}"))?;
+
+    let request_packet = [1u8, 0u8];
+    timeout(Duration::from_secs(3), stream.write_all(&request_packet))
+        .await
+        .map_err(|_| "minecraft status request write timed out".to_string())?
+        .map_err(|error| format!("failed to write Minecraft status request: {error}"))?;
+
+    let _packet_length = timeout(Duration::from_secs(3), read_varint(&mut stream))
+        .await
+        .map_err(|_| "minecraft status response timed out".to_string())??;
+    let packet_id = timeout(Duration::from_secs(3), read_varint(&mut stream))
+        .await
+        .map_err(|_| "minecraft status packet id timed out".to_string())??;
+    if packet_id != 0 {
+        return Err(format!("unexpected Minecraft status packet id {packet_id}"));
+    }
+    let json_length = timeout(Duration::from_secs(3), read_varint(&mut stream))
+        .await
+        .map_err(|_| "minecraft status payload length timed out".to_string())??;
+    if json_length < 0 || json_length > 1024 * 1024 {
+        return Err("minecraft status payload length was invalid".to_string());
+    }
+    let mut json_buf = vec![0u8; json_length as usize];
+    timeout(Duration::from_secs(3), stream.read_exact(&mut json_buf))
+        .await
+        .map_err(|_| "minecraft status payload read timed out".to_string())?
+        .map_err(|error| format!("failed to read Minecraft status payload: {error}"))?;
+
+    let parsed = serde_json::from_slice::<MinecraftStatusResponse>(&json_buf)
+        .map_err(|error| format!("failed to decode Minecraft status payload: {error}"))?;
+
+    let description = parsed
+        .description
+        .as_ref()
+        .map(flatten_description)
+        .filter(|value| !value.trim().is_empty());
+
+    Ok(rustfin_core::servers_agent::MinecraftServerProbe {
+        version_name: parsed.version.as_ref().and_then(|value| value.name.clone()),
+        protocol_version: parsed.version.as_ref().and_then(|value| value.protocol),
+        online_players: parsed
+            .players
+            .as_ref()
+            .and_then(|value| value.online)
+            .unwrap_or(0),
+        max_players: parsed.players.as_ref().and_then(|value| value.max),
+        description,
+    })
 }
 
 fn bool_prop(value: bool) -> &'static str {
@@ -1146,5 +1326,24 @@ mod tests {
         assert_eq!(candidate.motd.as_deref(), Some("Welcome"));
         assert_eq!(candidate.top_level_jars, vec!["paper.jar".to_string()]);
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn normalize_probe_host_rewrites_wildcards() {
+        assert_eq!(super::normalize_probe_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(super::normalize_probe_host("::"), "127.0.0.1");
+        assert_eq!(super::normalize_probe_host("192.168.0.10"), "192.168.0.10");
+    }
+
+    #[test]
+    fn flatten_description_supports_nested_chat_components() {
+        let value: serde_json::Value = serde_json::json!({
+            "text": "Welcome ",
+            "extra": [
+                {"text": "to "},
+                {"text": "Rustyfin"}
+            ]
+        });
+        assert_eq!(super::flatten_description(&value), "Welcome to Rustyfin");
     }
 }

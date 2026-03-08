@@ -9,8 +9,8 @@ use tokio::time::{Duration, sleep};
 use super::runtime::{
     ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult, ServerLifecycleAction,
     ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse, SystemdUnitStatus,
-    import_existing_instance, provision_managed_instance, query_unit_logs, query_unit_status,
-    run_lifecycle_action, scan_discovery_candidates,
+    import_existing_instance, probe_minecraft_server, provision_managed_instance, query_unit_logs,
+    query_unit_status, run_lifecycle_action, scan_discovery_candidates,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -323,6 +323,7 @@ struct RuntimeProjection {
     observed_state: String,
     health_state: String,
     current_player_count: i64,
+    max_player_count: Option<i64>,
     last_ready_ts: Option<i64>,
     last_started_ts: Option<i64>,
     last_stopped_ts: Option<i64>,
@@ -373,6 +374,7 @@ fn build_managed_provision_spec(
 fn apply_runtime_status_projection(
     current: &rustfin_db::repo::servers::MinecraftServerRow,
     status: &SystemdUnitStatus,
+    probe: Option<&super::runtime::MinecraftServerProbe>,
 ) -> RuntimeProjection {
     let now = chrono::Utc::now().timestamp();
     let mut projection = RuntimeProjection {
@@ -380,7 +382,8 @@ fn apply_runtime_status_projection(
         desired_state: current.desired_state.clone(),
         observed_state: current.observed_state.clone(),
         health_state: current.health_state.clone(),
-        current_player_count: current.current_player_count,
+        current_player_count: 0,
+        max_player_count: current.max_player_count,
         last_ready_ts: current.last_ready_ts,
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
@@ -391,6 +394,7 @@ fn apply_runtime_status_projection(
     if status.load_state == "not-found" {
         projection.observed_state = "unprovisioned".to_string();
         projection.health_state = "unknown".to_string();
+        projection.current_player_count = 0;
         projection.last_error_summary = Some(format!(
             "Native systemd unit {} was not found on the host",
             current.systemd_unit_name
@@ -401,34 +405,49 @@ fn apply_runtime_status_projection(
     match status.active_state.as_str() {
         "active" if status.sub_state == "running" => {
             projection.observed_state = "running".to_string();
-            projection.health_state = "healthy".to_string();
-            projection.last_ready_ts = Some(now);
             projection.last_started_ts = Some(
                 current
                     .last_started_ts
                     .filter(|_| current.observed_state == "running")
                     .unwrap_or(now),
             );
-            projection.last_error_summary = None;
+            if let Some(probe) = probe {
+                projection.health_state = "healthy".to_string();
+                projection.current_player_count = probe.online_players.max(0);
+                projection.max_player_count = probe.max_players.or(current.max_player_count);
+                projection.last_ready_ts = Some(now);
+                projection.last_error_summary = None;
+            } else {
+                projection.health_state = "pending".to_string();
+                projection.current_player_count = 0;
+                projection.last_error_summary = Some(
+                    "Minecraft server process is running but the status probe is not ready yet"
+                        .to_string(),
+                );
+            }
         }
         "activating" => {
             projection.observed_state = "starting".to_string();
             projection.health_state = "pending".to_string();
+            projection.current_player_count = 0;
             projection.last_error_summary = None;
         }
         "deactivating" => {
             projection.observed_state = "stopping".to_string();
             projection.health_state = "pending".to_string();
+            projection.current_player_count = 0;
             projection.last_error_summary = None;
         }
         "reloading" => {
             projection.observed_state = "restarting".to_string();
             projection.health_state = "pending".to_string();
+            projection.current_player_count = 0;
             projection.last_error_summary = None;
         }
         "inactive" => {
             projection.observed_state = "stopped".to_string();
             projection.health_state = "idle".to_string();
+            projection.current_player_count = 0;
             projection.last_stopped_ts = Some(
                 current
                     .last_stopped_ts
@@ -440,6 +459,7 @@ fn apply_runtime_status_projection(
         "failed" => {
             projection.observed_state = "failed".to_string();
             projection.health_state = "error".to_string();
+            projection.current_player_count = 0;
             projection.last_stopped_ts = Some(now);
             projection.last_error_summary = Some(format!(
                 "systemd reported result={} sub_state={} unit_state={}",
@@ -449,6 +469,7 @@ fn apply_runtime_status_projection(
         other => {
             projection.observed_state = other.to_string();
             projection.health_state = "unknown".to_string();
+            projection.current_player_count = 0;
             projection.last_error_summary = Some(format!(
                 "systemd reported active_state={} sub_state={} unit_state={}",
                 status.active_state, status.sub_state, status.unit_file_state
@@ -468,7 +489,8 @@ fn apply_runtime_error_projection(
         desired_state: current.desired_state.clone(),
         observed_state: current.observed_state.clone(),
         health_state: "error".to_string(),
-        current_player_count: current.current_player_count,
+        current_player_count: 0,
+        max_player_count: current.max_player_count,
         last_ready_ts: current.last_ready_ts,
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
@@ -491,6 +513,7 @@ async fn persist_runtime_projection(
             observed_state: &projection.observed_state,
             health_state: &projection.health_state,
             current_player_count: projection.current_player_count,
+            max_player_count: projection.max_player_count,
             last_ready_ts: projection.last_ready_ts,
             last_started_ts: projection.last_started_ts,
             last_stopped_ts: projection.last_stopped_ts,
@@ -512,7 +535,18 @@ async fn refresh_runtime_status(
     current: &rustfin_db::repo::servers::MinecraftServerRow,
 ) -> Result<rustfin_db::repo::servers::MinecraftServerRow, AppError> {
     let projection = match query_unit_status(state, &current.systemd_unit_name).await {
-        Ok(status) => apply_runtime_status_projection(current, &status),
+        Ok(status) => {
+            let probe = if status.active_state == "active" && status.sub_state == "running" {
+                let port = u16::try_from(current.listen_port)
+                    .map_err(|_| ApiError::Internal("server listen port is out of range".into()))?;
+                probe_minecraft_server(state, &current.listen_host, port)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            apply_runtime_status_projection(current, &status, probe.as_ref())
+        }
         Err(error) => apply_runtime_error_projection(current, &error),
     };
 
@@ -648,6 +682,7 @@ async fn apply_provisioning_success(
         observed_state: "stopped".to_string(),
         health_state: "ready".to_string(),
         current_player_count: 0,
+        max_player_count: current.max_player_count,
         last_ready_ts: Some(chrono::Utc::now().timestamp()),
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
@@ -776,6 +811,7 @@ async fn run_managed_provision_job(
                 observed_state: "failed".to_string(),
                 health_state: "error".to_string(),
                 current_player_count: current.current_player_count,
+                max_player_count: current.max_player_count,
                 last_ready_ts: current.last_ready_ts,
                 last_started_ts: current.last_started_ts,
                 last_stopped_ts: current.last_stopped_ts,
@@ -929,6 +965,7 @@ async fn run_import_job(
                 observed_state: "failed".to_string(),
                 health_state: "error".to_string(),
                 current_player_count: current.current_player_count,
+                max_player_count: current.max_player_count,
                 last_ready_ts: current.last_ready_ts,
                 last_started_ts: current.last_started_ts,
                 last_stopped_ts: current.last_stopped_ts,
@@ -1198,6 +1235,7 @@ pub async fn request_minecraft_server_action(
         observed_state: action.transitional_observed_state().to_string(),
         health_state: "pending".to_string(),
         current_player_count: current.current_player_count,
+        max_player_count: current.max_player_count,
         last_ready_ts: current.last_ready_ts,
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
@@ -1308,6 +1346,7 @@ pub async fn provision_minecraft_server(
         observed_state: "provisioning".to_string(),
         health_state: "pending".to_string(),
         current_player_count: current.current_player_count,
+        max_player_count: current.max_player_count,
         last_ready_ts: current.last_ready_ts,
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
@@ -1407,6 +1446,7 @@ pub async fn import_minecraft_server(
         observed_state: "importing".to_string(),
         health_state: "pending".to_string(),
         current_player_count: current.current_player_count,
+        max_player_count: current.max_player_count,
         last_ready_ts: current.last_ready_ts,
         last_started_ts: current.last_started_ts,
         last_stopped_ts: current.last_stopped_ts,
