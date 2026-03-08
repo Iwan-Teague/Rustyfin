@@ -63,6 +63,9 @@ fi
 RUSTFIN_NATIVE_USER_HOME="$(getent passwd "$RUSTFIN_NATIVE_USER" | cut -d: -f6 || true)"
 [[ -n "$RUSTFIN_NATIVE_USER_HOME" ]] || die "Unable to resolve home directory for user: $RUSTFIN_NATIVE_USER"
 
+RUSTFIN_MANAGED_JAVA_ROOT="/opt/rustyfin/java"
+RUSTFIN_MANAGED_JAVA_CURRENT="${RUSTFIN_MANAGED_JAVA_ROOT}/current"
+
 if [[ "$RUSTFIN_NATIVE_USER" == "root" ]]; then
   RUN_NATIVE_USER=()
 else
@@ -72,6 +75,45 @@ else
     RUN_NATIVE_USER=()
   fi
 fi
+
+java_major_version() {
+  local java_bin="$1"
+  "$java_bin" -version 2>&1 | awk -F[\".] '/version/ {print $2; exit}' || true
+}
+
+install_managed_java_21() {
+  local arch
+  case "$(dpkg --print-architecture)" in
+    arm64) arch="aarch64" ;;
+    amd64) arch="x64" ;;
+    *) die "Unsupported Debian architecture for managed Java 21 install: $(dpkg --print-architecture)" ;;
+  esac
+
+  local install_parent="${RUSTFIN_MANAGED_JAVA_ROOT}"
+  local install_dir="${install_parent}/temurin-21"
+  local temp_dir
+  local archive_path
+  local download_url="https://api.adoptium.net/v3/binary/latest/21/ga/linux/${arch}/jdk/hotspot/normal/eclipse"
+
+  temp_dir="$(mktemp -d)"
+  archive_path="${temp_dir}/temurin21.tar.gz"
+  trap 'rm -rf "$temp_dir"' RETURN
+
+  info "Installing managed Java 21 runtime for Minecraft..."
+  "${RUN_ROOT[@]}" install -d -m 755 "$install_parent"
+  "${RUN_ROOT[@]}" curl -fsSL "$download_url" -o "$archive_path"
+  "${RUN_ROOT[@]}" rm -rf "$install_dir"
+  "${RUN_ROOT[@]}" mkdir -p "$install_dir"
+  "${RUN_ROOT[@]}" tar -xzf "$archive_path" -C "$install_dir" --strip-components=1
+  "${RUN_ROOT[@]}" ln -sfn "$install_dir" "$RUSTFIN_MANAGED_JAVA_CURRENT"
+  "${RUN_ROOT[@]}" chmod -R a+rX "$install_dir"
+
+  if [[ ! -x "${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java" ]]; then
+    die "Managed Java 21 install did not produce ${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java"
+  fi
+
+  success "Managed Java 21 installed at ${RUSTFIN_MANAGED_JAVA_CURRENT}"
+}
 
 info "Installing Debian 12 native runtime dependencies..."
 "${RUN_ROOT[@]}" apt-get update
@@ -157,10 +199,16 @@ fi
 if command -v java >/dev/null 2>&1; then
   java_major="$(java -version 2>&1 | awk -F[\".] '/version/ {print $2; exit}' || true)"
   if [[ -n "$java_major" ]] && [[ "$java_major" -lt 21 ]]; then
-    warn "Detected Java ${java_major}. Minecraft 1.21.x server runtime typically needs Java 21."
+    warn "Detected Java ${java_major}. Installing managed Java 21 for Minecraft 1.21.x compatibility."
+    install_managed_java_21
   fi
 else
-  warn "Java is not installed. Minecraft server provisioning/runtime will need a suitable JRE/JDK."
+  warn "Java is not installed. Installing managed Java 21 for Minecraft."
+  install_managed_java_21
+fi
+
+if [[ -x "${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java" ]]; then
+  success "Rustyfin Minecraft default Java runtime: ${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java"
 fi
 
 success "Debian 12 native host prerequisites are installed."
