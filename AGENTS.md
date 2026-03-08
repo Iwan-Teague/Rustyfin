@@ -56,6 +56,7 @@ Rustyfin is a native-Debian-first local media platform with:
 - Start native Debian host runtime: `./scripts/start-native.sh`
 - Stop native Debian host runtime: `./scripts/stop-native.sh`
 - Install native Debian prerequisites: `./scripts/install_native_debian.sh`
+- Install native Debian `systemd` integration: `./scripts/install_native_systemd.sh`
 - Clean install/reset: `./scripts/clean_install.sh`
 
 Rust build runtime behavior:
@@ -65,6 +66,7 @@ Rust build runtime behavior:
   - builds the Next.js UI directly on the host
   - runs PostgreSQL/Caddy/Node/Rust services natively instead of through Docker
   - writes logs/pids under `.tmp/native-runtime/`
+- After the first successful native build on Debian 12, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot.
 - To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
 - On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
 - Native prerequisite strict mode defaults to `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1` (fail-fast).

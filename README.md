@@ -142,6 +142,12 @@ Install native Debian 12 dependencies:
 ./scripts/install_native_debian.sh
 ```
 
+Install native systemd boot/startup integration:
+
+```bash
+./scripts/install_native_systemd.sh
+```
+
 Start native host runtime:
 
 ```bash
@@ -167,6 +173,9 @@ Stop native host runtime:
   - `.rustyfin.runtime.env`
 - Stores native runtime logs and pid files under:
   - `.tmp/native-runtime/`
+- For Debian 12 boot persistence, install:
+  - `./scripts/install_native_systemd.sh`
+  - this installs and enables `rustyfin-native.service`
 
 ## Quick Start (Docker)
 
