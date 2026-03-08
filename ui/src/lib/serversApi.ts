@@ -33,10 +33,19 @@ export type MinecraftServer = {
   updated_ts: number;
   server_distribution: string;
   minecraft_version: string;
+  java_path: string;
   world_name: string;
   gamemode: string;
   difficulty: string;
+  hardcore: boolean;
+  motd: string;
+  min_memory_mb: number;
   max_memory_mb: number;
+  online_mode: boolean;
+  pvp: boolean;
+  allow_flight: boolean;
+  enable_command_block: boolean;
+  white_list_enabled: boolean;
   current_user_role?: string | null;
 };
 
@@ -58,6 +67,24 @@ export type MinecraftServerActionResponse = {
   requested_action: MinecraftServerAction;
   message: string;
   instance: MinecraftServer;
+};
+
+export type MinecraftServerOperationResponse = {
+  job_id: string;
+  message: string;
+  instance: MinecraftServer;
+};
+
+export type HostDirectoryListEntry = {
+  name: string;
+  path: string;
+};
+
+export type HostDirectoryListResponse = {
+  current_path: string;
+  parent_path?: string | null;
+  roots: string[];
+  directories: HostDirectoryListEntry[];
 };
 
 export type CreateMinecraftServerPayload = {
@@ -115,4 +142,24 @@ export function requestMinecraftServerAction(id: string, action: MinecraftServer
       method: 'POST',
     },
   );
+}
+
+export function provisionMinecraftServer(id: string) {
+  return apiJson<MinecraftServerOperationResponse>(`/servers/minecraft/instances/${id}/provision`, {
+    method: 'POST',
+  });
+}
+
+export function importMinecraftServer(id: string, sourcePath: string) {
+  return apiJson<MinecraftServerOperationResponse>(`/servers/minecraft/instances/${id}/import`, {
+    method: 'POST',
+    body: JSON.stringify({ source_path: sourcePath }),
+  });
+}
+
+export function listBackendHostDirectories(path?: string) {
+  const suffix = path?.trim()
+    ? `?path=${encodeURIComponent(path.trim())}`
+    : '';
+  return apiJson<HostDirectoryListResponse>(`/system/host-directories${suffix}`);
 }

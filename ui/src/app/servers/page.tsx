@@ -10,9 +10,14 @@ import {
   MinecraftServer,
   MinecraftServerActionResponse,
   MinecraftServerEvent,
+  MinecraftServerOperationResponse,
   createMinecraftServer,
+  HostDirectoryListEntry,
   listMinecraftServerEvents,
+  listBackendHostDirectories,
   listMinecraftServers,
+  importMinecraftServer,
+  provisionMinecraftServer,
   refreshMinecraftServerStatus,
   requestMinecraftServerAction,
 } from '@/lib/serversApi';
@@ -38,6 +43,16 @@ type CreateFormState = {
   white_list_enabled: boolean;
   autostart: boolean;
   eula_accepted: boolean;
+};
+
+type HostDirectoryBrowserState = {
+  open: boolean;
+  loading: boolean;
+  error: string;
+  currentPath: string;
+  parentPath: string | null;
+  roots: string[];
+  directories: HostDirectoryListEntry[];
 };
 
 const DEFAULT_FORM: CreateFormState = {
@@ -106,10 +121,22 @@ export default function ServersPage() {
   const [eventsLoading, setEventsLoading] = useState(false);
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
+  const [provisioning, setProvisioning] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
+  const [importSourcePath, setImportSourcePath] = useState('');
+  const [hostBrowser, setHostBrowser] = useState<HostDirectoryBrowserState>({
+    open: false,
+    loading: false,
+    error: '',
+    currentPath: '',
+    parentPath: null,
+    roots: [],
+    directories: [],
+  });
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -204,6 +231,58 @@ export default function ServersPage() {
     });
   }
 
+  function closeHostDirectoryBrowser() {
+    setHostBrowser((prev) => ({
+      ...prev,
+      open: false,
+      loading: false,
+      error: '',
+    }));
+  }
+
+  async function fetchHostDirectories(path?: string) {
+    const listing = await listBackendHostDirectories(path);
+    setHostBrowser((prev) => ({
+      ...prev,
+      loading: false,
+      error: '',
+      currentPath: listing.current_path,
+      parentPath: listing.parent_path ?? null,
+      roots: listing.roots,
+      directories: listing.directories,
+    }));
+  }
+
+  function openHostDirectoryBrowser(initialPath?: string) {
+    setHostBrowser((prev) => ({
+      ...prev,
+      open: true,
+      loading: true,
+      error: '',
+    }));
+    void fetchHostDirectories(initialPath)
+      .catch((err: unknown) => {
+        setHostBrowser((prev) => ({
+          ...prev,
+          loading: false,
+          error: clientErrorMessage(err, 'Failed to browse backend directories'),
+        }));
+      });
+  }
+
+  function navigateHostDirectory(path?: string | null) {
+    const target = path?.trim();
+    if (!target) return;
+    setHostBrowser((prev) => ({ ...prev, loading: true, error: '' }));
+    void fetchHostDirectories(target).catch((err: unknown) => {
+      setHostBrowser((prev) => ({
+        ...prev,
+        loading: false,
+        error: clientErrorMessage(err, 'Failed to browse backend directories'),
+      }));
+    });
+  }
+
   async function refreshServers(selectId?: string) {
     const rows = await listMinecraftServers();
     setServers(rows);
@@ -265,6 +344,54 @@ export default function ServersPage() {
       setError(clientErrorMessage(err, `Failed to ${action} server`));
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  async function handleProvisionServer() {
+    if (!selectedServer) return;
+    setProvisioning(true);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const response: MinecraftServerOperationResponse = await provisionMinecraftServer(selectedServer.id);
+      upsertServer(response.instance);
+      setSuccessMessage(response.message);
+      await Promise.all([
+        refreshSelectedServerStatus(response.instance.id, false),
+        loadSelectedServerEvents(response.instance.id, false),
+      ]);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to provision Minecraft server'));
+    } finally {
+      setProvisioning(false);
+    }
+  }
+
+  async function handleImportServer() {
+    if (!selectedServer) return;
+    if (!importSourcePath.trim()) {
+      setError('Import source path is required');
+      return;
+    }
+
+    setImporting(true);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const response: MinecraftServerOperationResponse = await importMinecraftServer(
+        selectedServer.id,
+        importSourcePath.trim(),
+      );
+      upsertServer(response.instance);
+      setSuccessMessage(response.message);
+      await Promise.all([
+        refreshSelectedServerStatus(response.instance.id, false),
+        loadSelectedServerEvents(response.instance.id, false),
+      ]);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to import Minecraft server'));
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -522,6 +649,72 @@ export default function ServersPage() {
                 </div>
               </div>
 
+              {me.role === 'admin' ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="panel-soft rounded-xl px-4 py-4">
+                    <div className="space-y-2">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                        Managed Provision
+                      </h3>
+                      <p className="text-sm muted">
+                        Download the selected Minecraft server artifact, render `server.properties`,
+                        write `eula.txt`, and install a native systemd unit for this instance.
+                      </p>
+                    </div>
+                    <div className="mt-3 text-xs muted">
+                      Distribution: {selectedServer.server_distribution} {selectedServer.minecraft_version}
+                      {' · '}Java: {selectedServer.java_path}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
+                      disabled={provisioning || importing || actionLoading !== null}
+                      onClick={() => void handleProvisionServer()}
+                    >
+                      {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
+                    </button>
+                  </div>
+
+                  <div className="panel-soft rounded-xl px-4 py-4">
+                    <div className="space-y-2">
+                      <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                        Import Existing Server
+                      </h3>
+                      <p className="text-sm muted">
+                        Copy an existing Minecraft server directory from the host into Rustyfin’s
+                        managed instance path, normalize the server jar, and install the unit.
+                      </p>
+                    </div>
+                    <label className="mt-4 block space-y-2">
+                      <span className="text-sm font-medium text-white">Host source path</span>
+                      <input
+                        className="input rounded-xl px-4 py-3"
+                        value={importSourcePath}
+                        onChange={(event) => setImportSourcePath(event.target.value)}
+                        placeholder="/srv/minecraft/existing-world"
+                      />
+                    </label>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="btn-secondary px-4 py-2 text-sm"
+                        onClick={() => openHostDirectoryBrowser(importSourcePath)}
+                      >
+                        Browse Host Directories
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                        disabled={importing || provisioning || actionLoading !== null}
+                        onClick={() => void handleImportServer()}
+                      >
+                        {importing ? 'Importing…' : 'Import Existing Server'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="flex min-h-0 flex-1 flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
@@ -733,6 +926,112 @@ export default function ServersPage() {
           )}
         </section>
       </div>
+
+      {hostBrowser.open ? (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/70 px-4 py-6">
+          <div className="panel flex w-full max-w-3xl flex-col gap-4 rounded-2xl p-5 sm:p-6">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold">Browse Backend Directories</h2>
+                <p className="text-sm muted">
+                  Choose the host directory that contains the existing Minecraft server you want to import.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-3 py-2 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            {hostBrowser.roots.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {hostBrowser.roots.map((rootPath) => (
+                  <button
+                    key={rootPath}
+                    type="button"
+                    onClick={() => navigateHostDirectory(rootPath)}
+                    className={`btn-ghost px-2.5 py-1 text-xs ${
+                      hostBrowser.currentPath.startsWith(rootPath)
+                        ? 'border-[var(--orange-soft)] text-[var(--orange-soft)]'
+                        : ''
+                    }`}
+                  >
+                    {rootPath}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="panel-soft rounded-xl border border-[var(--border)] px-3 py-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateHostDirectory(hostBrowser.parentPath)}
+                disabled={!hostBrowser.parentPath || hostBrowser.loading}
+                className="btn-secondary px-3 py-1 text-xs disabled:opacity-50"
+              >
+                Up
+              </button>
+              <div className="min-w-0">
+                <p className="text-[11px] uppercase tracking-[0.12em] muted">Current Path</p>
+                <p className="text-sm font-mono truncate" title={hostBrowser.currentPath}>
+                  {hostBrowser.currentPath || '—'}
+                </p>
+              </div>
+            </div>
+
+            {hostBrowser.error ? (
+              <p className="text-sm text-red-300">{hostBrowser.error}</p>
+            ) : null}
+
+            <div className="panel-soft min-h-[260px] overflow-auto rounded-xl border border-[var(--border)] p-2">
+              {hostBrowser.loading ? (
+                <p className="px-2 py-2 text-sm muted">Loading directories…</p>
+              ) : hostBrowser.directories.length === 0 ? (
+                <p className="px-2 py-2 text-sm muted">No child directories found.</p>
+              ) : (
+                <div className="space-y-1">
+                  {hostBrowser.directories.map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      onClick={() => navigateHostDirectory(entry.path)}
+                      className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2 text-left text-sm hover:border-[var(--orange-soft)]/55 hover:bg-[var(--panel)]"
+                      title={entry.path}
+                    >
+                      <div className="font-medium">{entry.name}</div>
+                      <div className="truncate text-xs muted">{entry.path}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeHostDirectoryBrowser}
+                className="btn-ghost px-4 py-2 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setImportSourcePath(hostBrowser.currentPath);
+                  closeHostDirectoryBrowser();
+                }}
+                disabled={hostBrowser.loading || !hostBrowser.currentPath}
+                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+              >
+                Use This Directory
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

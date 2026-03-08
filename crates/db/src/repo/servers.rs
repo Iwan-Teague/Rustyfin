@@ -35,10 +35,19 @@ pub struct MinecraftServerRow {
     pub updated_ts: i64,
     pub server_distribution: String,
     pub minecraft_version: String,
+    pub java_path: String,
     pub world_name: String,
     pub gamemode: String,
     pub difficulty: String,
+    pub hardcore: bool,
+    pub motd: String,
+    pub min_memory_mb: i64,
     pub max_memory_mb: i64,
+    pub online_mode: bool,
+    pub pvp: bool,
+    pub allow_flight: bool,
+    pub enable_command_block: bool,
+    pub white_list_enabled: bool,
     pub current_user_role: Option<String>,
 }
 
@@ -82,6 +91,7 @@ pub struct ServerInstanceEventRow {
 
 #[derive(Debug, Clone)]
 pub struct UpdateMinecraftServerRuntimeParams<'a> {
+    pub install_mode: Option<&'a str>,
     pub desired_state: &'a str,
     pub observed_state: &'a str,
     pub health_state: &'a str,
@@ -174,10 +184,19 @@ fn decode_minecraft_server_row(
         updated_ts: row.try_get("updated_ts")?,
         server_distribution: row.try_get("server_distribution")?,
         minecraft_version: row.try_get("minecraft_version")?,
+        java_path: row.try_get("java_path")?,
         world_name: row.try_get("world_name")?,
         gamemode: row.try_get("gamemode")?,
         difficulty: row.try_get("difficulty")?,
+        hardcore: row.try_get("hardcore")?,
+        motd: row.try_get("motd")?,
+        min_memory_mb: row.try_get("min_memory_mb")?,
         max_memory_mb: row.try_get("max_memory_mb")?,
+        online_mode: row.try_get("online_mode")?,
+        pvp: row.try_get("pvp")?,
+        allow_flight: row.try_get("allow_flight")?,
+        enable_command_block: row.try_get("enable_command_block")?,
+        white_list_enabled: row.try_get("white_list_enabled")?,
         current_user_role: row.try_get("role")?,
     })
 }
@@ -208,8 +227,9 @@ fn minecraft_select_sql(where_clause: &str) -> String {
             si.auto_stop_idle_minutes, si.current_player_count, si.max_player_count, \
             si.last_ready_ts, si.last_started_ts, si.last_stopped_ts, si.last_exit_code, \
             si.last_error_summary, si.created_ts, si.updated_ts, \
-            cfg.server_distribution, cfg.minecraft_version, cfg.world_name, cfg.gamemode, \
-            cfg.difficulty, cfg.max_memory_mb, member.role \
+            cfg.server_distribution, cfg.minecraft_version, cfg.java_path, cfg.world_name, cfg.gamemode, \
+            cfg.difficulty, cfg.hardcore, cfg.motd, cfg.min_memory_mb, cfg.max_memory_mb, \
+            cfg.online_mode, cfg.pvp, cfg.allow_flight, cfg.enable_command_block, cfg.white_list_enabled, member.role \
         FROM server_instance si \
         JOIN minecraft_server_config cfg ON cfg.instance_id = si.id \
         JOIN \"user\" owner ON owner.id = si.owner_user_id \
@@ -451,18 +471,20 @@ pub async fn update_minecraft_server_runtime(
     let now = chrono::Utc::now().timestamp();
     let result = sqlx::query(
         "UPDATE server_instance
-         SET desired_state = $1,
-             observed_state = $2,
-             health_state = $3,
-             current_player_count = $4,
-             last_ready_ts = $5,
-             last_started_ts = $6,
-             last_stopped_ts = $7,
-             last_exit_code = $8,
-             last_error_summary = $9,
-             updated_ts = $10
-         WHERE id = $11",
+         SET install_mode = COALESCE($1, install_mode),
+             desired_state = $2,
+             observed_state = $3,
+             health_state = $4,
+             current_player_count = $5,
+             last_ready_ts = $6,
+             last_started_ts = $7,
+             last_stopped_ts = $8,
+             last_exit_code = $9,
+             last_error_summary = $10,
+             updated_ts = $11
+         WHERE id = $12",
     )
+    .bind(params.install_mode)
     .bind(params.desired_state)
     .bind(params.observed_state)
     .bind(params.health_state)
