@@ -540,3 +540,18 @@ pub async fn create_server_instance_event(
         created_ts: now,
     })
 }
+
+pub async fn delete_minecraft_server(
+    pool: &DbPool,
+    instance_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM server_instance
+         WHERE id = $1
+           AND game_kind = 'minecraft'",
+    )
+    .bind(instance_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}

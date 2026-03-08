@@ -9,8 +9,9 @@ use tokio::time::{Duration, sleep};
 use super::runtime::{
     ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult, ServerLifecycleAction,
     ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse, SystemdUnitStatus,
-    import_existing_instance, probe_minecraft_server, provision_managed_instance, query_unit_logs,
-    query_unit_status, run_lifecycle_action, scan_discovery_candidates,
+    delete_managed_instance, import_existing_instance, probe_minecraft_server,
+    provision_managed_instance, query_unit_logs, query_unit_status, run_lifecycle_action,
+    scan_discovery_candidates,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -95,6 +96,12 @@ pub struct MinecraftServerOperationResponse {
     pub job_id: String,
     pub message: String,
     pub instance: MinecraftServerResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MinecraftServerDeleteResponse {
+    pub deleted_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,6 +345,13 @@ fn can_control_server(
     auth.role == "admin"
         || auth.user_id == server.owner_user_id
         || matches!(server.current_user_role.as_deref(), Some("manager"))
+}
+
+fn can_delete_server(
+    auth: &AuthUser,
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> bool {
+    auth.role == "admin" || auth.user_id == server.owner_user_id
 }
 
 fn build_managed_provision_spec(
@@ -1502,6 +1516,61 @@ pub async fn import_minecraft_server(
             instance: row_to_response(updated),
         }),
     ))
+}
+
+pub async fn delete_minecraft_server(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<MinecraftServerDeleteResponse>, AppError> {
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    if !can_delete_server(&auth, &current) {
+        return Err(
+            ApiError::Forbidden("you do not have permission to delete this server".into()).into(),
+        );
+    }
+
+    delete_managed_instance(&state, &current.systemd_unit_name, &current.instance_root)
+        .await
+        .map_err(ApiError::BadRequest)?;
+
+    let deleted = rustfin_db::repo::servers::delete_minecraft_server(&state.db, &current.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if !deleted {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    }
+
+    crate::audit_log::record_event(
+        &state,
+        "servers.minecraft.delete",
+        json!({
+            "instance_id": current.id,
+            "display_name": current.display_name,
+            "systemd_unit_name": current.systemd_unit_name,
+            "deleted_by": auth.username,
+        }),
+    )
+    .await;
+
+    Ok(Json(MinecraftServerDeleteResponse {
+        deleted_id: current.id,
+        message: format!(
+            "Deleted Minecraft server {} and removed its managed host files.",
+            current.display_name
+        ),
+    }))
 }
 
 pub async fn create_minecraft_server(

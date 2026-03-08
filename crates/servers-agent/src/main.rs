@@ -12,10 +12,11 @@ use rustfin_core::{
     axum_error::AppError,
     error::ApiError,
     servers_agent::{
-        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
-        ServersAgentDiscoveryScanResponse, ServersAgentImportRequest, ServersAgentLifecycleRequest,
-        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProbeRequest,
-        ServersAgentProvisionRequest, ServersAgentStatusRequest, SystemdUnitStatus,
+        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDeleteRequest,
+        ServersAgentDiscoveryScanRequest, ServersAgentDiscoveryScanResponse,
+        ServersAgentImportRequest, ServersAgentLifecycleRequest, ServersAgentLogsRequest,
+        ServersAgentLogsResponse, ServersAgentProbeRequest, ServersAgentProvisionRequest,
+        ServersAgentStatusRequest, SystemdUnitStatus,
     },
 };
 use tracing_subscriber::EnvFilter;
@@ -93,6 +94,18 @@ async fn import(
     Ok(Json(result))
 }
 
+async fn delete_instance(
+    State(state): State<AgentState>,
+    headers: HeaderMap,
+    Json(req): Json<ServersAgentDeleteRequest>,
+) -> Result<Json<ServersAgentAckResponse>, AppError> {
+    require_agent_auth(&headers, &state)?;
+    rustfin_servers_host::delete_managed_instance(req.unit_name.trim(), req.instance_root.trim())
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(ServersAgentAckResponse { ok: true }))
+}
+
 async fn logs(
     State(state): State<AgentState>,
     headers: HeaderMap,
@@ -136,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/minecraft/lifecycle", post(run_lifecycle))
         .route("/v1/minecraft/provision", post(provision))
         .route("/v1/minecraft/import", post(import))
+        .route("/v1/minecraft/delete", post(delete_instance))
         .route("/v1/minecraft/logs", post(logs))
         .route("/v1/minecraft/discovery/scan", post(discovery_scan))
         .with_state(AgentState { token });

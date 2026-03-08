@@ -12,7 +12,8 @@ pub fn servers_router() -> Router<AppState> {
         )
         .route(
             "/minecraft/instances/{id}",
-            get(super::handlers::get_minecraft_server),
+            get(super::handlers::get_minecraft_server)
+                .delete(super::handlers::delete_minecraft_server),
         )
         .route(
             "/minecraft/instances/{id}/status",

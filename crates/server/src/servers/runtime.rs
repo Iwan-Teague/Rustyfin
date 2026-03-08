@@ -82,6 +82,20 @@ pub async fn import_existing_instance(
     }
 }
 
+pub async fn delete_managed_instance(
+    state: &AppState,
+    unit_name: &str,
+    instance_root: &str,
+) -> Result<(), String> {
+    if use_servers_agent(state) {
+        super::agent_client::delete_managed_instance(state, unit_name, instance_root)
+            .await
+            .map_err(|error| error.to_string())
+    } else {
+        rustfin_servers_host::delete_managed_instance(unit_name, instance_root).await
+    }
+}
+
 pub async fn query_unit_logs(
     state: &AppState,
     unit_name: &str,

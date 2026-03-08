@@ -1,10 +1,11 @@
 use rustfin_core::{
     error::ApiError,
     servers_agent::{
-        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDiscoveryScanRequest,
-        ServersAgentDiscoveryScanResponse, ServersAgentImportRequest, ServersAgentLifecycleRequest,
-        ServersAgentLogsRequest, ServersAgentLogsResponse, ServersAgentProbeRequest,
-        ServersAgentProvisionRequest, ServersAgentStatusRequest, SystemdUnitStatus,
+        MinecraftServerProbe, ServersAgentAckResponse, ServersAgentDeleteRequest,
+        ServersAgentDiscoveryScanRequest, ServersAgentDiscoveryScanResponse,
+        ServersAgentImportRequest, ServersAgentLifecycleRequest, ServersAgentLogsRequest,
+        ServersAgentLogsResponse, ServersAgentProbeRequest, ServersAgentProvisionRequest,
+        ServersAgentStatusRequest, SystemdUnitStatus,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,24 @@ pub async fn import_existing_instance(
         "failed to import Minecraft server via servers agent",
     )
     .await
+}
+
+pub async fn delete_managed_instance(
+    state: &AppState,
+    unit_name: &str,
+    instance_root: &str,
+) -> Result<(), ApiError> {
+    let _: ServersAgentAckResponse = post_json(
+        state,
+        "/v1/minecraft/delete",
+        &ServersAgentDeleteRequest {
+            unit_name: unit_name.to_string(),
+            instance_root: instance_root.to_string(),
+        },
+        "failed to delete Minecraft server via servers agent",
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn query_unit_logs(

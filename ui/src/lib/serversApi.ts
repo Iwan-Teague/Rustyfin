@@ -103,6 +103,11 @@ export type MinecraftServerOperationResponse = {
   instance: MinecraftServer;
 };
 
+export type MinecraftServerDeleteResponse = {
+  deleted_id: string;
+  message: string;
+};
+
 export type HostDirectoryListEntry = {
   name: string;
   path: string;
@@ -188,6 +193,12 @@ export function importMinecraftServer(id: string, sourcePath: string) {
   return apiJson<MinecraftServerOperationResponse>(`/servers/minecraft/instances/${id}/import`, {
     method: 'POST',
     body: JSON.stringify({ source_path: sourcePath }),
+  });
+}
+
+export function deleteMinecraftServer(id: string) {
+  return apiJson<MinecraftServerDeleteResponse>(`/servers/minecraft/instances/${id}`, {
+    method: 'DELETE',
   });
 }
 
