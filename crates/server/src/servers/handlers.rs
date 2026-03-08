@@ -4,7 +4,11 @@ use axum::http::StatusCode;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::time::{Duration, sleep};
 
+use super::runtime::{
+    ServerLifecycleAction, SystemdUnitStatus, query_unit_status, run_lifecycle_action,
+};
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -64,6 +68,14 @@ pub struct ServerInstanceEventResponse {
     pub event_kind: String,
     pub message: String,
     pub created_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MinecraftServerActionResponse {
+    pub job_id: String,
+    pub requested_action: String,
+    pub message: String,
+    pub instance: MinecraftServerResponse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,6 +281,292 @@ fn validate_create_request(
     })
 }
 
+#[derive(Debug)]
+struct RuntimeProjection {
+    desired_state: String,
+    observed_state: String,
+    health_state: String,
+    current_player_count: i64,
+    last_ready_ts: Option<i64>,
+    last_started_ts: Option<i64>,
+    last_stopped_ts: Option<i64>,
+    last_exit_code: Option<i64>,
+    last_error_summary: Option<String>,
+}
+
+fn can_control_server(
+    auth: &AuthUser,
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> bool {
+    auth.role == "admin"
+        || auth.user_id == server.owner_user_id
+        || matches!(server.current_user_role.as_deref(), Some("manager"))
+}
+
+fn apply_runtime_status_projection(
+    current: &rustfin_db::repo::servers::MinecraftServerRow,
+    status: &SystemdUnitStatus,
+) -> RuntimeProjection {
+    let now = chrono::Utc::now().timestamp();
+    let mut projection = RuntimeProjection {
+        desired_state: current.desired_state.clone(),
+        observed_state: current.observed_state.clone(),
+        health_state: current.health_state.clone(),
+        current_player_count: current.current_player_count,
+        last_ready_ts: current.last_ready_ts,
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: status.exec_main_status.or(current.last_exit_code),
+        last_error_summary: current.last_error_summary.clone(),
+    };
+
+    if status.load_state == "not-found" {
+        projection.observed_state = "unprovisioned".to_string();
+        projection.health_state = "unknown".to_string();
+        projection.last_error_summary = Some(format!(
+            "Native systemd unit {} was not found on the host",
+            current.systemd_unit_name
+        ));
+        return projection;
+    }
+
+    match status.active_state.as_str() {
+        "active" if status.sub_state == "running" => {
+            projection.observed_state = "running".to_string();
+            projection.health_state = "healthy".to_string();
+            projection.last_ready_ts = Some(now);
+            projection.last_started_ts = Some(
+                current
+                    .last_started_ts
+                    .filter(|_| current.observed_state == "running")
+                    .unwrap_or(now),
+            );
+            projection.last_error_summary = None;
+        }
+        "activating" => {
+            projection.observed_state = "starting".to_string();
+            projection.health_state = "pending".to_string();
+            projection.last_error_summary = None;
+        }
+        "deactivating" => {
+            projection.observed_state = "stopping".to_string();
+            projection.health_state = "pending".to_string();
+            projection.last_error_summary = None;
+        }
+        "reloading" => {
+            projection.observed_state = "restarting".to_string();
+            projection.health_state = "pending".to_string();
+            projection.last_error_summary = None;
+        }
+        "inactive" => {
+            projection.observed_state = "stopped".to_string();
+            projection.health_state = "idle".to_string();
+            projection.last_stopped_ts = Some(
+                current
+                    .last_stopped_ts
+                    .filter(|_| current.observed_state == "stopped")
+                    .unwrap_or(now),
+            );
+            projection.last_error_summary = None;
+        }
+        "failed" => {
+            projection.observed_state = "failed".to_string();
+            projection.health_state = "error".to_string();
+            projection.last_stopped_ts = Some(now);
+            projection.last_error_summary = Some(format!(
+                "systemd reported result={} sub_state={} unit_state={}",
+                status.result, status.sub_state, status.unit_file_state
+            ));
+        }
+        other => {
+            projection.observed_state = other.to_string();
+            projection.health_state = "unknown".to_string();
+            projection.last_error_summary = Some(format!(
+                "systemd reported active_state={} sub_state={} unit_state={}",
+                status.active_state, status.sub_state, status.unit_file_state
+            ));
+        }
+    }
+
+    projection
+}
+
+fn apply_runtime_error_projection(
+    current: &rustfin_db::repo::servers::MinecraftServerRow,
+    error: &str,
+) -> RuntimeProjection {
+    RuntimeProjection {
+        desired_state: current.desired_state.clone(),
+        observed_state: current.observed_state.clone(),
+        health_state: "error".to_string(),
+        current_player_count: current.current_player_count,
+        last_ready_ts: current.last_ready_ts,
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: current.last_exit_code,
+        last_error_summary: Some(error.to_string()),
+    }
+}
+
+async fn persist_runtime_projection(
+    state: &AppState,
+    current: &rustfin_db::repo::servers::MinecraftServerRow,
+    projection: &RuntimeProjection,
+) -> Result<rustfin_db::repo::servers::MinecraftServerRow, AppError> {
+    rustfin_db::repo::servers::update_minecraft_server_runtime(
+        &state.db,
+        &current.id,
+        rustfin_db::repo::servers::UpdateMinecraftServerRuntimeParams {
+            desired_state: &projection.desired_state,
+            observed_state: &projection.observed_state,
+            health_state: &projection.health_state,
+            current_player_count: projection.current_player_count,
+            last_ready_ts: projection.last_ready_ts,
+            last_started_ts: projection.last_started_ts,
+            last_stopped_ts: projection.last_stopped_ts,
+            last_exit_code: projection.last_exit_code,
+            last_error_summary: projection.last_error_summary.as_deref(),
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    rustfin_db::repo::servers::get_minecraft_server_by_id(&state.db, &current.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("server instance not found".into()).into())
+}
+
+async fn refresh_runtime_status(
+    state: &AppState,
+    current: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> Result<rustfin_db::repo::servers::MinecraftServerRow, AppError> {
+    let projection = match query_unit_status(&current.systemd_unit_name).await {
+        Ok(status) => apply_runtime_status_projection(current, &status),
+        Err(error) => apply_runtime_error_projection(current, &error),
+    };
+
+    persist_runtime_projection(state, current, &projection).await
+}
+
+async fn record_server_event(
+    state: &AppState,
+    instance_id: &str,
+    job_id: Option<&str>,
+    actor_user_id: Option<&str>,
+    level: &str,
+    event_kind: &str,
+    message: &str,
+) {
+    let _ = rustfin_db::repo::servers::create_server_instance_event(
+        &state.db,
+        rustfin_db::repo::servers::CreateServerInstanceEventParams {
+            instance_id,
+            job_id,
+            actor_user_id,
+            level,
+            event_kind,
+            message,
+            details_json: None,
+        },
+    )
+    .await;
+}
+
+async fn run_server_lifecycle_job(
+    state: AppState,
+    instance_id: String,
+    unit_name: String,
+    job_id: String,
+    action: ServerLifecycleAction,
+    actor_user_id: String,
+) {
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.2, None).await;
+    record_server_event(
+        &state,
+        &instance_id,
+        Some(&job_id),
+        Some(&actor_user_id),
+        "info",
+        "lifecycle_action_started",
+        &format!("{} requested for unit {}.", action.as_str(), unit_name),
+    )
+    .await;
+
+    let command_result = run_lifecycle_action(&unit_name, action).await;
+    sleep(Duration::from_millis(350)).await;
+
+    let refreshed = match rustfin_db::repo::servers::get_minecraft_server_by_id(
+        &state.db,
+        &instance_id,
+    )
+    .await
+    {
+        Ok(Some(current)) => refresh_runtime_status(&state, &current).await.ok(),
+        _ => None,
+    };
+
+    match command_result {
+        Ok(()) => {
+            let message = if let Some(server) = refreshed.as_ref() {
+                format!(
+                    "{} completed. Observed state is now {}.",
+                    action.as_str(),
+                    server.observed_state
+                )
+            } else {
+                format!("{} completed.", action.as_str())
+            };
+            record_server_event(
+                &state,
+                &instance_id,
+                Some(&job_id),
+                Some(&actor_user_id),
+                "info",
+                "lifecycle_action_completed",
+                &message,
+            )
+            .await;
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "completed",
+                1.0,
+                None,
+            )
+            .await;
+        }
+        Err(error) => {
+            if let Ok(Some(current)) =
+                rustfin_db::repo::servers::get_minecraft_server_by_id(&state.db, &instance_id).await
+            {
+                let projection = apply_runtime_error_projection(&current, &error);
+                let _ = persist_runtime_projection(&state, &current, &projection).await;
+            }
+
+            record_server_event(
+                &state,
+                &instance_id,
+                Some(&job_id),
+                Some(&actor_user_id),
+                "error",
+                "lifecycle_action_failed",
+                &format!("{} failed: {}", action.as_str(), error),
+            )
+            .await;
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&error),
+            )
+            .await;
+        }
+    }
+}
+
 fn row_to_response(row: rustfin_db::repo::servers::MinecraftServerRow) -> MinecraftServerResponse {
     MinecraftServerResponse {
         id: row.id,
@@ -344,6 +642,27 @@ pub async fn get_minecraft_server(
     Ok(Json(row_to_response(row)))
 }
 
+pub async fn refresh_minecraft_server_status(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<MinecraftServerResponse>, AppError> {
+    let Some(row) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    let refreshed = refresh_runtime_status(&state, &row).await?;
+    Ok(Json(row_to_response(refreshed)))
+}
+
 pub async fn list_minecraft_server_events(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -383,6 +702,119 @@ pub async fn list_minecraft_server_events(
                 created_ts: row.created_ts,
             })
             .collect(),
+    ))
+}
+
+pub async fn request_minecraft_server_action(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((id, action_name)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<MinecraftServerActionResponse>), AppError> {
+    let action = ServerLifecycleAction::parse(&action_name).ok_or_else(|| {
+        ApiError::BadRequest("action must be one of: start, stop, restart".into())
+    })?;
+
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &auth.user_id,
+        auth.role == "admin",
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    if !can_control_server(&auth, &current) {
+        return Err(ApiError::Forbidden(
+            "you do not have permission to control this server".into(),
+        )
+        .into());
+    }
+
+    let job_payload = json!({
+        "instance_id": current.id,
+        "display_name": current.display_name,
+        "requested_action": action.as_str(),
+        "systemd_unit_name": current.systemd_unit_name,
+    });
+    let job = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        &format!("servers.minecraft.{}", action.as_str()),
+        Some(&job_payload.to_string()),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let transitional = RuntimeProjection {
+        desired_state: action.desired_state().to_string(),
+        observed_state: action.transitional_observed_state().to_string(),
+        health_state: "pending".to_string(),
+        current_player_count: current.current_player_count,
+        last_ready_ts: current.last_ready_ts,
+        last_started_ts: current.last_started_ts,
+        last_stopped_ts: current.last_stopped_ts,
+        last_exit_code: current.last_exit_code,
+        last_error_summary: None,
+    };
+    let updated = persist_runtime_projection(&state, &current, &transitional).await?;
+
+    record_server_event(
+        &state,
+        &updated.id,
+        Some(&job.id),
+        Some(&auth.user_id),
+        "info",
+        "lifecycle_action_queued",
+        &format!(
+            "{} queued for unit {}.",
+            action.as_str(),
+            updated.systemd_unit_name
+        ),
+    )
+    .await;
+
+    crate::audit_log::record_event(
+        &state,
+        &format!("servers.minecraft.{}", action.as_str()),
+        json!({
+            "instance_id": updated.id,
+            "display_name": updated.display_name,
+            "requested_action": action.as_str(),
+            "requested_by": auth.username,
+        }),
+    )
+    .await;
+
+    let state_clone = state.clone();
+    let instance_id = updated.id.clone();
+    let unit_name = updated.systemd_unit_name.clone();
+    let job_id = job.id.clone();
+    let actor_user_id = auth.user_id.clone();
+    tokio::spawn(async move {
+        run_server_lifecycle_job(
+            state_clone,
+            instance_id,
+            unit_name,
+            job_id,
+            action,
+            actor_user_id,
+        )
+        .await;
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(MinecraftServerActionResponse {
+            job_id: job.id,
+            requested_action: action.as_str().to_string(),
+            message: format!(
+                "{} requested. Rustyfin is reconciling the native systemd unit now.",
+                action.as_str()
+            ),
+            instance: row_to_response(updated),
+        }),
     ))
 }
 

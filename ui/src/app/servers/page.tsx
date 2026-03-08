@@ -6,11 +6,15 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
 import {
+  MinecraftServerAction,
   MinecraftServer,
+  MinecraftServerActionResponse,
   MinecraftServerEvent,
   createMinecraftServer,
   listMinecraftServerEvents,
   listMinecraftServers,
+  refreshMinecraftServerStatus,
+  requestMinecraftServerAction,
 } from '@/lib/serversApi';
 
 type CreateFormState = {
@@ -100,6 +104,8 @@ export default function ServersPage() {
   const [selectedEvents, setSelectedEvents] = useState<MinecraftServerEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
+  const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
@@ -152,27 +158,28 @@ export default function ServersPage() {
     }
 
     let cancelled = false;
-    setEventsLoading(true);
-
-    (async () => {
+    void (async () => {
       try {
-        const rows = await listMinecraftServerEvents(selectedServerId, 20);
+        await Promise.all([
+          refreshSelectedServerStatus(selectedServerId, true),
+          loadSelectedServerEvents(selectedServerId, true),
+        ]);
+      } catch (err: unknown) {
         if (!cancelled) {
-          setSelectedEvents(rows);
-        }
-      } catch {
-        if (!cancelled) {
-          setSelectedEvents([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setEventsLoading(false);
+          setError(clientErrorMessage(err, 'Failed to refresh selected server status'));
         }
       }
     })();
 
+    const interval = window.setInterval(() => {
+      if (cancelled) return;
+      void refreshSelectedServerStatus(selectedServerId, false);
+      void loadSelectedServerEvents(selectedServerId, false);
+    }, 5000);
+
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, [me, selectedServerId]);
 
@@ -185,6 +192,18 @@ export default function ServersPage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function upsertServer(updated: MinecraftServer) {
+    setServers((prev) => {
+      const existingIndex = prev.findIndex((server) => server.id === updated.id);
+      if (existingIndex === -1) {
+        return [updated, ...prev];
+      }
+      const next = [...prev];
+      next[existingIndex] = updated;
+      return next;
+    });
+  }
+
   async function refreshServers(selectId?: string) {
     const rows = await listMinecraftServers();
     setServers(rows);
@@ -193,6 +212,60 @@ export default function ServersPage() {
       if (current && rows.some((row) => row.id === current)) return current;
       return rows[0]?.id ?? null;
     });
+  }
+
+  async function loadSelectedServerEvents(serverId: string, showSpinner = true) {
+    if (showSpinner) {
+      setEventsLoading(true);
+    }
+    try {
+      const rows = await listMinecraftServerEvents(serverId, 20);
+      setSelectedEvents(rows);
+    } catch {
+      setSelectedEvents([]);
+    } finally {
+      if (showSpinner) {
+        setEventsLoading(false);
+      }
+    }
+  }
+
+  async function refreshSelectedServerStatus(serverId: string, showSpinner = true) {
+    if (showSpinner) {
+      setStatusRefreshing(true);
+    }
+    try {
+      const updated = await refreshMinecraftServerStatus(serverId);
+      upsertServer(updated);
+      return updated;
+    } finally {
+      if (showSpinner) {
+        setStatusRefreshing(false);
+      }
+    }
+  }
+
+  async function handleRequestAction(action: MinecraftServerAction) {
+    if (!selectedServer) return;
+    setActionLoading(action);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const response: MinecraftServerActionResponse = await requestMinecraftServerAction(
+        selectedServer.id,
+        action,
+      );
+      upsertServer(response.instance);
+      setSuccessMessage(response.message);
+      await Promise.all([
+        refreshSelectedServerStatus(response.instance.id, false),
+        loadSelectedServerEvents(response.instance.id, false),
+      ]);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, `Failed to ${action} server`));
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   async function handleCreateServer() {
@@ -255,8 +328,8 @@ export default function ServersPage() {
         <div className="space-y-2">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Game servers</h1>
           <p className="max-w-3xl text-sm muted sm:text-base">
-            This first slice stores Minecraft server records in PostgreSQL, exposes them through the Rust API,
-            and gives you a real UI entry point. Runtime start, stop, import, and provisioning land next.
+            Rustyfin now tracks Minecraft server records in PostgreSQL, exposes native lifecycle controls
+            through the Rust API, and polls live runtime state into the UI. Provisioning and import land next.
           </p>
         </div>
       </header>
@@ -341,10 +414,51 @@ export default function ServersPage() {
           ) : (
             <>
               <div className="panel-soft rounded-xl px-4 py-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-lg font-semibold text-white">{selectedServer.display_name}</h3>
-                  <span className="chip">{titleCase(selectedServer.observed_state)}</span>
-                  <span className="chip">{titleCase(selectedServer.install_mode)}</span>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-lg font-semibold text-white">{selectedServer.display_name}</h3>
+                    <span className="chip">{titleCase(selectedServer.observed_state)}</span>
+                    <span className="chip">{titleCase(selectedServer.install_mode)}</span>
+                    <span className="chip">Desired {titleCase(selectedServer.desired_state)}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                      disabled={statusRefreshing || actionLoading !== null}
+                      onClick={() => void refreshSelectedServerStatus(selectedServer.id, true)}
+                    >
+                      {statusRefreshing ? 'Refreshing…' : 'Refresh Status'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                      disabled={actionLoading !== null}
+                      onClick={() => void handleRequestAction('start')}
+                    >
+                      {actionLoading === 'start' ? 'Starting…' : 'Start'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                      disabled={actionLoading !== null}
+                      onClick={() => void handleRequestAction('restart')}
+                    >
+                      {actionLoading === 'restart' ? 'Restarting…' : 'Restart'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                      disabled={actionLoading !== null}
+                      onClick={() => void handleRequestAction('stop')}
+                    >
+                      {actionLoading === 'stop' ? 'Stopping…' : 'Stop'}
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 text-xs muted">
+                  Lifecycle controls target the native Debian 12 systemd unit for this instance. If the
+                  unit has not been provisioned or imported yet, status refresh will report that clearly.
                 </div>
                 <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
                   <div>
@@ -381,9 +495,21 @@ export default function ServersPage() {
                     <div className="muted">Memory</div>
                     <div>{selectedServer.max_memory_mb} MB</div>
                   </div>
+                  <div>
+                    <div className="muted">Systemd unit</div>
+                    <div className="break-all">{selectedServer.systemd_unit_name}</div>
+                  </div>
+                  <div>
+                    <div className="muted">Health</div>
+                    <div>{titleCase(selectedServer.health_state)}</div>
+                  </div>
                   <div className="sm:col-span-2">
                     <div className="muted">Planned root</div>
                     <div className="break-all">{selectedServer.instance_root}</div>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <div className="muted">Last runtime error</div>
+                    <div>{selectedServer.last_error_summary || 'None'}</div>
                   </div>
                   <div>
                     <div className="muted">Last started</div>
@@ -431,8 +557,8 @@ export default function ServersPage() {
           <div>
             <h2 className="text-xl font-semibold">Create Minecraft server</h2>
             <p className="text-sm muted">
-              This first implementation creates draft server records in the database and prepares the shape
-              needed for native Debian 12 runtime management.
+              Draft creation is still the entry point for brand-new Minecraft servers. Native start, stop,
+              restart, and status refresh now sit on top of the same record model.
             </p>
           </div>
 
@@ -591,8 +717,8 @@ export default function ServersPage() {
               </div>
 
               <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                Import existing server, runtime provisioning, artifact download, and native start/stop wiring are
-                the next implementation steps after this database-backed draft flow.
+                Import existing servers, artifact download, server provisioning, and systemd unit rendering are
+                the next implementation steps after this lifecycle-enabled draft flow.
               </div>
 
               <button
