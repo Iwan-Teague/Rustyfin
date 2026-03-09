@@ -10,7 +10,6 @@ import { clientErrorMessage } from '@/lib/errors';
 type PlaybackDescriptor = {
   item_id: string;
   file_id: string;
-  direct_url: string;
   hls_start_url: string;
   media_info_url: string;
   duration_ms?: number | null;
@@ -54,12 +53,6 @@ function formatPlaybackRateLabel(rate: number): string {
   return `${rate.toFixed(rate % 1 === 0 ? 0 : 2)}x`;
 }
 
-type DirectSupportResult = {
-  supported: boolean;
-  reason?: string;
-  tooltip?: string;
-};
-
 const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
   { value: 'auto', label: 'Auto (Original)' },
   { value: 2160, label: '2160p (4K)' },
@@ -69,51 +62,6 @@ const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
   { value: 480, label: '480p' },
   { value: 360, label: '360p' },
 ];
-
-const DIRECT_MIME_BY_CONTAINER: Array<[string, string]> = [
-  ['mp4', 'video/mp4'],
-  ['mov', 'video/quicktime'],
-  ['matroska', 'video/x-matroska'],
-  ['webm', 'video/webm'],
-  ['mpegts', 'video/mp2t'],
-  ['mpeg', 'video/mpeg'],
-];
-
-function mapCodec(codec?: string): string | null {
-  if (!codec) return null;
-  const c = codec.toLowerCase();
-  if (c === 'h264') return 'avc1.64001F';
-  if (c === 'hevc' || c === 'h265') return 'hev1';
-  if (c === 'vp9') return 'vp09';
-  if (c === 'av1') return 'av01';
-  if (c === 'aac') return 'mp4a.40.2';
-  if (c === 'opus') return 'opus';
-  if (c === 'vorbis') return 'vorbis';
-  return null;
-}
-
-function buildDirectContentType(info: MediaInfo | null): string | null {
-  const container = info?.container?.toLowerCase() || '';
-  const mime = DIRECT_MIME_BY_CONTAINER.find(([needle]) => container.includes(needle))?.[1];
-  if (!mime) return null;
-
-  const codecs: string[] = [];
-  const videoCodec = mapCodec(info?.video?.codec);
-  if (videoCodec) codecs.push(videoCodec);
-
-  const firstAudio = info?.audio?.[0];
-  const audioCodec = mapCodec(firstAudio?.codec);
-  if (audioCodec) codecs.push(audioCodec);
-
-  if (codecs.length > 0) {
-    return `${mime}; codecs="${codecs.join(', ')}"`;
-  }
-  return mime;
-}
-
-function buildDirectUnsupportedMessage(contentType: string): string {
-  return `Direct Play is not supported for this media type in your browser (${contentType}). Use Transcode (HLS), which is slower but compatible. To use Direct Play, add support for this media type.`;
-}
 
 type VideoAudioState = {
   muted: boolean;
@@ -225,6 +173,81 @@ type StartHlsOptions = {
   seekTimeOverrideSecs?: number;
 };
 
+type IconProps = {
+  className?: string;
+};
+
+function PlayIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M8 6.25c0-1.02 1.12-1.65 2-1.13l8 4.75a1.3 1.3 0 0 1 0 2.26l-8 4.75A1.3 1.3 0 0 1 8 15.75v-9.5Z" />
+    </svg>
+  );
+}
+
+function PauseIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <path d="M7.5 5.75A1.25 1.25 0 0 1 8.75 4.5h1.5A1.25 1.25 0 0 1 11.5 5.75v12.5a1.25 1.25 0 0 1-1.25 1.25h-1.5A1.25 1.25 0 0 1 7.5 18.25V5.75Zm5 0a1.25 1.25 0 0 1 1.25-1.25h1.5A1.25 1.25 0 0 1 16.5 5.75v12.5a1.25 1.25 0 0 1-1.25 1.25h-1.5a1.25 1.25 0 0 1-1.25-1.25V5.75Z" />
+    </svg>
+  );
+}
+
+function Volume2Icon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M11 5 6.5 9H3.75A1.25 1.25 0 0 0 2.5 10.25v3.5A1.25 1.25 0 0 0 3.75 15H6.5L11 19V5Z" />
+      <path d="M15 9.5a4 4 0 0 1 0 5" />
+      <path d="M17.75 7.25a7 7 0 0 1 0 9.5" />
+    </svg>
+  );
+}
+
+function VolumeXIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M11 5 6.5 9H3.75A1.25 1.25 0 0 0 2.5 10.25v3.5A1.25 1.25 0 0 0 3.75 15H6.5L11 19V5Z" />
+      <path d="m15.5 10.5 4 4" />
+      <path d="m19.5 10.5-4 4" />
+    </svg>
+  );
+}
+
+function SettingsIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M10.4 3.2h3.2l.55 2.05c.35.1.68.24 1 .4l1.93-.94 2.26 2.26-.94 1.93c.16.32.3.65.4 1l2.05.55v3.2l-2.05.55c-.1.35-.24.68-.4 1l.94 1.93-2.26 2.26-1.93-.94c-.32.16-.65.3-1 .4l-.55 2.05h-3.2l-.55-2.05a6.4 6.4 0 0 1-1-.4l-1.93.94-2.26-2.26.94-1.93a6.4 6.4 0 0 1-.4-1L3.2 13.6v-3.2l2.05-.55c.1-.35.24-.68.4-1L4.7 6.92l2.26-2.26 1.93.94c.32-.16.65-.3 1-.4l.55-2.05Z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </svg>
+  );
+}
+
+function FullscreenIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M8 3.75H5.75A2 2 0 0 0 3.75 5.75V8" />
+      <path d="M16 3.75h2.25a2 2 0 0 1 2 2V8" />
+      <path d="M20.25 16v2.25a2 2 0 0 1-2 2H16" />
+      <path d="M8 20.25H5.75a2 2 0 0 1-2-2V16" />
+    </svg>
+  );
+}
+
+function FullscreenExitIcon({ className = 'h-5 w-5' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M9 3.75H5.75A2 2 0 0 0 3.75 5.75V9" />
+      <path d="M15 3.75h3.25a2 2 0 0 1 2 2V9" />
+      <path d="M20.25 15v3.25a2 2 0 0 1-2 2H15" />
+      <path d="M3.75 15v3.25a2 2 0 0 0 2 2H9" />
+      <path d="m9.5 9.5-3-3" />
+      <path d="M14.5 9.5 17.5 6.5" />
+      <path d="m9.5 14.5-3 3" />
+      <path d="m14.5 14.5 3 3" />
+    </svg>
+  );
+}
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
@@ -232,18 +255,13 @@ export default function PlayerPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
-  const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
-  const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
-  const [directFallbackTriggered, setDirectFallbackTriggered] = useState(false);
-  const [directSupport, setDirectSupport] = useState<DirectSupportResult | null>(null);
-  const [directSupportMessage, setDirectSupportMessage] = useState('');
   const [timelineNowSecs, setTimelineNowSecs] = useState(0);
   const [timelineDurationSecs, setTimelineDurationSecs] = useState(0);
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
@@ -255,7 +273,6 @@ export default function PlayerPage() {
   const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
 
   const canStartPlayback = Boolean(descriptor?.file_id);
-  const directContentType = useMemo(() => buildDirectContentType(mediaInfo), [mediaInfo]);
 
   const stopSession = useCallback(async (sid: string) => {
     await apiFetch(`/playback/sessions/${sid}/stop`, { method: 'POST' }).catch(() => {});
@@ -280,66 +297,6 @@ export default function PlayerPage() {
       hlsRef.current = null;
     }
   }, []);
-
-  const evaluateDirectSupport = useCallback(async (): Promise<DirectSupportResult> => {
-    const video = videoRef.current;
-    if (!video) return { supported: true };
-    if (!directContentType) return { supported: true };
-
-    const unsupported = {
-      supported: false,
-      reason: buildDirectUnsupportedMessage(directContentType),
-      tooltip: `Media type not supported: ${directContentType}`,
-    };
-
-    const nav = navigator as Navigator & {
-      mediaCapabilities?: {
-        decodingInfo?: (
-          config: MediaDecodingConfiguration,
-        ) => Promise<{ supported: boolean }>;
-      };
-    };
-
-    let mediaCapabilitiesUnsupported = false;
-    if (nav.mediaCapabilities?.decodingInfo && mediaInfo?.video) {
-      try {
-        const result = await nav.mediaCapabilities.decodingInfo({
-          type: 'file',
-          video: {
-            contentType: directContentType,
-            width: mediaInfo.video.width || 1920,
-            height: mediaInfo.video.height || 1080,
-            bitrate: (mediaInfo.video.bitrate_kbps || 2000) * 1000,
-            framerate: mediaInfo.video.framerate || 24,
-          },
-        });
-        mediaCapabilitiesUnsupported = !result.supported;
-      } catch {
-        // Fall back to canPlayType below.
-      }
-    }
-
-    const canPlay = video.canPlayType(directContentType);
-    if (canPlay === 'probably' || canPlay === 'maybe') return { supported: true };
-
-    // Some browsers report unsupported for strict codec strings even when
-    // container-level MP4 playback works in practice.
-    const baseMime = directContentType.split(';', 1)[0]?.trim() || '';
-    if (baseMime && baseMime !== directContentType) {
-      const canPlayBase = video.canPlayType(baseMime);
-      if (canPlayBase === 'probably' || canPlayBase === 'maybe') {
-        return {
-          supported: true,
-          tooltip: `Codec details could not be verified (${directContentType}). Trying Direct Play.`,
-        };
-      }
-    }
-
-    // Keep compatibility checks advisory: we still allow trying Direct Play
-    // to match watch-party behavior and only fall back if playback actually fails.
-    if (mediaCapabilitiesUnsupported) return unsupported;
-    return { supported: true };
-  }, [directContentType, mediaInfo]);
 
   const startHls = useCallback(async (options?: StartHlsOptions) => {
     if (!descriptor?.file_id) {
@@ -402,9 +359,7 @@ export default function PlayerPage() {
 
       destroyHls();
       setSessionId(data.session_id);
-      setMode('hls');
       setHlsSessionStartOffsetSecs(startTimeSecs ?? 0);
-      setDirectSupportMessage('');
 
       const Hls = (await import('hls.js')).default;
       const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -507,53 +462,6 @@ export default function PlayerPage() {
     }
   }, [descriptor, destroyHls, sessionId, stopSession, hlsTargetHeight, mediaInfo]);
 
-  const startDirectPlay = useCallback(async () => {
-    if (!descriptor?.file_id) {
-      setError('No media file is attached to this item. Rescan the library and try again.');
-      return;
-    }
-
-    const video = videoRef.current;
-    if (!video) {
-      setError('Player is not ready yet.');
-      return;
-    }
-    audioStateRef.current = readVideoAudioState(video);
-    const preservedAudioState = audioStateRef.current;
-
-    setStartingDirect(true);
-    setError('');
-    setDirectFallbackTriggered(false);
-    try {
-      const support = await evaluateDirectSupport();
-      setDirectSupport(support);
-      if (!support.supported) {
-        setDirectSupportMessage(
-          support.reason ||
-            'Direct Play is not supported for this media type in your browser. Use Transcode (HLS).',
-        );
-      } else {
-        setDirectSupportMessage('');
-      }
-
-      destroyHls();
-      if (sessionId) {
-        await stopSession(sessionId);
-        setSessionId(null);
-      }
-      setMode('direct');
-      setHlsSessionStartOffsetSecs(0);
-      video.src = descriptor.direct_url;
-      video.load();
-      applyVideoAudioState(video, preservedAudioState);
-    } catch (e: unknown) {
-      setError(clientErrorMessage(e, 'Direct Play failed; switching to HLS.'));
-      await startHls();
-    } finally {
-      setStartingDirect(false);
-    }
-  }, [descriptor, destroyHls, evaluateDirectSupport, startHls]);
-
   useEffect(() => {
     let cancelled = false;
     autoStartedRef.current = false;
@@ -562,8 +470,6 @@ export default function PlayerPage() {
     setMediaInfo(null);
     setSessionId(null);
     setError('');
-    setDirectSupport(null);
-    setDirectSupportMessage('');
     setTimelineNowSecs(0);
     setTimelineDurationSecs(0);
     setHlsSessionStartOffsetSecs(0);
@@ -592,42 +498,13 @@ export default function PlayerPage() {
     };
   }, [id]);
 
-  useEffect(() => {
-    let cancelled = false;
-    if (!canStartPlayback) {
-      setDirectSupport(null);
-      setDirectSupportMessage('');
-      return;
-    }
-
-    (async () => {
-      const support = await evaluateDirectSupport();
-      if (cancelled) return;
-      setDirectSupport(support);
-      if (!support.supported) {
-        setDirectSupportMessage(
-          support.reason ||
-            'Direct Play is not supported for this media type in your browser. Use Transcode (HLS).',
-        );
-      } else {
-        setDirectSupportMessage('');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [canStartPlayback, evaluateDirectSupport]);
-
-  // Auto-start direct play (load without playing) once the descriptor is ready
+  // Auto-start HLS once the descriptor is ready
   useEffect(() => {
     if (!loadingDescriptor && canStartPlayback && !autoStartedRef.current) {
       autoStartedRef.current = true;
-      void startHls().catch(() => {
-        void startDirectPlay();
-      });
+      void startHls();
     }
-  }, [loadingDescriptor, canStartPlayback, startHls, startDirectPlay]);
+  }, [loadingDescriptor, canStartPlayback, startHls]);
 
   useEffect(() => {
     return () => {
@@ -639,7 +516,6 @@ export default function PlayerPage() {
   }, [destroyHls, sessionId, stopSession]);
 
   useEffect(() => {
-    if (mode !== 'hls') return;
     const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
     if (!hls) return;
 
@@ -671,19 +547,20 @@ export default function PlayerPage() {
         }
       }
     };
-  }, [mode, descriptor?.duration_ms, mediaInfo?.duration_secs]);
+  }, [descriptor?.duration_ms, mediaInfo?.duration_secs]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const syncState = () => {
-      const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
       setIsPlaying(!video.paused && !video.ended);
       setIsMuted(video.muted || video.volume <= 0);
       setPlaybackRate(Number.isFinite(video.playbackRate) && video.playbackRate > 0 ? video.playbackRate : 1);
       setTimelineNowSecs(
-        Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+        Number.isFinite(video.currentTime)
+          ? hlsSessionStartOffsetSecs + video.currentTime
+          : hlsSessionStartOffsetSecs,
       );
       if (Number.isFinite(video.duration) && video.duration > 0) {
         setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
@@ -717,7 +594,7 @@ export default function PlayerPage() {
       video.removeEventListener('timeupdate', syncState);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
-  }, [mode, hlsSessionStartOffsetSecs]);
+  }, [hlsSessionStartOffsetSecs]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -728,23 +605,15 @@ export default function PlayerPage() {
           method: 'POST',
           body: JSON.stringify({
             item_id: id,
-            progress_ms: Math.floor(video.currentTime * 1000),
+            progress_ms: Math.floor((hlsSessionStartOffsetSecs + video.currentTime) * 1000),
             played: video.ended,
           }),
         }).catch(() => {});
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [hlsSessionStartOffsetSecs, id]);
 
-  const directPlayUnsupported = directSupport?.supported === false;
-  const directPlayDisabled =
-    !canStartPlayback || startingDirect || startingHls;
-  const directPlayDisabledReason = !canStartPlayback
-    ? 'No playable media file is attached to this item.'
-    : directPlayUnsupported
-      ? (directSupport?.tooltip ?? 'Compatibility check failed, but you can still try Direct Play.')
-      : 'Use browser-native Direct Play';
   const knownDurationFromDescriptorSecs =
     descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0;
   const knownDurationFromProbeSecs =
@@ -787,7 +656,6 @@ export default function PlayerPage() {
       if (!Number.isFinite(safeTarget)) return;
 
       if (
-        mode === 'hls' &&
         descriptor?.file_id &&
         (safeTarget < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
           (timelineDurationSecs > 0 && safeTarget > hlsBufferedWindowEndSecs + 1))
@@ -799,8 +667,7 @@ export default function PlayerPage() {
         return;
       }
 
-      video.currentTime =
-        mode === 'hls' ? Math.max(0, safeTarget - hlsSessionStartOffsetSecs) : safeTarget;
+      video.currentTime = Math.max(0, safeTarget - hlsSessionStartOffsetSecs);
       setTimelineNowSecs(safeTarget);
     },
     [
@@ -809,7 +676,6 @@ export default function PlayerPage() {
       hlsBufferedWindowEndSecs,
       hlsSessionStartOffsetSecs,
       hlsTargetHeight,
-      mode,
       startHls,
       timelineDurationSecs,
     ],
@@ -844,9 +710,6 @@ export default function PlayerPage() {
       </header>
 
       {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
-      {directSupportMessage && (
-        <p className="notice-error rounded-xl px-4 py-2 text-sm">{directSupportMessage}</p>
-      )}
       {loadingDescriptor && (
         <p className="panel-soft rounded-xl px-4 py-2 text-sm muted">Preparing playback descriptor…</p>
       )}
@@ -868,9 +731,10 @@ export default function PlayerPage() {
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             audioStateRef.current = readVideoAudioState(video);
-            const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
             setTimelineNowSecs(
-              Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+              Number.isFinite(video.currentTime)
+                ? hlsSessionStartOffsetSecs + video.currentTime
+                : hlsSessionStartOffsetSecs,
             );
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
@@ -885,19 +749,17 @@ export default function PlayerPage() {
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
-            const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
             setTimelineNowSecs(
-              Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+              Number.isFinite(video.currentTime)
+                ? hlsSessionStartOffsetSecs + video.currentTime
+                : hlsSessionStartOffsetSecs,
             );
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
           }}
           onError={() => {
-            if (mode !== 'direct' || directFallbackTriggered || !canStartPlayback) return;
-            setDirectFallbackTriggered(true);
-            setError('Direct Play failed in this browser. Falling back to HLS.');
-            void startHls();
+            setError('HLS playback failed. Refresh the page and retry.');
           }}
         />
         <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
@@ -906,17 +768,21 @@ export default function PlayerPage() {
               type="button"
               onClick={() => void togglePlayback()}
               disabled={!canStartPlayback}
-              className="btn-secondary min-w-[88px] px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={isPlaying ? 'Pause playback' : 'Play playback'}
+              title={isPlaying ? 'Pause playback' : 'Play playback'}
             >
-              {isPlaying ? 'Pause' : 'Play'}
+              {isPlaying ? <PauseIcon /> : <PlayIcon />}
             </button>
             <button
               type="button"
               onClick={toggleMute}
               disabled={!canStartPlayback}
-              className="btn-secondary min-w-[88px] px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={isMuted ? 'Unmute audio' : 'Mute audio'}
+              title={isMuted ? 'Unmute audio' : 'Mute audio'}
             >
-              {isMuted ? 'Unmute' : 'Mute'}
+              {isMuted ? <VolumeXIcon /> : <Volume2Icon />}
             </button>
             <span className="min-w-[4.75rem] text-right text-sm tabular-nums text-white/85">
               {formatClock(timelineNowSecs)}
@@ -951,16 +817,20 @@ export default function PlayerPage() {
               <button
                 type="button"
                 onClick={() => setShowPlayerSettings((current) => !current)}
-                className="btn-secondary px-4 py-2 text-sm"
+                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm"
+                aria-label="Playback settings"
+                title="Playback settings"
               >
-                Settings
+                <SettingsIcon />
               </button>
               <button
                 type="button"
                 onClick={() => void toggleFullscreen()}
-                className="btn-secondary px-4 py-2 text-sm"
+                className="btn-secondary inline-flex h-10 w-10 items-center justify-center rounded-full p-0 text-sm"
+                aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
               >
-                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
               </button>
               {showPlayerSettings ? (
                 <div className="absolute right-0 top-[calc(100%+0.6rem)] z-20 w-56 rounded-2xl border border-white/10 bg-[rgba(24,28,40,0.98)] p-3 shadow-[0_20px_40px_rgba(0,0,0,0.45)] backdrop-blur">
@@ -987,11 +857,9 @@ export default function PlayerPage() {
                         const value = event.target.value;
                         const nextTargetHeight = value === 'auto' ? null : Number(value);
                         setHlsTargetHeight(nextTargetHeight);
-                        if (mode === 'hls') {
-                          void startHls({ targetHeightOverride: nextTargetHeight });
-                        }
+                        void startHls({ targetHeightOverride: nextTargetHeight });
                       }}
-                      disabled={startingDirect || startingHls}
+                      disabled={startingHls}
                     >
                       {HLS_QUALITY_OPTIONS.map((option) => (
                         <option key={option.label} value={option.value}>
@@ -1010,44 +878,11 @@ export default function PlayerPage() {
         <span>
           Timeline: {formatClock(timelineNowSecs)} / {formatClock(effectiveTotalDuration)}
         </span>
-        {mode === 'hls' && knownDurationSecs > 0 && timelineDurationSecs > 0 && hlsBufferedWindowEndSecs < knownDurationSecs - 1 ? (
+        {knownDurationSecs > 0 && timelineDurationSecs > 0 && hlsBufferedWindowEndSecs < knownDurationSecs - 1 ? (
           <span className="ml-2">
             (buffered through: {formatClock(hlsBufferedWindowEndSecs)})
           </span>
         ) : null}
-      </div>
-
-      <div className="panel-soft flex flex-wrap items-center gap-3 px-4 py-4">
-        <p className="mr-2 text-sm muted">Mode:</p>
-        <span className="chip">
-          {mode === 'direct' ? 'Using Direct Play' : 'Using Transcode (HLS)'}
-        </span>
-        <button
-          onClick={() => void startDirectPlay()}
-          disabled={directPlayDisabled}
-          title={directPlayDisabledReason}
-          className={`px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
-            directPlayUnsupported
-              ? 'bg-amber-800/30 text-amber-200 border border-amber-500/50'
-              : mode === 'direct'
-                ? 'btn-primary'
-                : 'btn-secondary'
-          }`}
-        >
-          {startingDirect ? 'Starting…' : 'Direct Play'}
-        </button>
-        <button
-          onClick={() => void startHls()}
-          disabled={!canStartPlayback || startingDirect || startingHls}
-          className={`px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50 ${
-            mode === 'hls' ? 'btn-primary' : 'btn-secondary'
-          }`}
-        >
-          {startingHls ? 'Starting…' : 'Transcode (HLS)'}
-        </button>
-        {directContentType && (
-          <p className="text-xs muted">Direct capability check: {directContentType}</p>
-        )}
       </div>
     </div>
   );
