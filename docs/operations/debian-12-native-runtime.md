@@ -163,6 +163,12 @@ Primary variables:
 
 Selected media/library paths are validated as host paths. There is no container path translation layer.
 
+On GUI-enabled Debian hosts, the optional native folder picker can still be used.
+On headless Debian hosts, Rustyfin falls back to:
+
+- server-side host directory browsing
+- manual path entry
+
 ## GPU Usage
 
 Playback/transcoding GPU mode is controlled through:

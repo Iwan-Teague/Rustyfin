@@ -3521,6 +3521,14 @@ fn open_directory_picker_native() -> Result<String, ApiError> {
 
 #[cfg(target_os = "linux")]
 fn open_directory_picker_linux() -> Result<String, ApiError> {
+    let has_display = std::env::var_os("DISPLAY").is_some();
+    let has_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if !has_display && !has_wayland {
+        return Err(ApiError::BadRequest(
+            "directory picker is unavailable on a headless host; use Browse Host Directories or enter the path manually".into(),
+        ));
+    }
+
     let mut last_err: Option<ApiError> = None;
 
     if command_exists("zenity") {
@@ -3560,7 +3568,7 @@ fn open_directory_picker_linux() -> Result<String, ApiError> {
     }
 
     Err(ApiError::BadRequest(
-        "directory picker is unavailable: install zenity or kdialog, or enter the path manually"
+        "directory picker is unavailable: install zenity or kdialog, or use Browse Host Directories / enter the path manually"
             .into(),
     ))
 }
