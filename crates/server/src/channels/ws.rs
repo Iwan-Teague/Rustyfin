@@ -20,6 +20,7 @@ use super::protocol::{ChannelEvent, ClientMsg, MessageInfo, VoiceTranscriptionSt
 
 const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
 const MAX_WS_TEXT_BYTES: usize = 8 * 1024;
+const PERSONAL_EVENT_BUFFER: usize = 256;
 const AUTH_DEADLINE_SECONDS: u64 = 3;
 const PING_INTERVAL_SECONDS: u64 = 20;
 const MESSAGE_RATE_WINDOW_SECONDS: u64 = 10;
@@ -102,6 +103,30 @@ async fn check_ws_connect_rate_limit(headers: &HeaderMap) -> Result<(), AppError
         }
         .into()),
     }
+}
+
+async fn validate_voice_channel_access(
+    state: &AppState,
+    role: &str,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    let channel = rustfin_db::repo::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let Some(channel) = channel else {
+        return Err(ApiError::NotFound("channel not found".into()).into());
+    };
+    if channel.kind != "voice" {
+        return Err(
+            ApiError::BadRequest("voice join is only supported for voice channels".into()).into(),
+        );
+    }
+    if channel.is_private && role != "admin" {
+        return Err(ApiError::Forbidden("channel access denied".into()).into());
+    }
+
+    Ok(())
 }
 
 fn validate_origin(headers: &HeaderMap) -> Result<(), AppError> {
@@ -213,7 +238,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     debug!(user_id = %user_id, "channels ws authenticated");
 
     // ── Register personal mpsc channel ───────────────────────────────────────
-    let (personal_tx, mut personal_rx) = mpsc::unbounded_channel();
+    let (personal_tx, mut personal_rx) = mpsc::channel(PERSONAL_EVENT_BUFFER);
     state
         .channel_manager
         .register_user(&user_id, personal_tx)
@@ -353,8 +378,35 @@ async fn dispatch(
         }
 
         ClientMsg::JoinVoice { channel_id } => {
+            if let Err(err) = validate_voice_channel_access(state, role, &channel_id).await {
+                let message = match &err.0 {
+                    ApiError::Internal(_) => "internal error".to_string(),
+                    other => other.to_string(),
+                };
+                let _ = send_error(socket, &message).await;
+                return Ok(());
+            }
+
+            let left_channels = state
+                .channel_manager
+                .leave_other_voice(user_id, &channel_id)
+                .await;
             let (runtime_username, runtime_avatar_url) =
                 resolve_runtime_profile(state, user_id, username, avatar_url).await;
+
+            for left in left_channels {
+                state
+                    .channel_manager
+                    .broadcast(ChannelEvent::VoicePresence {
+                        channel_id: left.channel_id,
+                        user_id: user_id.to_string(),
+                        username: runtime_username.clone(),
+                        avatar_url: runtime_avatar_url.clone(),
+                        joined: false,
+                        active_since_ts: left.active_since_ts,
+                    });
+            }
+
             let join_result = state
                 .channel_manager
                 .join_voice(
@@ -419,6 +471,18 @@ async fn dispatch(
             channel_id,
             sdp,
         } => {
+            if !state
+                .channel_manager
+                .voice_channel_has_pair(&channel_id, user_id, &to_user_id)
+                .await
+            {
+                let _ = send_error(
+                    socket,
+                    "rtc offer requires both users to be in the same voice channel",
+                )
+                .await;
+                return Ok(());
+            }
             state
                 .channel_manager
                 .send_to_user(
@@ -438,6 +502,18 @@ async fn dispatch(
             channel_id,
             sdp,
         } => {
+            if !state
+                .channel_manager
+                .voice_channel_has_pair(&channel_id, user_id, &to_user_id)
+                .await
+            {
+                let _ = send_error(
+                    socket,
+                    "rtc answer requires both users to be in the same voice channel",
+                )
+                .await;
+                return Ok(());
+            }
             state
                 .channel_manager
                 .send_to_user(
@@ -457,6 +533,18 @@ async fn dispatch(
             channel_id,
             candidate,
         } => {
+            if !state
+                .channel_manager
+                .voice_channel_has_pair(&channel_id, user_id, &to_user_id)
+                .await
+            {
+                let _ = send_error(
+                    socket,
+                    "rtc ice requires both users to be in the same voice channel",
+                )
+                .await;
+                return Ok(());
+            }
             state
                 .channel_manager
                 .send_to_user(

@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{RwLock, broadcast, mpsc};
 
 use super::protocol::{ChannelEvent, UserInfo};
 
 pub struct ChannelManager {
     broadcast: broadcast::Sender<Arc<ChannelEvent>>,
-    user_senders: RwLock<HashMap<String, mpsc::UnboundedSender<Arc<ChannelEvent>>>>,
+    user_senders: RwLock<HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>,
     /// channel_id → Vec<(user_id, username, avatar_url)> in join order
     voice: RwLock<HashMap<String, Vec<(String, String, Option<String>)>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
@@ -39,7 +40,7 @@ impl ChannelManager {
         self.broadcast.subscribe()
     }
 
-    pub async fn register_user(&self, user_id: &str, tx: mpsc::UnboundedSender<Arc<ChannelEvent>>) {
+    pub async fn register_user(&self, user_id: &str, tx: mpsc::Sender<Arc<ChannelEvent>>) {
         let mut senders = self.user_senders.write().await;
         senders.insert(user_id.to_string(), tx);
     }
@@ -54,11 +55,21 @@ impl ChannelManager {
     }
 
     pub async fn send_to_user(&self, user_id: &str, event: ChannelEvent) -> bool {
-        let senders = self.user_senders.read().await;
-        if let Some(tx) = senders.get(user_id) {
-            tx.send(Arc::new(event)).is_ok()
-        } else {
-            false
+        let sender = {
+            let senders = self.user_senders.read().await;
+            senders.get(user_id).cloned()
+        };
+        let Some(sender) = sender else {
+            return false;
+        };
+
+        match sender.try_send(Arc::new(event)) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) | Err(TrySendError::Closed(_)) => {
+                let mut senders = self.user_senders.write().await;
+                senders.remove(user_id);
+                false
+            }
         }
     }
 
@@ -182,6 +193,92 @@ impl ChannelManager {
         results
     }
 
+    /// Removes a user from every voice channel except the target one.
+    pub async fn leave_other_voice(
+        &self,
+        user_id: &str,
+        keep_channel_id: &str,
+    ) -> Vec<LeaveVoiceResult> {
+        let mut voice = self.voice.write().await;
+        let mut left_channel_ids = Vec::new();
+        let mut still_active_channels = HashSet::new();
+
+        for (channel_id, members) in voice.iter_mut() {
+            if channel_id == keep_channel_id {
+                continue;
+            }
+            let before = members.len();
+            members.retain(|(uid, _, _)| uid != user_id);
+            if members.len() < before {
+                left_channel_ids.push(channel_id.clone());
+                if !members.is_empty() {
+                    still_active_channels.insert(channel_id.clone());
+                }
+            }
+        }
+
+        voice.retain(|_, members| !members.is_empty());
+        drop(voice);
+
+        let mut active = self.voice_active_since_ts.write().await;
+        let mut results = Vec::with_capacity(left_channel_ids.len());
+        for channel_id in left_channel_ids {
+            if still_active_channels.contains(&channel_id) {
+                let active_since_ts = active.get(&channel_id).copied().or_else(|| {
+                    let now = chrono::Utc::now().timestamp();
+                    active.insert(channel_id.clone(), now);
+                    Some(now)
+                });
+                results.push(LeaveVoiceResult {
+                    channel_id,
+                    active_since_ts,
+                });
+            } else {
+                active.remove(&channel_id);
+                results.push(LeaveVoiceResult {
+                    channel_id,
+                    active_since_ts: None,
+                });
+            }
+        }
+
+        results
+    }
+
+    pub async fn voice_channel_has_user(&self, channel_id: &str, user_id: &str) -> bool {
+        let voice = self.voice.read().await;
+        voice
+            .get(channel_id)
+            .map(|members| members.iter().any(|(uid, _, _)| uid == user_id))
+            .unwrap_or(false)
+    }
+
+    pub async fn voice_channel_has_pair(
+        &self,
+        channel_id: &str,
+        first_user_id: &str,
+        second_user_id: &str,
+    ) -> bool {
+        let voice = self.voice.read().await;
+        let Some(members) = voice.get(channel_id) else {
+            return false;
+        };
+        let mut first_found = false;
+        let mut second_found = false;
+        for (user_id, _, _) in members {
+            if user_id == first_user_id {
+                first_found = true;
+            }
+            if user_id == second_user_id {
+                second_found = true;
+            }
+            if first_found && second_found {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn voice_snapshot(&self) -> HashMap<String, Vec<UserInfo>> {
         let voice = self.voice.read().await;
         voice
@@ -210,5 +307,53 @@ impl ChannelManager {
 impl Default for ChannelManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn leave_other_voice_keeps_target_channel_membership() {
+        let manager = ChannelManager::new();
+        manager.join_voice("voice-a", "u-1", "alpha", None).await;
+        manager.join_voice("voice-b", "u-1", "alpha", None).await;
+
+        let left = manager.leave_other_voice("u-1", "voice-b").await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].channel_id, "voice-a");
+        assert!(!manager.voice_channel_has_user("voice-a", "u-1").await);
+        assert!(manager.voice_channel_has_user("voice-b", "u-1").await);
+    }
+
+    #[tokio::test]
+    async fn send_to_user_evicts_full_personal_queue() {
+        let manager = ChannelManager::new();
+        let (tx, mut rx) = mpsc::channel(1);
+        manager.register_user("u-1", tx).await;
+
+        assert!(
+            manager
+                .send_to_user(
+                    "u-1",
+                    ChannelEvent::Error {
+                        message: "first".to_string(),
+                    },
+                )
+                .await
+        );
+        assert!(
+            !manager
+                .send_to_user(
+                    "u-1",
+                    ChannelEvent::Error {
+                        message: "second".to_string(),
+                    },
+                )
+                .await
+        );
+        assert!(matches!(rx.recv().await, Some(_)));
+        assert!(rx.recv().await.is_none());
     }
 }
