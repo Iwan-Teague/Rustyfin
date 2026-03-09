@@ -120,6 +120,14 @@ function dayCellLabel(date: Date): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+function dayCellDay(date: Date): string {
+  return date.toLocaleDateString(undefined, { day: 'numeric' });
+}
+
+function dayCellMonth(date: Date): string {
+  return date.toLocaleDateString(undefined, { month: 'short' });
+}
+
 function sameCalendarDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&
@@ -501,7 +509,12 @@ export default function CalendarPage() {
                               : 'border-[var(--border)] bg-white/5'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
+                        <div className="sm:hidden">
+                          <p className="text-xs font-semibold leading-tight">{dayCellDay(day)}</p>
+                          <p className="text-[11px] muted leading-tight">{dayCellMonth(day)}</p>
+                          <span className="block text-[11px] muted leading-tight">{dayEvents.length}</span>
+                        </div>
+                        <div className="hidden items-center justify-between sm:flex">
                           <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
                           <span className="text-[11px] muted">{dayEvents.length}</span>
                         </div>
