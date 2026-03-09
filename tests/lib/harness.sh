@@ -18,9 +18,30 @@ export PLAYWRIGHT_BROWSERS_PATH="${SAFE_PW_BROWSERS}"
 # Use caller-provided ports when set; otherwise allocate free loopback ports at runtime.
 TEST_BACKEND_PORT="${RUSTFIN_TEST_BACKEND_PORT:-}"
 TEST_UI_PORT="${RUSTFIN_TEST_UI_PORT:-}"
-TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
-TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
-TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
+TEST_BACKEND_BIND=""
+TEST_BACKEND_URL=""
+TEST_UI_URL=""
+
+set_backend_endpoints() {
+  local port="$1"
+  TEST_BACKEND_PORT="${port}"
+  TEST_BACKEND_BIND="127.0.0.1:${port}"
+  TEST_BACKEND_URL="http://127.0.0.1:${port}"
+}
+
+set_ui_endpoint() {
+  local port="$1"
+  TEST_UI_PORT="${port}"
+  TEST_UI_URL="http://127.0.0.1:${port}"
+}
+
+if [[ -n "${TEST_BACKEND_PORT}" ]]; then
+  set_backend_endpoints "${TEST_BACKEND_PORT}"
+fi
+
+if [[ -n "${TEST_UI_PORT}" ]]; then
+  set_ui_endpoint "${TEST_UI_PORT}"
+fi
 
 color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
 log() { printf "%s\n" "$*"; }
@@ -127,9 +148,7 @@ start_server() {
   local picker="$3"
 
   if [[ -z "${RUSTFIN_TEST_BACKEND_PORT:-}" ]]; then
-    TEST_BACKEND_PORT="$(allocate_ephemeral_port)"
-    TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
-    TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
+    set_backend_endpoints "$(allocate_ephemeral_port)"
     log_info "Using dynamic backend test port ${TEST_BACKEND_PORT}"
   fi
 
@@ -137,10 +156,8 @@ start_server() {
     clear_test_port "${TEST_BACKEND_PORT}"
   fi
   if port_in_use "${TEST_BACKEND_PORT}"; then
-    TEST_BACKEND_PORT="$(find_available_port "$((TEST_BACKEND_PORT + 1))")" || \
+    set_backend_endpoints "$(find_available_port "$((TEST_BACKEND_PORT + 1))")" || \
       die "Unable to find a free backend test port."
-    TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
-    TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
     log_info "Using alternate backend test port ${TEST_BACKEND_PORT}"
   fi
 
@@ -175,8 +192,7 @@ start_ui() {
   local run_dir="$1"
 
   if [[ -z "${RUSTFIN_TEST_UI_PORT:-}" ]]; then
-    TEST_UI_PORT="$(allocate_ephemeral_port)"
-    TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
+    set_ui_endpoint "$(allocate_ephemeral_port)"
     log_info "Using dynamic UI test port ${TEST_UI_PORT}"
   fi
 
@@ -184,9 +200,8 @@ start_ui() {
     clear_test_port "${TEST_UI_PORT}"
   fi
   if port_in_use "${TEST_UI_PORT}"; then
-    TEST_UI_PORT="$(find_available_port "$((TEST_UI_PORT + 1))")" || \
+    set_ui_endpoint "$(find_available_port "$((TEST_UI_PORT + 1))")" || \
       die "Unable to find a free UI test port."
-    TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
     log_info "Using alternate UI test port ${TEST_UI_PORT}"
   fi
 
