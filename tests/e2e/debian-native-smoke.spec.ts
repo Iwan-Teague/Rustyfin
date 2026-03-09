@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN, createLibraryViaBrowse, login, runSetupWizard, triggerScan } from './helpers';
+import { ADMIN, createLibraryViaBrowse, login, triggerScan } from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
-  await runSetupWizard(page);
   await login(page, ADMIN.username, ADMIN.password);
 
   await page.goto('/channels');
