@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { runSetupWizard, ADMIN, login } from './helpers';
 
-async function a11yPage(page, path: string) {
+async function a11yPage(page: Page, path: string) {
   await page.goto(path);
   await page.waitForLoadState('networkidle');
   const results = await new AxeBuilder({ page }).analyze();

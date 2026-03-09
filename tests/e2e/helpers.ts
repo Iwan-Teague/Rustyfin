@@ -1,13 +1,18 @@
 import { expect, Page } from '@playwright/test';
 
+const adminUsername = process.env.RUSTYFIN_ADMIN_USERNAME?.trim();
+const adminPassword = process.env.RUSTYFIN_ADMIN_PASSWORD?.trim();
+const userUsername = process.env.RUSTYFIN_USER_USERNAME?.trim();
+const userPassword = process.env.RUSTYFIN_USER_PASSWORD?.trim();
+
 export const ADMIN = {
-  username: 'admin',
-  password: 'AdminPassword123!' // >= 6 chars
+  username: adminUsername && adminUsername.length > 0 ? adminUsername : 'admin',
+  password: adminPassword && adminPassword.length > 0 ? adminPassword : 'AdminPassword123!' // >= 6 chars
 };
 
 export const USER = {
-  username: 'basicuser',
-  password: 'UserPassword123!' // >= 6 chars
+  username: userUsername && userUsername.length > 0 ? userUsername : 'basicuser',
+  password: userPassword && userPassword.length > 0 ? userPassword : 'UserPassword123!' // >= 6 chars
 };
 
 export async function runSetupWizard(page: Page) {

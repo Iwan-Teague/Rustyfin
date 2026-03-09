@@ -18,6 +18,7 @@ SKIP_RUNTIME=false
 SKIP_UI=false
 SKIP_CLIPPY=false
 SKIP_TESTS=false
+SKIP_BROWSER_SMOKE=false
 ALLOW_NON_DEBIAN=false
 REPORT_PATH=""
 
@@ -35,6 +36,7 @@ Options:
   --skip-ui             Skip UI lint/typecheck/build gates.
   --skip-clippy         Skip strict clippy gates.
   --skip-tests          Skip Rust test gates.
+  --skip-browser-smoke  Skip the isolated Playwright browser smoke suite.
   --allow-non-debian    Run outside Debian 12 (runtime confidence is reduced).
   --report PATH         Write the Markdown report to PATH.
   -h, --help            Show this help.
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --skip-ui) SKIP_UI=true; shift ;;
     --skip-clippy) SKIP_CLIPPY=true; shift ;;
     --skip-tests) SKIP_TESTS=true; shift ;;
+    --skip-browser-smoke) SKIP_BROWSER_SMOKE=true; shift ;;
     --allow-non-debian) ALLOW_NON_DEBIAN=true; shift ;;
     --report)
       [[ $# -ge 2 ]] || die "--report requires a path"
@@ -170,6 +173,9 @@ check_debian12_host() {
 check_required_tooling() {
   local missing=0
   local tools=(cargo rustc node npm git curl jq psql)
+  if [[ "$SKIP_BROWSER_SMOKE" != "true" ]]; then
+    tools+=(lsof)
+  fi
   if [[ "$ALLOW_NON_DEBIAN" != "true" ]]; then
     tools+=(systemctl)
   fi
@@ -278,6 +284,32 @@ check_runtime_health_endpoints() {
   curl -sf "http://127.0.0.1:${RUSTFIN_SERVERS_AGENT_PORT:-8103}/health" | jq -e '.ok == true'
 }
 
+expect_http_code() {
+  local method="$1"
+  local url="$2"
+  local expected="$3"
+  local actual
+  actual="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "$url")"
+  echo "$method $url -> $actual"
+  [[ "$actual" == "$expected" ]]
+}
+
+check_runtime_protected_api_auth() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+
+  local base="http://127.0.0.1:${RUSTFIN_BACKEND_PORT:-8096}/api/v1"
+  expect_http_code GET "${base}/system/info/public" 200
+  expect_http_code GET "${base}/users" 401
+  expect_http_code GET "${base}/libraries" 401
+  expect_http_code GET "${base}/channels" 401
+  expect_http_code GET "${base}/watch-party/rooms" 401
+  expect_http_code GET "${base}/servers/minecraft/instances" 401
+  expect_http_code GET "${base}/jobs" 401
+}
+
 check_latest_migration_applied() {
   runtime_service_present || {
     echo "rustyfin-native.service not installed on this host."
@@ -352,6 +384,10 @@ check_recent_journal_errors() {
   fi
 }
 
+check_debian_browser_smoke() {
+  "${REPO_ROOT}/scripts/ci/debian_browser_smoke.sh"
+}
+
 write_report() {
   local overall host_name current_commit
   overall="PASS"
@@ -419,6 +455,12 @@ else
   run_gate "UI production build" npm --prefix ui run build
 fi
 
+if [[ "$SKIP_BROWSER_SMOKE" == "true" ]]; then
+  warn "Skipping browser smoke gate by request."
+else
+  run_gate "Browser smoke suite" check_debian_browser_smoke
+fi
+
 if [[ "$SKIP_RUNTIME" == "true" ]]; then
   warn "Skipping runtime gates by request."
 else
@@ -426,6 +468,7 @@ else
   run_gate "Runtime edge reachable" check_runtime_edge
   run_gate "Runtime config endpoint" check_runtime_config
   run_gate "Runtime health endpoints" check_runtime_health_endpoints
+  run_gate "Protected API auth gate" check_runtime_protected_api_auth
   run_gate "Latest migration applied" check_latest_migration_applied
   run_gate "No recent runtime journal errors" check_recent_journal_errors
 fi

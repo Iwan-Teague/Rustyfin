@@ -249,6 +249,17 @@ This is the main post-update confidence check for the supported runtime. It emit
 - a latest report copy at:
   - `/Users/iwanteague/Desktop/Rustyfin/.tmp/gates/debian-native-gates-latest.md`
 
+It now also includes:
+
+- an isolated browser smoke pass for setup/login, channels, rooms, servers, and playback
+- a live unauthenticated-access gate for representative protected API routes
+
+Run the browser smoke independently if needed:
+
+```bash
+./scripts/ci/debian_browser_smoke.sh
+```
+
 Rust:
 
 ```bash
