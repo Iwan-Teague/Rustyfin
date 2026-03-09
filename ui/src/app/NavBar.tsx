@@ -38,9 +38,6 @@ export default function NavBar() {
     { href: '/calendar', label: 'Calendar' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
-  const desktopNavSplitIndex = Math.ceil(navLinks.length / 2);
-  const desktopLeftNavLinks = navLinks.slice(0, desktopNavSplitIndex);
-  const desktopRightNavLinks = navLinks.slice(desktopNavSplitIndex);
   const hasLocalStream = voiceSession?.localStream !== null;
   const muted = voiceSession?.muted ?? false;
   const deafened = voiceSession?.deafened ?? false;
@@ -50,36 +47,29 @@ export default function NavBar() {
   return (
     <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
       {/* ── Desktop bar (lg+): nav links left | logo centered | user right ── */}
-      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-4">
+      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-6 lg:gap-y-3">
 
         {/* Left: nav links */}
-        <div className="flex min-w-0 items-center justify-start gap-1 pr-3">
-          {desktopLeftNavLinks.map((link) => (
-            <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-1 pr-2">
+          {navLinks.map((link) => (
+            <Link key={link.href} href={link.href} className="btn-ghost px-3 py-2 text-sm">
               {link.label}
             </Link>
           ))}
         </div>
 
         {/* Center: logo */}
-        <span
-          className="justify-self-center px-3 text-center text-2xl font-semibold accent-logo select-none"
-          aria-label="Rustyfin"
+        <Link
+          href="/"
+          className="justify-self-center px-3 text-center text-2xl font-semibold accent-logo"
         >
           Rustyfin
-        </span>
+        </Link>
 
         {/* Right: voice indicator + user section */}
-        <div className="flex min-w-0 items-center justify-end gap-2 pl-3">
-          <div className="flex min-w-0 items-center justify-end gap-1">
-            {desktopRightNavLinks.map((link) => (
-              <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
-                {link.label}
-              </Link>
-            ))}
-          </div>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 pl-2">
           {voiceSession && (
-            <div className="chip h-10 shrink-0 border-green-500/50 gap-2 px-2 py-1.5 text-green-300">
+            <div className="chip h-10 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
               <Link
                 href="/channels"
                 className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300 hover:text-green-200"
@@ -165,13 +155,13 @@ export default function NavBar() {
             <span className="text-sm muted">&hellip;</span>
           ) : me ? (
             <>
-              <span className="chip h-10 shrink-0 px-4 text-sm">{me.username}</span>
-              <button onClick={logout} className="btn-secondary h-10 shrink-0 px-4 text-sm">
+              <span className="chip h-10 px-4 text-sm">{me.username}</span>
+              <button onClick={logout} className="btn-secondary h-10 px-4 text-sm">
                 Logout
               </button>
             </>
           ) : (
-            <Link href="/login" className="btn-secondary h-10 shrink-0 px-4 text-sm">
+            <Link href="/login" className="btn-secondary h-10 px-4 text-sm">
               Login
             </Link>
           )}
@@ -190,9 +180,9 @@ export default function NavBar() {
           ☰
         </button>
 
-        <span className="mx-auto text-2xl font-semibold accent-logo select-none" aria-label="Rustyfin">
+        <Link href="/" className="mx-auto text-2xl font-semibold accent-logo">
           Rustyfin
-        </span>
+        </Link>
 
         {/* Voice indicator pill on mobile */}
         {voiceSession && (

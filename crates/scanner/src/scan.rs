@@ -44,6 +44,21 @@ pub async fn run_library_scan(
         for entry in &entries {
             let path_str = entry.path.to_string_lossy().to_string();
 
+            // If a media row already exists and is mapped, this file is already indexed.
+            // If the media row exists but has no mapping (e.g. old library deleted),
+            // reuse it so re-scans can rebuild items without manual DB cleanup.
+            let existing = get_existing_media_file(pool, &path_str)
+                .await
+                .map_err(ScanError::Db)?;
+            let existing_file_id = match existing {
+                Some(existing) if existing.has_mapping => {
+                    result.skipped += 1;
+                    continue;
+                }
+                Some(existing) => Some(existing.id),
+                None => None,
+            };
+
             // Determine relative path for parsing
             let rel = entry.path.strip_prefix(root).unwrap_or(&entry.path);
 
@@ -57,85 +72,50 @@ pub async fn run_library_scan(
                 }
             };
 
-            // If a media row already exists and is mapped, this file is already indexed.
-            // If the media row exists but has no mapping (e.g. old library deleted),
-            // reuse it so re-scans can rebuild items without manual DB cleanup.
-            //
-            // TV entries are reconciled on every scan so stale root-level mappings from older
-            // parser behavior cannot survive once the file is correctly recognized as an episode.
-            let existing = get_existing_media_file(pool, &path_str)
-                .await
-                .map_err(ScanError::Db)?;
-            let existing_file_id = existing.as_ref().map(|existing| existing.id.as_str());
-
             match parsed {
                 ParsedMedia::Movie(info) => {
-                    if existing
-                        .as_ref()
-                        .is_some_and(|existing| existing.has_mapping)
+                    if let Err(error) = create_movie_item(
+                        pool,
+                        library_id,
+                        &info,
+                        &path_str,
+                        entry,
+                        existing_file_id.as_deref(),
+                    )
+                    .await
                     {
+                        warn!(
+                            library_id = library_id,
+                            file = %path_str,
+                            error = %error,
+                            "failed to index movie file; skipping entry"
+                        );
                         result.skipped += 1;
                         continue;
                     }
-
-                    let changed = match create_movie_item(
-                        pool,
-                        library_id,
-                        &info,
-                        &path_str,
-                        entry,
-                        existing_file_id,
-                    )
-                    .await
-                    {
-                        Ok(changed) => changed,
-                        Err(error) => {
-                            warn!(
-                                library_id = library_id,
-                                file = %path_str,
-                                error = %error,
-                                "failed to index movie file; skipping entry"
-                            );
-                            result.skipped += 1;
-                            continue;
-                        }
-                    };
-
-                    if changed {
-                        result.added += 1;
-                    } else {
-                        result.skipped += 1;
-                    }
+                    result.added += 1;
                 }
                 ParsedMedia::Episode(info) => {
-                    let changed = match create_episode_item(
+                    if let Err(error) = create_episode_item(
                         pool,
                         library_id,
                         &info,
                         &path_str,
                         entry,
-                        existing_file_id,
+                        existing_file_id.as_deref(),
                     )
                     .await
                     {
-                        Ok(changed) => changed,
-                        Err(error) => {
-                            warn!(
-                                library_id = library_id,
-                                file = %path_str,
-                                error = %error,
-                                "failed to index episode file; skipping entry"
-                            );
-                            result.skipped += 1;
-                            continue;
-                        }
-                    };
-
-                    if changed {
-                        result.added += 1;
-                    } else {
+                        warn!(
+                            library_id = library_id,
+                            file = %path_str,
+                            error = %error,
+                            "failed to index episode file; skipping entry"
+                        );
                         result.skipped += 1;
+                        continue;
                     }
+                    result.added += 1;
                 }
                 ParsedMedia::Unknown(name) => {
                     warn!(file = %name, "could not parse media filename");
@@ -323,7 +303,10 @@ async fn get_existing_media_file(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(id, has_mapping)| ExistingMediaFile { id, has_mapping }))
+    Ok(row.map(|(id, has_mapping)| ExistingMediaFile {
+        id,
+        has_mapping,
+    }))
 }
 
 async fn ensure_media_file(
@@ -399,11 +382,7 @@ fn probe_audio_duration_ms(path: &str) -> Option<i64> {
     Some((duration_secs * 1000.0) as i64)
 }
 
-async fn link_file_to_item(
-    pool: &DbPool,
-    item_id: &str,
-    file_id: &str,
-) -> Result<bool, sqlx::Error> {
+async fn link_file_to_item(pool: &DbPool, item_id: &str, file_id: &str) -> Result<(), sqlx::Error> {
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT id FROM episode_file_map WHERE episode_item_id = $1 AND file_id = $2 AND map_kind = 'primary'",
     )
@@ -413,7 +392,7 @@ async fn link_file_to_item(
     .await?;
 
     if existing.is_some() {
-        return Ok(false);
+        return Ok(());
     }
 
     let map_id = uuid::Uuid::new_v4().to_string();
@@ -429,7 +408,7 @@ async fn link_file_to_item(
     .execute(pool)
     .await?;
 
-    Ok(true)
+    Ok(())
 }
 
 async fn find_or_create_item(
@@ -439,7 +418,7 @@ async fn find_or_create_item(
     parent_id: Option<&str>,
     title: &str,
     year: Option<u16>,
-) -> Result<(String, bool), sqlx::Error> {
+) -> Result<String, sqlx::Error> {
     // Try to find existing item with same title, kind, and parent
     let existing: Option<(String,)> = if let Some(pid) = parent_id {
         sqlx::query_as(
@@ -463,7 +442,7 @@ async fn find_or_create_item(
     };
 
     if let Some((id,)) = existing {
-        return Ok((id, false));
+        return Ok(id);
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -484,75 +463,7 @@ async fn find_or_create_item(
     .execute(pool)
     .await?;
 
-    Ok((id, true))
-}
-
-async fn remove_conflicting_file_mappings(
-    pool: &DbPool,
-    canonical_item_id: &str,
-    file_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let mapped_item_ids: Vec<(String,)> =
-        sqlx::query_as("SELECT episode_item_id FROM episode_file_map WHERE file_id = $1")
-            .bind(file_id)
-            .fetch_all(pool)
-            .await?;
-
-    let mut changed = false;
-
-    for (mapped_item_id,) in mapped_item_ids {
-        if mapped_item_id == canonical_item_id {
-            continue;
-        }
-
-        sqlx::query("DELETE FROM episode_file_map WHERE file_id = $1 AND episode_item_id = $2")
-            .bind(file_id)
-            .bind(&mapped_item_id)
-            .execute(pool)
-            .await?;
-
-        prune_item_chain_if_orphaned(pool, &mapped_item_id).await?;
-        changed = true;
-    }
-
-    Ok(changed)
-}
-
-async fn prune_item_chain_if_orphaned(
-    pool: &DbPool,
-    start_item_id: &str,
-) -> Result<(), sqlx::Error> {
-    let mut current_item_id = Some(start_item_id.to_string());
-
-    while let Some(item_id) = current_item_id.take() {
-        let row: Option<(Option<String>, i64, i64)> = sqlx::query_as(
-            "SELECT i.parent_id, \
-                    (SELECT COUNT(*) FROM item child WHERE child.parent_id = i.id) AS child_count, \
-                    (SELECT COUNT(*) FROM episode_file_map efm WHERE efm.episode_item_id = i.id) AS map_count \
-             FROM item i \
-             WHERE i.id = $1",
-        )
-        .bind(&item_id)
-        .fetch_optional(pool)
-        .await?;
-
-        let Some((parent_id, child_count, map_count)) = row else {
-            break;
-        };
-
-        if child_count > 0 || map_count > 0 {
-            break;
-        }
-
-        sqlx::query("DELETE FROM item WHERE id = $1")
-            .bind(&item_id)
-            .execute(pool)
-            .await?;
-
-        current_item_id = parent_id;
-    }
-
-    Ok(())
+    Ok(id)
 }
 
 async fn create_movie_item(
@@ -562,13 +473,13 @@ async fn create_movie_item(
     file_path: &str,
     entry: &walk::MediaEntry,
     existing_file_id: Option<&str>,
-) -> Result<bool, sqlx::Error> {
-    let (item_id, item_created) =
+) -> Result<(), sqlx::Error> {
+    let item_id =
         find_or_create_item(pool, library_id, "movie", None, &info.title, info.year).await?;
     let file_id = ensure_media_file(pool, file_path, entry, existing_file_id, false).await?;
-    let mapping_created = link_file_to_item(pool, &item_id, &file_id).await?;
+    link_file_to_item(pool, &item_id, &file_id).await?;
 
-    Ok(item_created || mapping_created)
+    Ok(())
 }
 
 async fn create_episode_item(
@@ -578,9 +489,9 @@ async fn create_episode_item(
     file_path: &str,
     entry: &walk::MediaEntry,
     existing_file_id: Option<&str>,
-) -> Result<bool, sqlx::Error> {
+) -> Result<(), sqlx::Error> {
     // Create or find series
-    let (series_id, series_created) =
+    let series_id =
         find_or_create_item(pool, library_id, "series", None, &info.series_title, None).await?;
 
     // Create or find season
@@ -589,7 +500,7 @@ async fn create_episode_item(
     } else {
         format!("Season {}", info.season)
     };
-    let (season_id, season_created) = find_or_create_item(
+    let season_id = find_or_create_item(
         pool,
         library_id,
         "season",
@@ -604,7 +515,7 @@ async fn create_episode_item(
         .episode_title
         .clone()
         .unwrap_or_else(|| format!("Episode {}", info.episode));
-    let (episode_id, episode_created) = find_or_create_item(
+    let episode_id = find_or_create_item(
         pool,
         library_id,
         "episode",
@@ -615,10 +526,9 @@ async fn create_episode_item(
     .await?;
 
     let file_id = ensure_media_file(pool, file_path, entry, existing_file_id, false).await?;
-    let removed_conflicts = remove_conflicting_file_mappings(pool, &episode_id, &file_id).await?;
-    let mapping_created = link_file_to_item(pool, &episode_id, &file_id).await?;
+    link_file_to_item(pool, &episode_id, &file_id).await?;
 
-    Ok(series_created || season_created || episode_created || removed_conflicts || mapping_created)
+    Ok(())
 }
 
 // ─── Music library scanner ───────────────────────────────────────────────────
@@ -672,11 +582,7 @@ async fn parse_music_library(
 
         // Create artist item if present
         let artist_id = if let Some(ref artist) = artist_name {
-            Some(
-                find_or_create_item(pool, library_id, "artist", None, artist, None)
-                    .await?
-                    .0,
-            )
+            Some(find_or_create_item(pool, library_id, "artist", None, artist, None).await?)
         } else {
             None
         };
@@ -684,9 +590,8 @@ async fn parse_music_library(
         // Create album item if present
         let album_id = if let Some(ref album) = album_name {
             let parent = artist_id.as_deref();
-            let album_id = find_or_create_item(pool, library_id, "album", parent, album, None)
-                .await?
-                .0;
+            let album_id =
+                find_or_create_item(pool, library_id, "album", parent, album, None).await?;
 
             // Look for cover art in the album directory
             if let Some(ref dir) = album_dir {
@@ -734,12 +639,11 @@ async fn parse_music_library(
         let track_parent = album_id.as_deref().or(artist_id.as_deref());
         let track_id =
             find_or_create_item(pool, library_id, "track", track_parent, &track_title, None)
-                .await?
-                .0;
+                .await?;
 
         let file_id =
             ensure_media_file(pool, &path_str, entry, existing_file_id.as_deref(), true).await?;
-        let _ = link_file_to_item(pool, &track_id, &file_id).await?;
+        link_file_to_item(pool, &track_id, &file_id).await?;
 
         result.added += 1;
     }

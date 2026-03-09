@@ -51,9 +51,9 @@ static AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "aac", "m4a", "ogg", "opus", "wav", "wma", "aiff", "alac",
 ];
 
-// SxxExx pattern: S01E02, S01 E02, S01_E02, s1e3, etc.
+// SxxExx pattern: S01E02, s1e3, etc.
 static RE_SXXEXX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)[Ss]\s*(\d{1,2})[\s._-]*[Ee]\s*(\d{1,3})").unwrap());
+    LazyLock::new(|| Regex::new(r"(?i)[Ss](\d{1,2})[Ee](\d{1,3})").unwrap());
 
 // 1x02 pattern
 static RE_XEP: LazyLock<Regex> =
@@ -259,34 +259,6 @@ mod tests {
                 season: 1,
                 episode: 1,
                 episode_title: Some("pilot".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_sxxexx_with_space_separator() {
-        let r = parse_filename("Breaking Bad S02 E05.mkv");
-        assert_eq!(
-            r,
-            ParsedMedia::Episode(EpisodeInfo {
-                series_title: "Breaking Bad".into(),
-                season: 2,
-                episode: 5,
-                episode_title: None,
-            })
-        );
-    }
-
-    #[test]
-    fn parse_sxxexx_with_underscore_separator() {
-        let r = parse_filename("Breaking_Bad_S02_E05_Ozymandias.mkv");
-        assert_eq!(
-            r,
-            ParsedMedia::Episode(EpisodeInfo {
-                series_title: "Breaking Bad".into(),
-                season: 2,
-                episode: 5,
-                episode_title: Some("Ozymandias".into()),
             })
         );
     }
