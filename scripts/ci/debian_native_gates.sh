@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
+
+info()    { echo -e "${CYAN}[debian-gates]${RESET} $*"; }
+success() { echo -e "${GREEN}[debian-gates]${RESET} $*"; }
+warn()    { echo -e "${YELLOW}[debian-gates]${RESET} $*"; }
+error()   { echo -e "${RED}[debian-gates]${RESET} $*" >&2; }
+die()     { error "$*"; exit 1; }
+
+SKIP_CODE=222
+SKIP_RUNTIME=false
+SKIP_UI=false
+SKIP_CLIPPY=false
+SKIP_TESTS=false
+ALLOW_NON_DEBIAN=false
+REPORT_PATH=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./scripts/ci/debian_native_gates.sh [options]
+
+Purpose:
+  Run the curated Debian 12 native quality gates for Rustyfin and emit a
+  Markdown report with the results.
+
+Options:
+  --skip-runtime        Skip runtime/systemd/health endpoint checks.
+  --skip-ui             Skip UI lint/typecheck/build gates.
+  --skip-clippy         Skip strict clippy gates.
+  --skip-tests          Skip Rust test gates.
+  --allow-non-debian    Run outside Debian 12 (runtime confidence is reduced).
+  --report PATH         Write the Markdown report to PATH.
+  -h, --help            Show this help.
+
+Default report output:
+  ./.tmp/gates/debian-native-gates-latest.md
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-runtime) SKIP_RUNTIME=true; shift ;;
+    --skip-ui) SKIP_UI=true; shift ;;
+    --skip-clippy) SKIP_CLIPPY=true; shift ;;
+    --skip-tests) SKIP_TESTS=true; shift ;;
+    --allow-non-debian) ALLOW_NON_DEBIAN=true; shift ;;
+    --report)
+      [[ $# -ge 2 ]] || die "--report requires a path"
+      REPORT_PATH="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1"
+      ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+REPORT_ROOT="$REPO_ROOT/.tmp/gates"
+LOG_DIR="$REPORT_ROOT/$RUN_ID"
+mkdir -p "$LOG_DIR"
+
+if [[ -z "$REPORT_PATH" ]]; then
+  REPORT_PATH="$REPORT_ROOT/debian-native-gates-$RUN_ID.md"
+fi
+LATEST_REPORT="$REPORT_ROOT/debian-native-gates-latest.md"
+
+if [[ "$(id -u)" -eq 0 ]]; then
+  RUN_ROOT=()
+  RUN_POSTGRES=(runuser -u postgres -- psql)
+else
+  RUN_ROOT=(sudo)
+  RUN_POSTGRES=(sudo -u postgres psql)
+fi
+
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+declare -a RESULT_ROWS=()
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
+record_result() {
+  local status="$1"
+  local label="$2"
+  local duration="$3"
+  local logfile="$4"
+  RESULT_ROWS+=("$status|$label|$duration|$logfile")
+  case "$status" in
+    PASS) PASS_COUNT=$((PASS_COUNT + 1)); success "PASS: $label ($duration)" ;;
+    FAIL) FAIL_COUNT=$((FAIL_COUNT + 1)); error "FAIL: $label ($duration)"; error "  log: $logfile" ;;
+    SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)); warn "SKIP: $label ($duration)"; warn "  log: $logfile" ;;
+  esac
+}
+
+run_gate() {
+  local label="$1"
+  shift
+  local slug logfile start_ts end_ts duration rc
+  slug="$(slugify "$label")"
+  logfile="$LOG_DIR/${slug}.log"
+  start_ts="$(date +%s)"
+  if "$@" >"$logfile" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  end_ts="$(date +%s)"
+  duration="$((end_ts - start_ts))s"
+
+  if [[ "$rc" -eq 0 ]]; then
+    record_result "PASS" "$label" "$duration" "$logfile"
+  elif [[ "$rc" -eq "$SKIP_CODE" ]]; then
+    record_result "SKIP" "$label" "$duration" "$logfile"
+  else
+    record_result "FAIL" "$label" "$duration" "$logfile"
+  fi
+}
+
+check_debian12_host() {
+  [[ "$(uname -s)" == "Linux" ]] || {
+    echo "Host OS is not Linux: $(uname -s)"
+    [[ "$ALLOW_NON_DEBIAN" == "true" ]] && return "$SKIP_CODE"
+    return 1
+  }
+  [[ -r /etc/os-release ]] || {
+    echo "/etc/os-release not found"
+    [[ "$ALLOW_NON_DEBIAN" == "true" ]] && return "$SKIP_CODE"
+    return 1
+  }
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  echo "ID=${ID:-unknown}"
+  echo "VERSION_ID=${VERSION_ID:-unknown}"
+  if [[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "12" ]]; then
+    return 0
+  fi
+  [[ "$ALLOW_NON_DEBIAN" == "true" ]] && return "$SKIP_CODE"
+  echo "Expected Debian 12, got ${ID:-unknown} ${VERSION_ID:-unknown}"
+  return 1
+}
+
+check_required_tooling() {
+  local missing=0
+  local tools=(cargo rustc node npm git curl jq psql)
+  if [[ "$ALLOW_NON_DEBIAN" != "true" ]]; then
+    tools+=(systemctl)
+  fi
+  local tool
+  for tool in "${tools[@]}"; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      printf 'found %s at %s\n' "$tool" "$(command -v "$tool")"
+    else
+      printf 'missing %s\n' "$tool"
+      missing=1
+    fi
+  done
+  return "$missing"
+}
+
+check_no_docker_runtime_files() {
+  local matches
+  matches="$(find "$REPO_ROOT" -maxdepth 2 \( -name 'Dockerfile' -o -name 'docker-compose*.yml' -o -name '.dockerignore' \) -print)"
+  if [[ -n "$matches" ]]; then
+    echo "$matches"
+    return 1
+  fi
+  echo "No Docker runtime files found in live repo paths."
+}
+
+check_live_runtime_docs() {
+  if rg -n 'docker-compose|docker run|sqlite://' \
+      "$REPO_ROOT/README.md" \
+      "$REPO_ROOT/AGENTS.md" \
+      "$REPO_ROOT/docs/operations/debian-12-native-runtime.md" \
+      "$REPO_ROOT/scripts/start-native.sh" \
+      "$REPO_ROOT/scripts/stop-native.sh" \
+      "$REPO_ROOT/scripts/deploy-native.sh" \
+      "$REPO_ROOT/scripts/install_native_debian.sh" \
+      "$REPO_ROOT/scripts/install_native_systemd.sh" \
+      "$REPO_ROOT/scripts/start.sh" \
+      "$REPO_ROOT/scripts/stop.sh" \
+      "$REPO_ROOT/scripts/clean_install.sh"
+  then
+    echo "Found unsupported runtime guidance in live docs/scripts."
+    return 1
+  fi
+  echo "Live docs/scripts reflect native Debian runtime only."
+}
+
+check_native_script_syntax() {
+  bash -n \
+    "$REPO_ROOT/scripts/start-native.sh" \
+    "$REPO_ROOT/scripts/stop-native.sh" \
+    "$REPO_ROOT/scripts/deploy-native.sh" \
+    "$REPO_ROOT/scripts/install_native_debian.sh" \
+    "$REPO_ROOT/scripts/ci/debian_native_gates.sh"
+}
+
+check_ui_dependencies_present() {
+  [[ -x "$REPO_ROOT/ui/node_modules/.bin/tsc" ]] || {
+    echo "UI dependencies are missing. Run npm --prefix ui ci first."
+    return 1
+  }
+}
+
+runtime_service_present() {
+  systemctl cat "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" >/dev/null 2>&1
+}
+
+check_runtime_services_active() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+  systemctl is-active --quiet "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}"
+  systemctl is-active --quiet "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}"
+  systemctl is-active "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}"
+  systemctl is-active "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}"
+}
+
+check_runtime_edge() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+  curl -skfI "https://127.0.0.1:${RUSTFIN_UI_EDGE_PORT:-3000}/"
+}
+
+check_runtime_config() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+  curl -skf "https://127.0.0.1:${RUSTFIN_UI_EDGE_PORT:-3000}/runtime-config" | jq -e '
+    (.backend_origin | type) == "string" and (.backend_origin | length) > 0
+  '
+}
+
+check_runtime_health_endpoints() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+
+  curl -sf "http://127.0.0.1:${RUSTFIN_BACKEND_PORT:-8096}/health" | jq -e '.status == "ok"'
+  curl -sf "http://127.0.0.1:${RUSTFIN_CALENDAR_PORT:-8099}/health" | jq -e '.status == "ok"'
+  curl -sf "http://127.0.0.1:${RUSTFIN_TMDB_AGENT_PORT:-8100}/health" | jq -e '.status == "ok"'
+  curl -sf "http://127.0.0.1:${RUSTFIN_YOUTUBE_AGENT_PORT:-8101}/health" | jq -e '.status == "ok"'
+  curl -sf "http://127.0.0.1:${RUSTFIN_TRANSCRIPTION_AGENT_PORT:-8102}/health" | jq -e '.status == "ok"'
+  curl -sf "http://127.0.0.1:${RUSTFIN_SERVERS_AGENT_PORT:-8103}/health" | jq -e '.ok == true'
+}
+
+check_latest_migration_applied() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+  command -v psql >/dev/null 2>&1 || {
+    echo "psql not installed"
+    return 1
+  }
+  local latest_migration db_name applied_count
+  latest_migration="$(find "$REPO_ROOT/crates/db/migrations_pg" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1)"
+  [[ -n "$latest_migration" ]] || {
+    echo "No migrations found"
+    return 1
+  }
+  latest_migration="$(basename "$latest_migration" .sql)"
+  db_name="${RUSTFIN_PG_DB:-rustfin}"
+  applied_count="$("${RUN_POSTGRES[@]}" -At -d "$db_name" -c "select count(*) from _migrations where name = '$latest_migration';")"
+  echo "latest migration: $latest_migration"
+  echo "applied count: ${applied_count:-0}"
+  [[ "${applied_count:-0}" == "1" ]]
+}
+
+check_recent_journal_errors() {
+  runtime_service_present || {
+    echo "rustyfin-native.service not installed on this host."
+    return "$SKIP_CODE"
+  }
+  local entries
+  entries="$("${RUN_ROOT[@]}" journalctl \
+    -u "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" \
+    -u "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" \
+    --since '15 minutes ago' \
+    -p err \
+    --no-pager)"
+  if [[ -n "$entries" ]]; then
+    echo "$entries"
+    return 1
+  fi
+  echo "No recent error-level journal entries."
+}
+
+write_report() {
+  local overall host_name current_commit
+  overall="PASS"
+  [[ "$FAIL_COUNT" -eq 0 ]] || overall="FAIL"
+  host_name="$(hostname)"
+  current_commit="$(git rev-parse HEAD)"
+
+  {
+    echo "# Debian 12 Native Quality Gates"
+    echo
+    echo "- Run ID: \`$RUN_ID\`"
+    echo "- Host: \`$host_name\`"
+    echo "- Commit: \`$current_commit\`"
+    echo "- Overall: \`$overall\`"
+    echo "- Passed: \`$PASS_COUNT\`"
+    echo "- Failed: \`$FAIL_COUNT\`"
+    echo "- Skipped: \`$SKIP_COUNT\`"
+    echo
+    echo "## Results"
+    echo
+    echo "| Status | Gate | Duration | Log |"
+    echo "| --- | --- | --- | --- |"
+    local row status label duration logfile
+    for row in "${RESULT_ROWS[@]}"; do
+      IFS='|' read -r status label duration logfile <<<"$row"
+      echo "| $status | $label | $duration | \`$logfile\` |"
+    done
+  } >"$REPORT_PATH"
+
+  cp "$REPORT_PATH" "$LATEST_REPORT"
+}
+
+info "Running Debian 12 native quality gates..."
+info "Logs: $LOG_DIR"
+
+run_gate "Host is Debian 12" check_debian12_host
+run_gate "Required host tooling present" check_required_tooling
+run_gate "No Docker runtime files remain" check_no_docker_runtime_files
+run_gate "Live docs and scripts reflect native runtime" check_live_runtime_docs
+run_gate "Native script syntax" check_native_script_syntax
+run_gate "Rust formatting" cargo fmt --all -- --check
+
+if [[ "$SKIP_CLIPPY" == "true" ]]; then
+  warn "Skipping clippy gates by request."
+else
+  run_gate "Rust clippy critical crates" cargo clippy -p rustfin-server -p rustfin-transcoder -p rustfin-calendar -p rustfin-servers-host -- -D warnings
+fi
+
+if [[ "$SKIP_TESTS" == "true" ]]; then
+  warn "Skipping Rust test gates by request."
+else
+  run_gate "Rust server lib tests" cargo test -p rustfin-server --lib
+  run_gate "Rust server integration compile" cargo test -p rustfin-server --test integration --no-run
+  run_gate "Rust transcoder tests" cargo test -p rustfin-transcoder --lib
+  run_gate "Rust calendar tests" cargo test -p rustfin-calendar --bin rustfin-calendar
+  run_gate "Rust servers-host tests" cargo test -p rustfin-servers-host
+fi
+
+if [[ "$SKIP_UI" == "true" ]]; then
+  warn "Skipping UI gates by request."
+else
+  run_gate "UI dependencies present" check_ui_dependencies_present
+  run_gate "UI lint" npm --prefix ui run lint
+  run_gate "UI typecheck" "$REPO_ROOT/ui/node_modules/.bin/tsc" --noEmit -p "$REPO_ROOT/ui/tsconfig.json"
+  run_gate "UI production build" npm --prefix ui run build
+fi
+
+if [[ "$SKIP_RUNTIME" == "true" ]]; then
+  warn "Skipping runtime gates by request."
+else
+  run_gate "Runtime services active" check_runtime_services_active
+  run_gate "Runtime edge reachable" check_runtime_edge
+  run_gate "Runtime config endpoint" check_runtime_config
+  run_gate "Runtime health endpoints" check_runtime_health_endpoints
+  run_gate "Latest migration applied" check_latest_migration_applied
+  run_gate "No recent runtime journal errors" check_recent_journal_errors
+fi
+
+write_report
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+  error "Quality gates failed. Report: $REPORT_PATH"
+  exit 1
+fi
+
+success "All requested quality gates passed. Report: $REPORT_PATH"
