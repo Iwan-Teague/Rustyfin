@@ -35,6 +35,29 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 
 port_in_use() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
+clear_test_port() {
+  local port="$1"
+  local pids=""
+
+  pids="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)"
+  if [[ -z "${pids}" ]]; then
+    return 0
+  fi
+
+  log_info "Clearing stale listener(s) on test port ${port}: ${pids}"
+  kill ${pids} >/dev/null 2>&1 || true
+  sleep 1
+
+  if port_in_use "${port}"; then
+    pids="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)"
+    if [[ -n "${pids}" ]]; then
+      log_info "Force-killing stubborn listener(s) on test port ${port}: ${pids}"
+      kill -9 ${pids} >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  fi
+}
+
 wait_http() {
   local url="$1"
   local timeout="$2"
@@ -85,7 +108,10 @@ start_server() {
   local picker="$3"
 
   if port_in_use "${TEST_BACKEND_PORT}"; then
-    die "Port ${TEST_BACKEND_PORT} already in use. Set RUSTFIN_TEST_BACKEND_PORT or free that port and retry."
+    clear_test_port "${TEST_BACKEND_PORT}"
+  fi
+  if port_in_use "${TEST_BACKEND_PORT}"; then
+    die "Port ${TEST_BACKEND_PORT} already in use after cleanup. Set RUSTFIN_TEST_BACKEND_PORT or free that port and retry."
   fi
 
   local db_target
@@ -119,7 +145,10 @@ start_ui() {
   local run_dir="$1"
 
   if port_in_use "${TEST_UI_PORT}"; then
-    die "Port ${TEST_UI_PORT} already in use. Set RUSTFIN_TEST_UI_PORT or free that port and retry."
+    clear_test_port "${TEST_UI_PORT}"
+  fi
+  if port_in_use "${TEST_UI_PORT}"; then
+    die "Port ${TEST_UI_PORT} already in use after cleanup. Set RUSTFIN_TEST_UI_PORT or free that port and retry."
   fi
 
   local standalone_entry="${REPO_ROOT}/ui/.next/standalone/server.js"
