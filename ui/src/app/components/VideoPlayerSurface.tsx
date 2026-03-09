@@ -435,24 +435,28 @@ export default function VideoPlayerSurface({
           : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
       }
     >
-      <div className={isFullscreen ? 'relative flex min-h-0 flex-1 items-center justify-center bg-black' : 'relative'}>
+      <div
+        className={
+          isFullscreen
+            ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
+            : 'relative cursor-pointer'
+        }
+        onClick={() => {
+          handleVideoSingleClick();
+        }}
+        onDoubleClick={() => {
+          handleVideoDoubleClick();
+        }}
+      >
         <video
           ref={videoRef}
           {...videoElementProps}
           controls={false}
           playsInline
-          onClick={(event) => {
-            videoElementProps?.onClick?.(event);
-            handleVideoSingleClick();
-          }}
-          onDoubleClick={(event) => {
-            videoElementProps?.onDoubleClick?.(event);
-            handleVideoDoubleClick();
-          }}
           className={
             `${
               isFullscreen
-                ? 'h-full w-full max-h-full cursor-pointer object-contain'
+                ? 'h-full w-full max-h-full object-contain'
                 : `w-full cursor-pointer ${maxViewportHeightClassName}`
             } ${(videoElementProps?.className ?? '').trim()}`.trim()
           }

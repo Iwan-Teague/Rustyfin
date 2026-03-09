@@ -31,11 +31,11 @@ export default function NavBar() {
   }
 
   const navLinks = [
-    { href: '/libraries', label: 'Libraries' },
     { href: '/channels', label: 'Channels' },
     { href: '/rooms', label: 'Rooms' },
     { href: '/servers', label: 'Servers' },
     { href: '/calendar', label: 'Calendar' },
+    { href: '/libraries', label: 'Libraries' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
   const desktopNavSplitIndex = Math.ceil(navLinks.length / 2);
@@ -62,12 +62,13 @@ export default function NavBar() {
         </div>
 
         {/* Center: logo */}
-        <span
-          className="justify-self-center px-3 text-center text-2xl font-semibold accent-logo select-none"
-          aria-label="Rustyfin"
+        <Link
+          href="/"
+          className="justify-self-center rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+          aria-label="Go to Rustyfin home"
         >
           Rustyfin
-        </span>
+        </Link>
 
         {/* Right: voice indicator + user section */}
         <div className="flex min-w-0 items-center justify-end gap-2 pl-3">
@@ -190,9 +191,13 @@ export default function NavBar() {
           ☰
         </button>
 
-        <span className="mx-auto text-2xl font-semibold accent-logo select-none" aria-label="Rustyfin">
+        <Link
+          href="/"
+          className="mx-auto rounded-full text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+          aria-label="Go to Rustyfin home"
+        >
           Rustyfin
-        </span>
+        </Link>
 
         {/* Voice indicator pill on mobile */}
         {voiceSession && (
