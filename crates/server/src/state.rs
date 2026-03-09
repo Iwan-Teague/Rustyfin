@@ -36,6 +36,9 @@ pub enum ServerEvent {
 pub struct AppState {
     pub db: DbPool,
     pub jwt_secret: String,
+    pub http: reqwest::Client,
+    pub tmdb_agent_url: String,
+    pub tmdb_agent_token: Option<String>,
     pub youtube_agent_url: String,
     pub youtube_agent_token: Option<String>,
     pub transcription_agent_url: String,

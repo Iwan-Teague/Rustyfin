@@ -26,6 +26,44 @@ Set RUSTFIN_TEST_DB_ALLOW_ANY=1 to bypass."
     pool
 }
 
+fn build_test_state(
+    pool: rustfin_db::DbPool,
+    transcoder: std::sync::Arc<rustfin_transcoder::session::SessionManager>,
+    ffmpeg_path: PathBuf,
+    ffprobe_path: PathBuf,
+    events_tx: tokio::sync::broadcast::Sender<rustfin_server::state::ServerEvent>,
+    cache_dir: PathBuf,
+    watch_party_audio_dir: PathBuf,
+) -> AppState {
+    AppState {
+        db: pool,
+        jwt_secret: "test-secret-key".to_string(),
+        http: reqwest::Client::builder().build().unwrap(),
+        tmdb_agent_url: "http://127.0.0.1:8100".to_string(),
+        tmdb_agent_token: None,
+        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+        youtube_agent_token: None,
+        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
+        transcription_agent_token: None,
+        servers_agent_url: None,
+        servers_agent_token: None,
+        transcoder,
+        ffmpeg_path,
+        ffprobe_path,
+        transcoder_hw_accel: None,
+        transcoder_hw_accel_required: false,
+        cache_dir,
+        watch_party_audio_dir,
+        events: events_tx,
+        watch_party: std::sync::Arc::new(
+            rustfin_server::watch_party::manager::WatchPartyManager::new(),
+        ),
+        channel_manager: std::sync::Arc::new(
+            rustfin_server::channels::manager::ChannelManager::new(),
+        ),
+    }
+}
+
 /// Create a test server using the configured test database target.
 async fn test_app() -> TestServer {
     let pool = create_test_pool().await;
@@ -57,27 +95,15 @@ async fn test_app() -> TestServer {
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
     let (events_tx, _) = tokio::sync::broadcast::channel(64);
-    let state = AppState {
-        db: pool,
-        jwt_secret: "test-secret-key".to_string(),
-        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
-        youtube_agent_token: None,
-        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
-        transcription_agent_token: None,
+    let state = build_test_state(
+        pool,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
-        cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
-        watch_party_audio_dir: std::env::temp_dir()
-            .join(format!("rf_watch_audio_{}", std::process::id())),
-        events: events_tx,
-        watch_party: std::sync::Arc::new(
-            rustfin_server::watch_party::manager::WatchPartyManager::new(),
-        ),
-        channel_manager: std::sync::Arc::new(
-            rustfin_server::channels::manager::ChannelManager::new(),
-        ),
-    };
+        events_tx,
+        std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        std::env::temp_dir().join(format!("rf_watch_audio_{}", std::process::id())),
+    );
 
     let app = build_router(state);
     TestServer::new(app).unwrap()
@@ -111,27 +137,15 @@ async fn test_app_http() -> TestServer {
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
     let (events_tx, _) = tokio::sync::broadcast::channel(64);
-    let state = AppState {
-        db: pool,
-        jwt_secret: "test-secret-key".to_string(),
-        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
-        youtube_agent_token: None,
-        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
-        transcription_agent_token: None,
+    let state = build_test_state(
+        pool,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
-        cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
-        watch_party_audio_dir: std::env::temp_dir()
-            .join(format!("rf_watch_audio_{}", std::process::id())),
-        events: events_tx,
-        watch_party: std::sync::Arc::new(
-            rustfin_server::watch_party::manager::WatchPartyManager::new(),
-        ),
-        channel_manager: std::sync::Arc::new(
-            rustfin_server::channels::manager::ChannelManager::new(),
-        ),
-    };
+        events_tx,
+        std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        std::env::temp_dir().join(format!("rf_watch_audio_{}", std::process::id())),
+    );
 
     let app = build_router(state);
     for _ in 0..12 {
@@ -284,27 +298,15 @@ async fn test_app_with_fake_ffmpeg() -> TestServer {
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
     let (events_tx, _) = tokio::sync::broadcast::channel(64);
-    let state = AppState {
-        db: pool,
-        jwt_secret: "test-secret-key".to_string(),
-        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
-        youtube_agent_token: None,
-        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
-        transcription_agent_token: None,
+    let state = build_test_state(
+        pool,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
-        cache_dir: std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
-        watch_party_audio_dir: std::env::temp_dir()
-            .join(format!("rf_watch_audio_{}", std::process::id())),
-        events: events_tx,
-        watch_party: std::sync::Arc::new(
-            rustfin_server::watch_party::manager::WatchPartyManager::new(),
-        ),
-        channel_manager: std::sync::Arc::new(
-            rustfin_server::channels::manager::ChannelManager::new(),
-        ),
-    };
+        events_tx,
+        std::env::temp_dir().join(format!("rf_cache_{}", std::process::id())),
+        std::env::temp_dir().join(format!("rf_watch_audio_{}", std::process::id())),
+    );
 
     let app = build_router(state);
     TestServer::new(app).unwrap()
@@ -1000,27 +1002,15 @@ async fn stream_file_with_range_returns_206() {
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
     let (events_tx, _) = tokio::sync::broadcast::channel(64);
-    let state = AppState {
-        db: pool,
-        jwt_secret: "test-secret-key".to_string(),
-        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
-        youtube_agent_token: None,
-        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
-        transcription_agent_token: None,
+    let state = build_test_state(
+        pool,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
-        cache_dir: std::env::temp_dir().join(format!("rf_cache_stream_{}", std::process::id())),
-        watch_party_audio_dir: std::env::temp_dir()
-            .join(format!("rf_watch_audio_stream_{}", std::process::id())),
-        events: events_tx,
-        watch_party: std::sync::Arc::new(
-            rustfin_server::watch_party::manager::WatchPartyManager::new(),
-        ),
-        channel_manager: std::sync::Arc::new(
-            rustfin_server::channels::manager::ChannelManager::new(),
-        ),
-    };
+        events_tx,
+        std::env::temp_dir().join(format!("rf_cache_stream_{}", std::process::id())),
+        std::env::temp_dir().join(format!("rf_watch_audio_stream_{}", std::process::id())),
+    );
     let app = rustfin_server::routes::build_router(state);
     let server = TestServer::new(app).unwrap();
     let token = login(&server, "admin", "admin_secure_123").await;
@@ -1947,27 +1937,15 @@ async fn test_app_fresh() -> TestServer {
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
 
     let (events_tx, _) = tokio::sync::broadcast::channel(64);
-    let state = AppState {
-        db: pool,
-        jwt_secret: "test-secret-key".to_string(),
-        youtube_agent_url: "http://127.0.0.1:8101".to_string(),
-        youtube_agent_token: None,
-        transcription_agent_url: "http://127.0.0.1:8102".to_string(),
-        transcription_agent_token: None,
+    let state = build_test_state(
+        pool,
         transcoder,
         ffmpeg_path,
         ffprobe_path,
-        cache_dir: std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
-        watch_party_audio_dir: std::env::temp_dir()
-            .join(format!("rf_watch_audio_setup_{}", std::process::id())),
-        events: events_tx,
-        watch_party: std::sync::Arc::new(
-            rustfin_server::watch_party::manager::WatchPartyManager::new(),
-        ),
-        channel_manager: std::sync::Arc::new(
-            rustfin_server::channels::manager::ChannelManager::new(),
-        ),
-    };
+        events_tx,
+        std::env::temp_dir().join(format!("rf_cache_setup_{}", std::process::id())),
+        std::env::temp_dir().join(format!("rf_watch_audio_setup_{}", std::process::id())),
+    );
 
     let app = build_router(state);
     TestServer::new(app).unwrap()

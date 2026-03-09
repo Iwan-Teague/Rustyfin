@@ -1429,7 +1429,7 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            if let Some(reason) = youtube_embed_block_reason(&video_id).await {
+            if let Some(reason) = youtube_embed_block_reason(&state.http, &video_id).await {
                 warn!(
                     room_id = %context.room_id,
                     user_id = %context.user_id,
@@ -1481,7 +1481,7 @@ async fn handle_client_message(
                 return Ok(());
             }
 
-            if let Some(reason) = youtube_embed_block_reason(&video_id).await {
+            if let Some(reason) = youtube_embed_block_reason(&state.http, &video_id).await {
                 warn!(
                     room_id = %context.room_id,
                     user_id = %context.user_id,
@@ -1554,7 +1554,8 @@ async fn handle_client_message(
                 let Some(next_video_id) = runtime.youtube_queue_video_at(0).await else {
                     break;
                 };
-                let Some(reason) = youtube_embed_block_reason(&next_video_id).await else {
+                let Some(reason) = youtube_embed_block_reason(&state.http, &next_video_id).await
+                else {
                     break;
                 };
                 let _ = runtime.remove_youtube_queue_index(0).await;
@@ -1608,7 +1609,7 @@ async fn handle_client_message(
                 return Ok(());
             };
 
-            if let Some(reason) = youtube_embed_block_reason(&queued_video_id).await {
+            if let Some(reason) = youtube_embed_block_reason(&state.http, &queued_video_id).await {
                 warn!(
                     room_id = %context.room_id,
                     user_id = %context.user_id,
@@ -2929,7 +2930,7 @@ async fn handle_client_message(
             }
 
             let (search_query, search_results) =
-                match perform_youtube_search(&query, Some(12)).await {
+                match perform_youtube_search(&state.http, &query, Some(12)).await {
                     Ok((search_query, search_results)) => (search_query, search_results),
                     Err(err) => {
                         send_error(socket, &err.0.to_string()).await?;

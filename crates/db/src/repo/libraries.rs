@@ -39,6 +39,22 @@ pub struct LibrarySettingsRow {
     pub updated_ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpsertLibrarySettingsParams<'a> {
+    pub library_id: &'a str,
+    pub show_images: bool,
+    pub prefer_local_artwork: bool,
+    pub fetch_online_artwork: bool,
+    pub tmdb_store_in_media_dir: bool,
+    pub tmdb_sync_on_new_media: bool,
+    pub tmdb_sync_schedule: &'a str,
+    pub tmdb_last_sync_ts: Option<i64>,
+    pub tmdb_fetch_posters: bool,
+    pub tmdb_fetch_backdrops: bool,
+    pub tmdb_fetch_metadata: bool,
+    pub tmdb_fetch_reviews: bool,
+}
+
 pub async fn create_library(
     pool: &DbPool,
     name: &str,
@@ -471,18 +487,7 @@ pub async fn get_library_settings_for_libraries(
 
 pub async fn upsert_library_settings(
     pool: &DbPool,
-    library_id: &str,
-    show_images: bool,
-    prefer_local_artwork: bool,
-    fetch_online_artwork: bool,
-    tmdb_store_in_media_dir: bool,
-    tmdb_sync_on_new_media: bool,
-    tmdb_sync_schedule: &str,
-    tmdb_last_sync_ts: Option<i64>,
-    tmdb_fetch_posters: bool,
-    tmdb_fetch_backdrops: bool,
-    tmdb_fetch_metadata: bool,
-    tmdb_fetch_reviews: bool,
+    params: UpsertLibrarySettingsParams<'_>,
 ) -> Result<LibrarySettingsRow, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
 
@@ -506,35 +511,35 @@ pub async fn upsert_library_settings(
            tmdb_fetch_reviews = excluded.tmdb_fetch_reviews, \
            updated_ts = excluded.updated_ts",
     )
-    .bind(library_id)
-    .bind(bool_to_db_int(show_images))
-    .bind(bool_to_db_int(prefer_local_artwork))
-    .bind(bool_to_db_int(fetch_online_artwork))
-    .bind(bool_to_db_int(tmdb_store_in_media_dir))
-    .bind(bool_to_db_int(tmdb_sync_on_new_media))
-    .bind(tmdb_sync_schedule)
-    .bind(tmdb_last_sync_ts)
-    .bind(bool_to_db_int(tmdb_fetch_posters))
-    .bind(bool_to_db_int(tmdb_fetch_backdrops))
-    .bind(bool_to_db_int(tmdb_fetch_metadata))
-    .bind(bool_to_db_int(tmdb_fetch_reviews))
+    .bind(params.library_id)
+    .bind(bool_to_db_int(params.show_images))
+    .bind(bool_to_db_int(params.prefer_local_artwork))
+    .bind(bool_to_db_int(params.fetch_online_artwork))
+    .bind(bool_to_db_int(params.tmdb_store_in_media_dir))
+    .bind(bool_to_db_int(params.tmdb_sync_on_new_media))
+    .bind(params.tmdb_sync_schedule)
+    .bind(params.tmdb_last_sync_ts)
+    .bind(bool_to_db_int(params.tmdb_fetch_posters))
+    .bind(bool_to_db_int(params.tmdb_fetch_backdrops))
+    .bind(bool_to_db_int(params.tmdb_fetch_metadata))
+    .bind(bool_to_db_int(params.tmdb_fetch_reviews))
     .bind(now)
     .execute(pool)
     .await?;
 
     Ok(LibrarySettingsRow {
-        library_id: library_id.to_string(),
-        show_images,
-        prefer_local_artwork,
-        fetch_online_artwork,
-        tmdb_store_in_media_dir,
-        tmdb_sync_on_new_media,
-        tmdb_sync_schedule: tmdb_sync_schedule.to_string(),
-        tmdb_last_sync_ts,
-        tmdb_fetch_posters,
-        tmdb_fetch_backdrops,
-        tmdb_fetch_metadata,
-        tmdb_fetch_reviews,
+        library_id: params.library_id.to_string(),
+        show_images: params.show_images,
+        prefer_local_artwork: params.prefer_local_artwork,
+        fetch_online_artwork: params.fetch_online_artwork,
+        tmdb_store_in_media_dir: params.tmdb_store_in_media_dir,
+        tmdb_sync_on_new_media: params.tmdb_sync_on_new_media,
+        tmdb_sync_schedule: params.tmdb_sync_schedule.to_string(),
+        tmdb_last_sync_ts: params.tmdb_last_sync_ts,
+        tmdb_fetch_posters: params.tmdb_fetch_posters,
+        tmdb_fetch_backdrops: params.tmdb_fetch_backdrops,
+        tmdb_fetch_metadata: params.tmdb_fetch_metadata,
+        tmdb_fetch_reviews: params.tmdb_fetch_reviews,
         updated_ts: now,
     })
 }

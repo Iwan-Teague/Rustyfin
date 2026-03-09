@@ -1,6 +1,9 @@
 use anyhow::{Context, bail};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -97,6 +100,32 @@ fn probe_binary(path: &Path, name: &str) {
     }
 }
 
+async fn wait_for_shutdown_signal(shutdown: CancellationToken) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    warn!(error = %error, "failed to listen for ctrl-c shutdown signal");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        warn!(error = %error, "failed to listen for ctrl-c shutdown signal");
+    }
+
+    info!("shutdown signal received");
+    shutdown.cancel();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -172,6 +201,18 @@ async fn main() -> anyhow::Result<()> {
     // JWT secret: use env or generate random
     let jwt_secret =
         std::env::var("RUSTFIN_JWT_SECRET").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let outbound_http = reqwest::Client::builder()
+        .user_agent(format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build shared outbound HTTP client")?;
+    let tmdb_agent_url = std::env::var("RUSTFIN_TMDB_AGENT_URL")
+        .unwrap_or_else(|_| "http://rustfin-tmdb-agent:8100".to_string());
+    let tmdb_agent_token = std::env::var("RUSTFIN_TMDB_AGENT_TOKEN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let youtube_agent_url = std::env::var("RUSTFIN_YOUTUBE_AGENT_URL")
         .unwrap_or_else(|_| "http://rustfin-youtube-agent:8101".to_string());
     let youtube_agent_token = std::env::var("RUSTFIN_YOUTUBE_AGENT_TOKEN")
@@ -303,16 +344,23 @@ async fn main() -> anyhow::Result<()> {
 
     let session_mgr =
         std::sync::Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+    let shutdown = CancellationToken::new();
+    let mut background_tasks: Vec<JoinHandle<()>> = Vec::new();
 
     // Spawn idle session cleanup task
     {
         let mgr = session_mgr.clone();
-        tokio::spawn(async move {
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-                mgr.cleanup_idle().await;
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(20)) => {
+                        mgr.cleanup_idle().await;
+                    }
+                }
             }
-        });
+        }));
     }
 
     // Cache directory
@@ -330,19 +378,27 @@ async fn main() -> anyhow::Result<()> {
     // Spawn heartbeat emitter
     {
         let tx = events_tx.clone();
-        tokio::spawn(async move {
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
             let mut seq = 0u64;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let _ = tx.send(rustfin_server::state::ServerEvent::Heartbeat { seq });
-                seq += 1;
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                        let _ = tx.send(rustfin_server::state::ServerEvent::Heartbeat { seq });
+                        seq += 1;
+                    }
+                }
             }
-        });
+        }));
     }
 
     let app_state = rustfin_server::state::AppState {
         db: pool,
         jwt_secret,
+        http: outbound_http,
+        tmdb_agent_url,
+        tmdb_agent_token,
         youtube_agent_url,
         youtube_agent_token,
         transcription_agent_url,
@@ -370,29 +426,39 @@ async fn main() -> anyhow::Result<()> {
         let watch_party = app_state.watch_party.clone();
         let db = app_state.db.clone();
         let watch_party_audio_dir = watch_party_audio_dir.clone();
-        tokio::spawn(async move {
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                watch_party
-                    .cleanup_empty_lobbies(&db, &watch_party_audio_dir)
-                    .await;
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                        watch_party
+                            .cleanup_empty_lobbies(&db, &watch_party_audio_dir)
+                            .await;
+                    }
+                }
             }
-        });
+        }));
     }
 
     // Spawn periodic TMDB auto-sync scheduler for libraries that opt in.
     {
         let tmdb_state = app_state.clone();
-        tokio::spawn(async move {
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                if let Err(err) =
-                    rustfin_server::tmdb_sync::run_auto_tmdb_scheduler_tick(&tmdb_state).await
-                {
-                    tracing::warn!(error = %err, "tmdb auto-sync scheduler tick failed");
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                        if let Err(err) =
+                            rustfin_server::tmdb_sync::run_auto_tmdb_scheduler_tick(&tmdb_state).await
+                        {
+                            tracing::warn!(error = %err, "tmdb auto-sync scheduler tick failed");
+                        }
+                    }
                 }
             }
-        });
+        }));
     }
 
     let app = rustfin_server::routes::build_router(app_state);
@@ -403,10 +469,17 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to bind")?;
     info!(addr = %bind_addr, "server listening");
 
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
+    .with_graceful_shutdown(wait_for_shutdown_signal(shutdown.clone()))
+    .await;
+
+    shutdown.cancel();
+    for task in background_tasks {
+        let _ = task.await;
+    }
+    serve_result?;
     Ok(())
 }

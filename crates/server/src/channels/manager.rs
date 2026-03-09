@@ -6,11 +6,13 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 
 use super::protocol::{ChannelEvent, UserInfo};
 
+type VoiceMember = (String, String, Option<String>);
+
 pub struct ChannelManager {
     broadcast: broadcast::Sender<Arc<ChannelEvent>>,
     user_senders: RwLock<HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>,
     /// channel_id → Vec<(user_id, username, avatar_url)> in join order
-    voice: RwLock<HashMap<String, Vec<(String, String, Option<String>)>>>,
+    voice: RwLock<HashMap<String, Vec<VoiceMember>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
     voice_active_since_ts: RwLock<HashMap<String, i64>>,
 }
