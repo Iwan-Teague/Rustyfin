@@ -120,11 +120,12 @@ export async function loginViaApi(page: Page, username: string, password: string
   });
   expect(meResponse.ok()).toBeTruthy();
 
-  await page.addInitScript((value) => {
+  await page.context().addInitScript((value) => {
     localStorage.setItem('token', value);
   }, token);
-  await page.goto('/');
-  await page.waitForLoadState('domcontentloaded');
+  await page.evaluate((value) => {
+    localStorage.setItem('token', value);
+  }, token);
 }
 
 export async function goAdmin(page: Page) {
