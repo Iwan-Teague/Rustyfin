@@ -1,24 +1,55 @@
 # Rustyfin Docs Index
 
-`/docs` holds long-form planning, reports, and reference artifacts used during implementation.
+This directory contains both current project documentation and archived planning material.
+
+The supported runtime for Rustyfin is **native Debian 12**. Any document that suggests Docker, Windows, or macOS runtime support should be treated as historical unless it explicitly says otherwise.
+
+## Current Authoritative Docs
+
+Read these first:
+
+- `/Users/iwanteague/Desktop/Rustyfin/README.md`
+  - top-level product summary and native Debian quick start
+- `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`
+  - repository operating rules and runtime policy
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
+  - native Debian install, start, deploy, ports, logs, and service model
+- `/Users/iwanteague/Desktop/Rustyfin/docs/setup-wizard/Rustyfin_Setup_Wizard_Package/Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md`
+  - current setup wizard contract/spec
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-minecraft-implementation-plan-2026-03-08.md`
+  - current Minecraft `Servers` implementation plan
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-minecraft-rust-native-design-2026-03-08.md`
+  - adopted Rust-native Debian design rationale for `Servers`
 
 ## Directory Map
 
+- `docs/operations/`
+  - current deployment and operational guides
 - `docs/plans/`
-  - Implementation plans and staged execution outlines.
+  - implementation plans for active features
 - `docs/project/`
-  - Project trackers and high-level status documents.
+  - project trackers and status notes
 - `docs/prompts/`
-  - Prompt/instruction templates used for agent-driven work.
-- `docs/reference/`
-  - Large external or bundled reference material.
+  - prompt and instruction templates used during development
 - `docs/reports/`
-  - Audits, postmortems, implementation notes, and fix reports.
-  - Latest: `docs/reports/efficiency-deep-dive-2026-02-26.md`
+  - audits, implementation notes, investigations, and design reports
 - `docs/setup-wizard/`
-  - Setup flow package artifacts and related specifications.
+  - setup flow specs and implementation artifacts
+- `docs/reference/`
+  - archived bundled reference material
 
-## Notes
+## Archive Policy
 
-- Source code is the operational source of truth; docs capture design intent and implementation history.
-- When documentation and code diverge, prefer code and update the docs accordingly.
+These locations are historical by default:
+
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reference/`
+- older point-in-time reports under `/Users/iwanteague/Desktop/Rustyfin/docs/reports/`
+- older tracker documents that describe superseded architecture constraints
+
+Historical docs are kept for context, not as the source of truth for current runtime behavior.
+
+## Documentation Rules
+
+- If documentation and code diverge, update the docs in the same change.
+- Current runtime/deployment docs must describe **native Debian 12** only.
+- Historical reports may mention older Docker-era design decisions, but they should not be mistaken for current operational guidance.

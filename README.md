@@ -121,6 +121,10 @@ Compatibility aliases:
 - `./scripts/start.sh` delegates to `./scripts/start-native.sh`
 - `./scripts/stop.sh` delegates to `./scripts/stop-native.sh`
 
+Detailed native operations guide:
+
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
+
 ## Native Runtime Notes
 
 - `./scripts/start-native.sh` builds Rust services directly on the Debian host
@@ -262,4 +266,4 @@ Database:
 
 ## Historical Notes
 
-Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss older runtime ideas. The supported runtime described by the repository code is native Debian 12 only.
+Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the Debian 12 native runtime documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
