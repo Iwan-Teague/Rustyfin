@@ -150,6 +150,14 @@ function getServerIndicator(server: MinecraftServer) {
     };
   }
 
+  if (server.observed_state === 'running' && server.health_state === 'pending') {
+    return {
+      label: 'Booting',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      textClass: 'text-amber-200',
+    };
+  }
+
   if (server.observed_state === 'running' && server.health_state === 'healthy') {
     return {
       label: 'Online',
@@ -187,6 +195,55 @@ function getServerIndicator(server: MinecraftServer) {
     dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
     textClass: 'text-rose-200',
   };
+}
+
+function getServerProgressMessage(server: MinecraftServer) {
+  if (server.observed_state === 'draft') {
+    return 'Created. Click Start to provision the server files and launch the Minecraft service.';
+  }
+
+  if (server.observed_state === 'unprovisioned') {
+    return 'Ready to provision. Click Start to create the native service and first-time server files.';
+  }
+
+  if (server.observed_state === 'provisioning') {
+    return 'Provisioning server files and native service. First boot can take a minute or two.';
+  }
+
+  if (server.observed_state === 'importing') {
+    return 'Importing the existing server into Rustyfin management now.';
+  }
+
+  if (server.observed_state === 'starting') {
+    return 'Launching the Minecraft service now.';
+  }
+
+  if (server.observed_state === 'restarting') {
+    return 'Restarting the Minecraft service now.';
+  }
+
+  if (server.observed_state === 'running' && server.health_state === 'pending') {
+    return 'The process is up. Waiting for Minecraft to finish booting and accept player connections.';
+  }
+
+  if (
+    (server.health_state === 'error' || server.observed_state === 'failed' || server.observed_state === 'error') &&
+    server.last_error_summary
+  ) {
+    return server.last_error_summary;
+  }
+
+  return null;
+}
+
+function shouldAutoRefreshServer(server: MinecraftServer) {
+  return (
+    server.observed_state === 'provisioning' ||
+    server.observed_state === 'importing' ||
+    server.observed_state === 'starting' ||
+    server.observed_state === 'restarting' ||
+    (server.observed_state === 'running' && server.health_state === 'pending')
+  );
 }
 
 export default function ServersPage() {
@@ -317,6 +374,47 @@ export default function ServersPage() {
       window.clearInterval(interval);
     };
   }, [me, runtimeCapabilities?.status_supported, selectedServerId]);
+
+  useEffect(() => {
+    if (!me || !(runtimeCapabilities?.status_supported ?? true)) {
+      return;
+    }
+
+    const activeServerIds = servers
+      .filter((server) => shouldAutoRefreshServer(server))
+      .map((server) => server.id);
+
+    if (activeServerIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshActiveServers = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        await Promise.all(
+          activeServerIds.map((serverId) =>
+            refreshSelectedServerStatus(serverId, false).catch(() => undefined),
+          ),
+        );
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshActiveServers();
+    const interval = window.setInterval(() => {
+      void refreshActiveServers();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [me, runtimeCapabilities?.status_supported, servers]);
 
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -650,6 +748,7 @@ export default function ServersPage() {
             {servers.map((server) => {
               const expanded = selectedServerId === server.id;
               const indicator = getServerIndicator(server);
+              const progressMessage = getServerProgressMessage(server);
               const needsProvisioning =
                 server.observed_state === 'draft' ||
                 server.observed_state === 'unprovisioned' ||
@@ -708,6 +807,19 @@ export default function ServersPage() {
                           <span className="text-white/20">•</span>
                           <span>{server.world_name}</span>
                         </div>
+                        {progressMessage ? (
+                          <div
+                            className={`max-w-3xl text-sm ${
+                              server.health_state === 'error' ||
+                              server.observed_state === 'failed' ||
+                              server.observed_state === 'error'
+                                ? 'text-rose-200'
+                                : 'text-amber-100'
+                            }`}
+                          >
+                            {progressMessage}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="flex min-w-fit flex-col items-end gap-2 self-start">
