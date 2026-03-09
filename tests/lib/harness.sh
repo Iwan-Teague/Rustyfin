@@ -206,8 +206,24 @@ start_ui() {
   fi
 
   local standalone_entry="${REPO_ROOT}/ui/.next/standalone/server.js"
+  local build_marker="${REPO_ROOT}/ui/.next/.rustyfin_test_api_base_url"
+  local previous_api_base=""
+  local needs_build="false"
+
+  if [[ -f "${build_marker}" ]]; then
+    previous_api_base="$(cat "${build_marker}")"
+  fi
+
   if [[ ! -f "${standalone_entry}" ]]; then
-    log_info "Building UI standalone bundle for smoke run ..."
+    needs_build="true"
+  elif [[ "${previous_api_base}" != "${TEST_BACKEND_URL}" ]]; then
+    needs_build="true"
+  elif [[ "${RUSTFIN_TEST_UI_FORCE_REBUILD:-0}" == "1" ]]; then
+    needs_build="true"
+  fi
+
+  if [[ "${needs_build}" == "true" ]]; then
+    log_info "Building UI standalone bundle for smoke run against ${TEST_BACKEND_URL} ..."
     (
       cd "${REPO_ROOT}"
       export TMPDIR="${TMPDIR}"
@@ -219,6 +235,7 @@ start_ui() {
       tail -n 80 "${run_dir}/logs/ui-build.log" || true
       return 1
     }
+    printf '%s' "${TEST_BACKEND_URL}" > "${build_marker}"
   fi
 
   log_info "Starting UI (Next standalone server) ..."
