@@ -25,6 +25,11 @@ struct AppState {
     http_client: reqwest::Client,
 }
 
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuthUser {
     id: String,
@@ -649,12 +654,12 @@ async fn delete_event(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn health(State(state): State<AppState>) -> Result<StatusCode, AppError> {
+async fn health(State(state): State<AppState>) -> Result<Json<HealthResponse>, AppError> {
     sqlx::query("SELECT 1")
         .execute(&state.db)
         .await
         .map_err(|e| ApiError::Internal(format!("database check failed: {e}")))?;
-    Ok(StatusCode::OK)
+    Ok(Json(HealthResponse { status: "ok" }))
 }
 
 #[tokio::main]
@@ -735,4 +740,16 @@ async fn main() -> anyhow::Result<()> {
     info!(addr = %bind_addr, "calendar service listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HealthResponse;
+    use serde_json::json;
+
+    #[test]
+    fn health_response_serializes_minimally() {
+        let payload = serde_json::to_value(HealthResponse { status: "ok" }).unwrap();
+        assert_eq!(payload, json!({ "status": "ok" }));
+    }
 }
