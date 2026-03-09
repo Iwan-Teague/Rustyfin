@@ -96,6 +96,34 @@ export async function login(page: Page, username: string, password: string) {
   await page.waitForLoadState('networkidle');
 }
 
+export async function loginViaApi(page: Page, username: string, password: string) {
+  await page.goto('/login');
+  await page.waitForLoadState('domcontentloaded');
+
+  const response = await page.request.post('/api/v1/auth/login', {
+    data: { username, password },
+  });
+  expect(response.ok()).toBeTruthy();
+
+  const body = (await response.json()) as { token?: unknown };
+  expect(typeof body.token).toBe('string');
+
+  const token = body.token as string;
+  await page.evaluate((value) => {
+    localStorage.setItem('token', value);
+  }, token);
+
+  const meResponse = await page.request.get('/api/v1/users/me', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  expect(meResponse.ok()).toBeTruthy();
+
+  await page.goto('/');
+  await page.waitForLoadState('networkidle');
+}
+
 export async function goAdmin(page: Page) {
   await page.goto('/admin');
   await page.waitForLoadState('networkidle');
