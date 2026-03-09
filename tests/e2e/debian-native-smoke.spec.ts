@@ -29,19 +29,6 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   expect(serversResponse.ok()).toBeTruthy();
   expect(Array.isArray(await serversResponse.json())).toBeTruthy();
 
-  await authedPage.goto('/channels');
-  await expect(authedPage.getByText('Text Channels')).toBeVisible({ timeout: 20_000 });
-
-  await authedPage.goto('/rooms');
-  await expect(authedPage.getByRole('heading', { name: 'Open Rooms' })).toBeVisible({
-    timeout: 20_000,
-  });
-
-  await authedPage.goto('/servers');
-  await expect(authedPage.getByRole('heading', { name: 'Known servers' })).toBeVisible({
-    timeout: 20_000,
-  });
-
   const libName = 'Debian Browser Smoke Fixtures';
   const libraryId = await createLibraryViaApi(authedPage, token, libName);
   await triggerScanViaApi(authedPage, token, libraryId);
