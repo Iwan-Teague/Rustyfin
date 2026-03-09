@@ -260,6 +260,7 @@ export default function VideoPlayerSurface({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [currentPositionSecs, setCurrentPositionSecs] = useState(0);
   const [rawDurationSecs, setRawDurationSecs] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [pendingSeekSecs, setPendingSeekSecs] = useState<number | null>(null);
 
@@ -290,7 +291,10 @@ export default function VideoPlayerSurface({
     if (!video) return;
 
     const handleSync = () => syncFromVideo();
-    const handleFullscreenChange = () => syncFromVideo();
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === activeShellRef.current);
+      syncFromVideo();
+    };
     video.addEventListener('play', handleSync);
     video.addEventListener('pause', handleSync);
     video.addEventListener('ended', handleSync);
@@ -330,8 +334,6 @@ export default function VideoPlayerSurface({
   }, [effectiveBufferedWindowEndSecs, knownDurationSecs]);
 
   const effectiveSeekValue = pendingSeekSecs ?? Math.min(currentPositionSecs, effectiveDurationSecs || 0);
-  const isFullscreen =
-    typeof document !== 'undefined' && document.fullscreenElement === activeShellRef.current;
 
   const commitSeek = useCallback(async () => {
     if (pendingSeekSecs === null) return;
@@ -398,15 +400,25 @@ export default function VideoPlayerSurface({
   return (
     <div
       ref={activeShellRef}
-      className="tile overflow-hidden rounded-2xl border border-white/10 bg-black"
+      className={
+        isFullscreen
+          ? 'flex h-screen w-screen flex-col overflow-hidden bg-black'
+          : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
+      }
     >
-      <div className="relative">
+      <div className={isFullscreen ? 'relative flex min-h-0 flex-1 items-center justify-center bg-black' : 'relative'}>
         <video
           ref={videoRef}
           {...videoElementProps}
           controls={false}
           playsInline
-          className={`w-full ${maxViewportHeightClassName} ${(videoElementProps?.className ?? '').trim()}`.trim()}
+          className={
+            `${
+              isFullscreen
+                ? 'h-full w-full max-h-full object-contain'
+                : `w-full ${maxViewportHeightClassName}`
+            } ${(videoElementProps?.className ?? '').trim()}`.trim()
+          }
         />
         <button
           type="button"
@@ -417,7 +429,7 @@ export default function VideoPlayerSurface({
           className="absolute inset-0 z-10 cursor-pointer bg-transparent disabled:cursor-not-allowed"
         />
       </div>
-      <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
+      <div className="shrink-0 border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
