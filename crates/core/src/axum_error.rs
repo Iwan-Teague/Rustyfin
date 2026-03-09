@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use tracing::error;
 
 use crate::error::{ApiError, ApiErrorWithCode, ErrorEnvelope};
 
@@ -15,6 +16,9 @@ impl From<ApiError> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        if let ApiError::Internal(message) = &self.0 {
+            error!(error = %message, "internal api error");
+        }
         let status =
             StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let envelope = ErrorEnvelope::from(&self.0);
