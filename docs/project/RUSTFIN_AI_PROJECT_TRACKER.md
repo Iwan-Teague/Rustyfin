@@ -2,13 +2,16 @@
 Generated: 2026-02-13  
 Purpose: This document is written for an AI agent (and humans) to **structure the Rustfin project**, enforce constraints, and keep an always-up-to-date record of **what’s implemented vs what remains**.
 
+> Status note (2026-03-09): this file is a historical implementation tracker.  
+> Current runtime/deployment truth lives in `/Users/iwanteague/Desktop/Rustyfin/README.md`, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
+
 > **Rule #1:** Every time you implement anything (even a tiny refactor), update the **Status Ledger** and the relevant checklists in this file.  
 > **Rule #2:** Do not “silently drift” from constraints. If you must change a constraint, record it in **Decision Log** with rationale and tradeoffs.
 
 ---
 
 ## 0) Project identity (one paragraph)
-Rustfin is a **local-first** Jellyfin-class media server, implemented as a **single Rust server binary** with **PostgreSQL** for storage, using **FFmpeg/ffprobe** for media probing/remux/transcoding, and a **single UI app** (either Rust/WASM or Next.js) talking to the server via a versioned HTTP API. Streaming supports **HTTP Range** (Direct Play) and **HLS** (adaptive; Transcode when required). The supported deployment target is native Debian 12.
+Rustfin is a **local-first** media server platform built around **Rust services**, **PostgreSQL**, **FFmpeg/ffprobe**, and a **Next.js UI**. It supports media libraries, playback, rooms, channels, calendar features, and native Minecraft server management. The supported deployment target is **native Debian 12**.
 
 ---
 
@@ -16,13 +19,12 @@ Rustfin is a **local-first** Jellyfin-class media server, implemented as a **sin
 
 ### 1.1 Stack constraints
 - **Backend language:** Rust (required).
-- **Server architecture:** **Modular monolith** (one server process). No microservice network.
+- **Server architecture:** Rust-first native Debian service set.
 - **Database:** PostgreSQL (required) using WAL mode.
 - **Media engine:** FFmpeg + ffprobe (required). Do not attempt to implement codecs/containers.
-- **Client/UI:** Choose exactly **one**:
-  - **Option A:** Rust/WASM (Leptos or equivalent)  
-  - **Option B:** Next.js (TypeScript/React)
-- **Two-language cap:** Rust + (Rust OR TypeScript). Avoid additional languages/services.
+- **Client/UI:** Next.js (TypeScript/React).
+- **Two-language cap:** Rust + TypeScript for primary product code.
+- **Runtime target:** native Debian 12 with `systemd`.
 - **Local-first:** Intended to run locally on a Debian 12 host; not production multi-tenant.
 
 ### 1.2 Feature constraints (baseline Jellyfin-class)

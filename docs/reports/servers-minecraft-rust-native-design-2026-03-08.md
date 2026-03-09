@@ -1,5 +1,7 @@
 # Rustyfin Servers Minecraft Rust-Native Design
 
+Status note (2026-03-09): this design has been adopted. Rustyfin runtime is now native Debian 12 and Minecraft server management follows this host-native model.
+
 Date: 2026-03-08
 
 ## Context
@@ -643,4 +645,3 @@ This gives you the interactive UI you want while keeping the backend orchestrati
 - Do you want only admins to create servers, or should trusted users also be able to create them?
 - What port range should be reserved for managed Minecraft instances?
 - Should import keep servers in place or migrate them into a Rustyfin-managed root by default?
-

@@ -4,6 +4,8 @@ Date: 2026-03-08
 
 Status: concrete implementation plan
 
+Implementation note (2026-03-09): the repository runtime is now native Debian 12. Older transitional references to mixed Docker/native deployment should be read as superseded.
+
 ## Baseline Decision
 
 This plan is built around **Debian 12 headless**.
@@ -11,7 +13,6 @@ This plan is built around **Debian 12 headless**.
 That is the correct target for this project today because:
 
 - `README.md` explicitly defines Debian 12 headless/minimal as the intended host OS.
-- the current Docker images are Bookworm-based (`debian:bookworm-slim`, `postgres:16-bookworm`, `node:22-bookworm-slim`).
 - the project is already standardized around PostgreSQL and stable Rust.
 
 This plan does **not** assume Debian 13.
@@ -156,11 +157,9 @@ For Minecraft serversing, the first-class supported deployment target should be:
 
 ### Transitional Mode
 
-If the rest of Rustyfin remains Docker-based for a while, the servers feature can still be added, but only through a native host agent.
+Rustyfin runtime is now native Debian 12, so the transitional mixed-runtime case no longer applies.
 
-That transitional mode is more operationally awkward because a containerized backend needs a clean route to a native host service.
-
-Because of that, the concrete implementation should treat **native Debian 12 deployment as the supported target for servers** and keep Docker-only installs as servers-disabled until the native profile is ready.
+The concrete implementation should therefore treat **native Debian 12 deployment as the supported target for servers**.
 
 That is the lowest-risk plan.
 
