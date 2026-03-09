@@ -155,7 +155,7 @@ Jellyfin generally relies on host settings; Rustyfin MAY optionally expose TZ ov
 
 **UX features:**
 - “Validate path” button for each path (calls `/setup/paths/validate`)
-- Clear permission error guidance (Docker volume mounts)
+- Clear permission error guidance for unreadable host directories
 
 #### Step 5 — Preferred metadata language & region
 **Fields:**

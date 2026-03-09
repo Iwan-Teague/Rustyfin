@@ -639,7 +639,7 @@ Response 200:
 Rules:
 - MUST canonicalize and reject invalid paths.
 - MUST return actionable details:
-  - if not readable, include hint: “If using Docker, mount host folder into container (e.g. -v /host/movies:/media/movies).”
+  - if not readable, include hint: “If using a native host path, verify the directory exists and the Rustyfin service user can read it.”
 
 ---
 
@@ -979,7 +979,7 @@ Algorithm:
 
 Return hints:
 - If not exists: “Path not found in container. Did you mount it?”
-- If permission denied: “Server user lacks permission; adjust chmod/chown or Docker user.”
+- If permission denied: “Server user lacks permission; adjust chmod/chown so the Rustyfin service user can read it.”
 
 ---
 

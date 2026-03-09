@@ -5,13 +5,12 @@ This file defines repo-specific operating rules for coding agents and contributo
 ## Project Summary
 
 Rustyfin is a native-Debian-first local media platform with:
+
 - Rust backend (`crates/server`, Axum + PostgreSQL)
-- Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`)
+- Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`, `crates/servers-agent`)
 - Next.js frontend (`ui`)
-- Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`)
-- A new `Servers` product area for native game-server management, starting with Minecraft instance records and management APIs/UI
-  - Current `Servers` slice includes native Minecraft lifecycle control (`start`, `stop`, `restart`, status refresh), live readiness/player-count probing, managed provisioning, existing-server import, journald log viewing, discovery scans for existing Minecraft directories, and host systemd unit rendering when Rustyfin is running in its supported native Debian deployment mode.
-  - Privileged Minecraft host operations are now split behind a dedicated Rust `rustfin-servers-agent`; keep the main backend focused on orchestration, authorization, jobs, and DB/audit updates.
+- Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`, `crates/servers-host`)
+- A `Servers` product area for native game-server management, currently focused on Minecraft on Debian 12 through `systemd`
 
 ## Core Rules
 
@@ -22,21 +21,22 @@ Rustyfin is a native-Debian-first local media platform with:
 - No other commit identity is allowed for this repository.
 
 2. Rust-First Policy
-- Use Rust where possible for backend/business logic, services, and system integrations.
-- Prefer extending existing Rust crates/services over introducing new non-Rust backend components.
-- Keep frontend-only logic in UI when it is purely presentational/UX.
+- Use Rust where possible for backend logic, services, and system integrations.
+- Prefer extending existing Rust crates/services over introducing new backend components in other languages.
+- Keep frontend-only logic in UI when it is purely presentational or UX-specific.
 
 3. Rust Toolchain Policy
 - Rust toolchain is pinned to stable via `/Users/iwanteague/Desktop/Rustyfin/rust-toolchain.toml`.
 - Do not move this repository to nightly unless explicitly requested and documented.
 
 4. Keep Existing Architecture Stable
-- Do not break: setup flow, libraries/scanning, playback, channels, rooms, calendar, admin, start/stop/clean scripts.
-- Favor additive, backward-compatible changes.
+- Do not break: setup flow, libraries/scanning, playback, channels, rooms, calendar, admin, native start/stop/clean scripts.
+- Favor additive, backward-compatible changes unless the requested change is an intentional runtime cutover.
 
 5. Script Platform Policy
-- Repository runtime/ops scripts are POSIX shell-based (`.sh`) only.
-- Do not add or reintroduce PowerShell (`.ps1`) script variants.
+- Runtime and operational scripts are POSIX shell (`.sh`) only.
+- Do not add or reintroduce PowerShell (`.ps1`) variants.
+- The supported runtime target is native Debian 12. Do not add new macOS, Windows, or container runtime paths.
 
 6. UI Animation Consistency (mandatory)
 - Save/Create/primary actions:
@@ -47,89 +47,78 @@ Rustyfin is a native-Debian-first local media platform with:
   - Use the shared delete animation helper `playTelegramDeleteAnimation` from `ui/src/lib/deleteAnimation.ts`.
   - Use `findDataDeleteTarget` (or a direct equivalent target lookup) so the element being removed visibly animates before deletion.
   - Keep the shared fade-out motion in `ui/src/app/globals.css` (`.tg-delete-target.tg-delete-out` and `tg-delete-fade-out`) as the canonical delete animation style.
-  - Apply this consistently to all delete surfaces (messages, channels, transcripts, queue items, calendar/admin records, etc.).
+  - Apply this consistently to all delete surfaces.
 
 ## Runtime and Scripts
 
-- Start Docker/runtime stack: `./scripts/start.sh`
-- Stop Docker/runtime stack: `./scripts/stop.sh`
-- Start native Debian host runtime: `./scripts/start-native.sh`
-- Deploy/update native Debian host runtime: `./scripts/deploy-native.sh`
-- Stop native Debian host runtime: `./scripts/stop-native.sh`
+- Start runtime: `./scripts/start.sh`
+- Stop runtime: `./scripts/stop.sh`
+- Start native Debian runtime directly: `./scripts/start-native.sh`
+- Deploy/update native Debian runtime: `./scripts/deploy-native.sh`
+- Stop native Debian runtime directly: `./scripts/stop-native.sh`
 - Install native Debian prerequisites: `./scripts/install_native_debian.sh`
 - Install native Debian `systemd` integration: `./scripts/install_native_systemd.sh`
 - Clean install/reset: `./scripts/clean_install.sh`
 
-Rust build runtime behavior:
-- `start.sh` defaults to native host Rust binary compilation for Linux targets, then Docker images copy the prebuilt binaries.
-- `start-native.sh` is the preferred production/home-server path on Debian 12:
-  - builds Rust services directly on the host
+Runtime behavior:
+
+- `start.sh` is a compatibility wrapper around `start-native.sh`
+- `stop.sh` is a compatibility wrapper around `stop-native.sh`
+- `start-native.sh` is the supported production and development runtime path:
+  - builds Rust services directly on the Debian host
   - builds the Next.js UI directly on the host
-  - runs PostgreSQL/Caddy/Node/Rust services natively instead of through Docker
-  - writes logs/pids under `.tmp/native-runtime/`
-  - supports `--build-only` for artifact-only refreshes during native deployments
-- After the first successful native build on Debian 12, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot.
-  - The installer also creates a dedicated root-run `rustfin-servers-agent.service` for privileged Minecraft host operations, while the main Rustyfin service stays on the normal Debian user.
-- After native systemd services are installed, use `./scripts/deploy-native.sh` for updates instead of restarting `rustyfin-native.service` directly.
-  - It stops the running runtime, pulls the current branch, rebuilds artifacts, and then starts the native services again.
-- To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
-- On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
-- Native prerequisite strict mode defaults to `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1` (fail-fast).
-  - Set `RUSTFIN_NATIVE_RUST_BUILD_STRICT=0` to allow fallback to Docker Rust build mode.
-- On Linux hosts, `start.sh` auto-attaches `/dev/dri` to the `rustfin` container when present (unless `RUSTFIN_AUTO_HW_ACCEL=0`).
-- Use `RUSTFIN_TRANSCODER_HW_ACCEL` to force hardware mode (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`).
+  - runs PostgreSQL, Caddy, Node, and Rust services natively
+  - writes logs and pid files under `.tmp/native-runtime/`
+  - supports `--build-only` for artifact refreshes without launching
+- After the first successful native build on Debian 12, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot
+  - this also installs a dedicated root-run `rustfin-servers-agent.service` for privileged Minecraft host operations
+- After native `systemd` services are installed, use `./scripts/deploy-native.sh` for updates
+  - it stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
+- On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
 - Transcription GPU path:
-  - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`, where `auto` resolves to `opencl`).
-  - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default (no CPU fallback; transcription requests are rejected if GPU backend is unavailable).
-  - `start.sh` attempts GPU device mapping for both `/dev/dri` (Intel/AMD) and `/dev/nvidia*` (NVIDIA) for `rustfin-transcription-agent`.
-  - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` controls agent backend build features (for example `gpu-opencl`, `gpu-cuda`, `gpu-hip`).
+  - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
+  - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default
+  - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` controls compiled GPU backends
 
-Primary Docker containers:
-- `postgres` (PostgreSQL database)
-- `rustfin` (main API)
-- `rustfin-calendar` (calendar service)
-- `rustfin-tmdb-agent` (TMDB sync service)
-- `rustfin-youtube-agent` (YouTube audio download service)
-- `rustfin-transcription-agent` (Whisper transcription service)
-- `rustfin-ui` (Next.js app)
-- `rustfin-edge` (HTTPS edge proxy)
+Primary native services:
 
-Optional native host companion:
+- `postgres`
+- `rustfin`
+- `rustfin-calendar`
+- `rustfin-tmdb-agent`
+- `rustfin-youtube-agent`
+- `rustfin-transcription-agent`
+- `rustfin-ui`
+- `rustfin-edge` (Caddy)
 - `rustfin-servers-agent`
-  - Intended to run on the Debian host outside the main backend runtime.
-  - Owns privileged Minecraft host operations (`systemctl`, `journalctl`, managed provisioning/import, discovery scans).
-  - Main backend talks to it via `RUSTFIN_SERVERS_AGENT_URL` and `RUSTFIN_SERVERS_AGENT_TOKEN`.
 
 Database runtime configuration:
-- Prefer `RUSTFIN_DATABASE_URL` for new wiring.
-- Runtime is PostgreSQL-only; `RUSTFIN_DATABASE_URL` must be `postgres://` or `postgresql://`.
-- Docker runtime defaults to PostgreSQL (`postgres` service) when `RUSTFIN_DATABASE_URL` is not explicitly set.
-- Migration authority is controlled by `RUSTFIN_RUN_MIGRATIONS`.
-  - Compose defaults:
-    - `rustfin`: `RUSTFIN_RUN_MIGRATIONS=true`
-    - `rustfin-calendar`: `RUSTFIN_RUN_MIGRATIONS=false`
-    - `rustfin-tmdb-agent`: `RUSTFIN_RUN_MIGRATIONS=false`
-- PostgreSQL migrations live in `crates/db/migrations_pg/`.
+
+- Prefer `RUSTFIN_DATABASE_URL`
+- Runtime is PostgreSQL-only
+- `RUSTFIN_DATABASE_URL` must be `postgres://` or `postgresql://`
+- PostgreSQL migrations live in `crates/db/migrations_pg/`
 
 ## Quality Gates
 
 Run before finalizing substantial changes:
+
 - Rust format: `cargo fmt --all`
-- Rust checks: `cargo check` (or targeted crate checks)
+- Rust checks: `cargo check`
 - Rust tests when relevant: `cargo test`
 - UI build: `npm --prefix ui run build`
 
-## Security/Operational Notes
+## Security and Operational Notes
 
-- Do not place sensitive auth tokens in URL query strings.
-- Enforce server-side authorization; UI checks are UX only.
-- Keep credentials/secrets in environment variables, not hardcoded.
-- Prefer explicit error handling and structured logging in Rust services.
-- For online Listen Together downloads, prefer maintaining a current `yt-dlp` runtime in `rustfin-youtube-agent`; YouTube provider changes can break stale downloader builds.
+- Do not place sensitive auth tokens in URL query strings
+- Enforce server-side authorization; UI checks are UX only
+- Keep credentials and secrets in environment variables, not hardcoded
+- Prefer explicit error handling and structured logging in Rust services
+- For online Listen Together downloads, prefer maintaining a current `yt-dlp` runtime in `rustfin-youtube-agent`
 
 ## Implementation Style
 
-- Keep code pragmatic and production-oriented.
-- Reuse existing repo patterns before adding new abstractions.
-- Keep changes scoped and readable; avoid unrelated refactors.
-- When architecture, runtime behavior, or developer conventions change, update `README.md` and this `AGENTS.md` in the same change.
+- Keep code pragmatic and production-oriented
+- Reuse existing repo patterns before adding new abstractions
+- Keep changes scoped and readable; avoid unrelated refactors
+- When architecture, runtime behavior, or developer conventions change, update `/Users/iwanteague/Desktop/Rustyfin/README.md` and `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md` in the same change

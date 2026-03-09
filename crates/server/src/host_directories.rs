@@ -28,8 +28,8 @@ fn collect_host_directory_roots() -> Vec<std::path::PathBuf> {
     }
 
     if candidates.is_empty() {
-        if let Ok(container_root) = std::env::var("RUSTFIN_MEDIA_CONTAINER_ROOT") {
-            let trimmed = container_root.trim();
+        if let Ok(media_root) = std::env::var("RUSTFIN_MEDIA_PATH") {
+            let trimmed = media_root.trim();
             if !trimmed.is_empty() {
                 candidates.push(std::path::PathBuf::from(trimmed));
             }
@@ -37,10 +37,10 @@ fn collect_host_directory_roots() -> Vec<std::path::PathBuf> {
     }
 
     if candidates.is_empty() {
-        candidates.push(std::path::PathBuf::from("/media"));
+        candidates.push(std::path::PathBuf::from("/srv/media"));
     }
 
-    for fallback in ["/mnt", "/srv/media", "/home"] {
+    for fallback in ["/media", "/mnt", "/home"] {
         let fallback_path = std::path::PathBuf::from(fallback);
         if !candidates
             .iter()
