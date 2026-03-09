@@ -21,6 +21,7 @@ SKIP_TESTS=false
 SKIP_BROWSER_SMOKE=false
 ALLOW_NON_DEBIAN=false
 REPORT_PATH=""
+CARGO_GATE_JOBS="${RUSTFIN_GATE_CARGO_JOBS:-1}"
 
 usage() {
   cat <<'EOF'
@@ -145,6 +146,12 @@ run_gate() {
   else
     record_result "FAIL" "$label" "$duration" "$logfile"
   fi
+}
+
+run_cargo_gate() {
+  local label="$1"
+  shift
+  run_gate "$label" env CARGO_BUILD_JOBS="$CARGO_GATE_JOBS" "$@"
 }
 
 check_debian12_host() {
@@ -415,6 +422,7 @@ check_setup_integration() {
   psql "$base_db_url" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA ${schema_name};" >/dev/null
 
   env \
+    CARGO_BUILD_JOBS="$CARGO_GATE_JOBS" \
     RUSTFIN_TEST_DATABASE_URL="$test_db_url" \
     RUSTFIN_TEST_DB_ALLOW_ANY=1 \
     cargo test -p rustfin-server --test integration setup_full_wizard_flow -- --exact || rc=$?
@@ -468,18 +476,18 @@ run_gate "Rust formatting" cargo fmt --all -- --check
 if [[ "$SKIP_CLIPPY" == "true" ]]; then
   warn "Skipping clippy gates by request."
 else
-  run_gate "Rust clippy critical crates" cargo clippy -p rustfin-server -p rustfin-transcoder -p rustfin-calendar -p rustfin-servers-host -- -D warnings
+  run_cargo_gate "Rust clippy critical crates" cargo clippy -p rustfin-server -p rustfin-transcoder -p rustfin-calendar -p rustfin-servers-host -- -D warnings
 fi
 
 if [[ "$SKIP_TESTS" == "true" ]]; then
   warn "Skipping Rust test gates by request."
 else
-  run_gate "Rust server lib tests" cargo test -p rustfin-server --lib
+  run_cargo_gate "Rust server lib tests" cargo test -p rustfin-server --lib
   run_gate "Rust setup integration" check_setup_integration
-  run_gate "Rust server integration compile" cargo test -p rustfin-server --test integration --no-run
-  run_gate "Rust transcoder tests" cargo test -p rustfin-transcoder --lib
-  run_gate "Rust calendar tests" cargo test -p rustfin-calendar --bin rustfin-calendar
-  run_gate "Rust servers-host tests" cargo test -p rustfin-servers-host
+  run_cargo_gate "Rust server integration compile" cargo test -p rustfin-server --test integration --no-run
+  run_cargo_gate "Rust transcoder tests" cargo test -p rustfin-transcoder --lib
+  run_cargo_gate "Rust calendar tests" cargo test -p rustfin-calendar --bin rustfin-calendar
+  run_cargo_gate "Rust servers-host tests" cargo test -p rustfin-servers-host
 fi
 
 if [[ "$SKIP_UI" == "true" ]]; then
