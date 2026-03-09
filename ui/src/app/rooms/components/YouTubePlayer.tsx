@@ -7,59 +7,62 @@ import {
   lookupYouTubeVideos,
 } from '@/lib/watchPartyApi';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 import ClearSearchButton from './ClearSearchButton';
+
+type YTPlayerStateMap = {
+  UNSTARTED: -1;
+  ENDED: 0;
+  PLAYING: 1;
+  PAUSED: 2;
+  BUFFERING: 3;
+  CUED: 5;
+};
+
+type YTPlayer = {
+  playVideo(): void;
+  pauseVideo(): void;
+  seekTo(seconds: number, allowSeekAhead?: boolean): void;
+  getCurrentTime(): number;
+  getPlayerState(): number;
+  getVideoData(): { title: string; video_id: string };
+  loadVideoById(videoId: string, startSeconds?: number): void;
+  cueVideoById(videoId: string, startSeconds?: number): void;
+  destroy(): void;
+};
+
+type YTPlayerOptions = {
+  videoId?: string;
+  width?: number | string;
+  height?: number | string;
+  playerVars?: {
+    autoplay?: 0 | 1;
+    controls?: 0 | 1;
+    playsinline?: 0 | 1;
+    rel?: 0 | 1;
+    modestbranding?: 0 | 1;
+    enablejsapi?: 0 | 1;
+    iv_load_policy?: 1 | 3;
+    origin?: string;
+  };
+  host?: string;
+  events?: {
+    onReady?: (event: { target: YTPlayer }) => void;
+    onStateChange?: (event: { target: YTPlayer; data: number }) => void;
+    onError?: (event: { target: YTPlayer; data: number }) => void;
+  };
+};
+
+type YouTubeIframeApi = {
+  PlayerState: YTPlayerStateMap;
+  Player: new (elementId: string | HTMLElement, options: YTPlayerOptions) => YTPlayer;
+};
 
 // Minimal YouTube IFrame API type declarations
 declare global {
   interface Window {
-    YT: typeof YT;
+    YT: YouTubeIframeApi;
     onYouTubeIframeAPIReady: () => void;
-  }
-}
-
-declare namespace YT {
-  const PlayerState: {
-    UNSTARTED: -1;
-    ENDED: 0;
-    PLAYING: 1;
-    PAUSED: 2;
-    BUFFERING: 3;
-    CUED: 5;
-  };
-
-  class Player {
-    constructor(elementId: string | HTMLElement, options: PlayerOptions);
-    playVideo(): void;
-    pauseVideo(): void;
-    seekTo(seconds: number, allowSeekAhead?: boolean): void;
-    getCurrentTime(): number;
-    getPlayerState(): number;
-    getVideoData(): { title: string; video_id: string };
-    loadVideoById(videoId: string, startSeconds?: number): void;
-    cueVideoById(videoId: string, startSeconds?: number): void;
-    destroy(): void;
-  }
-
-  interface PlayerOptions {
-    videoId?: string;
-    width?: number | string;
-    height?: number | string;
-    playerVars?: {
-      autoplay?: 0 | 1;
-      controls?: 0 | 1;
-      playsinline?: 0 | 1;
-      rel?: 0 | 1;
-      modestbranding?: 0 | 1;
-      enablejsapi?: 0 | 1;
-      iv_load_policy?: 1 | 3;
-      origin?: string;
-    };
-    host?: string;
-    events?: {
-      onReady?: (event: { target: YT.Player }) => void;
-      onStateChange?: (event: { target: YT.Player; data: number }) => void;
-      onError?: (event: { target: YT.Player; data: number }) => void;
-    };
   }
 }
 
@@ -122,7 +125,7 @@ export default function YouTubePlayer({
   wsConnected,
   sendWs,
 }: Props) {
-  const playerRef = useRef<YT.Player | null>(null);
+  const playerRef = useRef<YTPlayer | null>(null);
   const playerDivId = `yt-player-${roomId}`;
   const applyingRemoteRef = useRef(false);
   const lastVideoIdRef = useRef('');
@@ -272,7 +275,7 @@ export default function YouTubePlayer({
     }
   }, [ytState, sharedSearchQuery, searchResults, clearPendingSearchAck, logDebug]);
 
-  const handlePlayerStateChange = useCallback((event: { target: YT.Player; data: number }) => {
+  const handlePlayerStateChange = useCallback((event: { target: YTPlayer; data: number }) => {
     if (applyingRemoteRef.current) return;
     const player = event.target;
     const posMs = Math.floor(player.getCurrentTime() * 1000);
@@ -772,13 +775,13 @@ export default function YouTubePlayer({
         logDebug(
           `youtube queue metadata resolved requested=${requestIds.length} resolved=${resolved.length}`,
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return;
         for (const videoId of requestIds) {
           queueLookupFailedRef.current.add(videoId);
         }
         logDebug(
-          `youtube queue metadata lookup failed error=${String(err?.message || err)}`,
+          `youtube queue metadata lookup failed error=${clientErrorMessage(err, 'lookup failed')}`,
         );
       }
     })();
@@ -810,11 +813,11 @@ export default function YouTubePlayer({
           queueLookupFailedRef.current.add(currentVideoId);
           logDebug(`youtube current video metadata unavailable video_id=${currentVideoId}`);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return;
         queueLookupFailedRef.current.add(currentVideoId);
         logDebug(
-          `youtube current video metadata lookup failed video_id=${currentVideoId} error=${String(err?.message || err)}`,
+          `youtube current video metadata lookup failed video_id=${currentVideoId} error=${clientErrorMessage(err, 'lookup failed')}`,
         );
       } finally {
         if (currentVideoLookupInFlightRef.current === currentVideoId) {

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
 import { apiJson } from '@/lib/api';
+import { clientErrorMessage } from '@/lib/errors';
 import { getPublicSystemInfo } from '@/lib/setupApi';
 import { listPublicRooms, type PublicRoom } from '@/lib/watchPartyApi';
 
@@ -89,9 +90,9 @@ export default function HomePage() {
 
         const flattened = libraryItems.flat().slice(0, 24);
         setFeaturedItems(flattened);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to load home view');
+          setError(clientErrorMessage(err, 'Failed to load home view'));
         }
       } finally {
         if (!cancelled) {

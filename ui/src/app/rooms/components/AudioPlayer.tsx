@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '@/lib/api';
+import { clientErrorMessage } from '@/lib/errors';
 import {
   AudioTrack,
   WsAudioStateMessage,
@@ -173,11 +174,14 @@ export default function AudioPlayer({
         if (cancelled) return;
         setDescriptor(data);
       })
-      .catch((err: any) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         setDescriptor(null);
         setStreamError(
-          err?.message || 'Failed to load track stream. Verify the item has a mapped media file.',
+          clientErrorMessage(
+            err,
+            'Failed to load track stream. Verify the item has a mapped media file.',
+          ),
         );
       });
 
@@ -373,8 +377,8 @@ export default function AudioPlayer({
             actionInfoTimeoutRef.current = null;
           }, 5000);
         }
-      } catch (err: any) {
-        setStreamError(err?.message || 'Failed to queue online audio track');
+      } catch (err: unknown) {
+        setStreamError(clientErrorMessage(err, 'Failed to queue online audio track'));
       } finally {
         setQueueingVideoId(null);
       }
@@ -401,8 +405,8 @@ export default function AudioPlayer({
             actionInfoTimeoutRef.current = null;
           }, 5000);
         }
-      } catch (err: any) {
-        setStreamError(err?.message || 'Failed to queue local track');
+      } catch (err: unknown) {
+        setStreamError(clientErrorMessage(err, 'Failed to queue local track'));
       } finally {
         setQueueingLocalTrackId(null);
       }

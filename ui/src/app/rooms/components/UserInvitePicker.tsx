@@ -51,7 +51,7 @@ export default function UserInvitePicker({
     >
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Invite Users</h2>
-        <p className="text-sm muted">Set each user's access level, then check the box to invite them.</p>
+        <p className="text-sm muted">Set each user&apos;s access level, then check the box to invite them.</p>
       </div>
 
       <ul className={fillHeight ? 'min-h-0 flex-1 space-y-2 overflow-y-auto pr-1' : 'space-y-2'}>

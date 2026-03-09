@@ -10,6 +10,7 @@ import type {
 import { deleteMessage, getMessages, uploadMessageAttachment } from '@/lib/channelsApi';
 import { apiFetch } from '@/lib/api';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 import { useListReflowAnimation } from '@/lib/listReflowAnimation';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
@@ -305,8 +306,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-    } catch (error: any) {
-      setUploadError(error?.message || 'Failed to upload file');
+    } catch (error: unknown) {
+      setUploadError(clientErrorMessage(error, 'Failed to upload file'));
     } finally {
       setUploading(false);
     }

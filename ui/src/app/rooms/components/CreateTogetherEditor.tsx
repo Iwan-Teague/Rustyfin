@@ -5,6 +5,7 @@ import type {
   ChangeEvent,
   PointerEvent as ReactPointerEvent,
 } from 'react';
+import { clientErrorMessage } from '@/lib/errors';
 import type { WsCreateCanvasStroke, WsCreateStateMessage } from '@/lib/watchPartyApi';
 
 type Props = {
@@ -1432,8 +1433,8 @@ export default function CreateTogetherEditor({
       }
       setActivePageId(page.id);
       setLocalMessage(`Loaded ${file.name}`);
-    } catch (err: any) {
-      setLocalMessage(err?.message || 'Failed to import file');
+    } catch (err: unknown) {
+      setLocalMessage(clientErrorMessage(err, 'Failed to import file'));
     } finally {
       event.target.value = '';
     }
