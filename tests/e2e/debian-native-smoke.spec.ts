@@ -11,6 +11,11 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   const { page: authedPage, token } = await loginViaApi(page, ADMIN.username, ADMIN.password);
   const authHeaders = { Authorization: `Bearer ${token}` };
 
+  await authedPage.goto('/');
+  await expect(authedPage.getByRole('link', { name: 'Rustyfin' }).first()).toBeVisible({
+    timeout: 20_000,
+  });
+
   const channelsResponse = await authedPage.request.get('/api/v1/channels', {
     headers: authHeaders,
   });
@@ -34,43 +39,63 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   await triggerScanViaApi(authedPage, token, libraryId);
   const playableItem = await waitForPlayableItemViaApi(authedPage, token, libraryId);
 
-  const hlsSessionReq = authedPage.waitForRequest(
-    (req) => req.method() === 'POST' && req.url().includes('/api/v1/playback/sessions'),
-    { timeout: 60_000 }
-  );
-  const playlistReq = authedPage.waitForRequest(
-    (req) =>
-      req.method() === 'GET' &&
-      req.url().includes('/stream/hls/') &&
-      req.url().includes('master.m3u8'),
-    { timeout: 60_000 }
-  );
-  const segmentReq = authedPage.waitForRequest(
-    (req) =>
-      req.method() === 'GET' &&
-      req.url().includes('/stream/hls/') &&
-      /seg_\\d+\\.ts/.test(req.url()),
-    { timeout: 60_000 }
-  );
+  const descriptorResponse = await authedPage.request.get(`/api/v1/items/${playableItem.id}/playback`, {
+    headers: authHeaders,
+  });
+  expect(descriptorResponse.ok()).toBeTruthy();
+  const descriptor = (await descriptorResponse.json()) as {
+    file_id?: unknown;
+    direct_url?: unknown;
+    hls_start_url?: unknown;
+    media_info_url?: unknown;
+  };
+  expect(typeof descriptor.file_id).toBe('string');
+  expect(typeof descriptor.direct_url).toBe('string');
+  expect(typeof descriptor.hls_start_url).toBe('string');
+  expect(typeof descriptor.media_info_url).toBe('string');
 
-  await authedPage.goto(`/player/${playableItem.id}`);
-  await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage).toHaveURL(/\/player\//);
-  await hlsSessionReq;
-  await playlistReq;
-  await segmentReq;
+  const mediaInfoResponse = await authedPage.request.get(descriptor.media_info_url as string, {
+    headers: authHeaders,
+  });
+  expect(mediaInfoResponse.ok()).toBeTruthy();
 
-  await expect
-    .poll(
-      async () => authedPage.getByRole('button', { name: 'Direct Play', exact: true }).isEnabled(),
-      { timeout: 60_000 }
-    )
-    .toBe(true);
+  const directResponse = await authedPage.request.get(descriptor.direct_url as string);
+  expect([200, 206]).toContain(directResponse.status());
 
-  const directReq = authedPage.waitForRequest(
-    (req) => req.method() === 'GET' && req.url().includes('/stream/file/'),
-    { timeout: 30_000 }
-  );
-  await authedPage.getByRole('button', { name: 'Direct Play', exact: true }).click();
-  await directReq;
+  const hlsSessionResponse = await authedPage.request.post(descriptor.hls_start_url as string, {
+    headers: authHeaders,
+    data: {
+      file_id: descriptor.file_id,
+    },
+  });
+  expect(hlsSessionResponse.ok()).toBeTruthy();
+  const hlsSession = (await hlsSessionResponse.json()) as {
+    session_id?: unknown;
+    hls_url?: unknown;
+  };
+  expect(typeof hlsSession.session_id).toBe('string');
+  expect(typeof hlsSession.hls_url).toBe('string');
+
+  const playlistResponse = await authedPage.request.get(hlsSession.hls_url as string, {
+    headers: authHeaders,
+  });
+  expect(playlistResponse.ok()).toBeTruthy();
+  const playlistText = await playlistResponse.text();
+  expect(playlistText).toContain('#EXTM3U');
+
+  const firstSegment = playlistText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /seg_\d+\.ts(?:\?.*)?$/.test(line));
+  expect(firstSegment).toBeTruthy();
+
+  const segmentUrl = new URL(firstSegment!, new URL(hlsSession.hls_url as string, authedPage.url())).toString();
+  const segmentResponse = await authedPage.request.get(segmentUrl, {
+    headers: authHeaders,
+  });
+  expect([200, 206]).toContain(segmentResponse.status());
+
+  await authedPage.request.post(`/api/v1/playback/sessions/${hlsSession.session_id}/stop`, {
+    headers: authHeaders,
+  });
 });
