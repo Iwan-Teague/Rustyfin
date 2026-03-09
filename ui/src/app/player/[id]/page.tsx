@@ -383,6 +383,8 @@ export default function PlayerPage() {
 
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+        video.preload = 'auto';
+        video.autoplay = true;
 
         if (Hls.isSupported()) {
           resetVideoSourceForMse(video);
@@ -479,6 +481,7 @@ export default function PlayerPage() {
           });
           hls.attachMedia(video);
           hls.loadSource(data.hls_url);
+          hls.startLoad(0);
         } else if (canNativeHls) {
           video.src = data.hls_url;
           video.load();
