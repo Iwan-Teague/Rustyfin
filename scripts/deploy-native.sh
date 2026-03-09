@@ -79,6 +79,11 @@ service_exists() {
   systemctl cat "$service_name" >/dev/null 2>&1
 }
 
+if [[ "$(id -u)" -ne 0 ]] && ( service_exists "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" || service_exists "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" ); then
+  info "Refreshing sudo credentials for systemd operations..."
+  sudo -v
+fi
+
 stop_service_if_present() {
   local service_name="$1"
   if service_exists "$service_name"; then
@@ -140,4 +145,3 @@ else
   fi
   "$REPO_ROOT/scripts/start-native.sh" "${start_args[@]}"
 fi
-
