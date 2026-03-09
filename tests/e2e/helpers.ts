@@ -254,3 +254,32 @@ export async function waitForLibraryItemsViaApi(
 
   throw new Error(`Timed out waiting for library items for library ${libraryId}`);
 }
+
+export async function waitForPlayableItemViaApi(
+  page: Page,
+  token: string,
+  libraryId: string,
+  timeoutMs = 60_000,
+): Promise<{ id: string; title: string; kind: string }> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const items = await waitForLibraryItemsViaApi(page, token, libraryId, 5_000);
+    const candidateItems = items.filter((item) => item.kind === 'movie' || item.kind === 'episode');
+
+    for (const item of candidateItems) {
+      const response = await page.request.get(`/api/v1/items/${item.id}/playback`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (response.ok()) {
+        return item;
+      }
+    }
+
+    await page.waitForTimeout(1_000);
+  }
+
+  throw new Error(`Timed out waiting for a playable item in library ${libraryId}`);
+}

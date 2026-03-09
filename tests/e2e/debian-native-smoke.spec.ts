@@ -4,7 +4,7 @@ import {
   createLibraryViaApi,
   loginViaApi,
   triggerScanViaApi,
-  waitForLibraryItemsViaApi,
+  waitForPlayableItemViaApi,
 } from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
@@ -32,11 +32,9 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   const libName = 'Debian Browser Smoke Fixtures';
   const libraryId = await createLibraryViaApi(authedPage, token, libName);
   await triggerScanViaApi(authedPage, token, libraryId);
-  const items = await waitForLibraryItemsViaApi(authedPage, token, libraryId);
-  const firstPlayableItem = items.find((item) => item.kind === 'movie' || item.kind === 'episode');
-  expect(firstPlayableItem).toBeTruthy();
+  const playableItem = await waitForPlayableItemViaApi(authedPage, token, libraryId);
 
-  await authedPage.goto(`/player/${firstPlayableItem!.id}`);
+  await authedPage.goto(`/player/${playableItem.id}`);
   await authedPage.waitForLoadState('networkidle');
   await expect(authedPage).toHaveURL(/\/player\//);
   await expect(authedPage.getByRole('button', { name: 'Direct Play', exact: true })).toBeVisible({
