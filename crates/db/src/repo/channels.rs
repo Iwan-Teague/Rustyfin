@@ -202,12 +202,19 @@ pub async fn list_messages(
                  FROM channel_message m \
                  LEFT JOIN \"user\" u ON u.id = m.user_id \
                  WHERE m.channel_id = $1 \
-                   AND (m.created_ts < $2 OR (m.created_ts = $3 AND m.id < $4)) \
-                 ORDER BY m.created_ts DESC, m.id DESC \
-                 LIMIT $5",
+                   AND (
+                        m.created_ts < $2
+                        OR (
+                            EXISTS(SELECT 1 FROM channel_message pivot WHERE pivot.id = $3)
+                            AND m.sort_seq < (
+                                SELECT pivot.sort_seq FROM channel_message pivot WHERE pivot.id = $3
+                            )
+                        )
+                   ) \
+                 ORDER BY m.sort_seq DESC \
+                 LIMIT $4",
             )
             .bind(channel_id)
-            .bind(before_ts)
             .bind(before_ts)
             .bind(before_id)
             .bind(limit)
@@ -220,7 +227,7 @@ pub async fn list_messages(
                  FROM channel_message m \
                  LEFT JOIN \"user\" u ON u.id = m.user_id \
                  WHERE m.channel_id = $1 AND m.created_ts < $2 \
-                 ORDER BY m.created_ts DESC, m.id DESC \
+                 ORDER BY m.sort_seq DESC \
                  LIMIT $3",
             )
             .bind(channel_id)

@@ -118,6 +118,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "029_servers_minecraft",
         include_str!("../migrations_pg/029_servers_minecraft.sql"),
     ),
+    (
+        "030_channel_message_sort_seq",
+        include_str!("../migrations_pg/030_channel_message_sort_seq.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
