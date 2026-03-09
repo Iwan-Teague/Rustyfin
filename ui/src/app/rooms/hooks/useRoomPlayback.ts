@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { normalizePlaybackQualitySelection } from '@/app/components/VideoPlayerSurface';
 import { apiFetch, apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
 import type { WatchPartyRoomResponse } from '@/lib/watchPartyApi';
@@ -16,6 +17,9 @@ type UseRoomPlaybackArgs = {
 
 type MediaInfo = {
   duration_secs?: number;
+  video?: {
+    height?: number;
+  } | null;
 };
 
 type HlsFatalErrorData = {
@@ -147,10 +151,9 @@ export function useRoomPlayback({
 }: UseRoomPlaybackArgs) {
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
-  const [mode, setMode] = useState<'direct' | 'hls'>('direct');
-  const [startingDirect, setStartingDirect] = useState(false);
   const [startingHls, setStartingHls] = useState(false);
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
+  const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
@@ -201,94 +204,10 @@ export function useRoomPlayback({
     }
     setDescriptor(null);
     setMediaInfo(null);
-    setMode('direct');
+    setHlsSessionStartOffsetSecs(0);
   }, [destroyHls, stopSession]);
 
-  const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!video.currentSrc && !video.src) return;
-
-    applyingRemoteRef.current = true;
-
-    const targetSeconds = stateMessage.position_ms / 1000;
-    if (Math.abs(video.currentTime - targetSeconds) > 1.2) {
-      video.currentTime = targetSeconds;
-    }
-
-    if (stateMessage.playing && video.paused) {
-      applyVideoAudioState(video, audioStateRef.current);
-      await video.play().catch(() => {});
-    }
-
-    if (!stateMessage.playing && !video.paused) {
-      video.pause();
-    }
-
-    window.setTimeout(() => {
-      applyingRemoteRef.current = false;
-    }, 60);
-  }, []);
-
-  const startDirect = useCallback(
-    async (options: StartPlaybackOptions = {}): Promise<boolean> => {
-      if (!descriptor) {
-        if (!options.silent) {
-          setError('Playback descriptor is not ready yet');
-        }
-        return false;
-      }
-
-      setStartingDirect(true);
-      if (!options.silent) {
-        setError('');
-      }
-
-      try {
-        destroyHls();
-        if (sessionIdRef.current) {
-          await stopSession(sessionIdRef.current);
-          sessionIdRef.current = null;
-        }
-
-        const video = videoRef.current;
-        if (!video) throw new Error('Video element is not ready');
-        audioStateRef.current = readVideoAudioState(video);
-        const preservedAudioState = audioStateRef.current;
-
-        setMode('direct');
-        video.src = descriptor.direct_url;
-        video.load();
-        applyVideoAudioState(video, preservedAudioState);
-        await waitForVideoMetadata(video);
-
-        if (roomState) {
-          await applyRemoteState(roomState);
-        } else if (options.autoplayWhenNoState ?? true) {
-          applyVideoAudioState(video, preservedAudioState);
-          await video.play().catch(() => {});
-        } else {
-          video.pause();
-          try {
-            if (video.currentTime !== 0) {
-              video.currentTime = 0;
-            }
-          } catch {
-            // Some browsers may block programmatic seek before enough data is ready.
-          }
-        }
-        return true;
-      } catch (err: unknown) {
-        if (!options.silent) {
-          setError(clientErrorMessage(err, 'Failed to start direct playback'));
-        }
-        return false;
-      } finally {
-        setStartingDirect(false);
-      }
-    },
-    [descriptor, destroyHls, stopSession, roomState, applyRemoteState, setError],
-  );
+  const applyRemoteStateRef = useRef<(stateMessage: WsStateMessage) => Promise<void>>(async () => {});
 
   const startHls = useCallback(
     async (options: StartPlaybackOptions = {}): Promise<boolean> => {
@@ -318,6 +237,12 @@ export function useRoomPlayback({
           descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
           mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
         );
+        const explicitSeekTime =
+          options.seekTimeOverrideSecs !== undefined &&
+          Number.isFinite(options.seekTimeOverrideSecs) &&
+          options.seekTimeOverrideSecs >= 0
+            ? options.seekTimeOverrideSecs
+            : undefined;
         destroyHls();
         if (sessionIdRef.current) {
           await stopSession(sessionIdRef.current);
@@ -328,12 +253,13 @@ export function useRoomPlayback({
           method: 'POST',
           body: JSON.stringify({
             file_id: descriptor.file_id,
+            start_time_secs: explicitSeekTime,
             target_height: selectedTargetHeight ?? undefined,
           }),
         });
 
         sessionIdRef.current = session.session_id;
-        setMode('hls');
+        setHlsSessionStartOffsetSecs(explicitSeekTime ?? 0);
 
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -382,7 +308,7 @@ export function useRoomPlayback({
             reinforceKnownDuration();
             applyVideoAudioState(video, preservedAudioState);
             if (roomState) {
-              void applyRemoteState(roomState);
+              void applyRemoteStateRef.current(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
               void video.play().catch(() => {});
             } else {
@@ -435,7 +361,7 @@ export function useRoomPlayback({
           applyVideoAudioState(video, preservedAudioState);
           await waitForVideoMetadata(video);
           if (roomState) {
-            await applyRemoteState(roomState);
+            await applyRemoteStateRef.current(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
             await video.play().catch(() => {});
           } else {
@@ -466,13 +392,63 @@ export function useRoomPlayback({
       destroyHls,
       stopSession,
       roomState,
-      applyRemoteState,
       setError,
       setInfo,
       hlsTargetHeight,
       mediaInfo,
     ],
   );
+
+  const applyRemoteState = useCallback(async (stateMessage: WsStateMessage) => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!video.currentSrc && !video.src) return;
+
+    applyingRemoteRef.current = true;
+
+    const targetSeconds = stateMessage.position_ms / 1000;
+    const currentWindowDuration =
+      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
+    const requiresSessionRestart =
+      targetSeconds < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
+      (currentWindowDuration > 0 && targetSeconds > bufferedWindowEndSecs + 1);
+
+    if (requiresSessionRestart) {
+      await startHls({
+        autoplayWhenNoState: stateMessage.playing,
+        silent: true,
+        targetHeightOverride: hlsTargetHeight,
+        seekTimeOverrideSecs: targetSeconds,
+      });
+      window.setTimeout(() => {
+        applyingRemoteRef.current = false;
+      }, 60);
+      return;
+    }
+
+    const sessionRelativeTarget = Math.max(0, targetSeconds - hlsSessionStartOffsetSecs);
+    if (Math.abs(video.currentTime - sessionRelativeTarget) > 1.2) {
+      video.currentTime = sessionRelativeTarget;
+    }
+
+    if (stateMessage.playing && video.paused) {
+      applyVideoAudioState(video, audioStateRef.current);
+      await video.play().catch(() => {});
+    }
+
+    if (!stateMessage.playing && !video.paused) {
+      video.pause();
+    }
+
+    window.setTimeout(() => {
+      applyingRemoteRef.current = false;
+    }, 60);
+  }, [hlsSessionStartOffsetSecs, hlsTargetHeight, startHls]);
+
+  useEffect(() => {
+    applyRemoteStateRef.current = applyRemoteState;
+  }, [applyRemoteState]);
 
   useEffect(() => {
     if (!room || !joinedRole || !isVideoRoom) return;
@@ -531,7 +507,7 @@ export function useRoomPlayback({
   useEffect(() => {
     if (!room || !joinedRole || !isVideoRoom || !descriptor) return;
     if (!room.item_id || room.item_id.trim().length === 0) return;
-    if (startingDirect || startingHls) return;
+    if (startingHls) return;
     if (autoPreloadedItemRef.current === room.item_id) return;
 
     autoPreloadedItemRef.current = room.item_id;
@@ -548,14 +524,13 @@ export function useRoomPlayback({
       }
 
       appendDebug(`auto preload hls failed; keeping room idle item_id=${room.item_id}`);
-      setInfo('HLS preload failed. Retry Transcode (HLS) or use Direct Play manually.');
+      setInfo('HLS preload failed. Retry the stream manually.');
     })();
   }, [
     room,
     joinedRole,
     descriptor,
     isVideoRoom,
-    startingDirect,
     startingHls,
     startHls,
     appendDebug,
@@ -563,7 +538,6 @@ export function useRoomPlayback({
   ]);
 
   useEffect(() => {
-    if (mode !== 'hls') return;
     const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
     if (!hls) return;
 
@@ -595,7 +569,17 @@ export function useRoomPlayback({
         }
       }
     };
-  }, [mode, descriptor?.duration_ms, mediaInfo?.duration_secs]);
+  }, [descriptor?.duration_ms, mediaInfo?.duration_secs]);
+
+  const sourceVideoHeight =
+    mediaInfo?.video?.height && mediaInfo.video.height > 0 ? mediaInfo.video.height : null;
+
+  useEffect(() => {
+    const normalized = normalizePlaybackQualitySelection(hlsTargetHeight, sourceVideoHeight);
+    if (normalized !== hlsTargetHeight) {
+      setHlsTargetHeight(normalized);
+    }
+  }, [hlsTargetHeight, sourceVideoHeight]);
 
   useEffect(() => {
     return () => {
@@ -617,16 +601,15 @@ export function useRoomPlayback({
   return {
     descriptor,
     knownDurationMs,
-    mode,
-    startingDirect,
     startingHls,
     hlsTargetHeight,
+    hlsSessionStartOffsetSecs,
+    sourceVideoHeight,
     setHlsTargetHeight,
     isVideoRoom,
     videoRef,
     applyingRemoteRef,
     applyRemoteState,
-    startDirect,
     startHls,
     resetPlaybackState,
   };

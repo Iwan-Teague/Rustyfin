@@ -79,6 +79,7 @@ export type StartPlaybackOptions = {
   autoplayWhenNoState?: boolean;
   silent?: boolean;
   targetHeightOverride?: number | null;
+  seekTimeOverrideSecs?: number;
 };
 
 export type RuntimeConfig = {
