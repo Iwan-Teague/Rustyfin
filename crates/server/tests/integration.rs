@@ -4,6 +4,13 @@ use rustfin_server::state::AppState;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+fn localhost_header() -> (axum::http::HeaderName, axum::http::HeaderValue) {
+    (
+        axum::http::header::HOST,
+        axum::http::HeaderValue::from_static("localhost"),
+    )
+}
+
 fn test_database_target() -> String {
     std::env::var("RUSTFIN_TEST_DATABASE_URL")
         .or_else(|_| std::env::var("RUSTFIN_DATABASE_URL"))
@@ -2187,6 +2194,7 @@ async fn setup_claim_and_release_session() {
         .post("/api/v1/setup/session/release")
         .add_header(owner_hdr, token_val.clone())
         .add_header(remote_hdr, token_val)
+        .add_header(localhost_header().0, localhost_header().1)
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
@@ -2214,12 +2222,14 @@ async fn setup_full_wizard_flow() {
     let remote_hdr = axum::http::HeaderName::from_static("x-setup-remote-token");
     let owner_val: axum::http::HeaderValue = token.parse().unwrap();
     let remote_val = owner_val.clone();
+    let (host_hdr, host_val) = localhost_header();
 
     // Step 2: PUT config
     let resp = server
         .put("/api/v1/setup/config")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .json(&json!({
             "server_name": "My Rustyfin",
             "default_ui_locale": "en-US",
@@ -2237,6 +2247,7 @@ async fn setup_full_wizard_flow() {
         .post("/api/v1/setup/admin")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
             "test-idem-key-12345678"
@@ -2258,6 +2269,7 @@ async fn setup_full_wizard_flow() {
         .post("/api/v1/setup/admin")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
             "test-idem-key-12345678"
@@ -2276,6 +2288,7 @@ async fn setup_full_wizard_flow() {
         .put("/api/v1/setup/metadata")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .json(&json!({
             "metadata_language": "en",
             "metadata_region": "US"
@@ -2290,6 +2303,7 @@ async fn setup_full_wizard_flow() {
         .put("/api/v1/setup/network")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .json(&json!({
             "allow_remote_access": false,
             "trusted_proxies": []
@@ -2304,6 +2318,7 @@ async fn setup_full_wizard_flow() {
         .post("/api/v1/setup/complete")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .json(&json!({ "confirm": true }))
         .await;
     resp.assert_status_ok();
@@ -2362,12 +2377,14 @@ async fn setup_validation_rejects_weak_password() {
     let remote_hdr = axum::http::HeaderName::from_static("x-setup-remote-token");
     let owner_val: axum::http::HeaderValue = token.parse().unwrap();
     let remote_val = owner_val.clone();
+    let (host_hdr, host_val) = localhost_header();
 
     // Put config first
     let resp = server
         .put("/api/v1/setup/config")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .json(&json!({
             "server_name": "Test",
             "default_ui_locale": "en",
@@ -2381,6 +2398,7 @@ async fn setup_validation_rejects_weak_password() {
         .post("/api/v1/setup/admin")
         .add_header(owner_hdr.clone(), owner_val.clone())
         .add_header(remote_hdr.clone(), remote_val.clone())
+        .add_header(host_hdr.clone(), host_val.clone())
         .add_header(
             axum::http::HeaderName::from_static("idempotency-key"),
             "validate-test-key123"
