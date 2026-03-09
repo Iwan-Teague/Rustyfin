@@ -388,6 +388,38 @@ check_debian_browser_smoke() {
   "${REPO_ROOT}/scripts/ci/debian_browser_smoke.sh"
 }
 
+build_schema_db_url() {
+  local base_url="$1"
+  local schema_name="$2"
+  local options_param="options=-c%20search_path%3D${schema_name}"
+
+  if [[ "$base_url" == *\?* ]]; then
+    printf '%s&%s' "$base_url" "$options_param"
+  else
+    printf '%s?%s' "$base_url" "$options_param"
+  fi
+}
+
+check_setup_integration() {
+  local base_db_url="${RUSTFIN_DATABASE_URL:-}"
+  [[ -n "$base_db_url" ]] || {
+    echo "RUSTFIN_DATABASE_URL is required for setup integration gate"
+    return 1
+  }
+
+  local schema_name="rustfin_setup_gate_${RUN_ID}_$$"
+  local test_db_url
+  test_db_url="$(build_schema_db_url "$base_db_url" "$schema_name")"
+
+  psql "$base_db_url" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA ${schema_name};" >/dev/null
+  trap 'psql "$base_db_url" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS '"${schema_name}"' CASCADE;" >/dev/null 2>&1 || true' RETURN
+
+  env \
+    RUSTFIN_TEST_DATABASE_URL="$test_db_url" \
+    RUSTFIN_TEST_DB_ALLOW_ANY=1 \
+    cargo test -p rustfin-server --test integration setup_full_wizard_flow -- --exact
+}
+
 write_report() {
   local overall host_name current_commit
   overall="PASS"
@@ -440,6 +472,7 @@ if [[ "$SKIP_TESTS" == "true" ]]; then
   warn "Skipping Rust test gates by request."
 else
   run_gate "Rust server lib tests" cargo test -p rustfin-server --lib
+  run_gate "Rust setup integration" check_setup_integration
   run_gate "Rust server integration compile" cargo test -p rustfin-server --test integration --no-run
   run_gate "Rust transcoder tests" cargo test -p rustfin-transcoder --lib
   run_gate "Rust calendar tests" cargo test -p rustfin-calendar --bin rustfin-calendar

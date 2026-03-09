@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS setup_session (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     owner_token_hash TEXT NOT NULL,
     client_name  TEXT NOT NULL,
-    claimed_at   INTEGER NOT NULL,
-    expires_at   INTEGER NOT NULL
+    claimed_at   BIGINT NOT NULL,
+    expires_at   BIGINT NOT NULL
 );
 
 -- Idempotency keys table: safe retries for create-only operations
@@ -33,5 +33,5 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     payload_hash TEXT NOT NULL,
     response     TEXT NOT NULL,
     status_code  INTEGER NOT NULL,
-    created_at   INTEGER NOT NULL
+    created_at   BIGINT NOT NULL
 );

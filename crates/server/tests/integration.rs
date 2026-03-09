@@ -5,7 +5,13 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 fn test_database_target() -> String {
-    std::env::var("RUSTFIN_TEST_DATABASE_URL").unwrap_or_else(|_| ":memory:".to_string())
+    std::env::var("RUSTFIN_TEST_DATABASE_URL")
+        .or_else(|_| std::env::var("RUSTFIN_DATABASE_URL"))
+        .unwrap_or_else(|_| {
+            panic!(
+                "RUSTFIN_TEST_DATABASE_URL or RUSTFIN_DATABASE_URL is required for integration tests"
+            )
+        })
 }
 
 async fn create_test_pool() -> rustfin_db::DbPool {
