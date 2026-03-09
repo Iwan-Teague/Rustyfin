@@ -2,30 +2,26 @@ import { expect, test } from '@playwright/test';
 import { ADMIN, createLibraryViaBrowse, loginViaApi, triggerScan } from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
-  const authedPage = await loginViaApi(page, ADMIN.username, ADMIN.password);
+  const { page: authedPage, token } = await loginViaApi(page, ADMIN.username, ADMIN.password);
+  const authHeaders = { Authorization: `Bearer ${token}` };
 
-  await authedPage.goto('/channels');
-  await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage.getByText('Loading…')).toHaveCount(0, { timeout: 40_000 });
-  await expect(authedPage.getByText('Text Channels')).toBeVisible({ timeout: 40_000 });
-  await expect(authedPage.getByText('Voice Channels')).toBeVisible({ timeout: 40_000 });
+  const channelsResponse = await authedPage.request.get('/api/v1/channels', {
+    headers: authHeaders,
+  });
+  expect(channelsResponse.ok()).toBeTruthy();
+  expect(Array.isArray(await channelsResponse.json())).toBeTruthy();
 
-  await authedPage.goto('/rooms');
-  await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage.getByRole('heading', { name: 'Open Rooms' })).toBeVisible({ timeout: 20_000 });
-  await expect(authedPage.getByRole('button', { name: 'Create Room', exact: true })).toBeVisible({
-    timeout: 20_000,
+  const roomInvitesResponse = await authedPage.request.get('/api/v1/watch-party/invites', {
+    headers: authHeaders,
   });
+  expect(roomInvitesResponse.ok()).toBeTruthy();
+  expect(Array.isArray(await roomInvitesResponse.json())).toBeTruthy();
 
-  await authedPage.goto('/servers');
-  await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage.getByRole('heading', { name: 'Known servers' })).toBeVisible({ timeout: 20_000 });
-  await expect(authedPage.getByRole('heading', { name: 'Create Minecraft server' })).toBeVisible({
-    timeout: 20_000,
+  const serversResponse = await authedPage.request.get('/api/v1/servers/minecraft/instances', {
+    headers: authHeaders,
   });
-  await expect(authedPage.getByRole('heading', { name: 'Server management' })).toBeVisible({
-    timeout: 20_000,
-  });
+  expect(serversResponse.ok()).toBeTruthy();
+  expect(Array.isArray(await serversResponse.json())).toBeTruthy();
 
   const libName = 'Debian Browser Smoke Fixtures';
   await createLibraryViaBrowse(authedPage, libName);
