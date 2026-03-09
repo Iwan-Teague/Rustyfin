@@ -236,6 +236,19 @@ Secrets/runtime support:
 
 ## Build and Test
 
+Debian 12 native quality gates:
+
+```bash
+./scripts/ci/debian_native_gates.sh
+```
+
+This is the main post-update confidence check for the supported runtime. It emits:
+
+- a Markdown report under `/Users/iwanteague/Desktop/Rustyfin/.tmp/gates/`
+- per-gate logs under the same run directory
+- a latest report copy at:
+  - `/Users/iwanteague/Desktop/Rustyfin/.tmp/gates/debian-native-gates-latest.md`
+
 Rust:
 
 ```bash
