@@ -219,6 +219,27 @@ async function ensurePreviewFrame(video: HTMLVideoElement): Promise<void> {
   }
 }
 
+async function attemptPlayWithWarmup(video: HTMLVideoElement): Promise<void> {
+  try {
+    await video.play();
+    return;
+  } catch {
+    // Fall back to waiting for the first decodable frame, then retry.
+  }
+
+  await ensurePreviewFrame(video).catch(() => {});
+
+  if (!video.paused) {
+    return;
+  }
+
+  try {
+    await video.play();
+  } catch {
+    // Leave the preview frame painted even if autoplay is blocked.
+  }
+}
+
 export function useRoomPlayback({
   room,
   joinedRole,
@@ -376,6 +397,9 @@ export function useRoomPlayback({
             stopDurationEnforcer;
           hlsRef.current = hls;
           let networkRecoveries = 0;
+          const shouldAutoplay =
+            roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
+          let playbackKickPending = shouldAutoplay;
           const reinforceKnownDuration = (data?: unknown) => {
             const playlistWindowDuration = extractPlaylistWindowDuration(data);
             const reportedWindowDuration = Math.max(
@@ -400,9 +424,10 @@ export function useRoomPlayback({
             applyVideoAudioState(video, preservedAudioState);
             if (roomState) {
               void applyRemoteStateRef.current(roomState);
-            } else if (options.autoplayWhenNoState ?? true) {
-              void video.play().catch(async () => {
-                await ensurePreviewFrame(video).catch(() => {});
+            } else if (shouldAutoplay) {
+              if (!playbackKickPending) return;
+              void attemptPlayWithWarmup(video).finally(() => {
+                playbackKickPending = false;
               });
             } else {
               video.pause();
@@ -417,6 +442,10 @@ export function useRoomPlayback({
           });
           hls.on(Hls.Events.FRAG_BUFFERED, () => {
             reinforceKnownDuration();
+            if (!playbackKickPending || !video.paused) return;
+            void attemptPlayWithWarmup(video).finally(() => {
+              playbackKickPending = false;
+            });
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: HlsFatalErrorData) => {
             if (!data?.fatal) return;
@@ -450,9 +479,7 @@ export function useRoomPlayback({
           if (roomState) {
             await applyRemoteStateRef.current(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
-            await video.play().catch(async () => {
-              await ensurePreviewFrame(video).catch(() => {});
-            });
+            await attemptPlayWithWarmup(video);
           } else {
             video.pause();
             await ensurePreviewFrame(video).catch(() => {});
