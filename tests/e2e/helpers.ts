@@ -220,3 +220,37 @@ export async function triggerScanViaApi(page: Page, token: string, libraryId: st
   });
   expect(response.ok()).toBeTruthy();
 }
+
+export async function waitForLibraryItemsViaApi(
+  page: Page,
+  token: string,
+  libraryId: string,
+  timeoutMs = 60_000,
+): Promise<Array<{ id: string; title: string; kind: string }>> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await page.request.get(`/api/v1/libraries/${libraryId}/items`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    expect(response.ok()).toBeTruthy();
+
+    const body = (await response.json()) as Array<{ id?: unknown; title?: unknown; kind?: unknown }>;
+    const items = body.filter(
+      (item): item is { id: string; title: string; kind: string } =>
+        typeof item.id === 'string' &&
+        typeof item.title === 'string' &&
+        typeof item.kind === 'string',
+    );
+
+    if (items.length > 0) {
+      return items;
+    }
+
+    await page.waitForTimeout(1_000);
+  }
+
+  throw new Error(`Timed out waiting for library items for library ${libraryId}`);
+}

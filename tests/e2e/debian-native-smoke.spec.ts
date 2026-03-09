@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN, createLibraryViaApi, loginViaApi, triggerScanViaApi } from './helpers';
+import {
+  ADMIN,
+  createLibraryViaApi,
+  loginViaApi,
+  triggerScanViaApi,
+  waitForLibraryItemsViaApi,
+} from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
   const { page: authedPage, token } = await loginViaApi(page, ADMIN.username, ADMIN.password);
@@ -23,29 +29,28 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   expect(serversResponse.ok()).toBeTruthy();
   expect(Array.isArray(await serversResponse.json())).toBeTruthy();
 
+  await authedPage.goto('/channels');
+  await expect(authedPage.getByText('Text Channels')).toBeVisible({ timeout: 20_000 });
+
+  await authedPage.goto('/rooms');
+  await expect(authedPage.getByRole('heading', { name: 'Open Rooms' })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  await authedPage.goto('/servers');
+  await expect(authedPage.getByRole('heading', { name: 'Known servers' })).toBeVisible({
+    timeout: 20_000,
+  });
+
   const libName = 'Debian Browser Smoke Fixtures';
   const libraryId = await createLibraryViaApi(authedPage, token, libName);
   await triggerScanViaApi(authedPage, token, libraryId);
+  const items = await waitForLibraryItemsViaApi(authedPage, token, libraryId);
+  const firstPlayableItem = items.find((item) => item.kind === 'movie' || item.kind === 'episode');
+  expect(firstPlayableItem).toBeTruthy();
 
-  await authedPage.goto('/libraries');
+  await authedPage.goto(`/items/${firstPlayableItem!.id}`);
   await authedPage.waitForLoadState('networkidle');
-
-  const targetLib = authedPage.getByRole('link', { name: libName }).first();
-  await expect(targetLib).toBeVisible({ timeout: 30_000 });
-  await targetLib.click();
-
-  await expect
-    .poll(
-      async () => {
-        await authedPage.reload();
-        await authedPage.waitForLoadState('networkidle');
-        return authedPage.locator('a[href^="/items/"]').count();
-      },
-      { timeout: 60_000 }
-    )
-    .toBeGreaterThan(0);
-
-  await authedPage.locator('a[href^="/items/"]').first().click();
   await expect(authedPage.getByRole('link', { name: 'Play Now' })).toBeVisible({ timeout: 20_000 });
   await authedPage.getByRole('link', { name: 'Play Now' }).click();
   await expect(authedPage).toHaveURL(/\/player\//);

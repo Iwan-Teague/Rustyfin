@@ -63,6 +63,7 @@ ui/node_modules/
 /.npm-cache/
 /.playwright-browsers/
 /tests/_runs/
+/_runs/
 /scripts/rustfin.db*
 /rustfin.db*
 /.rustyfin.runtime.env
