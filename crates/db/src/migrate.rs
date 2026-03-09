@@ -122,6 +122,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "030_channel_message_sort_seq",
         include_str!("../migrations_pg/030_channel_message_sort_seq.sql"),
     ),
+    (
+        "031_denormalized_counters",
+        include_str!("../migrations_pg/031_denormalized_counters.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
