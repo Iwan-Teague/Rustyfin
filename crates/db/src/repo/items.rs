@@ -85,7 +85,8 @@ pub async fn get_library_items(
     pool: &DbPool,
     library_id: &str,
 ) -> Result<Vec<ItemRow>, sqlx::Error> {
-    // Return top-level items (no parent) for the library
+    // Return top-level items (no parent) that still resolve to actual media or hierarchy.
+    // This hides stale shell rows left behind by older scans or interrupted reclassification.
     let rows: Vec<(
         String,
         String,
@@ -102,10 +103,16 @@ pub async fn get_library_items(
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
+        "SELECT i.id, i.library_id, i.kind, i.parent_id, i.title, i.sort_title, i.year, i.overview, \
          poster_url, backdrop_url, logo_url, thumb_url, \
-         created_ts, updated_ts FROM item \
-         WHERE library_id = $1 AND parent_id IS NULL ORDER BY title",
+         i.created_ts, i.updated_ts FROM item i \
+         WHERE i.library_id = $1 \
+           AND i.parent_id IS NULL \
+           AND ( \
+                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+           ) \
+         ORDER BY i.title",
     )
     .bind(library_id)
     .fetch_all(pool)

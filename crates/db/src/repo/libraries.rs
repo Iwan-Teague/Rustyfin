@@ -288,11 +288,19 @@ pub async fn get_library_paths_for_libraries(
 /// Count items belonging to a library.
 pub async fn count_library_items(pool: &DbPool, library_id: &str) -> Result<i64, sqlx::Error> {
     // Keep this aligned with GET /libraries/{id}/items, which returns top-level rows only.
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM item WHERE library_id = $1 AND parent_id IS NULL")
-            .bind(library_id)
-            .fetch_one(pool)
-            .await?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) \
+         FROM item i \
+         WHERE i.library_id = $1 \
+           AND i.parent_id IS NULL \
+           AND ( \
+                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+           )",
+    )
+    .bind(library_id)
+    .fetch_one(pool)
+    .await?;
     Ok(count)
 }
 
@@ -306,9 +314,15 @@ pub async fn count_library_items_for_libraries(
 
     let placeholders = crate::repo::dollar_placeholders(1, library_ids.len());
     let sql = format!(
-        "SELECT library_id, COUNT(*) FROM item \
-         WHERE parent_id IS NULL AND library_id IN ({placeholders}) \
-         GROUP BY library_id"
+        "SELECT i.library_id, COUNT(*) \
+         FROM item i \
+         WHERE i.parent_id IS NULL \
+           AND i.library_id IN ({placeholders}) \
+           AND ( \
+                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+           ) \
+         GROUP BY i.library_id"
     );
 
     let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
