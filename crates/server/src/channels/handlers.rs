@@ -8,14 +8,17 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path as StdPath;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tokio_util::io::ReaderStream;
 use tracing::warn;
 
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
+use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::transcription_agent::{self, AgentTranscribeChunkRequest};
 
@@ -29,6 +32,16 @@ const CHANNEL_UPLOADS_DIR: &str = "channel_uploads";
 const TRANSCRIPTION_FINALIZE_MIN_GRACE_MS: u64 = 900;
 const TRANSCRIPTION_FINALIZE_QUIET_WINDOW_MS: u64 = 250;
 const TRANSCRIPTION_FINALIZE_MAX_WAIT_MS: u64 = 25_000;
+
+fn text_message_rate_limiter() -> &'static RateLimiter {
+    static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+    LIMITER.get_or_init(|| RateLimiter::new(120, 60))
+}
+
+fn attachment_upload_rate_limiter() -> &'static RateLimiter {
+    static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+    LIMITER.get_or_init(|| RateLimiter::new(12, 60))
+}
 
 fn transcription_in_flight_chunks() -> &'static Mutex<HashMap<String, usize>> {
     static COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
@@ -362,6 +375,77 @@ fn sanitize_content_disposition_filename(raw: &str) -> String {
     } else {
         sanitized
     }
+}
+
+async fn enforce_channel_rate_limit(
+    limiter: &RateLimiter,
+    action: &str,
+    auth: &AuthUser,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    let key = format!("channels:{action}:{channel_id}:{}", auth.user_id);
+    limiter
+        .check(&key)
+        .await
+        .map(|_| ())
+        .map_err(|retry_after_seconds| {
+            ApiError::TooManyRequests {
+                retry_after_seconds,
+            }
+            .into()
+        })
+}
+
+async fn remove_uploaded_file_if_present(path: Option<&PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(err) = fs::remove_file(path).await
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(path = %path.display(), error = %err, "failed removing staged channel upload");
+    }
+}
+
+async fn stream_attachment_field_to_path(
+    mut field: axum::extract::multipart::Field<'_>,
+    target_path: &StdPath,
+) -> Result<i64, AppError> {
+    let mut file = fs::File::create(target_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to create upload target: {e}")))?;
+    let mut total_bytes: usize = 0;
+
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("invalid file field: {e}")))?
+    {
+        total_bytes = total_bytes.saturating_add(chunk.len());
+        if total_bytes > MAX_ATTACHMENT_BYTES {
+            drop(file);
+            let _ = fs::remove_file(target_path).await;
+            return Err(ApiError::BadRequest(format!(
+                "file too large (max {} MB)",
+                MAX_ATTACHMENT_BYTES / (1024 * 1024)
+            ))
+            .into());
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| ApiError::Internal(format!("failed saving uploaded file: {e}")))?;
+    }
+
+    if total_bytes == 0 {
+        drop(file);
+        let _ = fs::remove_file(target_path).await;
+        return Err(ApiError::BadRequest("uploaded file is empty".into()).into());
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed finalizing uploaded file: {e}")))?;
+    Ok(total_bytes as i64)
 }
 
 async fn log_admin_channel_action(
@@ -714,6 +798,7 @@ pub async fn send_message(
             ApiError::BadRequest("messages are only supported in text channels".into()).into(),
         );
     }
+    enforce_channel_rate_limit(text_message_rate_limiter(), "send", &auth, &channel_id).await?;
     let sender = resolve_sender_profile(&state, &auth).await?;
 
     let row = rustfin_db::repo::channels::create_message(
@@ -767,12 +852,21 @@ pub async fn upload_attachment_message(
             ApiError::BadRequest("attachments are only supported in text channels".into()).into(),
         );
     }
+    enforce_channel_rate_limit(
+        attachment_upload_rate_limiter(),
+        "upload",
+        &auth,
+        &channel_id,
+    )
+    .await?;
     let sender = resolve_sender_profile(&state, &auth).await?;
 
     let mut maybe_content: Option<String> = None;
     let mut maybe_filename: Option<String> = None;
     let mut maybe_content_type: Option<String> = None;
-    let mut maybe_file_bytes: Option<Vec<u8>> = None;
+    let mut maybe_stored_path: Option<PathBuf> = None;
+    let mut maybe_file_size_bytes: Option<i64> = None;
+    let upload_dir = state.cache_dir.join(CHANNEL_UPLOADS_DIR).join(&channel_id);
 
     while let Some(field) = multipart
         .next_field()
@@ -789,33 +883,43 @@ pub async fn upload_attachment_message(
             continue;
         }
 
-        if field_name == "file" && maybe_file_bytes.is_none() {
-            maybe_filename = field.file_name().map(|v| v.to_string());
-            maybe_content_type = field.content_type().map(|v| v.to_string());
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| ApiError::BadRequest(format!("invalid file field: {e}")))?;
-            if bytes.is_empty() {
-                return Err(ApiError::BadRequest("uploaded file is empty".into()).into());
-            }
-            if bytes.len() > MAX_ATTACHMENT_BYTES {
-                return Err(ApiError::BadRequest(format!(
-                    "file too large (max {} MB)",
-                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
-                ))
-                .into());
-            }
-            maybe_file_bytes = Some(bytes.to_vec());
+        if field_name == "file" && maybe_stored_path.is_none() {
+            let file_name = sanitize_file_name(field.file_name().unwrap_or("upload.bin"));
+            let content_type = infer_content_type(&file_name, field.content_type());
+
+            fs::create_dir_all(&upload_dir).await.map_err(|e| {
+                ApiError::Internal(format!("failed to create upload directory: {e}"))
+            })?;
+
+            let attachment_id = uuid::Uuid::new_v4().to_string();
+            let ext = StdPath::new(&file_name)
+                .extension()
+                .and_then(|v| v.to_str())
+                .and_then(sanitize_extension);
+            let stored_file_name = match ext {
+                Some(ext) => format!("{attachment_id}.{ext}"),
+                None => attachment_id,
+            };
+            let stored_path = upload_dir.join(stored_file_name);
+            let size_bytes = stream_attachment_field_to_path(field, &stored_path).await?;
+
+            maybe_filename = Some(file_name);
+            maybe_content_type = Some(content_type);
+            maybe_file_size_bytes = Some(size_bytes);
+            maybe_stored_path = Some(stored_path);
         }
     }
 
-    let file_bytes = maybe_file_bytes
-        .ok_or_else(|| ApiError::BadRequest("multipart form requires a file field".into()))?;
-    let file_name = sanitize_file_name(maybe_filename.as_deref().unwrap_or("upload.bin"));
-    let content_type = infer_content_type(&file_name, maybe_content_type.as_deref());
+    if maybe_stored_path.is_none() {
+        return Err(ApiError::BadRequest("multipart form requires a file field".into()).into());
+    }
+    let file_name = maybe_filename.unwrap_or_else(|| "upload.bin".to_string());
+    let content_type = maybe_content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let stored_path = maybe_stored_path.clone();
+    let size_bytes = maybe_file_size_bytes.unwrap_or(0);
     let mut message_content = maybe_content.unwrap_or_default().trim().to_string();
     if message_content.len() > MAX_MESSAGE_CHARS {
+        remove_uploaded_file_if_present(stored_path.as_ref()).await;
         return Err(ApiError::BadRequest(format!(
             "message content too long (max {MAX_MESSAGE_CHARS} chars)"
         ))
@@ -824,28 +928,11 @@ pub async fn upload_attachment_message(
     if message_content.is_empty() {
         message_content = format!("Shared file: {file_name}");
     }
-
-    let upload_dir = state.cache_dir.join(CHANNEL_UPLOADS_DIR).join(&channel_id);
-    fs::create_dir_all(&upload_dir)
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed to create upload directory: {e}")))?;
-
-    let attachment_id = uuid::Uuid::new_v4().to_string();
-    let ext = StdPath::new(&file_name)
-        .extension()
-        .and_then(|v| v.to_str())
-        .and_then(sanitize_extension);
-    let stored_file_name = match ext {
-        Some(ext) => format!("{attachment_id}.{ext}"),
-        None => attachment_id.clone(),
+    let Some(stored_path) = stored_path else {
+        return Err(ApiError::BadRequest("multipart form requires a file field".into()).into());
     };
-    let stored_path = upload_dir.join(stored_file_name);
 
-    fs::write(&stored_path, &file_bytes)
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed saving uploaded file: {e}")))?;
-
-    let row = rustfin_db::repo::channels::create_message(
+    let row = match rustfin_db::repo::channels::create_message(
         &state.db,
         &channel_id,
         &auth.user_id,
@@ -853,7 +940,13 @@ pub async fn upload_attachment_message(
         &message_content,
     )
     .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    {
+        Ok(row) => row,
+        Err(err) => {
+            remove_uploaded_file_if_present(Some(&stored_path)).await;
+            return Err(ApiError::Internal(format!("db error: {err}")).into());
+        }
+    };
 
     let attachment = match rustfin_db::repo::channels::create_message_attachment(
         &state.db,
@@ -861,7 +954,7 @@ pub async fn upload_attachment_message(
         &channel_id,
         &file_name,
         &content_type,
-        file_bytes.len() as i64,
+        size_bytes,
         &stored_path.to_string_lossy(),
     )
     .await
@@ -918,15 +1011,18 @@ pub async fn download_attachment(
 
     let _channel = get_accessible_channel(&state, &auth, &attachment.channel_id).await?;
 
-    let bytes = fs::read(&attachment.storage_path).await.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            ApiError::NotFound("attachment file not found".into())
-        } else {
-            ApiError::Internal(format!("failed reading attachment file: {e}"))
-        }
-    })?;
+    let file = fs::File::open(&attachment.storage_path)
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ApiError::NotFound("attachment file not found".into())
+            } else {
+                ApiError::Internal(format!("failed reading attachment file: {e}"))
+            }
+        })?;
+    let stream = ReaderStream::new(file);
 
-    let mut response = Response::new(Body::from(bytes));
+    let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
 
