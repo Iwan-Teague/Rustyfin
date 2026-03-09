@@ -291,11 +291,11 @@ async fn get_existing_media_file(
     pool: &DbPool,
     path: &str,
 ) -> Result<Option<ExistingMediaFile>, sqlx::Error> {
-    let row: Option<(String, i64)> = sqlx::query_as(
+    let row: Option<(String, bool)> = sqlx::query_as(
         "SELECT mf.id, \
-            CASE WHEN EXISTS ( \
+            EXISTS ( \
                 SELECT 1 FROM episode_file_map efm WHERE efm.file_id = mf.id \
-            ) THEN 1 ELSE 0 END AS has_mapping \
+            ) AS has_mapping \
          FROM media_file mf \
          WHERE mf.path = $1",
     )
@@ -305,7 +305,7 @@ async fn get_existing_media_file(
 
     Ok(row.map(|(id, has_mapping)| ExistingMediaFile {
         id,
-        has_mapping: has_mapping != 0,
+        has_mapping,
     }))
 }
 
