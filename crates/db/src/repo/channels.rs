@@ -291,6 +291,77 @@ pub async fn create_message(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn create_message_with_attachment(
+    pool: &DbPool,
+    channel_id: &str,
+    user_id: &str,
+    username: &str,
+    content: &str,
+    filename: &str,
+    content_type: &str,
+    size_bytes: i64,
+    storage_path: &str,
+) -> Result<(MessageRow, MessageAttachmentRow), sqlx::Error> {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    let attachment_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "INSERT INTO channel_message (id, channel_id, user_id, username, content, created_ts) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&message_id)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(username)
+    .bind(content)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO channel_message_attachment \
+         (id, message_id, channel_id, filename, content_type, size_bytes, storage_path, created_ts) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(&attachment_id)
+    .bind(&message_id)
+    .bind(channel_id)
+    .bind(filename)
+    .bind(content_type)
+    .bind(size_bytes)
+    .bind(storage_path)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok((
+        MessageRow {
+            id: message_id.clone(),
+            channel_id: channel_id.to_string(),
+            user_id: user_id.to_string(),
+            username: username.to_string(),
+            avatar_path: None,
+            content: content.to_string(),
+            created_ts: now,
+        },
+        MessageAttachmentRow {
+            id: attachment_id,
+            message_id,
+            channel_id: channel_id.to_string(),
+            filename: filename.to_string(),
+            content_type: content_type.to_string(),
+            size_bytes,
+            storage_path: storage_path.to_string(),
+            created_ts: now,
+        },
+    ))
+}
+
 pub async fn create_message_attachment(
     pool: &DbPool,
     message_id: &str,

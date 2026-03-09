@@ -11,6 +11,7 @@ pub struct WatchPartyRoomRow {
     pub join_password_hash: Option<String>,
     pub created_ts: i64,
     pub updated_ts: i64,
+    pub joined_member_count: i64,
     pub room_mode: String,
     pub audio_source: String,
     pub audio_library_id: Option<String>,
@@ -18,6 +19,16 @@ pub struct WatchPartyRoomRow {
     pub web_url: Option<String>,
     pub create_tool: String,
     pub create_document_name: String,
+}
+
+fn joined_member_delta(previous_status: Option<&str>, next_status: &str) -> i64 {
+    let was_joined = previous_status == Some("joined");
+    let is_joined = next_status == "joined";
+    match (was_joined, is_joined) {
+        (false, true) => 1,
+        (true, false) => -1,
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,13 +114,17 @@ pub async fn create_room_with_members(
     let name = room_name.unwrap_or("").trim();
     let tool = create_tool.unwrap_or("text");
     let document_name = create_document_name.unwrap_or("Untitled Document").trim();
+    let joined_member_count = members
+        .iter()
+        .filter(|member| member.status == "joined")
+        .count() as i64;
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO watch_party_room \
-         (id, room_name, host_user_id, item_id, status, policy_json, invite_only, join_password_hash, created_ts, updated_ts, room_mode, audio_source, audio_library_id, web_url, create_tool, create_document_name) \
-         VALUES ($1, $2, $3, $4, 'lobby', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+         (id, room_name, host_user_id, item_id, status, policy_json, invite_only, join_password_hash, created_ts, updated_ts, joined_member_count, room_mode, audio_source, audio_library_id, web_url, create_tool, create_document_name) \
+         VALUES ($1, $2, $3, $4, 'lobby', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(&room_id)
     .bind(name)
@@ -120,6 +135,7 @@ pub async fn create_room_with_members(
     .bind(join_password_hash)
     .bind(now)
     .bind(now)
+    .bind(joined_member_count)
     .bind(mode)
     .bind(source)
     .bind(audio_library_id)
@@ -159,6 +175,7 @@ pub async fn create_room_with_members(
         join_password_hash: join_password_hash.map(str::to_string),
         created_ts: now,
         updated_ts: now,
+        joined_member_count,
         room_mode: mode.to_string(),
         audio_source: source.to_string(),
         audio_library_id: audio_library_id.map(str::to_string),
@@ -173,74 +190,39 @@ pub async fn get_room(
     pool: &DbPool,
     room_id: &str,
 ) -> Result<Option<WatchPartyRoomRow>, sqlx::Error> {
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        i64,
-        i64,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        String,
-    )> =
-        sqlx::query_as(
-            "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, \
-                    CAST(created_ts AS BIGINT) AS created_ts, \
-                    CAST(updated_ts AS BIGINT) AS updated_ts, \
-                    room_mode, COALESCE(audio_source, 'library'), audio_library_id, youtube_video_id, web_url, COALESCE(create_tool, 'text'), COALESCE(create_document_name, 'Untitled Document') \
-             FROM watch_party_room WHERE id = $1",
-        )
-        .bind(room_id)
-        .fetch_optional(pool)
-        .await?;
+    use sqlx::Row;
 
-    Ok(row.map(
-        |(
-            id,
-            room_name,
-            host_user_id,
-            item_id,
-            status,
-            policy_json,
-            join_password_hash,
-            created_ts,
-            updated_ts,
-            room_mode,
-            audio_source,
-            audio_library_id,
-            youtube_video_id,
-            web_url,
-            create_tool,
-            create_document_name,
-        )| {
-            WatchPartyRoomRow {
-                id,
-                room_name,
-                host_user_id,
-                item_id,
-                status,
-                policy_json,
-                join_password_hash,
-                created_ts,
-                updated_ts,
-                room_mode,
-                audio_source,
-                audio_library_id,
-                youtube_video_id,
-                web_url,
-                create_tool,
-                create_document_name,
-            }
-        },
-    ))
+    let row = sqlx::query(
+        "SELECT id, COALESCE(room_name, ''), host_user_id, COALESCE(item_id, ''), status, policy_json, join_password_hash, \
+                CAST(created_ts AS BIGINT) AS created_ts, \
+                CAST(updated_ts AS BIGINT) AS updated_ts, \
+                CAST(joined_member_count AS BIGINT) AS joined_member_count, \
+                room_mode, COALESCE(audio_source, 'library'), audio_library_id, youtube_video_id, web_url, COALESCE(create_tool, 'text'), COALESCE(create_document_name, 'Untitled Document') \
+         FROM watch_party_room WHERE id = $1",
+    )
+    .bind(room_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| WatchPartyRoomRow {
+        id: row.get(0),
+        room_name: row.get(1),
+        host_user_id: row.get(2),
+        item_id: row.get(3),
+        status: row.get(4),
+        policy_json: row.get(5),
+        join_password_hash: row.get(6),
+        created_ts: row.get(7),
+        updated_ts: row.get(8),
+        joined_member_count: row.get(9),
+        room_mode: row.get(10),
+        audio_source: row.get(11),
+        audio_library_id: row.get(12),
+        youtube_video_id: row.get(13),
+        web_url: row.get(14),
+        create_tool: row.get(15),
+        create_document_name: row.get(16),
+    }))
 }
 
 pub async fn list_members(
@@ -390,6 +372,15 @@ pub async fn upsert_member(
     room_id: &str,
     member: &NewWatchPartyMember,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let previous_status: Option<(String,)> = sqlx::query_as(
+        "SELECT status FROM watch_party_member WHERE room_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(room_id)
+    .bind(&member.user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
     sqlx::query(
         "INSERT INTO watch_party_member \
          (room_id, user_id, role, status, invited_by, invited_ts, joined_ts, last_seen_ts) \
@@ -410,8 +401,26 @@ pub async fn upsert_member(
     .bind(member.invited_ts)
     .bind(member.joined_ts)
     .bind(member.joined_ts)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    let delta = joined_member_delta(
+        previous_status.as_ref().map(|(status,)| status.as_str()),
+        &member.status,
+    );
+    if delta != 0 {
+        sqlx::query(
+            "UPDATE watch_party_room \
+             SET joined_member_count = GREATEST(joined_member_count + $1, 0) \
+             WHERE id = $2",
+        )
+        .bind(delta)
+        .bind(room_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -422,6 +431,19 @@ pub async fn set_member_status(
     status: &str,
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
+    let mut tx = pool.begin().await?;
+    let previous_status: Option<(String,)> = sqlx::query_as(
+        "SELECT status FROM watch_party_member WHERE room_id = $1 AND user_id = $2 FOR UPDATE",
+    )
+    .bind(room_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((previous_status,)) = previous_status else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+
     let result = sqlx::query(
         "UPDATE watch_party_member \
          SET status = $1, \
@@ -435,9 +457,29 @@ pub async fn set_member_status(
     .bind(now)
     .bind(room_id)
     .bind(user_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    Ok(result.rows_affected() > 0)
+
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    let delta = joined_member_delta(Some(previous_status.as_str()), status);
+    if delta != 0 {
+        sqlx::query(
+            "UPDATE watch_party_room \
+             SET joined_member_count = GREATEST(joined_member_count + $1, 0) \
+             WHERE id = $2",
+        )
+        .bind(delta)
+        .bind(room_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn set_room_status(
@@ -607,17 +649,14 @@ pub async fn list_public_rooms(pool: &DbPool) -> Result<Vec<PublicRoomRow>, sqlx
             "SELECT r.id, COALESCE(r.room_name, ''), r.host_user_id, host.username, COALESCE(r.item_id, ''), \
                     COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                     CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
-                    CAST(COUNT(CASE WHEN m.status = 'joined' THEN 1 END) AS BIGINT) AS member_count, \
+                    CAST(r.joined_member_count AS BIGINT) AS member_count, \
                     CAST(r.created_ts AS BIGINT) AS created_ts \
              FROM watch_party_room r \
              JOIN \"user\" host ON host.id = r.host_user_id \
              LEFT JOIN item i ON i.id = r.item_id \
              LEFT JOIN library lib ON lib.id = r.audio_library_id \
-             LEFT JOIN watch_party_member m ON m.room_id = r.id \
              WHERE r.status = 'lobby' \
                AND r.invite_only = 0 \
-             GROUP BY r.id, r.room_name, r.host_user_id, host.username, r.item_id, i.title, \
-                      r.room_mode, r.audio_source, lib.name, r.web_url, r.join_password_hash, r.created_ts \
              ORDER BY r.created_ts DESC",
         )
         .fetch_all(pool)
@@ -684,7 +723,7 @@ pub async fn list_admin_rooms(pool: &DbPool) -> Result<Vec<AdminRoomRow>, sqlx::
                 COALESCE(i.title, ''), r.room_mode, COALESCE(r.audio_source, 'library'), COALESCE(lib.name, ''), COALESCE(r.web_url, ''), \
                 CAST(CASE WHEN r.join_password_hash IS NOT NULL AND r.join_password_hash != '' THEN 1 ELSE 0 END AS BIGINT), \
                 CAST(r.invite_only AS BIGINT) AS invite_only, \
-                CAST(COUNT(CASE WHEN m.status = 'joined' THEN 1 END) AS BIGINT) AS member_count, \
+                CAST(r.joined_member_count AS BIGINT) AS member_count, \
                 r.status, \
                 CAST(r.created_ts AS BIGINT) AS created_ts, \
                 CAST(r.updated_ts AS BIGINT) AS updated_ts \
@@ -692,10 +731,6 @@ pub async fn list_admin_rooms(pool: &DbPool) -> Result<Vec<AdminRoomRow>, sqlx::
          JOIN \"user\" host ON host.id = r.host_user_id \
          LEFT JOIN item i ON i.id = r.item_id \
          LEFT JOIN library lib ON lib.id = r.audio_library_id \
-         LEFT JOIN watch_party_member m ON m.room_id = r.id \
-         GROUP BY r.id, r.room_name, r.host_user_id, host.username, r.item_id, i.title, \
-                  r.room_mode, r.audio_source, lib.name, r.web_url, r.join_password_hash, r.invite_only, \
-                  r.status, r.created_ts, r.updated_ts \
          ORDER BY CASE WHEN r.status = 'lobby' THEN 0 ELSE 1 END, r.updated_ts DESC, r.created_ts DESC",
     )
     .fetch_all(pool)

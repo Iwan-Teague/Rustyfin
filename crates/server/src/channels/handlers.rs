@@ -932,26 +932,12 @@ pub async fn upload_attachment_message(
         return Err(ApiError::BadRequest("multipart form requires a file field".into()).into());
     };
 
-    let row = match rustfin_db::repo::channels::create_message(
+    let (row, attachment) = match rustfin_db::repo::channels::create_message_with_attachment(
         &state.db,
         &channel_id,
         &auth.user_id,
         &sender.display_name,
         &message_content,
-    )
-    .await
-    {
-        Ok(row) => row,
-        Err(err) => {
-            remove_uploaded_file_if_present(Some(&stored_path)).await;
-            return Err(ApiError::Internal(format!("db error: {err}")).into());
-        }
-    };
-
-    let attachment = match rustfin_db::repo::channels::create_message_attachment(
-        &state.db,
-        &row.id,
-        &channel_id,
         &file_name,
         &content_type,
         size_bytes,
@@ -959,10 +945,9 @@ pub async fn upload_attachment_message(
     )
     .await
     {
-        Ok(attachment) => attachment,
+        Ok(result) => result,
         Err(err) => {
-            let _ = rustfin_db::repo::channels::delete_message(&state.db, &row.id).await;
-            let _ = fs::remove_file(&stored_path).await;
+            remove_uploaded_file_if_present(Some(&stored_path)).await;
             return Err(ApiError::Internal(format!("db error: {err}")).into());
         }
     };
@@ -1235,26 +1220,7 @@ pub async fn get_transcription_status(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
     };
 
-    let entry_count = if let Some(ref s) = session {
-        let counts = rustfin_db::repo::channel_transcripts::count_entries_for_sessions(
-            &state.db,
-            std::slice::from_ref(&s.id),
-        )
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-        counts
-            .into_iter()
-            .find_map(|(session_id, count)| {
-                if session_id == s.id {
-                    Some(count)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let entry_count = session.as_ref().map(|s| s.entry_count).unwrap_or(0);
 
     Ok(Json(VoiceTranscriptionStatusResponse {
         channel_id,
@@ -1306,16 +1272,8 @@ pub async fn list_transcription_sessions(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    let session_ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
-    let counts =
-        rustfin_db::repo::channel_transcripts::count_entries_for_sessions(&state.db, &session_ids)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    let counts_by_session_id: HashMap<String, i64> = counts.into_iter().collect();
-
     let mut out = Vec::with_capacity(sessions.len());
     for session in sessions {
-        let entry_count = *counts_by_session_id.get(&session.id).unwrap_or(&0);
         let output_download_path = if session.output_path.is_some() {
             Some(format!(
                 "/api/v1/channels/{}/transcription/sessions/{}/download",
@@ -1333,7 +1291,7 @@ pub async fn list_transcription_sessions(
             output_available: output_download_path.is_some(),
             output_download_path,
             message: session.failure_reason,
-            entry_count,
+            entry_count: session.entry_count,
         });
     }
 
@@ -1379,21 +1337,7 @@ pub async fn start_transcription(
             output_available: existing.output_path.is_some(),
             output_download_path: None,
             message: Some("transcription is already running".to_string()),
-            entry_count: rustfin_db::repo::channel_transcripts::count_entries_for_sessions(
-                &state.db,
-                std::slice::from_ref(&existing.id),
-            )
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .into_iter()
-            .find_map(|(session_id, count)| {
-                if session_id == existing.id {
-                    Some(count)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0),
+            entry_count: existing.entry_count,
         }));
     }
 
@@ -1908,6 +1852,7 @@ mod tests {
             ended_ts: Some(1_700_000_120),
             output_path: Some("/tmp/t.md".to_string()),
             failure_reason: None,
+            entry_count: 1,
         };
         let entries = vec![rustfin_db::repo::channel_transcripts::TranscriptEntryRow {
             id: "e-1".to_string(),

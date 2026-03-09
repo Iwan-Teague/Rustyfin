@@ -11,6 +11,7 @@ pub struct TranscriptSessionRow {
     pub ended_ts: Option<i64>,
     pub output_path: Option<String>,
     pub failure_reason: Option<String>,
+    pub entry_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,7 @@ fn map_session(
         ended_ts,
         output_path,
         failure_reason,
+        entry_count,
     ): (
         String,
         String,
@@ -58,6 +60,7 @@ fn map_session(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     ),
 ) -> TranscriptSessionRow {
     TranscriptSessionRow {
@@ -70,6 +73,7 @@ fn map_session(
         ended_ts,
         output_path,
         failure_reason,
+        entry_count,
     }
 }
 
@@ -131,6 +135,7 @@ pub async fn create_running_session(
         ended_ts: None,
         output_path: None,
         failure_reason: None,
+        entry_count: 0,
     })
 }
 
@@ -148,9 +153,10 @@ pub async fn get_session(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
-                started_ts, ended_ts, output_path, failure_reason \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE id = $1",
     )
@@ -174,9 +180,10 @@ pub async fn get_running_session_for_channel(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
-                started_ts, ended_ts, output_path, failure_reason \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE channel_id = $1 AND status = 'running' \
          ORDER BY started_ts DESC \
@@ -202,9 +209,10 @@ pub async fn get_latest_session_for_channel(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
-                started_ts, ended_ts, output_path, failure_reason \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE channel_id = $1 \
          ORDER BY started_ts DESC \
@@ -232,9 +240,10 @@ pub async fn list_sessions_for_channel(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
-                started_ts, ended_ts, output_path, failure_reason \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE channel_id = $1 \
          ORDER BY started_ts DESC \
@@ -260,9 +269,10 @@ pub async fn list_running_sessions(
         Option<i64>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
-                started_ts, ended_ts, output_path, failure_reason \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE status = 'running' \
          ORDER BY started_ts ASC",
@@ -278,6 +288,7 @@ pub async fn append_entry(
 ) -> Result<TranscriptEntryRow, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
     let created_ts = chrono::Utc::now().timestamp();
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO channel_transcript_entry \
          (id, session_id, channel_id, user_id, username, started_ts_ms, ended_ts_ms, text, created_ts) \
@@ -292,8 +303,19 @@ pub async fn append_entry(
     .bind(entry.ended_ts_ms)
     .bind(entry.text)
     .bind(created_ts)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    sqlx::query(
+        "UPDATE channel_transcript_session \
+         SET entry_count = entry_count + 1 \
+         WHERE id = $1",
+    )
+    .bind(entry.session_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
 
     Ok(TranscriptEntryRow {
         id,
@@ -338,11 +360,14 @@ pub async fn count_entries_for_session(
     pool: &DbPool,
     session_id: &str,
 ) -> Result<i64, sqlx::Error> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM channel_transcript_entry WHERE session_id = $1")
-            .bind(session_id)
-            .fetch_one(pool)
-            .await?;
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT CAST(entry_count AS BIGINT) AS entry_count \
+         FROM channel_transcript_session \
+         WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await?;
     Ok(count)
 }
 
@@ -356,10 +381,9 @@ pub async fn count_entries_for_sessions(
 
     let placeholders = crate::repo::dollar_placeholders(1, session_ids.len());
     let sql = format!(
-        "SELECT session_id, COUNT(*) \
-         FROM channel_transcript_entry \
-         WHERE session_id IN ({placeholders}) \
-         GROUP BY session_id"
+        "SELECT id, CAST(entry_count AS BIGINT) AS entry_count \
+         FROM channel_transcript_session \
+         WHERE id IN ({placeholders})"
     );
 
     let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
