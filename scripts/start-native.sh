@@ -15,10 +15,11 @@ die()     { echo -e "${RED}[start-native] ERROR:${RESET} $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/start-native.sh [--no-build] [--foreground] [--no-health-check]
+  ./scripts/start-native.sh [--no-build] [--build-only] [--foreground] [--no-health-check]
 
 Options:
   --no-build         Skip Rust/UI build and reuse existing native artifacts.
+  --build-only       Build native artifacts only; do not launch the runtime.
   --foreground       Run in attached mode and tail native runtime logs.
   --no-health-check  Skip startup health waits.
   -h, --help         Show this help.
@@ -42,18 +43,24 @@ EOF
 }
 
 BUILD=true
+BUILD_ONLY=false
 DETACH=true
 HEALTH_CHECK=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build) BUILD=false; shift ;;
+    --build-only) BUILD_ONLY=true; shift ;;
     --foreground) DETACH=false; shift ;;
     --no-health-check) HEALTH_CHECK=false; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
 done
+
+if [[ "$BUILD_ONLY" == "true" && "$BUILD" == "false" ]]; then
+  die "--build-only cannot be combined with --no-build"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -603,8 +610,10 @@ else
   fi
 fi
 
-start_directory_picker_helper
-assert_not_running
+if [[ "$BUILD_ONLY" != "true" ]]; then
+  start_directory_picker_helper
+  assert_not_running
+fi
 
 info "Using TMPDIR: $TMPDIR"
 info "Native runtime dir: $RUNTIME_ROOT"
@@ -630,6 +639,9 @@ info "Native binary output dir: $NATIVE_BIN_DIR_ABS"
 info "Transcription GPU mode: $RUSTFIN_TRANSCRIPTION_GPU_MODE"
 info "Transcription GPU required: $RUSTFIN_TRANSCRIPTION_REQUIRE_GPU"
 info "Transcription agent cargo features: $RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES"
+if [[ "$BUILD_ONLY" == "true" ]]; then
+  info "Mode: build-only"
+fi
 
 if [[ "$BUILD" == "true" ]]; then
   export RUSTFIN_NATIVE_GNU_COMPAT_BUILD=0
@@ -677,6 +689,13 @@ if [[ "$BUILD" == "true" ]]; then
 else
   [[ -x "$NATIVE_BIN_DIR_ABS/rustfin-server" ]] || die "Native binaries are missing. Run without --no-build first."
   [[ -f "$REPO_ROOT/ui/.next/standalone/server.js" ]] || die "Native UI standalone build is missing. Run without --no-build first."
+fi
+
+if [[ "$BUILD_ONLY" == "true" ]]; then
+  success "Native artifacts built successfully."
+  info "Native binary output dir: $NATIVE_BIN_DIR_ABS"
+  info "UI standalone entry: $REPO_ROOT/ui/.next/standalone/server.js"
+  exit 0
 fi
 
 start_process "rustfin-tmdb-agent" "$REPO_ROOT" "$NATIVE_BIN_DIR_ABS/rustfin-tmdb-agent"

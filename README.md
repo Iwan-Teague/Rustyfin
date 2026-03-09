@@ -130,6 +130,8 @@ Supporting host process:
 - `crates/transcription-agent` - standalone Whisper transcription API for channel voice capture.
 - `ui` - Next.js frontend.
 - `scripts` - operational scripts (`start.sh`, `stop.sh`, `start-native.sh`, `stop-native.sh`, `install_native_debian.sh`, `clean_install.sh`, packaging helpers).
+  - Native Debian deploy/update path:
+    - `./scripts/deploy-native.sh`
   - Shell-only scripts (`.sh`); PowerShell (`.ps1`) scripts are not part of this repository.
 - `tests` - test harness and E2E suites.
 - `docs` - reports, plans, references, and setup wizard artifacts.
@@ -154,6 +156,12 @@ Start native host runtime:
 ./scripts/start-native.sh
 ```
 
+Deploy/update native host runtime:
+
+```bash
+./scripts/deploy-native.sh
+```
+
 Stop native host runtime:
 
 ```bash
@@ -164,6 +172,7 @@ Stop native host runtime:
 
 - Builds Rust services directly on the Debian host.
 - Builds the Next.js UI directly on the host and runs the standalone server natively.
+- Supports `--build-only` when you need to refresh native artifacts without launching the runtime.
 - Uses host PostgreSQL instead of a containerized database.
 - Uses host Caddy for HTTPS edge proxying.
 - Defaults to local PostgreSQL at:
@@ -177,6 +186,10 @@ Stop native host runtime:
   - `./scripts/install_native_systemd.sh`
   - this installs and enables `rustyfin-native.service`
   - it also installs a dedicated root-run `rustfin-servers-agent.service` so Minecraft provisioning/start/stop can manage systemd units and host files without interactive auth prompts
+- For native Debian updates after the services are installed:
+  - use `./scripts/deploy-native.sh`
+  - it stops the active runtime, pulls the latest git branch, rebuilds native artifacts, and then restarts via systemd when the native units are installed
+  - this avoids the stale-artifact problem caused by restarting `rustyfin-native.service` directly when its unit is configured with `--no-build`
 
 ## Quick Start (Docker)
 

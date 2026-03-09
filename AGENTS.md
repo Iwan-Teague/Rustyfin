@@ -54,6 +54,7 @@ Rustyfin is a native-Debian-first local media platform with:
 - Start Docker/runtime stack: `./scripts/start.sh`
 - Stop Docker/runtime stack: `./scripts/stop.sh`
 - Start native Debian host runtime: `./scripts/start-native.sh`
+- Deploy/update native Debian host runtime: `./scripts/deploy-native.sh`
 - Stop native Debian host runtime: `./scripts/stop-native.sh`
 - Install native Debian prerequisites: `./scripts/install_native_debian.sh`
 - Install native Debian `systemd` integration: `./scripts/install_native_systemd.sh`
@@ -66,8 +67,11 @@ Rust build runtime behavior:
   - builds the Next.js UI directly on the host
   - runs PostgreSQL/Caddy/Node/Rust services natively instead of through Docker
   - writes logs/pids under `.tmp/native-runtime/`
+  - supports `--build-only` for artifact-only refreshes during native deployments
 - After the first successful native build on Debian 12, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot.
   - The installer also creates a dedicated root-run `rustfin-servers-agent.service` for privileged Minecraft host operations, while the main Rustyfin service stays on the normal Debian user.
+- After native systemd services are installed, use `./scripts/deploy-native.sh` for updates instead of restarting `rustyfin-native.service` directly.
+  - It stops the running runtime, pulls the current branch, rebuilds artifacts, and then starts the native services again.
 - To force legacy Docker builder-stage Rust compilation, use `--docker-rust-build` (or `RUSTFIN_NATIVE_RUST_BUILD=0`).
 - On non-Linux hosts, native cross-build requires `zig` and `cargo-zigbuild`.
 - Native prerequisite strict mode defaults to `RUSTFIN_NATIVE_RUST_BUILD_STRICT=1` (fail-fast).
