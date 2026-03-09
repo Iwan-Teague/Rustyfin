@@ -12,7 +12,6 @@ import {
   MinecraftRuntimeCapabilities,
   MinecraftServer,
   MinecraftServerActionResponse,
-  MinecraftServerDeleteResponse,
   MinecraftServerLogsResponse,
   MinecraftServerEvent,
   MinecraftServerOperationResponse,
@@ -211,7 +210,6 @@ export default function ServersPage() {
   const [creating, setCreating] = useState(false);
   const [deletingServerId, setDeletingServerId] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
   const [deleteConfirmServer, setDeleteConfirmServer] = useState<MinecraftServer | null>(null);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<MinecraftRuntimeCapabilities | null>(null);
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
@@ -468,11 +466,9 @@ export default function ServersPage() {
     setSelectedServerId(server.id);
     setActionLoading(action);
     setError('');
-    setSuccessMessage('');
     try {
       const response: MinecraftServerActionResponse = await requestMinecraftServerAction(server.id, action);
       upsertServer(response.instance);
-      setSuccessMessage(response.message);
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
@@ -489,11 +485,9 @@ export default function ServersPage() {
     setSelectedServerId(server.id);
     setProvisioning(true);
     setError('');
-    setSuccessMessage('');
     try {
       const response: MinecraftServerOperationResponse = await provisionMinecraftServer(server.id);
       upsertServer(response.instance);
-      setSuccessMessage(response.message);
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
@@ -515,14 +509,12 @@ export default function ServersPage() {
     setSelectedServerId(server.id);
     setImporting(true);
     setError('');
-    setSuccessMessage('');
     try {
       const response: MinecraftServerOperationResponse = await importMinecraftServer(
         server.id,
         importSourcePath.trim(),
       );
       upsertServer(response.instance);
-      setSuccessMessage(response.message);
       await Promise.all([
         refreshSelectedServerStatus(response.instance.id, false),
         loadSelectedServerEvents(response.instance.id, false),
@@ -538,7 +530,6 @@ export default function ServersPage() {
   async function handleCreateServer() {
     setCreating(true);
     setError('');
-    setSuccessMessage('');
     try {
       const created = await createMinecraftServer({
         display_name: form.display_name,
@@ -567,7 +558,6 @@ export default function ServersPage() {
         minecraft_version: form.minecraft_version,
         server_distribution: form.server_distribution,
       });
-      setSuccessMessage('Draft Minecraft server created. Runtime provisioning comes next.');
       await refreshServers(created.id);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to create Minecraft server'));
@@ -579,12 +569,10 @@ export default function ServersPage() {
   async function handleDeleteServer(server: MinecraftServer) {
     setDeletingServerId(server.id);
     setError('');
-    setSuccessMessage('');
     try {
-      const response: MinecraftServerDeleteResponse = await deleteMinecraftServer(server.id);
+      await deleteMinecraftServer(server.id);
       setDeleteConfirmServer(null);
       await refreshServers();
-      setSuccessMessage(response.message);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to delete Minecraft server'));
     } finally {
@@ -607,12 +595,6 @@ export default function ServersPage() {
       {error ? (
         <div className="panel-soft animate-rise border border-red-400/30 px-5 py-4 text-sm text-red-200">
           {error}
-        </div>
-      ) : null}
-
-      {successMessage ? (
-        <div className="panel-soft animate-rise border border-green-400/30 px-5 py-4 text-sm text-green-200">
-          {successMessage}
         </div>
       ) : null}
 
