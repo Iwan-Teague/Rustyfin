@@ -183,6 +183,42 @@ async function waitForVideoMetadata(
   });
 }
 
+async function waitForVideoFrameData(
+  video: HTMLVideoElement,
+  timeoutMs = 4000,
+): Promise<void> {
+  if (video.readyState >= 2) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener('loadeddata', finish);
+      video.removeEventListener('canplay', finish);
+      resolve();
+    };
+
+    video.addEventListener('loadeddata', finish);
+    video.addEventListener('canplay', finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+async function ensurePreviewFrame(video: HTMLVideoElement): Promise<void> {
+  await waitForVideoMetadata(video);
+  await waitForVideoFrameData(video);
+
+  try {
+    const previewTarget = video.currentTime > 0.001 ? video.currentTime : 0.001;
+    if (Math.abs(video.currentTime - previewTarget) > 0.0005) {
+      video.currentTime = previewTarget;
+    }
+  } catch {
+    // Some browsers block tiny seeks while the first segment is still warming up.
+  }
+}
+
 export function useRoomPlayback({
   room,
   joinedRole,
@@ -365,16 +401,12 @@ export function useRoomPlayback({
             if (roomState) {
               void applyRemoteStateRef.current(roomState);
             } else if (options.autoplayWhenNoState ?? true) {
-              void video.play().catch(() => {});
+              void video.play().catch(async () => {
+                await ensurePreviewFrame(video).catch(() => {});
+              });
             } else {
               video.pause();
-              try {
-                if (video.currentTime !== 0) {
-                  video.currentTime = 0;
-                }
-              } catch {
-                // Some browsers may block programmatic seek before enough data is ready.
-              }
+              void ensurePreviewFrame(video).catch(() => {});
             }
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: unknown) => {
@@ -418,16 +450,12 @@ export function useRoomPlayback({
           if (roomState) {
             await applyRemoteStateRef.current(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
-            await video.play().catch(() => {});
+            await video.play().catch(async () => {
+              await ensurePreviewFrame(video).catch(() => {});
+            });
           } else {
             video.pause();
-            try {
-              if (video.currentTime !== 0) {
-                video.currentTime = 0;
-              }
-            } catch {
-              // Some browsers may block programmatic seek before enough data is ready.
-            }
+            await ensurePreviewFrame(video).catch(() => {});
           }
         } else {
           throw new Error('HLS is not supported in this browser');
