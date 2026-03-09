@@ -164,6 +164,62 @@ function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): ()
   return () => window.clearInterval(timer);
 }
 
+async function waitForVideoMetadata(
+  video: HTMLVideoElement,
+  timeoutMs = 5000,
+): Promise<void> {
+  if (video.readyState >= 1) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener('loadedmetadata', finish);
+      resolve();
+    };
+
+    video.addEventListener('loadedmetadata', finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+async function waitForVideoFrameData(
+  video: HTMLVideoElement,
+  timeoutMs = 4000,
+): Promise<void> {
+  if (video.readyState >= 2) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      video.removeEventListener('loadeddata', finish);
+      video.removeEventListener('canplay', finish);
+      resolve();
+    };
+
+    video.addEventListener('loadeddata', finish);
+    video.addEventListener('canplay', finish);
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+async function ensurePreviewFrame(video: HTMLVideoElement): Promise<void> {
+  await waitForVideoMetadata(video);
+  await waitForVideoFrameData(video);
+
+  try {
+    const previewTarget = video.currentTime > 0.001 ? video.currentTime : 0.001;
+    if (Math.abs(video.currentTime - previewTarget) > 0.0005) {
+      video.currentTime = previewTarget;
+    }
+  } catch {
+    // Some browsers block tiny seeks while the first segment is still warming up.
+  }
+}
+
 type StartHlsOptions = {
   targetHeightOverride?: number | null;
   seekTimeOverrideSecs?: number;
@@ -360,7 +416,9 @@ export default function PlayerPage() {
           };
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             reinforceKnownDuration();
-            void video.play().catch(() => {});
+            void video.play().catch(async () => {
+              await ensurePreviewFrame(video).catch(() => {});
+            });
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: LevelLoadedData) => {
             reinforceKnownDuration(data);
@@ -397,7 +455,9 @@ export default function PlayerPage() {
         } else if (canNativeHls) {
           video.src = data.hls_url;
           video.load();
-          void video.play().catch(() => {});
+          void video.play().catch(async () => {
+            await ensurePreviewFrame(video).catch(() => {});
+          });
         } else {
           throw new Error('HLS playback is not supported in this browser.');
         }
