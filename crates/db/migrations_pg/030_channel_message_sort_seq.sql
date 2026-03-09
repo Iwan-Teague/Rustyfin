@@ -1,0 +1,33 @@
+CREATE SEQUENCE IF NOT EXISTS channel_message_sort_seq_seq AS BIGINT;
+
+ALTER TABLE channel_message
+    ADD COLUMN IF NOT EXISTS sort_seq BIGINT;
+
+ALTER TABLE channel_message
+    ALTER COLUMN sort_seq SET DEFAULT nextval('channel_message_sort_seq_seq');
+
+WITH ordered AS (
+    SELECT id
+    FROM channel_message
+    WHERE sort_seq IS NULL
+    ORDER BY created_ts, id
+)
+UPDATE channel_message AS m
+SET sort_seq = nextval('channel_message_sort_seq_seq')
+FROM ordered
+WHERE m.id = ordered.id;
+
+SELECT setval(
+    'channel_message_sort_seq_seq',
+    COALESCE((SELECT MAX(sort_seq) FROM channel_message), 0),
+    true
+);
+
+ALTER TABLE channel_message
+    ALTER COLUMN sort_seq SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_message_sort_seq
+    ON channel_message(sort_seq);
+
+CREATE INDEX IF NOT EXISTS idx_channel_message_channel_sort_seq
+    ON channel_message(channel_id, sort_seq DESC);
