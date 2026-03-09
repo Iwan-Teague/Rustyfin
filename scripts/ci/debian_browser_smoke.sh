@@ -122,8 +122,23 @@ start_native_test_backend() {
 
   [[ -x "${server_bin}" ]] || die "Native rustfin-server binary not found: ${server_bin}"
 
+  if [[ -z "${TEST_BACKEND_PORT}" || -z "${TEST_BACKEND_BIND}" || -z "${TEST_BACKEND_URL}" ]]; then
+    if [[ -n "${RUSTFIN_TEST_BACKEND_PORT:-}" ]]; then
+      set_backend_endpoints "${RUSTFIN_TEST_BACKEND_PORT}"
+    else
+      set_backend_endpoints "$(allocate_ephemeral_port)"
+      log_info "Using dynamic backend test port ${TEST_BACKEND_PORT}"
+    fi
+  fi
+
   if port_in_use "${TEST_BACKEND_PORT}"; then
-    die "Port ${TEST_BACKEND_PORT} already in use. Set RUSTFIN_TEST_BACKEND_PORT or free that port and retry."
+    clear_test_port "${TEST_BACKEND_PORT}"
+  fi
+
+  if port_in_use "${TEST_BACKEND_PORT}"; then
+    set_backend_endpoints "$(find_available_port "$((TEST_BACKEND_PORT + 1))")" || \
+      die "Unable to find a free backend test port."
+    log_info "Using alternate backend test port ${TEST_BACKEND_PORT}"
   fi
 
   log_info "Starting backend from native rustfin-server binary ..."
