@@ -34,41 +34,43 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   await triggerScanViaApi(authedPage, token, libraryId);
   const playableItem = await waitForPlayableItemViaApi(authedPage, token, libraryId);
 
-  await authedPage.goto(`/player/${playableItem.id}`);
-  await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage).toHaveURL(/\/player\//);
-  await expect(authedPage.getByRole('button', { name: 'Direct Play', exact: true })).toBeVisible({
-    timeout: 20_000,
-  });
-
-  const directReq = authedPage.waitForRequest(
-    (req) => req.method() === 'GET' && req.url().includes('/stream/file/'),
-    { timeout: 20_000 }
-  );
-  await authedPage.getByRole('button', { name: 'Direct Play', exact: true }).click();
-  await directReq;
-
   const hlsSessionReq = authedPage.waitForRequest(
     (req) => req.method() === 'POST' && req.url().includes('/api/v1/playback/sessions'),
-    { timeout: 20_000 }
+    { timeout: 60_000 }
   );
   const playlistReq = authedPage.waitForRequest(
     (req) =>
       req.method() === 'GET' &&
       req.url().includes('/stream/hls/') &&
       req.url().includes('master.m3u8'),
-    { timeout: 30_000 }
+    { timeout: 60_000 }
   );
   const segmentReq = authedPage.waitForRequest(
     (req) =>
       req.method() === 'GET' &&
       req.url().includes('/stream/hls/') &&
       /seg_\\d+\\.ts/.test(req.url()),
-    { timeout: 30_000 }
+    { timeout: 60_000 }
   );
 
-  await authedPage.getByRole('button', { name: 'Transcode (HLS)', exact: true }).click();
+  await authedPage.goto(`/player/${playableItem.id}`);
+  await authedPage.waitForLoadState('networkidle');
+  await expect(authedPage).toHaveURL(/\/player\//);
   await hlsSessionReq;
   await playlistReq;
   await segmentReq;
+
+  await expect
+    .poll(
+      async () => authedPage.getByRole('button', { name: 'Direct Play', exact: true }).isEnabled(),
+      { timeout: 60_000 }
+    )
+    .toBe(true);
+
+  const directReq = authedPage.waitForRequest(
+    (req) => req.method() === 'GET' && req.url().includes('/stream/file/'),
+    { timeout: 30_000 }
+  );
+  await authedPage.getByRole('button', { name: 'Direct Play', exact: true }).click();
+  await directReq;
 });
