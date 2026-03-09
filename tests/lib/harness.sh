@@ -15,9 +15,9 @@ export TMPDIR="${SAFE_TMP_DIR}"
 export npm_config_cache="${SAFE_NPM_CACHE}"
 export PLAYWRIGHT_BROWSERS_PATH="${SAFE_PW_BROWSERS}"
 
-# Use dedicated test ports by default to avoid collisions with local dev services.
-TEST_BACKEND_PORT="${RUSTFIN_TEST_BACKEND_PORT:-18096}"
-TEST_UI_PORT="${RUSTFIN_TEST_UI_PORT:-13000}"
+# Use caller-provided ports when set; otherwise allocate free loopback ports at runtime.
+TEST_BACKEND_PORT="${RUSTFIN_TEST_BACKEND_PORT:-}"
+TEST_UI_PORT="${RUSTFIN_TEST_UI_PORT:-}"
 TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
 TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
 TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
@@ -48,6 +48,10 @@ find_available_port() {
   done
 
   return 1
+}
+
+allocate_ephemeral_port() {
+  node -e "const net=require('net'); const s=net.createServer(); s.listen(0,'127.0.0.1',()=>{const p=s.address().port; console.log(p); s.close();}); s.on('error', (err)=>{console.error(err.message); process.exit(1);});"
 }
 
 clear_test_port() {
@@ -122,6 +126,13 @@ start_server() {
   local db_path="$2"
   local picker="$3"
 
+  if [[ -z "${RUSTFIN_TEST_BACKEND_PORT:-}" ]]; then
+    TEST_BACKEND_PORT="$(allocate_ephemeral_port)"
+    TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
+    TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
+    log_info "Using dynamic backend test port ${TEST_BACKEND_PORT}"
+  fi
+
   if port_in_use "${TEST_BACKEND_PORT}"; then
     clear_test_port "${TEST_BACKEND_PORT}"
   fi
@@ -162,6 +173,12 @@ start_server() {
 
 start_ui() {
   local run_dir="$1"
+
+  if [[ -z "${RUSTFIN_TEST_UI_PORT:-}" ]]; then
+    TEST_UI_PORT="$(allocate_ephemeral_port)"
+    TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
+    log_info "Using dynamic UI test port ${TEST_UI_PORT}"
+  fi
 
   if port_in_use "${TEST_UI_PORT}"; then
     clear_test_port "${TEST_UI_PORT}"
