@@ -49,6 +49,11 @@ function formatClock(totalSeconds?: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatPlaybackRateLabel(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return '1x';
+  return `${rate.toFixed(rate % 1 === 0 ? 0 : 2)}x`;
+}
+
 type DirectSupportResult = {
   supported: boolean;
   reason?: string;
@@ -215,9 +220,15 @@ function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): ()
   return () => window.clearInterval(timer);
 }
 
+type StartHlsOptions = {
+  targetHeightOverride?: number | null;
+  seekTimeOverrideSecs?: number;
+};
+
 export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
+  const playerShellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
 
@@ -235,6 +246,11 @@ export default function PlayerPage() {
   const [directSupportMessage, setDirectSupportMessage] = useState('');
   const [timelineNowSecs, setTimelineNowSecs] = useState(0);
   const [timelineDurationSecs, setTimelineDurationSecs] = useState(0);
+  const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [showPlayerSettings, setShowPlayerSettings] = useState(false);
   const autoStartedRef = useRef(false);
   const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
 
@@ -325,7 +341,7 @@ export default function PlayerPage() {
     return { supported: true };
   }, [directContentType, mediaInfo]);
 
-  const startHls = useCallback(async (targetHeightOverride?: number | null) => {
+  const startHls = useCallback(async (options?: StartHlsOptions) => {
     if (!descriptor?.file_id) {
       setError('No media file is attached to this item. Rescan the library and try again.');
       return;
@@ -340,7 +356,7 @@ export default function PlayerPage() {
     const preservedAudioState = audioStateRef.current;
     const shouldResumePlayback = !video.paused;
     const selectedTargetHeight =
-      targetHeightOverride !== undefined ? targetHeightOverride : hlsTargetHeight;
+      options?.targetHeightOverride !== undefined ? options.targetHeightOverride : hlsTargetHeight;
     const knownDurationSeconds = Math.max(
       descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
       mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
@@ -352,12 +368,20 @@ export default function PlayerPage() {
         : 0;
     const finiteDuration =
       canResumeFromCurrentSource && Number.isFinite(video.duration) && video.duration > 0;
-    const startTimeSecs =
-      finiteDuration &&
-      currentTime > 0.5 &&
-      currentTime < (video.duration as number) - 0.5
-        ? currentTime
+    const explicitSeekTime =
+      options?.seekTimeOverrideSecs !== undefined &&
+      Number.isFinite(options.seekTimeOverrideSecs) &&
+      options.seekTimeOverrideSecs >= 0
+        ? options.seekTimeOverrideSecs
         : undefined;
+    const startTimeSecs =
+      explicitSeekTime !== undefined
+        ? explicitSeekTime
+        : finiteDuration &&
+            currentTime > 0.5 &&
+            currentTime < (video.duration as number) - 0.5
+          ? currentTime
+          : undefined;
 
     setStartingHls(true);
     setError('');
@@ -379,6 +403,7 @@ export default function PlayerPage() {
       destroyHls();
       setSessionId(data.session_id);
       setMode('hls');
+      setHlsSessionStartOffsetSecs(startTimeSecs ?? 0);
       setDirectSupportMessage('');
 
       const Hls = (await import('hls.js')).default;
@@ -517,6 +542,7 @@ export default function PlayerPage() {
         setSessionId(null);
       }
       setMode('direct');
+      setHlsSessionStartOffsetSecs(0);
       video.src = descriptor.direct_url;
       video.load();
       applyVideoAudioState(video, preservedAudioState);
@@ -540,6 +566,7 @@ export default function PlayerPage() {
     setDirectSupportMessage('');
     setTimelineNowSecs(0);
     setTimelineDurationSecs(0);
+    setHlsSessionStartOffsetSecs(0);
 
     apiJson<PlaybackDescriptor>(`/items/${id}/playback`)
       .then((data) => {
@@ -649,6 +676,52 @@ export default function PlayerPage() {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+
+    const syncState = () => {
+      const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
+      setIsPlaying(!video.paused && !video.ended);
+      setIsMuted(video.muted || video.volume <= 0);
+      setPlaybackRate(Number.isFinite(video.playbackRate) && video.playbackRate > 0 ? video.playbackRate : 1);
+      setTimelineNowSecs(
+        Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+      );
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      // Re-render the control bar if fullscreen state changes.
+      syncState();
+    };
+
+    syncState();
+    video.addEventListener('play', syncState);
+    video.addEventListener('pause', syncState);
+    video.addEventListener('ended', syncState);
+    video.addEventListener('ratechange', syncState);
+    video.addEventListener('volumechange', syncState);
+    video.addEventListener('loadedmetadata', syncState);
+    video.addEventListener('durationchange', syncState);
+    video.addEventListener('timeupdate', syncState);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+    return () => {
+      video.removeEventListener('play', syncState);
+      video.removeEventListener('pause', syncState);
+      video.removeEventListener('ended', syncState);
+      video.removeEventListener('ratechange', syncState);
+      video.removeEventListener('volumechange', syncState);
+      video.removeEventListener('loadedmetadata', syncState);
+      video.removeEventListener('durationchange', syncState);
+      video.removeEventListener('timeupdate', syncState);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [mode, hlsSessionStartOffsetSecs]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
     const interval = setInterval(() => {
       if (video.currentTime > 0) {
         apiFetch('/playback/progress', {
@@ -678,6 +751,90 @@ export default function PlayerPage() {
     mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0;
   const knownDurationSecs = Math.max(knownDurationFromDescriptorSecs, knownDurationFromProbeSecs);
   const effectiveTotalDuration = Math.max(knownDurationSecs, timelineDurationSecs);
+  const effectiveSeekLimit = effectiveTotalDuration > 0 ? effectiveTotalDuration : timelineNowSecs;
+  const seekValue = Math.min(timelineNowSecs, effectiveSeekLimit || 0);
+  const isFullscreen = typeof document !== 'undefined' && document.fullscreenElement === playerShellRef.current;
+  const hlsBufferedWindowEndSecs = hlsSessionStartOffsetSecs + timelineDurationSecs;
+
+  const togglePlayback = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      if (video.paused || video.ended) {
+        await video.play();
+      } else {
+        video.pause();
+      }
+    } catch (e: unknown) {
+      setError(clientErrorMessage(e, 'Playback control failed.'));
+    }
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    audioStateRef.current = readVideoAudioState(video);
+    setIsMuted(video.muted || video.volume <= 0);
+  }, []);
+
+  const handleSeek = useCallback(
+    async (targetSeconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const safeTarget = Math.max(0, Math.min(targetSeconds, effectiveTotalDuration || targetSeconds));
+      if (!Number.isFinite(safeTarget)) return;
+
+      if (
+        mode === 'hls' &&
+        descriptor?.file_id &&
+        (safeTarget < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
+          (timelineDurationSecs > 0 && safeTarget > hlsBufferedWindowEndSecs + 1))
+      ) {
+        await startHls({
+          targetHeightOverride: hlsTargetHeight,
+          seekTimeOverrideSecs: safeTarget,
+        });
+        return;
+      }
+
+      video.currentTime =
+        mode === 'hls' ? Math.max(0, safeTarget - hlsSessionStartOffsetSecs) : safeTarget;
+      setTimelineNowSecs(safeTarget);
+    },
+    [
+      descriptor?.file_id,
+      effectiveTotalDuration,
+      hlsBufferedWindowEndSecs,
+      hlsSessionStartOffsetSecs,
+      hlsTargetHeight,
+      mode,
+      startHls,
+      timelineDurationSecs,
+    ],
+  );
+
+  const toggleFullscreen = useCallback(async () => {
+    const shell = playerShellRef.current;
+    if (!shell) return;
+    try {
+      if (document.fullscreenElement === shell) {
+        await document.exitFullscreen();
+      } else {
+        await shell.requestFullscreen();
+      }
+    } catch (e: unknown) {
+      setError(clientErrorMessage(e, 'Fullscreen toggle failed.'));
+    }
+  }, []);
+
+  const setPlayerRate = useCallback((rate: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = rate;
+    setPlaybackRate(rate);
+  }, []);
 
   return (
     <div className="space-y-5 animate-rise">
@@ -699,16 +856,22 @@ export default function PlayerPage() {
         </p>
       )}
 
-      <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
+      <div
+        ref={playerShellRef}
+        className="tile overflow-hidden rounded-2xl border border-white/10 bg-black"
+      >
         <video
           ref={videoRef}
-          controls
           className="w-full max-h-[80vh]"
           playsInline
+          preload="metadata"
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             audioStateRef.current = readVideoAudioState(video);
-            setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+            const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
+            setTimelineNowSecs(
+              Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+            );
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
@@ -722,7 +885,10 @@ export default function PlayerPage() {
           }}
           onTimeUpdate={(event) => {
             const video = event.currentTarget;
-            setTimelineNowSecs(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+            const currentBaseOffset = mode === 'hls' ? hlsSessionStartOffsetSecs : 0;
+            setTimelineNowSecs(
+              Number.isFinite(video.currentTime) ? currentBaseOffset + video.currentTime : currentBaseOffset,
+            );
             if (Number.isFinite(video.duration) && video.duration > 0) {
               setTimelineDurationSecs((prev) => Math.max(prev, video.duration));
             }
@@ -734,14 +900,119 @@ export default function PlayerPage() {
             void startHls();
           }}
         />
+        <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void togglePlayback()}
+              disabled={!canStartPlayback}
+              className="btn-secondary min-w-[88px] px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isPlaying ? 'Pause' : 'Play'}
+            </button>
+            <button
+              type="button"
+              onClick={toggleMute}
+              disabled={!canStartPlayback}
+              className="btn-secondary min-w-[88px] px-4 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isMuted ? 'Unmute' : 'Mute'}
+            </button>
+            <span className="min-w-[4.75rem] text-right text-sm tabular-nums text-white/85">
+              {formatClock(timelineNowSecs)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={effectiveSeekLimit > 0 ? effectiveSeekLimit : 0}
+              step={0.1}
+              value={seekValue}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setTimelineNowSecs(next);
+              }}
+              onMouseUp={(event) => {
+                void handleSeek(Number((event.target as HTMLInputElement).value));
+              }}
+              onTouchEnd={(event) => {
+                void handleSeek(Number((event.target as HTMLInputElement).value));
+              }}
+              onKeyUp={(event) => {
+                void handleSeek(Number((event.target as HTMLInputElement).value));
+              }}
+              aria-label="Seek video"
+              className="h-2 min-w-[12rem] flex-1 accent-[var(--orange)]"
+              disabled={!canStartPlayback || effectiveSeekLimit <= 0}
+            />
+            <span className="min-w-[4.75rem] text-sm tabular-nums text-white/85">
+              {formatClock(effectiveTotalDuration)}
+            </span>
+            <div className="relative ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPlayerSettings((current) => !current)}
+                className="btn-secondary px-4 py-2 text-sm"
+              >
+                Settings
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleFullscreen()}
+                className="btn-secondary px-4 py-2 text-sm"
+              >
+                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+              </button>
+              {showPlayerSettings ? (
+                <div className="absolute right-0 top-[calc(100%+0.6rem)] z-20 w-56 rounded-2xl border border-white/10 bg-[rgba(24,28,40,0.98)] p-3 shadow-[0_20px_40px_rgba(0,0,0,0.45)] backdrop-blur">
+                  <label className="flex flex-col gap-1 text-xs muted">
+                    <span>Playback speed</span>
+                    <select
+                      className="select px-2 py-2 text-sm"
+                      value={playbackRate}
+                      onChange={(event) => setPlayerRate(Number(event.target.value))}
+                    >
+                      {[0.5, 0.75, 1, 1.25, 1.5, 2].map((rate) => (
+                        <option key={rate} value={rate}>
+                          {formatPlaybackRateLabel(rate)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="mt-3 flex flex-col gap-1 text-xs muted">
+                    <span>Quality</span>
+                    <select
+                      className="select px-2 py-2 text-sm"
+                      value={hlsTargetHeight ?? 'auto'}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const nextTargetHeight = value === 'auto' ? null : Number(value);
+                        setHlsTargetHeight(nextTargetHeight);
+                        if (mode === 'hls') {
+                          void startHls({ targetHeightOverride: nextTargetHeight });
+                        }
+                      }}
+                      disabled={startingDirect || startingHls}
+                    >
+                      {HLS_QUALITY_OPTIONS.map((option) => (
+                        <option key={option.label} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
       </div>
       <div className="px-1 text-xs muted">
         <span>
           Timeline: {formatClock(timelineNowSecs)} / {formatClock(effectiveTotalDuration)}
         </span>
-        {mode === 'hls' && knownDurationSecs > 0 && timelineDurationSecs > 0 && timelineDurationSecs < knownDurationSecs - 1 ? (
+        {mode === 'hls' && knownDurationSecs > 0 && timelineDurationSecs > 0 && hlsBufferedWindowEndSecs < knownDurationSecs - 1 ? (
           <span className="ml-2">
-            (buffered window: {formatClock(timelineDurationSecs)})
+            (buffered through: {formatClock(hlsBufferedWindowEndSecs)})
           </span>
         ) : null}
       </div>
@@ -774,28 +1045,6 @@ export default function PlayerPage() {
         >
           {startingHls ? 'Starting…' : 'Transcode (HLS)'}
         </button>
-        <label className="ml-auto flex items-center gap-2 text-xs muted">
-          <span>Quality</span>
-          <select
-            className="select px-2 py-1.5 text-sm"
-            value={hlsTargetHeight ?? 'auto'}
-            onChange={(event) => {
-              const value = event.target.value;
-              const nextTargetHeight = value === 'auto' ? null : Number(value);
-              setHlsTargetHeight(nextTargetHeight);
-              if (mode === 'hls') {
-                void startHls(nextTargetHeight);
-              }
-            }}
-            disabled={startingDirect || startingHls}
-          >
-            {HLS_QUALITY_OPTIONS.map((option) => (
-              <option key={option.label} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
         {directContentType && (
           <p className="text-xs muted">Direct capability check: {directContentType}</p>
         )}
