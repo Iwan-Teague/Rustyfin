@@ -374,6 +374,15 @@ fn requires_provisioning_before_lifecycle(
     )
 }
 
+fn can_auto_provision_before_start(
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+    action: ServerLifecycleAction,
+) -> bool {
+    action == ServerLifecycleAction::Start
+        && server.install_mode == "managed"
+        && matches!(server.observed_state.as_str(), "draft" | "unprovisioned")
+}
+
 fn capabilities_to_response(
     capabilities: MinecraftRuntimeCapabilities,
 ) -> MinecraftRuntimeCapabilitiesResponse {
@@ -889,6 +898,165 @@ async fn run_managed_provision_job(
     }
 }
 
+async fn run_managed_provision_then_start_job(
+    state: AppState,
+    instance_id: String,
+    job_id: String,
+    actor_user_id: String,
+) {
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.05, None).await;
+    record_server_event(
+        &state,
+        &instance_id,
+        Some(&job_id),
+        Some(&actor_user_id),
+        "info",
+        "provision_started",
+        "Managed Minecraft provisioning started before launch.",
+    )
+    .await;
+
+    let current = match rustfin_db::repo::servers::get_minecraft_server_by_id(
+        &state.db,
+        &instance_id,
+    )
+    .await
+    {
+        Ok(Some(server)) => server,
+        Ok(None) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some("server instance not found"),
+            )
+            .await;
+            return;
+        }
+        Err(error) => {
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&format!("db error: {error}")),
+            )
+            .await;
+            return;
+        }
+    };
+
+    let spec = build_managed_provision_spec(&current);
+    let result = provision_managed_instance(&state, &spec).await;
+
+    match result {
+        Ok(result) => match apply_provisioning_success(&state, &current, &result).await {
+            Ok(updated) => {
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "info",
+                    "provision_completed",
+                    &format!(
+                        "Managed server files and unit were provisioned at {}.",
+                        result.work_dir
+                    ),
+                )
+                .await;
+                crate::audit_log::record_event(
+                    &state,
+                    "servers.minecraft.provision.complete",
+                    json!({
+                        "instance_id": updated.id,
+                        "display_name": updated.display_name,
+                        "systemd_unit_name": updated.systemd_unit_name,
+                        "server_work_dir": result.work_dir,
+                        "requested_by": actor_user_id,
+                    }),
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "running",
+                    0.55,
+                    Some("Provisioning complete; launching native Minecraft service"),
+                )
+                .await;
+                run_server_lifecycle_job(
+                    state,
+                    instance_id,
+                    updated.systemd_unit_name,
+                    job_id,
+                    ServerLifecycleAction::Start,
+                    actor_user_id,
+                )
+                .await;
+            }
+            Err(error) => {
+                let message =
+                    format!("provision succeeded but state persistence failed: {error:?}");
+                record_server_event(
+                    &state,
+                    &instance_id,
+                    Some(&job_id),
+                    Some(&actor_user_id),
+                    "error",
+                    "provision_persist_failed",
+                    &message,
+                )
+                .await;
+                let _ = rustfin_db::repo::jobs::update_job_status(
+                    &state.db,
+                    &job_id,
+                    "failed",
+                    1.0,
+                    Some(&message),
+                )
+                .await;
+            }
+        },
+        Err(error) => {
+            let projection = RuntimeProjection {
+                install_mode: None,
+                desired_state: "running".to_string(),
+                observed_state: "failed".to_string(),
+                health_state: "error".to_string(),
+                current_player_count: current.current_player_count,
+                max_player_count: current.max_player_count,
+                last_ready_ts: current.last_ready_ts,
+                last_started_ts: current.last_started_ts,
+                last_stopped_ts: current.last_stopped_ts,
+                last_exit_code: current.last_exit_code,
+                last_error_summary: Some(error.clone()),
+            };
+            let _ = persist_runtime_projection(&state, &current, &projection).await;
+            record_server_event(
+                &state,
+                &instance_id,
+                Some(&job_id),
+                Some(&actor_user_id),
+                "error",
+                "provision_failed",
+                &format!("Managed provisioning failed before launch: {error}"),
+            )
+            .await;
+            let _ = rustfin_db::repo::jobs::update_job_status(
+                &state.db,
+                &job_id,
+                "failed",
+                1.0,
+                Some(&error),
+            )
+            .await;
+        }
+    }
+}
+
 async fn run_import_job(
     state: AppState,
     instance_id: String,
@@ -1270,7 +1438,9 @@ pub async fn request_minecraft_server_action(
         .into());
     }
 
-    if requires_provisioning_before_lifecycle(&current) {
+    let auto_provision_before_start = can_auto_provision_before_start(&current, action);
+
+    if requires_provisioning_before_lifecycle(&current) && !auto_provision_before_start {
         let message = match current.observed_state.as_str() {
             "provisioning" => {
                 "this Minecraft server is still provisioning. Wait for provisioning to complete before starting it."
@@ -1302,7 +1472,11 @@ pub async fn request_minecraft_server_action(
     let transitional = RuntimeProjection {
         install_mode: None,
         desired_state: action.desired_state().to_string(),
-        observed_state: action.transitional_observed_state().to_string(),
+        observed_state: if auto_provision_before_start {
+            "provisioning".to_string()
+        } else {
+            action.transitional_observed_state().to_string()
+        },
         health_state: "pending".to_string(),
         current_player_count: current.current_player_count,
         max_player_count: current.max_player_count,
@@ -1322,9 +1496,14 @@ pub async fn request_minecraft_server_action(
         "info",
         "lifecycle_action_queued",
         &format!(
-            "{} queued for unit {}.",
+            "{} queued for unit {}{}",
             action.as_str(),
-            updated.systemd_unit_name
+            updated.systemd_unit_name,
+            if auto_provision_before_start {
+                " after managed provisioning"
+            } else {
+                "."
+            }
         ),
     )
     .await;
@@ -1347,15 +1526,20 @@ pub async fn request_minecraft_server_action(
     let job_id = job.id.clone();
     let actor_user_id = auth.user_id.clone();
     tokio::spawn(async move {
-        run_server_lifecycle_job(
-            state_clone,
-            instance_id,
-            unit_name,
-            job_id,
-            action,
-            actor_user_id,
-        )
-        .await;
+        if auto_provision_before_start {
+            run_managed_provision_then_start_job(state_clone, instance_id, job_id, actor_user_id)
+                .await;
+        } else {
+            run_server_lifecycle_job(
+                state_clone,
+                instance_id,
+                unit_name,
+                job_id,
+                action,
+                actor_user_id,
+            )
+            .await;
+        }
     });
 
     Ok((
@@ -1363,10 +1547,15 @@ pub async fn request_minecraft_server_action(
         Json(MinecraftServerActionResponse {
             job_id: job.id,
             requested_action: action.as_str().to_string(),
-            message: format!(
-                "{} requested. Rustyfin is reconciling the native systemd unit now.",
-                action.as_str()
-            ),
+            message: if auto_provision_before_start {
+                "Start requested. Rustyfin is provisioning the managed server and launching it now."
+                    .to_string()
+            } else {
+                format!(
+                    "{} requested. Rustyfin is reconciling the native systemd unit now.",
+                    action.as_str()
+                )
+            },
             instance: row_to_response(updated),
         }),
     ))

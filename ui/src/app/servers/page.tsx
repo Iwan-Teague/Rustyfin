@@ -202,8 +202,9 @@ export default function ServersPage() {
   const [loading, setLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [logsLoading, setLogsLoading] = useState(false);
-  const [statusRefreshing, setStatusRefreshing] = useState(false);
+  const [statusRefreshingServerId, setStatusRefreshingServerId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
+  const [actionServerId, setActionServerId] = useState<string | null>(null);
   const [provisioning, setProvisioning] = useState(false);
   const [importing, setImporting] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
@@ -434,7 +435,7 @@ export default function ServersPage() {
 
   async function refreshSelectedServerStatus(serverId: string, showSpinner = true) {
     if (showSpinner) {
-      setStatusRefreshing(true);
+      setStatusRefreshingServerId(serverId);
     }
     try {
       const updated = await refreshMinecraftServerStatus(serverId);
@@ -442,7 +443,7 @@ export default function ServersPage() {
       return updated;
     } finally {
       if (showSpinner) {
-        setStatusRefreshing(false);
+        setStatusRefreshingServerId((current) => (current === serverId ? null : current));
       }
     }
   }
@@ -463,6 +464,7 @@ export default function ServersPage() {
   }
 
   async function handleRequestAction(server: MinecraftServer, action: MinecraftServerAction) {
+    setActionServerId(server.id);
     setActionLoading(action);
     setError('');
     try {
@@ -478,6 +480,7 @@ export default function ServersPage() {
       setError(clientErrorMessage(err, `Failed to ${action} server`));
     } finally {
       setActionLoading(null);
+      setActionServerId((current) => (current === server.id ? null : current));
     }
   }
 
@@ -658,7 +661,8 @@ export default function ServersPage() {
               const canDelete = me.role === 'admin' || me.id === server.owner_user_id;
               const canStart =
                 lifecycleSupported &&
-                !needsProvisioning &&
+                server.observed_state !== 'provisioning' &&
+                server.observed_state !== 'importing' &&
                 server.observed_state !== 'running' &&
                 server.observed_state !== 'starting' &&
                 server.observed_state !== 'restarting';
@@ -711,24 +715,21 @@ export default function ServersPage() {
                           <button
                             type="button"
                             className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={statusRefreshing || actionLoading !== null || !statusSupported}
+                            disabled={
+                              statusRefreshingServerId !== null || actionLoading !== null || !statusSupported
+                            }
                             onClick={() => void refreshSelectedServerStatus(server.id, true)}
                             title={!statusSupported ? runtimeCapabilities?.reason ?? 'Status refresh unavailable here' : undefined}
                           >
-                            {statusRefreshing && expanded ? 'Refreshing…' : 'Refresh Status'}
+                            {statusRefreshingServerId === server.id ? 'Refreshing…' : 'Refresh Status'}
                           </button>
                           <button
                             type="button"
                             className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
                             disabled={actionLoading !== null || !canStart}
                             onClick={() => void handleRequestAction(server, 'start')}
-                            title={
-                              needsProvisioning
-                                ? 'Provision or import this Minecraft server before starting it.'
-                                : undefined
-                            }
                           >
-                            {actionLoading === 'start' && expanded ? 'Starting…' : 'Start'}
+                            {actionLoading === 'start' && actionServerId === server.id ? 'Starting…' : 'Start'}
                           </button>
                           <button
                             type="button"
@@ -741,7 +742,7 @@ export default function ServersPage() {
                                 : undefined
                             }
                           >
-                            {actionLoading === 'restart' && expanded ? 'Restarting…' : 'Restart'}
+                            {actionLoading === 'restart' && actionServerId === server.id ? 'Restarting…' : 'Restart'}
                           </button>
                           <button
                             type="button"
@@ -754,7 +755,7 @@ export default function ServersPage() {
                                 : undefined
                             }
                           >
-                            {actionLoading === 'stop' && expanded ? 'Stopping…' : 'Stop'}
+                            {actionLoading === 'stop' && actionServerId === server.id ? 'Stopping…' : 'Stop'}
                           </button>
                           {canDelete ? (
                             <button
