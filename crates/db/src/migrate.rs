@@ -126,6 +126,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "031_denormalized_counters",
         include_str!("../migrations_pg/031_denormalized_counters.sql"),
     ),
+    (
+        "032_setup_table_bigint_alignment",
+        include_str!("../migrations_pg/032_setup_table_bigint_alignment.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
