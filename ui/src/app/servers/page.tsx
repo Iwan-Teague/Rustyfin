@@ -463,17 +463,17 @@ export default function ServersPage() {
   }
 
   async function handleRequestAction(server: MinecraftServer, action: MinecraftServerAction) {
-    setSelectedServerId(server.id);
     setActionLoading(action);
     setError('');
     try {
       const response: MinecraftServerActionResponse = await requestMinecraftServerAction(server.id, action);
       upsertServer(response.instance);
-      await Promise.all([
-        refreshSelectedServerStatus(response.instance.id, false),
-        loadSelectedServerEvents(response.instance.id, false),
-        loadSelectedServerLogs(response.instance.id, false),
-      ]);
+      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
+      if (selectedServerId === response.instance.id) {
+        tasks.push(loadSelectedServerEvents(response.instance.id, false));
+        tasks.push(loadSelectedServerLogs(response.instance.id, false));
+      }
+      await Promise.all(tasks);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, `Failed to ${action} server`));
     } finally {
@@ -482,17 +482,17 @@ export default function ServersPage() {
   }
 
   async function handleProvisionServer(server: MinecraftServer) {
-    setSelectedServerId(server.id);
     setProvisioning(true);
     setError('');
     try {
       const response: MinecraftServerOperationResponse = await provisionMinecraftServer(server.id);
       upsertServer(response.instance);
-      await Promise.all([
-        refreshSelectedServerStatus(response.instance.id, false),
-        loadSelectedServerEvents(response.instance.id, false),
-        loadSelectedServerLogs(response.instance.id, false),
-      ]);
+      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
+      if (selectedServerId === response.instance.id) {
+        tasks.push(loadSelectedServerEvents(response.instance.id, false));
+        tasks.push(loadSelectedServerLogs(response.instance.id, false));
+      }
+      await Promise.all(tasks);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to provision Minecraft server'));
     } finally {
@@ -506,7 +506,6 @@ export default function ServersPage() {
       return;
     }
 
-    setSelectedServerId(server.id);
     setImporting(true);
     setError('');
     try {
@@ -515,11 +514,12 @@ export default function ServersPage() {
         importSourcePath.trim(),
       );
       upsertServer(response.instance);
-      await Promise.all([
-        refreshSelectedServerStatus(response.instance.id, false),
-        loadSelectedServerEvents(response.instance.id, false),
-        loadSelectedServerLogs(response.instance.id, false),
-      ]);
+      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
+      if (selectedServerId === response.instance.id) {
+        tasks.push(loadSelectedServerEvents(response.instance.id, false));
+        tasks.push(loadSelectedServerLogs(response.instance.id, false));
+      }
+      await Promise.all(tasks);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to import Minecraft server'));
     } finally {
