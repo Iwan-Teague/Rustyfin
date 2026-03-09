@@ -486,7 +486,7 @@ fn detect_gpu_backend_ready(mode: TranscriptionGpuMode) -> Result<(), String> {
     let gpu_nodes = discover_gpu_device_nodes();
     if gpu_nodes.is_empty() {
         return Err(
-            "no GPU device nodes found in container (/dev/dri/renderD* or /dev/nvidia[0-9]*)"
+            "no GPU device nodes found on the host (/dev/dri/renderD* or /dev/nvidia[0-9]*)"
                 .to_string(),
         );
     }

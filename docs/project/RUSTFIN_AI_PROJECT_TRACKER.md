@@ -8,7 +8,7 @@ Purpose: This document is written for an AI agent (and humans) to **structure th
 ---
 
 ## 0) Project identity (one paragraph)
-Rustfin is a **local-first** Jellyfin-class media server, implemented as a **single Rust server binary** with **PostgreSQL** for storage, using **FFmpeg/ffprobe** for media probing/remux/transcoding, and a **single UI app** (either Rust/WASM or Next.js) talking to the server via a versioned HTTP API. Streaming supports **HTTP Range** (Direct Play) and **HLS** (adaptive; Transcode when required). Docker support is required.
+Rustfin is a **local-first** Jellyfin-class media server, implemented as a **single Rust server binary** with **PostgreSQL** for storage, using **FFmpeg/ffprobe** for media probing/remux/transcoding, and a **single UI app** (either Rust/WASM or Next.js) talking to the server via a versioned HTTP API. Streaming supports **HTTP Range** (Direct Play) and **HLS** (adaptive; Transcode when required). The supported deployment target is native Debian 12.
 
 ---
 
@@ -23,7 +23,7 @@ Rustfin is a **local-first** Jellyfin-class media server, implemented as a **sin
   - **Option A:** Rust/WASM (Leptos or equivalent)  
   - **Option B:** Next.js (TypeScript/React)
 - **Two-language cap:** Rust + (Rust OR TypeScript). Avoid additional languages/services.
-- **Local-first:** Intended to run locally or in Docker; not production multi-tenant.
+- **Local-first:** Intended to run locally on a Debian 12 host; not production multi-tenant.
 
 ### 1.2 Feature constraints (baseline Jellyfin-class)
 Rustfin must support:
@@ -37,7 +37,7 @@ Rustfin must support:
 - HLS generation for broad device support
 - Subtitle discovery (sidecar + embedded) + selection; optional download provider
 - Missing episodes placeholders (expected vs present) configurable per user
-- Docker + persistent volumes + (optional) GPU support
+- Native Debian 12 runtime + persistent data directories + optional GPU support
 
 ### 1.3 “No surprises” rules
 - All config is **DB-first** (stored in PostgreSQL). Do not require editing config files for normal use.
@@ -117,13 +117,13 @@ Maintain **exactly one** authoritative status table here.
 | Range streaming (Direct Play) | ✅ | RFC 7233 Range (206/416), path traversal protection, content-type detection, 7 unit tests + integration test | 2026-02-13 |
 | HLS sessions + playlists | ✅ | SessionManager with semaphore, ffmpeg spawn, segment serving, idle cleanup, playlist/segment routes | 2026-02-13 |
 | Transcode orchestration | ✅ | Decision engine (direct/remux/transcode), ffprobe media info, HW accel config | 2026-02-13 |
-| GPU acceleration | ✅ | Detection via ffmpeg -encoders, NVENC/VAAPI/QSV/VideoToolbox, GET /system/gpu, Docker GPU compose files | 2026-02-13 |
+| GPU acceleration | ✅ | Detection via ffmpeg -encoders, NVENC/VAAPI/QSV/VideoToolbox, GET /system/gpu, native Debian host acceleration controls | 2026-02-13 |
 | SSE/WebSocket events | ✅ | Broadcast channel with typed ServerEvent enum; scan/job/metadata/heartbeat events; real-time SSE endpoint with reconnection support | 2026-02-14 |
 | UI app foundation | ✅ | Next.js app: login, libraries list, library items, item detail (seasons/episodes), API client with auth | 2026-02-14 |
 | UI player + track selection | ✅ | Video player page with Direct Play + HLS (hls.js) mode, progress reporting, quality switching | 2026-02-14 |
 | Admin dashboard | ✅ | Admin page: create/scan libraries, view jobs; user management API (create/list/delete users) | 2026-02-14 |
-| Docker (CPU) | ✅ | Multi-stage Dockerfile, docker-compose.yml, volumes for /config /cache /transcode /media | 2026-02-13 |
-| Docker (GPU) | ✅ | docker-compose.gpu.yml (NVIDIA), docker-compose.vaapi.yml (Intel/AMD), documented setup | 2026-02-13 |
+| Native Debian runtime | ✅ | Native host scripts, Debian package install path, host PostgreSQL/Caddy/Node/Rust services | 2026-03-09 |
+| Native GPU runtime | ✅ | Native host GPU detection/config for ffmpeg and transcription workloads | 2026-03-09 |
 | Testing harness | ✅ | 57 tests: 18 scanner + 7 range + 9 transcoder + 4 metadata + 19 integration | 2026-02-14 |
 | Observability (logs/metrics) | 🟡 | tracing + env-filter; metrics endpoint not yet | 2026-02-13 |
 | Security hardening | ✅ | Argon2 hashing, JWT auth, error envelope, path traversal protection on streaming | 2026-02-13 |
@@ -139,7 +139,7 @@ After each meaningful change, append a bullet to this section:
 - (2026-02-13) [Milestone 4] Playback progress — DB repo (playstate.rs) with update_progress (upsert user_item_state) and get_play_state. Routes: POST /api/v1/playback/progress, GET /api/v1/playback/state/{item_id}. Integration test verifying progress update + mark-as-played flow. Files: crates/db/src/repo/playstate.rs, crates/server/src/routes.rs, crates/server/tests/integration.rs. Total: 37 tests passing.
 - (2026-02-13) [Milestone 6] HLS transcode + playback decision — Created rustfin-transcoder crate with: ffprobe media info extraction (JSON parsing, video/audio/subtitle streams), playback decision engine (direct play/remux/transcode with reasons), HLS session manager (semaphore-gated, ffmpeg argv spawn, idle cleanup, segment/playlist serving), HW accel config (NVENC/VAAPI/QSV/VideoToolbox). Server routes: POST /api/v1/playback/sessions (create HLS session), POST /api/v1/playback/sessions/{sid}/stop, GET /api/v1/playback/info/{file_id} (ffprobe), GET /stream/hls/{sid}/master.m3u8, GET /stream/hls/{sid}/{filename}. 8 new unit tests (decision + ffprobe + hls). Files: crates/transcoder/*, crates/server/src/routes.rs, crates/server/src/state.rs, crates/server/src/main.rs. Total: 45 tests passing.
 - (2026-02-13) [Milestone 7] Subtitles discovery — Sidecar subtitle file discovery with language (ISO 639), forced, and SDH/HI markers. Supported formats: SRT, SUB, ASS, SSA, VTT, SUP, IDX. Embedded track enumeration via ffprobe. Routes: GET /api/v1/items/{id}/subtitles (lists sidecar + embedded), GET /stream/subtitles/{path} (serves sidecar files with path security). 6 subtitle unit tests. Files: crates/scanner/src/subtitles.rs, crates/db/src/repo/libraries.rs, crates/server/src/routes.rs. Total: 51 tests passing.
-- (2026-02-13) [Milestone 8] GPU detection + Docker — GPU encoder detection via `ffmpeg -encoders` (NVENC/VAAPI/QSV/VideoToolbox), best-accelerator selection, admin endpoint GET /api/v1/system/gpu. Multi-stage Dockerfile (rust:1.83 builder → debian:bookworm-slim runtime with ffmpeg). docker-compose.yml (CPU), docker-compose.gpu.yml (NVIDIA), docker-compose.vaapi.yml (Intel/AMD VAAPI). Persistent volumes for /config, /cache, /transcode, /media. 1 new GPU test. Files: crates/transcoder/src/gpu.rs, Dockerfile, docker-compose*.yml. Total: 52 tests passing.
+- (2026-02-13) [Milestone 8] GPU detection + native runtime — GPU encoder detection via `ffmpeg -encoders` (NVENC/VAAPI/QSV/VideoToolbox), best-accelerator selection, admin endpoint GET /api/v1/system/gpu. Native Debian runtime scripts now own the supported deployment path. 1 new GPU test. Files: crates/transcoder/src/gpu.rs, scripts/start-native.sh, scripts/install_native_debian.sh. Total: 52 tests passing.
 - (2026-02-14) [Milestone 3] Metadata provider + merge engine — Created rustfin-metadata crate with TMDB API v3 client (search/get movies+series, season episodes, credits), MetadataProvider trait, merge engine with field locks (user overrides survive refresh), provider ID CRUD. Migration 002 adds metadata columns. Routes: POST /items/{id}/metadata/refresh, GET /items/{id}/providers, POST/DELETE /items/{id}/field-locks. 4 metadata tests. Files: crates/metadata/*, crates/db/migrations/002_metadata_columns.sql. Total: 56 tests.
 - (2026-02-14) [Milestone 4] TV correctness — Expected episodes DB repo (upsert_expected, get_expected, get_present, get_missing). Routes: GET /items/{id}/expected-episodes, GET /items/{id}/missing-episodes. File: crates/db/src/repo/episodes.rs.
 - (2026-02-14) [Milestone 9] UI app (Next.js) — Decision recorded in Decision Log. Created Next.js app with pages: login, libraries list, library detail, item detail (seasons/episodes), video player (Direct Play + HLS via hls.js + progress reporting), admin dashboard (create/scan libraries, view jobs). API client helper with auth token management. npm install + build verified. Files: ui/src/app/*, ui/src/lib/api.ts.
@@ -190,7 +190,7 @@ A feature is **Done ✅** only when:
 **Milestone 3:** TV correctness + missing episodes + specials  
 **Milestone 4:** playback (Range + HLS CPU) + progress reporting  
 **Milestone 5:** GPU acceleration + subtitle enhancements  
-**Milestone 6:** Docker ops + backup/restore + docs polish
+**Milestone 6:** Native Debian ops + backup/restore + docs polish
 
 ---
 
@@ -275,7 +275,7 @@ A feature is **Done ✅** only when:
 ### 8.11 GPU acceleration
 - [x] Detect available accel (NVENC/QSV/VAAPI)
 - [x] Config option to enable/disable GPU
-- [x] Docker runtime docs + compose examples
+- [x] Native Debian runtime docs
 
 ### 8.12 Events
 - [x] SSE endpoint
@@ -297,9 +297,9 @@ A feature is **Done ✅** only when:
 - [x] Player integration (native HLS or hls.js fallback)
 - [x] Admin pages
 
-### 8.14 Docker & ops
-- [x] Multi-stage Dockerfile
-- [x] docker-compose (CPU)
+### 8.14 Native ops
+- [x] Native Debian install/start/stop/deploy scripts
+- [x] Native systemd integration
 - [x] volumes: /config /cache /transcode /media
 - [ ] backup instructions
 - [x] health endpoint
