@@ -4,6 +4,7 @@ const adminUsername = process.env.RUSTYFIN_ADMIN_USERNAME?.trim();
 const adminPassword = process.env.RUSTYFIN_ADMIN_PASSWORD?.trim();
 const userUsername = process.env.RUSTYFIN_USER_USERNAME?.trim();
 const userPassword = process.env.RUSTYFIN_USER_PASSWORD?.trim();
+const libraryPath = process.env.RUSTYFIN_TEST_LIBRARY_PATH?.trim();
 
 export const ADMIN = {
   username: adminUsername && adminUsername.length > 0 ? adminUsername : 'admin',
@@ -170,8 +171,52 @@ export async function createLibraryViaBrowse(page: Page, libraryName: string) {
   await expect(page.getByText('Library created')).toBeVisible();
 }
 
+export async function createLibraryViaApi(page: Page, token: string, libraryName: string): Promise<string> {
+  if (!libraryPath) {
+    throw new Error('RUSTYFIN_TEST_LIBRARY_PATH is required for API-based smoke library creation');
+  }
+
+  const response = await page.request.post('/api/v1/libraries', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    data: {
+      name: libraryName,
+      kind: 'movies',
+      paths: [libraryPath],
+      settings: {
+        show_images: true,
+        prefer_local_artwork: true,
+        fetch_online_artwork: true,
+        tmdb_store_in_media_dir: false,
+        tmdb_sync_on_new_media: true,
+        tmdb_sync_schedule: 'manual',
+        tmdb_fetch_posters: true,
+        tmdb_fetch_backdrops: true,
+        tmdb_fetch_metadata: true,
+        tmdb_fetch_reviews: false,
+      },
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+
+  const body = (await response.json()) as { id?: unknown };
+  expect(typeof body.id).toBe('string');
+  return body.id as string;
+}
+
 export async function triggerScan(page: Page, libraryName: string) {
   const libRow = page.locator('div', { hasText: libraryName }).first();
   await libRow.getByRole('button', { name: 'Scan' }).click();
   await expect(page.getByText('Scan started')).toBeVisible();
+}
+
+export async function triggerScanViaApi(page: Page, token: string, libraryId: string) {
+  const response = await page.request.post(`/api/v1/libraries/${libraryId}/scan`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  expect(response.ok()).toBeTruthy();
 }
