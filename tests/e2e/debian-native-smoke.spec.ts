@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN, createLibraryViaBrowse, loginViaApi, triggerScan } from './helpers';
+import { ADMIN, createLibraryViaApi, loginViaApi, triggerScanViaApi } from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
   const { page: authedPage, token } = await loginViaApi(page, ADMIN.username, ADMIN.password);
@@ -24,8 +24,8 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   expect(Array.isArray(await serversResponse.json())).toBeTruthy();
 
   const libName = 'Debian Browser Smoke Fixtures';
-  await createLibraryViaBrowse(authedPage, libName);
-  await triggerScan(authedPage, libName);
+  const libraryId = await createLibraryViaApi(authedPage, token, libName);
+  await triggerScanViaApi(authedPage, token, libraryId);
 
   await authedPage.goto('/libraries');
   await authedPage.waitForLoadState('networkidle');

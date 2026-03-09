@@ -184,6 +184,7 @@ psql "${BASE_DB_URL}" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA ${SMOKE_SCHEMA};" >/d
 PICKER="$(absolute_fixture_path)"
 SMOKE_DB_URL="$(build_smoke_db_url "${BASE_DB_URL}" "${SMOKE_SCHEMA}")"
 SERVER_BIN="$(find_native_server_bin)"
+export RUSTYFIN_TEST_LIBRARY_PATH="${PICKER}/movies"
 
 start_native_test_backend "${RUN_DIR}" "${SMOKE_DB_URL}" "${PICKER}" "${SERVER_BIN}"
 bootstrap_setup_for_smoke
