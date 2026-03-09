@@ -409,15 +409,18 @@ check_setup_integration() {
 
   local schema_name="rustfin_setup_gate_${RUN_ID}_$$"
   local test_db_url
+  local rc=0
   test_db_url="$(build_schema_db_url "$base_db_url" "$schema_name")"
 
   psql "$base_db_url" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA ${schema_name};" >/dev/null
-  trap 'psql "$base_db_url" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS '"${schema_name}"' CASCADE;" >/dev/null 2>&1 || true' RETURN
 
   env \
     RUSTFIN_TEST_DATABASE_URL="$test_db_url" \
     RUSTFIN_TEST_DB_ALLOW_ANY=1 \
-    cargo test -p rustfin-server --test integration setup_full_wizard_flow -- --exact
+    cargo test -p rustfin-server --test integration setup_full_wizard_flow -- --exact || rc=$?
+
+  psql "$base_db_url" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS ${schema_name} CASCADE;" >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 write_report() {
