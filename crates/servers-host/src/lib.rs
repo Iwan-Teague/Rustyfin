@@ -1500,7 +1500,9 @@ mod tests {
         assert!(
             rendered.contains("ExecStart=/usr/bin/java -Xms1024M -Xmx4096M -jar server.jar nogui")
         );
-        assert!(rendered.contains("ExecStop=/bin/kill -s INT $MAINPID"));
+        assert!(rendered.contains(
+            "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'"
+        ));
     }
 
     #[test]
