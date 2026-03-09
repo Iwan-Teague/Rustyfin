@@ -437,7 +437,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       </div>
 
       {/* Input */}
-      <div className="px-4 py-3 border-t border-[var(--border)] shrink-0">
+      <div className="border-t border-[var(--border)] px-4 pb-4 pt-6 shrink-0">
         <div className="flex items-stretch gap-2">
           <input
             ref={fileInputRef}
@@ -499,9 +499,6 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             )}
           </div>
         )}
-        <p className="text-xs muted mt-1">
-          Enter to send · Shift+Enter for newline
-        </p>
         {uploadError && <p className="text-xs text-red-400 mt-1">{uploadError}</p>}
       </div>
 
