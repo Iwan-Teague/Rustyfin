@@ -3045,7 +3045,6 @@ async fn get_item_image(
 ) -> Result<axum::response::Response, AppError> {
     use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
-    use std::io::Read;
 
     let valid_types = ["poster", "backdrop", "logo", "thumb"];
     if !valid_types.contains(&img_type.as_str()) {
@@ -3085,7 +3084,8 @@ async fn get_item_image(
         query.h.unwrap_or(0)
     );
     let images_dir = state.cache_dir.join("images");
-    std::fs::create_dir_all(&images_dir)
+    tokio::fs::create_dir_all(&images_dir)
+        .await
         .map_err(|e| ApiError::Internal(format!("cache dir error: {e}")))?;
 
     let ext = if let Some(ref fmt) = query.format {
@@ -3098,7 +3098,10 @@ async fn get_item_image(
     let cache_path = images_dir.join(format!("{cache_key}.{ext}"));
 
     // Check cache
-    if !cache_path.exists() {
+    if !tokio::fs::try_exists(&cache_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("cache existence error: {e}")))?
+    {
         // Download the image
         if image_url.starts_with("http://") || image_url.starts_with("https://") {
             let client = reqwest::Client::new();
@@ -3121,25 +3124,27 @@ async fn get_item_image(
                 .await
                 .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
 
-            std::fs::write(&cache_path, &bytes)
+            tokio::fs::write(&cache_path, &bytes)
+                .await
                 .map_err(|e| ApiError::Internal(format!("cache write error: {e}")))?;
-        } else if std::path::Path::new(&image_url).exists() {
+        } else if tokio::fs::try_exists(std::path::Path::new(&image_url))
+            .await
+            .map_err(|e| ApiError::Internal(format!("image source existence error: {e}")))?
+        {
             // Local file — copy to cache
-            std::fs::copy(&image_url, &cache_path)
+            tokio::fs::copy(&image_url, &cache_path)
+                .await
                 .map_err(|e| ApiError::Internal(format!("copy error: {e}")))?;
         } else {
             return Err(ApiError::NotFound("image source not available".into()).into());
         }
     }
 
-    // Read the cached file
-    let mut file = std::fs::File::open(&cache_path)
-        .map_err(|e| ApiError::Internal(format!("cache read error: {e}")))?;
-    let metadata = file
-        .metadata()
+    let metadata = tokio::fs::metadata(&cache_path)
+        .await
         .map_err(|e| ApiError::Internal(format!("metadata error: {e}")))?;
-    let mut buf = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut buf)
+    let buf = tokio::fs::read(&cache_path)
+        .await
         .map_err(|e| ApiError::Internal(format!("read error: {e}")))?;
 
     // ETag from file size + modified time

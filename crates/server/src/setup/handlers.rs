@@ -566,26 +566,17 @@ pub async fn validate_path(
         return AppError::from(ApiError::validation(fields)).into_response();
     }
 
-    let path = std::path::Path::new(&body.path);
-    let exists = path.exists();
-    let readable = if exists {
-        path.read_dir().is_ok()
-    } else {
-        false
-    };
-
-    // Check writable by attempting to check metadata permissions
-    let writable = if exists {
-        // Try to check if we can write to the directory
-        let test_file = path.join(".rustyfin_write_test");
-        let can_write = std::fs::write(&test_file, b"test").is_ok();
-        if can_write {
-            let _ = std::fs::remove_file(&test_file);
-        }
-        can_write
-    } else {
-        false
-    };
+    let path_to_check = body.path.clone();
+    let (exists, readable, writable) =
+        match tokio::task::spawn_blocking(move || validate_filesystem_path(&path_to_check)).await {
+            Ok(result) => result,
+            Err(e) => {
+                return AppError::from(ApiError::Internal(format!(
+                    "path validation task failed: {e}"
+                )))
+                .into_response();
+            }
+        };
 
     let hint = if !exists {
         Some("Path does not exist on the server filesystem".to_string())
@@ -612,6 +603,29 @@ pub async fn validate_path(
         }),
     )
         .into_response()
+}
+
+fn validate_filesystem_path(path: &str) -> (bool, bool, bool) {
+    let path = std::path::Path::new(path);
+    let exists = path.exists();
+    let readable = if exists {
+        path.read_dir().is_ok()
+    } else {
+        false
+    };
+
+    let writable = if exists {
+        let test_file = path.join(".rustyfin_write_test");
+        let can_write = std::fs::write(&test_file, b"test").is_ok();
+        if can_write {
+            let _ = std::fs::remove_file(&test_file);
+        }
+        can_write
+    } else {
+        false
+    };
+
+    (exists, readable, writable)
 }
 
 #[derive(Deserialize)]

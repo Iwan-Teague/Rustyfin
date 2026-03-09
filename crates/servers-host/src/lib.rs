@@ -684,7 +684,9 @@ fn render_systemd_unit(spec: &ManagedProvisionSpec) -> String {
         "ExecStart={} -Xms{}M -Xmx{}M -jar server.jar nogui\n",
         spec.java_path, spec.min_memory_mb, spec.max_memory_mb
     ));
-    unit.push_str("ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'\n");
+    unit.push_str(
+        "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'\n",
+    );
     unit.push_str("KillSignal=SIGINT\n");
     unit.push_str("SuccessExitStatus=0 143\n");
     unit.push_str("Restart=on-failure\n");
