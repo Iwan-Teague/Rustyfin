@@ -58,8 +58,7 @@ async fn post_json<TReq: Serialize, TRes: for<'de> Deserialize<'de>>(
         .ok_or_else(|| ApiError::BadRequest("servers agent URL is not configured".into()))?
         .trim_end_matches('/');
     let url = format!("{base}{path}");
-    let client = reqwest::Client::new();
-    let mut request = client.post(url).json(body);
+    let mut request = state.http.post(url).json(body);
     if let Some(token) = state
         .servers_agent_token
         .as_ref()

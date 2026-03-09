@@ -89,8 +89,7 @@ async fn post_json<TReq: Serialize, TRes: for<'de> Deserialize<'de>>(
 ) -> Result<TRes, ApiError> {
     let base = state.transcription_agent_url.trim_end_matches('/');
     let url = format!("{base}{path}");
-    let client = reqwest::Client::new();
-    let mut request = client.post(url).json(body);
+    let mut request = state.http.post(url).json(body);
     if let Some(token) = state
         .transcription_agent_token
         .as_ref()

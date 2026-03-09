@@ -1342,13 +1342,10 @@ async fn download_youtube_audio_for_library_import(
         "{}/api/v1/download/audio",
         state.youtube_agent_url.trim_end_matches('/')
     );
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(YOUTUBE_AGENT_IMPORT_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("failed to build youtube-agent client: {e}")))?;
-
-    let mut request = client
+    let mut request = state
+        .http
         .post(&request_url)
+        .timeout(Duration::from_secs(YOUTUBE_AGENT_IMPORT_TIMEOUT_SECONDS))
         .json(&YouTubeAgentLibraryImportRequest {
             room_id: &import_scope_id,
             video_id: &video_id,
@@ -1662,18 +1659,20 @@ async fn create_library(
 
     rustfin_db::repo::libraries::upsert_library_settings(
         &state.db,
-        &lib.id,
-        body.settings.show_images.unwrap_or(true),
-        body.settings.prefer_local_artwork.unwrap_or(true),
-        body.settings.fetch_online_artwork.unwrap_or(true),
-        body.settings.tmdb_store_in_media_dir.unwrap_or(false),
-        body.settings.tmdb_sync_on_new_media.unwrap_or(true),
-        sync_schedule,
-        None,
-        body.settings.tmdb_fetch_posters.unwrap_or(true),
-        body.settings.tmdb_fetch_backdrops.unwrap_or(true),
-        body.settings.tmdb_fetch_metadata.unwrap_or(true),
-        body.settings.tmdb_fetch_reviews.unwrap_or(false),
+        rustfin_db::repo::libraries::UpsertLibrarySettingsParams {
+            library_id: &lib.id,
+            show_images: body.settings.show_images.unwrap_or(true),
+            prefer_local_artwork: body.settings.prefer_local_artwork.unwrap_or(true),
+            fetch_online_artwork: body.settings.fetch_online_artwork.unwrap_or(true),
+            tmdb_store_in_media_dir: body.settings.tmdb_store_in_media_dir.unwrap_or(false),
+            tmdb_sync_on_new_media: body.settings.tmdb_sync_on_new_media.unwrap_or(true),
+            tmdb_sync_schedule: sync_schedule,
+            tmdb_last_sync_ts: None,
+            tmdb_fetch_posters: body.settings.tmdb_fetch_posters.unwrap_or(true),
+            tmdb_fetch_backdrops: body.settings.tmdb_fetch_backdrops.unwrap_or(true),
+            tmdb_fetch_metadata: body.settings.tmdb_fetch_metadata.unwrap_or(true),
+            tmdb_fetch_reviews: body.settings.tmdb_fetch_reviews.unwrap_or(false),
+        },
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -1897,34 +1896,44 @@ async fn update_library(
 
         let _ = rustfin_db::repo::libraries::upsert_library_settings(
             &state.db,
-            &id,
-            body.settings.show_images.unwrap_or(current.show_images),
-            body.settings
-                .prefer_local_artwork
-                .unwrap_or(current.prefer_local_artwork),
-            body.settings
-                .fetch_online_artwork
-                .unwrap_or(current.fetch_online_artwork),
-            body.settings
-                .tmdb_store_in_media_dir
-                .unwrap_or(current.tmdb_store_in_media_dir),
-            body.settings
-                .tmdb_sync_on_new_media
-                .unwrap_or(current.tmdb_sync_on_new_media),
-            tmdb_sync_schedule,
-            current.tmdb_last_sync_ts,
-            body.settings
-                .tmdb_fetch_posters
-                .unwrap_or(current.tmdb_fetch_posters),
-            body.settings
-                .tmdb_fetch_backdrops
-                .unwrap_or(current.tmdb_fetch_backdrops),
-            body.settings
-                .tmdb_fetch_metadata
-                .unwrap_or(current.tmdb_fetch_metadata),
-            body.settings
-                .tmdb_fetch_reviews
-                .unwrap_or(current.tmdb_fetch_reviews),
+            rustfin_db::repo::libraries::UpsertLibrarySettingsParams {
+                library_id: &id,
+                show_images: body.settings.show_images.unwrap_or(current.show_images),
+                prefer_local_artwork: body
+                    .settings
+                    .prefer_local_artwork
+                    .unwrap_or(current.prefer_local_artwork),
+                fetch_online_artwork: body
+                    .settings
+                    .fetch_online_artwork
+                    .unwrap_or(current.fetch_online_artwork),
+                tmdb_store_in_media_dir: body
+                    .settings
+                    .tmdb_store_in_media_dir
+                    .unwrap_or(current.tmdb_store_in_media_dir),
+                tmdb_sync_on_new_media: body
+                    .settings
+                    .tmdb_sync_on_new_media
+                    .unwrap_or(current.tmdb_sync_on_new_media),
+                tmdb_sync_schedule,
+                tmdb_last_sync_ts: current.tmdb_last_sync_ts,
+                tmdb_fetch_posters: body
+                    .settings
+                    .tmdb_fetch_posters
+                    .unwrap_or(current.tmdb_fetch_posters),
+                tmdb_fetch_backdrops: body
+                    .settings
+                    .tmdb_fetch_backdrops
+                    .unwrap_or(current.tmdb_fetch_backdrops),
+                tmdb_fetch_metadata: body
+                    .settings
+                    .tmdb_fetch_metadata
+                    .unwrap_or(current.tmdb_fetch_metadata),
+                tmdb_fetch_reviews: body
+                    .settings
+                    .tmdb_fetch_reviews
+                    .unwrap_or(current.tmdb_fetch_reviews),
+            },
         )
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -3104,8 +3113,8 @@ async fn get_item_image(
     {
         // Download the image
         if image_url.starts_with("http://") || image_url.starts_with("https://") {
-            let client = reqwest::Client::new();
-            let resp = client
+            let resp = state
+                .http
                 .get(&image_url)
                 .send()
                 .await

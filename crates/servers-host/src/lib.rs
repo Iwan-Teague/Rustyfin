@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use rustfin_core::servers_agent::{
     DiscoveryCandidate, ImportProvisionSpec, ManagedProvisionSpec, ProvisioningResult,
@@ -17,6 +18,15 @@ use tokio::time::{Duration, timeout};
 struct VanillaVersionManifest {
     versions: Vec<VanillaVersionEntry>,
 }
+
+static OUTBOUND_HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .user_agent(format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("failed to build servers-host HTTP client")
+});
 
 #[derive(Debug, Deserialize)]
 struct VanillaVersionEntry {
@@ -129,10 +139,11 @@ fn import_roots() -> Vec<PathBuf> {
             continue;
         }
         let candidate = PathBuf::from(trimmed);
-        if let Ok(canonical) = std::fs::canonicalize(&candidate) {
-            if canonical.is_dir() && !roots.iter().any(|existing| existing == &canonical) {
-                roots.push(canonical);
-            }
+        if let Ok(canonical) = std::fs::canonicalize(&candidate)
+            && canonical.is_dir()
+            && !roots.iter().any(|existing| existing == &canonical)
+        {
+            roots.push(canonical);
         }
     }
     roots
@@ -376,15 +387,13 @@ pub async fn delete_managed_instance(unit_name: &str, instance_root: &str) -> Re
         }
     }
 
-    if systemctl_available {
-        if let Err(error) = run_systemctl(&["disable", unit_name]).await {
-            if is_systemctl_unavailable_error(&error) {
-                systemctl_available = false;
-            } else if !is_missing_unit_error(&error) {
-                return Err(format!(
-                    "failed to disable systemd unit before delete: {error}"
-                ));
-            }
+    if systemctl_available && let Err(error) = run_systemctl(&["disable", unit_name]).await {
+        if is_systemctl_unavailable_error(&error) {
+            systemctl_available = false;
+        } else if !is_missing_unit_error(&error) {
+            return Err(format!(
+                "failed to disable systemd unit before delete: {error}"
+            ));
         }
     }
 
@@ -416,12 +425,11 @@ pub async fn delete_managed_instance(unit_name: &str, instance_root: &str) -> Re
     .await
     .map_err(|error| format!("delete task failed: {error}"))??;
 
-    if systemctl_available {
-        if let Err(error) = daemon_reload().await {
-            if !is_systemctl_unavailable_error(&error) {
-                return Err(format!("failed to reload systemd after delete: {error}"));
-            }
-        }
+    if systemctl_available
+        && let Err(error) = daemon_reload().await
+        && !is_systemctl_unavailable_error(&error)
+    {
+        return Err(format!("failed to reload systemd after delete: {error}"));
     }
 
     Ok(())
@@ -573,7 +581,7 @@ pub async fn probe_minecraft_server(
     let json_length = timeout(Duration::from_secs(3), read_varint(&mut stream))
         .await
         .map_err(|_| "minecraft status payload length timed out".to_string())??;
-    if json_length < 0 || json_length > 1024 * 1024 {
+    if !(0..=1024 * 1024).contains(&json_length) {
         return Err("minecraft status payload length was invalid".to_string());
     }
     let mut json_buf = vec![0u8; json_length as usize];
@@ -936,8 +944,7 @@ fn write_runtime_files(
 }
 
 async fn resolve_vanilla_server_download(version: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let manifest: VanillaVersionManifest = client
+    let manifest: VanillaVersionManifest = OUTBOUND_HTTP
         .get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
         .send()
         .await
@@ -955,7 +962,7 @@ async fn resolve_vanilla_server_download(version: &str) -> Result<String, String
         .map(|entry| entry.url)
         .ok_or_else(|| format!("Minecraft vanilla version {version} was not found"))?;
 
-    let details: VanillaVersionDetails = client
+    let details: VanillaVersionDetails = OUTBOUND_HTTP
         .get(version_url)
         .send()
         .await
@@ -974,8 +981,7 @@ async fn resolve_vanilla_server_download(version: &str) -> Result<String, String
 }
 
 async fn resolve_paper_server_download(version: &str) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let metadata: Value = client
+    let metadata: Value = OUTBOUND_HTTP
         .get(format!(
             "https://api.papermc.io/v2/projects/paper/versions/{version}/builds"
         ))
@@ -1351,10 +1357,10 @@ pub async fn scan_discovery_candidates(
             if !visited.insert(canonical.clone()) {
                 continue;
             }
-            if let Some(managed_root) = managed_root.as_ref() {
-                if canonical.starts_with(managed_root) {
-                    continue;
-                }
+            if let Some(managed_root) = managed_root.as_ref()
+                && canonical.starts_with(managed_root)
+            {
+                continue;
             }
 
             if let Some(candidate) = build_discovery_candidate(&canonical) {

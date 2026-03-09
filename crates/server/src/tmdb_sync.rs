@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use rustfin_core::error::ApiError;
-use tokio::sync::broadcast::Sender;
 
 use crate::error::AppError;
 use crate::state::AppState;
@@ -19,13 +18,7 @@ pub async fn enqueue_library_tmdb_sync(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    spawn_tmdb_sync_job(
-        &state.db,
-        &state.events,
-        job.id.clone(),
-        library_id.to_string(),
-        None,
-    );
+    spawn_tmdb_sync_job(state.clone(), job.id.clone(), library_id.to_string(), None);
 
     Ok(job)
 }
@@ -54,15 +47,9 @@ async fn has_running_sync_job(
     Ok(row.is_some())
 }
 
-fn spawn_tmdb_sync_job(
-    pool: &rustfin_db::DbPool,
-    events: &Sender<crate::state::ServerEvent>,
-    job_id: String,
-    library_id: String,
-    reason: Option<&str>,
-) {
-    let pool = pool.clone();
-    let events_tx = events.clone();
+fn spawn_tmdb_sync_job(state: AppState, job_id: String, library_id: String, reason: Option<&str>) {
+    let pool = state.db.clone();
+    let events_tx = state.events.clone();
     let reason = reason.map(ToOwned::to_owned);
 
     tokio::spawn(async move {
@@ -75,7 +62,7 @@ fn spawn_tmdb_sync_job(
             progress: 0.0,
         });
 
-        match run_tmdb_sync(&library_id).await {
+        match run_tmdb_sync(&state, &library_id).await {
             Ok(_) => {
                 let now = chrono::Utc::now().timestamp();
                 let _ =
@@ -124,8 +111,7 @@ fn spawn_tmdb_sync_job(
 }
 
 pub async fn maybe_enqueue_post_scan_tmdb_sync(
-    pool: &rustfin_db::DbPool,
-    events: &Sender<crate::state::ServerEvent>,
+    state: &AppState,
     library_id: &str,
     library_kind: &str,
 ) -> Result<(), String> {
@@ -133,7 +119,7 @@ pub async fn maybe_enqueue_post_scan_tmdb_sync(
         return Ok(());
     }
 
-    let settings = rustfin_db::repo::libraries::get_library_settings(pool, library_id)
+    let settings = rustfin_db::repo::libraries::get_library_settings(&state.db, library_id)
         .await
         .map_err(|e| format!("failed to load library settings: {e}"))?;
     let Some(settings) = settings else {
@@ -144,7 +130,7 @@ pub async fn maybe_enqueue_post_scan_tmdb_sync(
         return Ok(());
     }
 
-    if has_running_sync_job(pool, library_id)
+    if has_running_sync_job(&state.db, library_id)
         .await
         .map_err(|e| format!("failed to check running TMDB jobs: {e}"))?
     {
@@ -152,14 +138,16 @@ pub async fn maybe_enqueue_post_scan_tmdb_sync(
     }
 
     let payload = serde_json::json!({ "library_id": library_id, "reason": "new_media_detected" });
-    let job =
-        rustfin_db::repo::jobs::create_job(pool, "library_tmdb_sync", Some(&payload.to_string()))
-            .await
-            .map_err(|e| format!("failed to create TMDB sync job: {e}"))?;
+    let job = rustfin_db::repo::jobs::create_job(
+        &state.db,
+        "library_tmdb_sync",
+        Some(&payload.to_string()),
+    )
+    .await
+    .map_err(|e| format!("failed to create TMDB sync job: {e}"))?;
 
     spawn_tmdb_sync_job(
-        pool,
-        events,
+        state.clone(),
         job.id,
         library_id.to_string(),
         Some("new_media_detected"),
@@ -220,26 +208,15 @@ pub async fn run_auto_tmdb_scheduler_tick(state: &AppState) -> Result<(), String
     Ok(())
 }
 
-async fn run_tmdb_sync(library_id: &str) -> Result<(), String> {
-    let base_url = std::env::var("RUSTFIN_TMDB_AGENT_URL")
-        .unwrap_or_else(|_| "http://rustfin-tmdb-agent:8100".to_string());
-    let request_url = format!(
-        "{}/enrich/library/{}",
-        base_url.trim_end_matches('/'),
-        library_id
-    );
+async fn run_tmdb_sync(state: &AppState, library_id: &str) -> Result<(), String> {
+    let base_url = state.tmdb_agent_url.trim_end_matches('/');
+    let request_url = format!("{}/enrich/library/{}", base_url, library_id);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(900))
-        .build()
-        .map_err(|e| format!("failed to build TMDB sync client: {e}"))?;
-
-    let mut request = client.post(&request_url);
-    if let Some(token) = std::env::var("RUSTFIN_TMDB_AGENT_TOKEN")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
+    let mut request = state
+        .http
+        .post(&request_url)
+        .timeout(Duration::from_secs(900));
+    if let Some(token) = state.tmdb_agent_token.as_ref().filter(|s| !s.is_empty()) {
         request = request.header("x-agent-token", token);
     }
 

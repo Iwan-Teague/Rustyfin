@@ -487,16 +487,16 @@ async fn fetch_youtube_view_count(client: &reqwest::Client, video_id: &str) -> O
 }
 
 pub(crate) async fn perform_youtube_search(
+    client: &reqwest::Client,
     raw_query: &str,
     limit: Option<usize>,
 ) -> Result<(String, Vec<YouTubeSearchResult>), AppError> {
     let query = normalize_youtube_search_query(raw_query)?;
     let limit = normalize_youtube_search_limit(limit);
-    let client = reqwest::Client::new();
 
     let mut results = Vec::new();
     if let Some(video_id) = extract_youtube_video_id_from_input(&query)
-        && let Some(metadata) = fetch_youtube_video_metadata(&client, &video_id).await
+        && let Some(metadata) = fetch_youtube_video_metadata(client, &video_id).await
     {
         results.push(metadata);
     }
@@ -593,14 +593,17 @@ fn youtube_playability_reason(playability: &serde_json::Value) -> String {
     "This YouTube video cannot be embedded by the uploader. Try another video.".to_string()
 }
 
-pub(crate) async fn youtube_embed_block_reason(video_id: &str) -> Option<String> {
+pub(crate) async fn youtube_embed_block_reason(
+    client: &reqwest::Client,
+    video_id: &str,
+) -> Option<String> {
     let url = reqwest::Url::parse_with_params(
         YOUTUBE_WATCH_URL,
         &[("v", video_id), ("hl", "en"), ("persist_hl", "1")],
     )
     .ok()?;
 
-    let response = reqwest::Client::new()
+    let response = client
         .get(url)
         .timeout(Duration::from_secs(YOUTUBE_VALIDATION_TIMEOUT_SECONDS))
         .header(reqwest::header::USER_AGENT, YOUTUBE_VALIDATION_USER_AGENT)

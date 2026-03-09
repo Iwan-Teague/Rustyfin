@@ -262,6 +262,9 @@ pub struct BattleshipState {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// These messages are built and serialized immediately; boxing the large variants
+// would add heap churn on a hot websocket path without improving durability.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerMessage {
     State {
         room_id: String,

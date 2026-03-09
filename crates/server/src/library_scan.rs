@@ -22,6 +22,7 @@ pub async fn enqueue_library_scan(
     let lib_id = library_id.to_string();
     let lib_kind = library_kind.to_string();
     let events_tx = state.events.clone();
+    let state = state.clone();
     tokio::spawn(async move {
         if let Err(e) = update_job_status_with_retry(&pool, &job_id, "running", 0.0, None).await {
             tracing::error!(job_id = %job_id, error = %e, "failed to set job status to running");
@@ -45,7 +46,7 @@ pub async fn enqueue_library_scan(
                 }
                 if result.added > 0 {
                     let maybe_sync = crate::tmdb_sync::maybe_enqueue_post_scan_tmdb_sync(
-                        &pool, &events_tx, &lib_id, &lib_kind,
+                        &state, &lib_id, &lib_kind,
                     )
                     .await;
                     if let Err(err) = maybe_sync {

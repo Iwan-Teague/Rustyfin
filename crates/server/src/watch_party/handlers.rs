@@ -603,13 +603,10 @@ async fn download_youtube_audio_mp3_for_room(
 ) -> Result<DownloadedOnlineAudio, AppError> {
     let base = state.youtube_agent_url.trim_end_matches('/');
     let request_url = format!("{base}/api/v1/download/audio");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(YOUTUBE_AGENT_DOWNLOAD_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("failed to build youtube-agent client: {e}")))?;
-
-    let mut request = client
+    let mut request = state
+        .http
         .post(&request_url)
+        .timeout(Duration::from_secs(YOUTUBE_AGENT_DOWNLOAD_TIMEOUT_SECONDS))
         .json(&YouTubeAgentDownloadRequest { room_id, video_id });
     if let Some(token) = state.youtube_agent_token.as_ref().filter(|s| !s.is_empty()) {
         request = request.header("x-agent-token", token);
@@ -2453,7 +2450,7 @@ pub async fn search_youtube(
         return Err(ApiError::Forbidden("room membership is not joined".into()).into());
     }
 
-    let (_, results) = perform_youtube_search(&params.q, params.limit).await?;
+    let (_, results) = perform_youtube_search(&state.http, &params.q, params.limit).await?;
     Ok(Json(results))
 }
 
@@ -2517,10 +2514,9 @@ pub async fn lookup_youtube_videos(
         return Ok(Json(Vec::new()));
     }
 
-    let client = reqwest::Client::new();
     let mut resolved = Vec::with_capacity(deduped.len());
     for video_id in deduped {
-        if let Some(metadata) = fetch_youtube_video_metadata(&client, &video_id).await {
+        if let Some(metadata) = fetch_youtube_video_metadata(&state.http, &video_id).await {
             resolved.push(metadata);
         }
     }
@@ -2672,7 +2668,7 @@ pub async fn search_online_audio(
         .limit
         .unwrap_or(ONLINE_AUDIO_SEARCH_DEFAULT_LIMIT)
         .clamp(1, ONLINE_AUDIO_SEARCH_MAX_LIMIT);
-    let (_, results) = perform_youtube_search(&params.q, Some(limit)).await?;
+    let (_, results) = perform_youtube_search(&state.http, &params.q, Some(limit)).await?;
     Ok(Json(results))
 }
 
@@ -2742,7 +2738,6 @@ pub async fn queue_online_audio(
         "Online track request accepted.",
     );
 
-    let metadata_client = reqwest::Client::new();
     let mut already_downloaded = false;
     let track_row = if let Some(existing) =
         rustfin_db::repo::watch_party::get_online_audio_track_by_video_id(
@@ -2796,7 +2791,7 @@ pub async fn queue_online_audio(
                 "pending",
                 "Resolving YouTube metadata…",
             );
-            let metadata = match fetch_youtube_video_metadata(&metadata_client, &video_id).await {
+            let metadata = match fetch_youtube_video_metadata(&state.http, &video_id).await {
                 Some(metadata) => {
                     emit_online_audio_status(
                         runtime.as_ref(),
@@ -2900,7 +2895,7 @@ pub async fn queue_online_audio(
             "pending",
             "Resolving YouTube metadata…",
         );
-        let metadata = match fetch_youtube_video_metadata(&metadata_client, &video_id).await {
+        let metadata = match fetch_youtube_video_metadata(&state.http, &video_id).await {
             Some(metadata) => {
                 emit_online_audio_status(
                     runtime.as_ref(),

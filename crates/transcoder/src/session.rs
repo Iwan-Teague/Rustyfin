@@ -64,6 +64,18 @@ pub struct SessionManager {
     semaphore: Arc<Semaphore>,
 }
 
+struct SpawnFfmpegOptions<'a> {
+    ffmpeg_path: &'a Path,
+    input: &'a Path,
+    output_dir: &'a Path,
+    segment_secs: u32,
+    start_time: Option<f64>,
+    target_height: Option<u32>,
+    video_codec_override: Option<&'a str>,
+    hw_accel: Option<&'a HwAccel>,
+    hw_device_path: Option<&'a Path>,
+}
+
 impl SessionManager {
     pub fn new(config: TranscoderConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
@@ -104,17 +116,17 @@ impl SessionManager {
         let output_dir = self.config.transcode_dir.join(&session_id);
         tokio::fs::create_dir_all(&output_dir).await?;
 
-        let child = spawn_ffmpeg(
-            &self.config.ffmpeg_path,
-            &input_path,
-            &output_dir,
-            self.config.segment_secs,
-            start_time_secs,
+        let child = spawn_ffmpeg(SpawnFfmpegOptions {
+            ffmpeg_path: &self.config.ffmpeg_path,
+            input: &input_path,
+            output_dir: &output_dir,
+            segment_secs: self.config.segment_secs,
+            start_time: start_time_secs,
             target_height,
             video_codec_override,
-            self.config.hw_accel.as_ref(),
-            self.config.hw_device_path.as_deref(),
-        )
+            hw_accel: self.config.hw_accel.as_ref(),
+            hw_device_path: self.config.hw_device_path.as_deref(),
+        })
         .await?;
 
         let session = TranscodeSession {
@@ -304,19 +316,9 @@ impl SessionManager {
 }
 
 /// Build and spawn ffmpeg for HLS output.
-async fn spawn_ffmpeg(
-    ffmpeg_path: &Path,
-    input: &Path,
-    output_dir: &Path,
-    segment_secs: u32,
-    start_time: Option<f64>,
-    target_height: Option<u32>,
-    video_codec_override: Option<&str>,
-    hw_accel: Option<&HwAccel>,
-    hw_device_path: Option<&Path>,
-) -> Result<Child, TranscodeError> {
+async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, TranscodeError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
-    let active_hw_accel = hw_accel;
+    let active_hw_accel = options.hw_accel;
 
     // HW accel input flags
     if let Some(hw) = active_hw_accel {
@@ -325,7 +327,8 @@ async fn spawn_ffmpeg(
                 args.extend(["-hwaccel".into(), "cuda".into()]);
             }
             HwAccel::Vaapi => {
-                let device = hw_device_path
+                let device = options
+                    .hw_device_path
                     .unwrap_or_else(|| Path::new("/dev/dri/renderD128"))
                     .to_string_lossy()
                     .into_owned();
@@ -333,7 +336,7 @@ async fn spawn_ffmpeg(
             }
             HwAccel::Qsv => {
                 args.extend(["-hwaccel".into(), "qsv".into()]);
-                if let Some(device) = hw_device_path {
+                if let Some(device) = options.hw_device_path {
                     args.extend(["-qsv_device".into(), device.to_string_lossy().into_owned()]);
                 }
             }
@@ -344,12 +347,12 @@ async fn spawn_ffmpeg(
     }
 
     // Seek
-    if let Some(t) = start_time {
+    if let Some(t) = options.start_time {
         args.extend(["-ss".into(), format!("{t:.3}")]);
     }
 
     // Input
-    args.extend(["-i".into(), input.to_string_lossy().into_owned()]);
+    args.extend(["-i".into(), options.input.to_string_lossy().into_owned()]);
 
     // Select the primary video stream and the first audio stream (if present).
     // This avoids ambiguous/default stream selection behavior on some containers.
@@ -368,20 +371,24 @@ async fn spawn_ffmpeg(
         // across 10-bit HDR sources than forcing vaapi decode/output.
         Some(HwAccel::Vaapi) => {
             let mut chain = vec!["format=nv12".to_string(), "hwupload".to_string()];
-            if let Some(height) = target_height {
+            if let Some(height) = options.target_height {
                 chain.push(format!("scale_vaapi=w=-2:h={height}"));
             }
             Some(chain.join(","))
         }
-        Some(HwAccel::Qsv) => target_height.map(|height| format!("vpp_qsv=w=-2:h={height}")),
-        _ => target_height.map(|height| format!("scale=-2:min(ih\\,{height})")),
+        Some(HwAccel::Qsv) => options
+            .target_height
+            .map(|height| format!("vpp_qsv=w=-2:h={height}")),
+        _ => options
+            .target_height
+            .map(|height| format!("scale=-2:min(ih\\,{height})")),
     };
     if let Some(filter) = vf {
         args.extend(["-vf".into(), filter]);
     }
 
     // Video codec
-    let vcodec = if let Some(vc) = video_codec_override {
+    let vcodec = if let Some(vc) = options.video_codec_override {
         vc.to_string()
     } else if let Some(hw) = active_hw_accel {
         match hw {
@@ -400,7 +407,7 @@ async fn spawn_ffmpeg(
     }
 
     // Video encoding params for software encode
-    if active_hw_accel.is_none() && video_codec_override.is_none() {
+    if active_hw_accel.is_none() && options.video_codec_override.is_none() {
         args.extend([
             "-preset".into(),
             "veryfast".into(),
@@ -424,18 +431,18 @@ async fn spawn_ffmpeg(
         "-max_muxing_queue_size".into(),
         "4096".into(),
         "-force_key_frames".into(),
-        format!("expr:gte(t,n_forced*{segment_secs})"),
+        format!("expr:gte(t,n_forced*{})", options.segment_secs),
     ]);
 
     // HLS output
-    let seg_pattern = output_dir.join("seg_%05d.ts");
-    let master = output_dir.join("master.m3u8");
+    let seg_pattern = options.output_dir.join("seg_%05d.ts");
+    let master = options.output_dir.join("master.m3u8");
 
     args.extend([
         "-f".into(),
         "hls".into(),
         "-hls_time".into(),
-        segment_secs.to_string(),
+        options.segment_secs.to_string(),
         "-hls_list_size".into(),
         "0".into(),
         "-hls_playlist_type".into(),
@@ -448,12 +455,12 @@ async fn spawn_ffmpeg(
     ]);
 
     // Log file
-    let log_path = output_dir.join("ffmpeg.log");
+    let log_path = options.output_dir.join("ffmpeg.log");
 
     let log_file = std::fs::File::create(&log_path)
         .map_err(|e| TranscodeError::FfmpegFailed(format!("create log: {e}")))?;
 
-    let child = tokio::process::Command::new(ffmpeg_path)
+    let child = tokio::process::Command::new(options.ffmpeg_path)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -461,6 +468,6 @@ async fn spawn_ffmpeg(
         .spawn()
         .map_err(|e| TranscodeError::FfmpegFailed(format!("spawn: {e}")))?;
 
-    info!(?ffmpeg_path, ?args, "spawned ffmpeg for HLS");
+    info!(ffmpeg_path = ?options.ffmpeg_path, ?args, "spawned ffmpeg for HLS");
     Ok(child)
 }
