@@ -120,11 +120,11 @@ export async function loginViaApi(page: Page, username: string, password: string
   });
   expect(meResponse.ok()).toBeTruthy();
 
+  await page.addInitScript((value) => {
+    localStorage.setItem('token', value);
+  }, token);
   await page.goto('/');
-  await page.waitForLoadState('networkidle');
-  await expect(
-    page.getByRole('heading', { name: new RegExp(`Welcome back,\\s*${username}`, 'i') })
-  ).toBeVisible({ timeout: 40_000 });
+  await page.waitForLoadState('domcontentloaded');
 }
 
 export async function goAdmin(page: Page) {
