@@ -518,7 +518,7 @@ export default function VideoPlayerSurface({
                 <SettingsIcon />
               </button>
               {showSettings ? (
-                <div className="absolute right-0 top-[calc(100%+0.6rem)] z-20 w-56 rounded-2xl border border-white/10 bg-[rgba(24,28,40,0.98)] p-3 shadow-[0_20px_40px_rgba(0,0,0,0.45)] backdrop-blur">
+                <div className="absolute bottom-[calc(100%+0.6rem)] right-0 z-20 w-56 rounded-2xl border border-white/10 bg-[rgba(24,28,40,0.98)] p-3 shadow-[0_20px_40px_rgba(0,0,0,0.45)] backdrop-blur">
                   <label className="flex flex-col gap-1 text-xs muted">
                     <span>Playback speed</span>
                     <select
