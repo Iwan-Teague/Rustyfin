@@ -1,11 +1,33 @@
 import { expect, test } from '@playwright/test';
 import { ADMIN, createLibraryViaBrowse, login, runSetupWizard, triggerScan } from './helpers';
 
-test('@playback direct and HLS playback paths issue network requests', async ({ page }) => {
+test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
   await runSetupWizard(page);
   await login(page, ADMIN.username, ADMIN.password);
 
-  const libName = 'Playback Fixtures';
+  await page.goto('/channels');
+  await page.waitForLoadState('networkidle');
+  await expect(page.getByText('Text Channels')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Voice Channels')).toBeVisible({ timeout: 20_000 });
+
+  await page.goto('/rooms');
+  await page.waitForLoadState('networkidle');
+  await expect(page.getByRole('heading', { name: 'Open Rooms' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'Create Room', exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  await page.goto('/servers');
+  await page.waitForLoadState('networkidle');
+  await expect(page.getByRole('heading', { name: 'Known servers' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('heading', { name: 'Create Minecraft server' })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByRole('heading', { name: 'Server management' })).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const libName = 'Debian Browser Smoke Fixtures';
   await createLibraryViaBrowse(page, libName);
   await triggerScan(page, libName);
 
@@ -40,8 +62,7 @@ test('@playback direct and HLS playback paths issue network requests', async ({ 
   await directReq;
 
   const hlsSessionReq = page.waitForRequest(
-    (req) =>
-      req.method() === 'POST' && req.url().includes('/api/v1/playback/sessions'),
+    (req) => req.method() === 'POST' && req.url().includes('/api/v1/playback/sessions'),
     { timeout: 20_000 }
   );
   const playlistReq = page.waitForRequest(
@@ -55,7 +76,7 @@ test('@playback direct and HLS playback paths issue network requests', async ({ 
     (req) =>
       req.method() === 'GET' &&
       req.url().includes('/stream/hls/') &&
-      /seg_\d+\.ts/.test(req.url()),
+      /seg_\\d+\\.ts/.test(req.url()),
     { timeout: 30_000 }
   );
 

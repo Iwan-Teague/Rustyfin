@@ -112,7 +112,23 @@ This is the main Debian 12 confidence sweep. It checks:
 - host/runtime assumptions
 - Rust formatting, lint, and targeted crate tests
 - UI lint, typecheck, and production build
+- isolated browser smoke for setup/login, channels, rooms, servers, and playback
+- unauthenticated access control on representative protected API routes
 - native runtime health endpoints, migration state, and recent journal errors
+
+You can also run the browser smoke path directly:
+
+```bash
+./scripts/ci/debian_browser_smoke.sh
+```
+
+That smoke script:
+
+- creates an isolated PostgreSQL schema inside the configured runtime database
+- starts a temporary backend on `127.0.0.1:18096`
+- starts a temporary UI on `127.0.0.1:13000`
+- runs Playwright against that isolated runtime
+- cleans the schema up after the run
 
 Outputs:
 

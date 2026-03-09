@@ -23,6 +23,14 @@ Run a single suite:
 ./tests/run-suite.sh 06_accessibility
 ```
 
+Debian-host browser smoke:
+
+```bash
+./scripts/ci/debian_browser_smoke.sh
+```
+
+This host-specific smoke path reuses the Playwright harness but runs it against an isolated PostgreSQL schema on the configured Debian runtime database, so it does not mutate the live runtime state.
+
 ## Ports Used By Test Harness
 
 The harness uses isolated defaults to avoid colliding with local dev instances:
