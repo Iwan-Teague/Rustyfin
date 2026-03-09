@@ -313,6 +313,14 @@ impl SessionManager {
     pub fn ffprobe_path(&self) -> &Path {
         &self.config.ffprobe_path
     }
+
+    pub fn hw_accel(&self) -> Option<&HwAccel> {
+        self.config.hw_accel.as_ref()
+    }
+
+    pub fn hw_device_path(&self) -> Option<&Path> {
+        self.config.hw_device_path.as_deref()
+    }
 }
 
 /// Build and spawn ffmpeg for HLS output.

@@ -1,4 +1,4 @@
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, FromRequestParts, Multipart, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -11,9 +11,12 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::{Path as StdPath, PathBuf};
+use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tokio::fs;
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
 use tracing::warn;
 
 use crate::auth::{
@@ -306,6 +309,7 @@ fn api_router() -> Router<AppState> {
         .route("/playback/sessions", post(create_playback_session))
         .route("/playback/sessions/{sid}/stop", post(stop_playback_session))
         .route("/playback/info/{file_id}", get(get_media_info))
+        .route("/playback/download/{file_id}", get(download_playback_media))
         .route("/system/host-directories", get(list_host_directories))
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
@@ -2623,40 +2627,18 @@ async fn create_playback_session(
     State(state): State<AppState>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, AppError> {
-    let target_height = normalize_transcode_height(body.target_height)?;
-
-    if auth.role != "admin" {
-        let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &body.file_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::Forbidden("file is not playable for this account".into()))?;
-
-        let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::Forbidden("file is not playable for this account".into()))?;
-        ensure_library_access(&auth, &state, &item.library_id).await?;
-    }
-
-    // Look up the media file
-    let file = rustfin_db::repo::media_files::get_media_file(&state.db, &body.file_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or(ApiError::NotFound("media file not found".into()))?;
-
+    let requested_target_height = normalize_transcode_height(body.target_height)?;
+    let file = get_accessible_media_file(&auth, &state, &body.file_id).await?;
     let input_path = std::path::PathBuf::from(&file.path);
-    if !input_path.exists() {
-        return Err(ApiError::NotFound("media file does not exist on disk".into()).into());
-    }
-    if !input_path.is_file() {
-        return Err(ApiError::BadRequest("media path is not a regular file".into()).into());
-    }
-    if std::fs::File::open(&input_path).is_err() {
-        return Err(ApiError::BadRequest(
-            "media file is not readable by the server process".into(),
-        )
-        .into());
-    }
+    let target_height = if requested_target_height.is_some() {
+        let media_info = probe_media_info_for_file(&state, &input_path).await?;
+        validate_target_height_for_source(
+            requested_target_height,
+            media_info.video.as_ref().map(|video| video.height),
+        )?
+    } else {
+        None
+    };
 
     let session_id = state
         .transcoder
@@ -2700,6 +2682,336 @@ fn normalize_transcode_height(raw: Option<u32>) -> Result<Option<u32>, AppError>
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct DownloadPlaybackQuery {
+    target_height: Option<u32>,
+}
+
+async fn get_accessible_media_file(
+    auth: &AuthUser,
+    state: &AppState,
+    file_id: &str,
+) -> Result<rustfin_db::repo::media_files::MediaFileRow, AppError> {
+    if auth.role != "admin" {
+        let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, file_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
+        let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
+        ensure_library_access(auth, state, &item.library_id).await?;
+    }
+
+    let file = rustfin_db::repo::media_files::get_media_file(&state.db, file_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or(ApiError::NotFound("media file not found".into()))?;
+
+    let media_path = StdPath::new(&file.path);
+    if !media_path.exists() {
+        return Err(ApiError::NotFound("media file does not exist on disk".into()).into());
+    }
+    if !media_path.is_file() {
+        return Err(ApiError::BadRequest("media path is not a regular file".into()).into());
+    }
+    if std::fs::File::open(media_path).is_err() {
+        return Err(ApiError::BadRequest(
+            "media file is not readable by the server process".into(),
+        )
+        .into());
+    }
+
+    Ok(file)
+}
+
+async fn probe_media_info_for_file(
+    state: &AppState,
+    media_path: &StdPath,
+) -> Result<rustfin_transcoder::ffprobe::MediaInfo, AppError> {
+    rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
+        .await
+        .map_err(|e| {
+            let message = e.to_string().to_lowercase();
+            if message.contains("spawn failed")
+                && (message.contains("no such file") || message.contains("not found"))
+            {
+                ApiError::Internal(
+                    "ffprobe is not available; configure RUSTFIN_FFPROBE_PATH or install ffprobe"
+                        .into(),
+                )
+            } else if message.contains("permission denied") {
+                ApiError::Internal("media file is not readable by ffprobe".into())
+            } else {
+                ApiError::Internal(format!("ffprobe error: {e}"))
+            }
+        })
+        .map_err(AppError::from)
+}
+
+fn validate_target_height_for_source(
+    target_height: Option<u32>,
+    source_height: Option<u32>,
+) -> Result<Option<u32>, AppError> {
+    let Some(height) = target_height else {
+        return Ok(None);
+    };
+    let Some(source_height) = source_height.filter(|value| *value > 0) else {
+        return Err(
+            ApiError::BadRequest("source video height is unavailable for this media file".into())
+                .into(),
+        );
+    };
+    if height > source_height {
+        return Err(ApiError::BadRequest(format!(
+            "requested quality {height}p exceeds source height {source_height}p"
+        ))
+        .into());
+    }
+    Ok(Some(height))
+}
+
+fn playback_download_content_type(path: &StdPath) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("mkv") => "video/x-matroska",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        _ => "application/octet-stream",
+    }
+}
+
+fn playback_download_filename(path: &StdPath, target_height: Option<u32>) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("rustyfin-media");
+    let stem = stem.replace('"', "").replace(';', "");
+    match target_height {
+        Some(height) => format!("{stem}-{height}p.mp4"),
+        None => path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.replace('"', "").replace(';', ""))
+            .unwrap_or_else(|| format!("{stem}.bin")),
+    }
+}
+
+fn attachment_disposition(filename: &str) -> String {
+    let sanitized = filename.replace('"', "");
+    format!("attachment; filename=\"{sanitized}\"")
+}
+
+async fn spawn_download_transcode_ffmpeg(
+    state: &AppState,
+    input_path: &StdPath,
+    target_height: u32,
+) -> Result<tokio::process::Child, AppError> {
+    let mut args: Vec<String> = vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-nostdin".into(),
+        "-i".into(),
+        input_path.to_string_lossy().into_owned(),
+        "-map".into(),
+        "0:v:0?".into(),
+        "-map".into(),
+        "0:a:0?".into(),
+        "-sn".into(),
+        "-dn".into(),
+    ];
+
+    let active_hw_accel = state.transcoder.hw_accel();
+    if let Some(hw) = active_hw_accel {
+        match hw {
+            rustfin_transcoder::HwAccel::Nvenc => {
+                args.splice(0..0, ["-hwaccel".into(), "cuda".into()]);
+            }
+            rustfin_transcoder::HwAccel::Vaapi => {
+                let device = state
+                    .transcoder
+                    .hw_device_path()
+                    .unwrap_or_else(|| StdPath::new("/dev/dri/renderD128"))
+                    .to_string_lossy()
+                    .into_owned();
+                args.splice(0..0, ["-vaapi_device".into(), device]);
+            }
+            rustfin_transcoder::HwAccel::Qsv => {
+                args.splice(0..0, ["-hwaccel".into(), "qsv".into()]);
+                if let Some(device) = state.transcoder.hw_device_path() {
+                    args.splice(
+                        2..2,
+                        ["-qsv_device".into(), device.to_string_lossy().into_owned()],
+                    );
+                }
+            }
+            rustfin_transcoder::HwAccel::VideoToolbox => {
+                args.splice(0..0, ["-hwaccel".into(), "videotoolbox".into()]);
+            }
+        }
+    }
+
+    let vf = match active_hw_accel {
+        Some(rustfin_transcoder::HwAccel::Vaapi) => Some(format!(
+            "format=nv12,hwupload,scale_vaapi=w=-2:h={target_height}"
+        )),
+        Some(rustfin_transcoder::HwAccel::Qsv) => {
+            Some(format!("vpp_qsv=w=-2:h={target_height}"))
+        }
+        _ => Some(format!("scale=-2:min(ih\\,{target_height})")),
+    };
+    if let Some(filter) = vf {
+        args.extend(["-vf".into(), filter]);
+    }
+
+    let vcodec = match active_hw_accel {
+        Some(rustfin_transcoder::HwAccel::Nvenc) => "h264_nvenc",
+        Some(rustfin_transcoder::HwAccel::Vaapi) => "h264_vaapi",
+        Some(rustfin_transcoder::HwAccel::Qsv) => "h264_qsv",
+        Some(rustfin_transcoder::HwAccel::VideoToolbox) => "h264_videotoolbox",
+        None => "libx264",
+    };
+    args.extend(["-c:v".into(), vcodec.into()]);
+    if matches!(active_hw_accel, Some(rustfin_transcoder::HwAccel::Vaapi)) {
+        args.extend(["-profile:v".into(), "high".into()]);
+    }
+    if active_hw_accel.is_none() {
+        args.extend([
+            "-preset".into(),
+            "veryfast".into(),
+            "-crf".into(),
+            "23".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+        ]);
+    }
+
+    args.extend([
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-ac".into(),
+        "2".into(),
+        "-ar".into(),
+        "48000".into(),
+        "-movflags".into(),
+        "frag_keyframe+empty_moov+faststart".into(),
+        "-f".into(),
+        "mp4".into(),
+        "pipe:1".into(),
+    ]);
+
+    tokio::process::Command::new(state.transcoder.ffmpeg_path())
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            let message = e.to_string().to_lowercase();
+            if message.contains("no such file") || message.contains("not found") {
+                ApiError::Internal(
+                    "ffmpeg is not available; configure RUSTFIN_FFMPEG_PATH or install ffmpeg"
+                        .into(),
+                )
+            } else {
+                ApiError::Internal(format!("failed to start media transcode download: {e}"))
+            }
+        })
+        .map_err(AppError::from)
+}
+
+async fn download_playback_media(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+    Query(query): Query<DownloadPlaybackQuery>,
+) -> Result<Response, AppError> {
+    let requested_target_height = normalize_transcode_height(query.target_height)?;
+    let file = get_accessible_media_file(&auth, &state, &file_id).await?;
+    let media_path = PathBuf::from(&file.path);
+
+    if requested_target_height.is_none() {
+        let file_handle = tokio::fs::File::open(&media_path)
+            .await
+            .map_err(|e| ApiError::Internal(format!("file open error: {e}")))?;
+        let stream = ReaderStream::new(file_handle);
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, playback_download_content_type(&media_path))
+            .header(
+                header::CONTENT_DISPOSITION,
+                attachment_disposition(&playback_download_filename(&media_path, None)),
+            )
+            .header("Cache-Control", "no-store")
+            .header("Referrer-Policy", "no-referrer")
+            .header("X-Content-Type-Options", "nosniff")
+            .body(Body::from_stream(stream))
+            .unwrap());
+    }
+
+    let media_info = probe_media_info_for_file(&state, &media_path).await?;
+    let target_height =
+        validate_target_height_for_source(requested_target_height, media_info.video.as_ref().map(|v| v.height))?
+            .expect("validated target height must be present");
+
+    let mut child = spawn_download_transcode_ffmpeg(&state, &media_path, target_height).await?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ApiError::Internal("ffmpeg download pipe was not available".into()))?;
+    let stream = async_stream::stream! {
+        let mut stdout = stdout;
+        let mut child = child;
+        let mut buffer = vec![0u8; 64 * 1024];
+
+        loop {
+            let read = match stdout.read(&mut buffer).await {
+                Ok(read) => read,
+                Err(e) => {
+                    yield Err(std::io::Error::other(format!("transcode read error: {e}")));
+                    break;
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read]));
+        }
+
+        match child.wait().await {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                warn!(file_id = %file_id, ?status, "playback download transcode exited with non-zero status");
+            }
+            Err(error) => {
+                warn!(file_id = %file_id, %error, "failed waiting for playback download transcode");
+            }
+        }
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(
+            header::CONTENT_DISPOSITION,
+            attachment_disposition(&playback_download_filename(&media_path, Some(target_height))),
+        )
+        .header("Cache-Control", "no-store")
+        .header("Referrer-Policy", "no-referrer")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(Body::from_stream(stream))
+        .unwrap())
+}
+
 async fn stop_playback_session(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -2728,54 +3040,9 @@ async fn get_media_info(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if auth.role != "admin" {
-        let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &file_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
-        let item = rustfin_db::repo::items::get_item(&state.db, &item_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .ok_or_else(|| ApiError::Forbidden("file is not accessible for this account".into()))?;
-        ensure_library_access(&auth, &state, &item.library_id).await?;
-    }
-
-    let file = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or(ApiError::NotFound("media file not found".into()))?;
-
+    let file = get_accessible_media_file(&auth, &state, &file_id).await?;
     let media_path = std::path::Path::new(&file.path);
-    if !media_path.exists() {
-        return Err(ApiError::NotFound("media file does not exist on disk".into()).into());
-    }
-    if !media_path.is_file() {
-        return Err(ApiError::BadRequest("media path is not a regular file".into()).into());
-    }
-    if std::fs::File::open(media_path).is_err() {
-        return Err(ApiError::BadRequest(
-            "media file is not readable by the server process".into(),
-        )
-        .into());
-    }
-
-    let info = rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
-        .await
-        .map_err(|e| {
-            let message = e.to_string().to_lowercase();
-            if message.contains("spawn failed")
-                && (message.contains("no such file") || message.contains("not found"))
-            {
-                ApiError::Internal(
-                    "ffprobe is not available; configure RUSTFIN_FFPROBE_PATH or install ffprobe"
-                        .into(),
-                )
-            } else if message.contains("permission denied") {
-                ApiError::Internal("media file is not readable by ffprobe".into())
-            } else {
-                ApiError::Internal(format!("ffprobe error: {e}"))
-            }
-        })?;
+    let info = probe_media_info_for_file(&state, media_path).await?;
 
     Ok(Json(serde_json::to_value(&info).unwrap()))
 }

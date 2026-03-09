@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
+import VideoPlayerSurface, { filterPlaybackQualityOptions } from '@/app/components/VideoPlayerSurface';
 import { useAuth } from '@/lib/auth';
+import { apiFetch } from '@/lib/api';
 import {
   WatchPartyUser,
   WsRoomReconfiguredMessage,
@@ -30,15 +32,6 @@ import { useRoomRealtime } from '../hooks/useRoomRealtime';
 import { useWatchRoomData } from '../hooks/useWatchRoomData';
 
 const INVITE_NAME_MAX_CHARS = 14;
-const HLS_QUALITY_OPTIONS: Array<{ value: 'auto' | number; label: string }> = [
-  { value: 'auto', label: 'Auto (Original)' },
-  { value: 2160, label: '2160p (4K)' },
-  { value: 1440, label: '1440p' },
-  { value: 1080, label: '1080p' },
-  { value: 720, label: '720p' },
-  { value: 480, label: '480p' },
-  { value: 360, label: '360p' },
-];
 
 function formatPlaybackClock(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -54,6 +47,30 @@ function formatPlaybackClock(ms: number): string {
 function truncateInviteName(name: string): string {
   if (name.length <= INVITE_NAME_MAX_CHARS) return name;
   return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
+}
+
+function fallbackVideoDownloadName(itemId: string, targetHeight: number | null): string {
+  if (targetHeight && targetHeight > 0) {
+    return `rustyfin-room-${itemId}-${targetHeight}p.mp4`;
+  }
+  return `rustyfin-room-${itemId}.bin`;
+}
+
+function extractDownloadFilename(header: string | null, fallback: string): string {
+  if (!header) return fallback;
+  const utf8Match = header.match(/filename\\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const basicMatch = header.match(/filename=\"?([^\";]+)\"?/i);
+  if (basicMatch?.[1]) {
+    return basicMatch[1];
+  }
+  return fallback;
 }
 
 export default function WatchPartyRoomPage() {
@@ -82,6 +99,7 @@ export default function WatchPartyRoomPage() {
 
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const [downloadingVideo, setDownloadingVideo] = useState(false);
   const {
     room,
     loadingRoom,
@@ -207,11 +225,10 @@ export default function WatchPartyRoomPage() {
   }, [room, joinedRole]);
 
   const controlsEnabled = canPlayPause || canSeek || joinedRole === 'host';
-  const videoPositionMs = realtime.roomState?.position_ms ?? 0;
-  const videoDurationMs = playback.knownDurationMs > 0 ? playback.knownDurationMs : null;
-  const playbackDurationLabel = videoDurationMs
-    ? `${formatPlaybackClock(videoPositionMs)} / ${formatPlaybackClock(videoDurationMs)}`
-    : null;
+  const qualityOptions = useMemo(
+    () => filterPlaybackQualityOptions(playback.sourceVideoHeight),
+    [playback.sourceVideoHeight],
+  );
 
   const roomDurationSeconds = useMemo(() => {
     if (!room) return 0;
@@ -341,6 +358,40 @@ export default function WatchPartyRoomPage() {
   const handleSwitchWatchSource = reconfigure.handleSwitchWatchSource;
   const handleApplyLocalMedia = reconfigure.handleApplyLocalMedia;
   const handleConfigureAudioLibrary = reconfigure.handleConfigureAudioLibrary;
+
+  const handleDownloadCurrentVideo = useCallback(async () => {
+    if (!playback.descriptor?.file_id || !room?.item_id) return;
+    setDownloadingVideo(true);
+    setError('');
+    try {
+      const search = new URLSearchParams();
+      if (playback.hlsTargetHeight && playback.hlsTargetHeight > 0) {
+        search.set('target_height', String(playback.hlsTargetHeight));
+      }
+      const suffix = search.toString();
+      const path = `/playback/download/${playback.descriptor.file_id}${suffix ? `?${suffix}` : ''}`;
+      const res = await apiFetch(path, { method: 'GET' });
+      if (!res.ok) {
+        throw new Error(clientErrorMessage(await res.text(), `Download failed: ${res.status}`));
+      }
+      const blob = await res.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = extractDownloadFilename(
+        res.headers.get('content-disposition'),
+        fallbackVideoDownloadName(room.item_id, playback.hlsTargetHeight),
+      );
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to download room media.'));
+    } finally {
+      setDownloadingVideo(false);
+    }
+  }, [playback.descriptor?.file_id, playback.hlsTargetHeight, room?.item_id]);
 
   async function handleJoin() {
     setJoining(true);
@@ -881,93 +932,94 @@ export default function WatchPartyRoomPage() {
               )
             ) : (
               <>
-                <div className="tile overflow-hidden rounded-2xl border border-white/10 bg-black">
-                  <video
-                    ref={playback.videoRef}
-                    controls={controlsEnabled}
-                    preload="auto"
-                    playsInline
-                    className="w-full max-h-[70vh]"
-                    onPlay={(event) => {
+                <VideoPlayerSurface
+                  videoRef={playback.videoRef}
+                  canStartPlayback={Boolean(playback.descriptor)}
+                  knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
+                  sessionStartOffsetSecs={playback.hlsSessionStartOffsetSecs}
+                  qualityValue={playback.hlsTargetHeight ?? 'auto'}
+                  qualityOptions={qualityOptions}
+                  qualityDisabled={playback.startingHls}
+                  onQualityChange={(value) => {
+                    const nextTargetHeight = value === 'auto' ? null : value;
+                    playback.setHlsTargetHeight(nextTargetHeight);
+                    void playback.startHls({
+                      silent: true,
+                      targetHeightOverride: nextTargetHeight,
+                    });
+                  }}
+                  onSeekRequest={async (targetSeconds) => {
+                    const video = playback.videoRef.current;
+                    if (!video || !canSeek) return;
+                    const currentWindowDuration =
+                      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+                    const bufferedWindowEndSecs =
+                      playback.hlsSessionStartOffsetSecs + currentWindowDuration;
+                    const requiresSessionRestart =
+                      targetSeconds < Math.max(0, playback.hlsSessionStartOffsetSecs - 1) ||
+                      (currentWindowDuration > 0 && targetSeconds > bufferedWindowEndSecs + 1);
+
+                    if (requiresSessionRestart) {
+                      await playback.startHls({
+                        silent: true,
+                        targetHeightOverride: playback.hlsTargetHeight,
+                        seekTimeOverrideSecs: targetSeconds,
+                        autoplayWhenNoState: realtime.roomState?.playing ?? false,
+                      });
+                    } else {
+                      video.currentTime = Math.max(
+                        0,
+                        targetSeconds - playback.hlsSessionStartOffsetSecs,
+                      );
+                    }
+
+                    if (playback.applyingRemoteRef.current) return;
+                    sendWs({
+                      type: 'seek',
+                      position_ms: Math.floor(targetSeconds * 1000),
+                    });
+                  }}
+                  onDownload={handleDownloadCurrentVideo}
+                  downloading={downloadingVideo}
+                  downloadDisabled={!playback.descriptor || playback.startingHls}
+                  playbackEnabled={canPlayPause}
+                  seekEnabled={canSeek}
+                  playbackDisabledReason={
+                    !controlsEnabled ? 'Playback controls are host-only in this room.' : null
+                  }
+                  statusText={
+                    playback.startingHls
+                      ? 'Preparing transcoded stream…'
+                      : !controlsEnabled
+                        ? 'Playback controls are host-only in this room.'
+                        : null
+                  }
+                  maxViewportHeightClassName="max-h-[70vh]"
+                  videoElementProps={{
+                    preload: 'auto',
+                    onPlay: (event) => {
                       if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'play',
-                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
+                        position_ms: Math.floor(
+                          (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
+                        ),
                       });
-                    }}
-                    onPause={(event) => {
+                    },
+                    onPause: (event) => {
                       if (playback.applyingRemoteRef.current || !canPlayPause) return;
                       sendWs({
                         type: 'pause',
-                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
+                        position_ms: Math.floor(
+                          (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
+                        ),
                       });
-                    }}
-                    onSeeked={(event) => {
-                      if (playback.applyingRemoteRef.current || !canSeek) return;
-                      sendWs({
-                        type: 'seek',
-                        position_ms: Math.floor(event.currentTarget.currentTime * 1000),
-                      });
-                    }}
-                    onError={() => {
-                      if (playback.mode !== 'direct') return;
-                      setInfo('Direct playback failed. Switching to HLS…');
-                      void playback.startHls();
-                    }}
-                  />
-                </div>
-
-                <div className="panel-soft flex flex-wrap items-center gap-2 rounded-xl px-3 py-3">
-                  <button
-                    type="button"
-                    className={`px-4 py-2 text-sm ${playback.mode === 'direct' ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => void playback.startDirect()}
-                    disabled={playback.startingDirect || playback.startingHls || !playback.descriptor}
-                  >
-                    {playback.startingDirect ? 'Starting…' : 'Direct Play'}
-                  </button>
-                  <button
-                    type="button"
-                    className={`px-4 py-2 text-sm ${playback.mode === 'hls' ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => void playback.startHls()}
-                    disabled={playback.startingDirect || playback.startingHls || !playback.descriptor}
-                  >
-                    {playback.startingHls ? 'Starting…' : 'Transcode (HLS)'}
-                  </button>
-                  <label className="ml-auto flex items-center gap-2 text-xs muted">
-                    <span>Quality</span>
-                    <select
-                      className="select px-2 py-1.5 text-sm"
-                      value={playback.hlsTargetHeight ?? 'auto'}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        const nextTargetHeight = value === 'auto' ? null : Number(value);
-                        playback.setHlsTargetHeight(nextTargetHeight);
-                        if (playback.mode === 'hls') {
-                          void playback.startHls({
-                            silent: true,
-                            targetHeightOverride: nextTargetHeight,
-                          });
-                        }
-                      }}
-                      disabled={playback.startingDirect || playback.startingHls}
-                    >
-                      {HLS_QUALITY_OPTIONS.map((option) => (
-                        <option key={option.label} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {playbackDurationLabel && (
-                    <span className="text-xs muted">
-                      {playbackDurationLabel}
-                    </span>
-                  )}
-                  {!controlsEnabled && (
-                    <span className="text-xs muted">Playback controls are host-only in this room.</span>
-                  )}
-                </div>
+                    },
+                    onError: () => {
+                      setError('HLS playback failed. Refresh the room and retry.');
+                    },
+                  }}
+                />
               </>
             )}
           </section>
