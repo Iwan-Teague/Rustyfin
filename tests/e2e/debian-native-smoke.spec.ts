@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN, createLibraryViaBrowse, login, triggerScan } from './helpers';
+import { ADMIN, createLibraryViaBrowse, loginViaApi, triggerScan } from './helpers';
 
 test('@debian-native-smoke login, channels, rooms, servers, and playback stay healthy', async ({ page }) => {
-  await login(page, ADMIN.username, ADMIN.password);
+  await loginViaApi(page, ADMIN.username, ADMIN.password);
 
   await page.goto('/channels');
   await page.waitForLoadState('networkidle');
