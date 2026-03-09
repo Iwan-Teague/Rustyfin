@@ -400,13 +400,23 @@ export default function VideoPlayerSurface({
       ref={activeShellRef}
       className="tile overflow-hidden rounded-2xl border border-white/10 bg-black"
     >
-      <video
-        ref={videoRef}
-        {...videoElementProps}
-        controls={false}
-        playsInline
-        className={`w-full ${maxViewportHeightClassName} ${(videoElementProps?.className ?? '').trim()}`.trim()}
-      />
+      <div className="relative">
+        <video
+          ref={videoRef}
+          {...videoElementProps}
+          controls={false}
+          playsInline
+          className={`w-full ${maxViewportHeightClassName} ${(videoElementProps?.className ?? '').trim()}`.trim()}
+        />
+        <button
+          type="button"
+          onClick={() => void togglePlayback()}
+          disabled={!canStartPlayback || !playbackEnabled}
+          aria-label={isPlaying ? 'Pause playback' : 'Play playback'}
+          title={playbackDisabledReason ?? 'Toggle playback'}
+          className="absolute inset-0 z-10 cursor-pointer bg-transparent disabled:cursor-not-allowed"
+        />
+      </div>
       <div className="border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
         <div className="flex flex-wrap items-center gap-3">
           <button
