@@ -172,6 +172,11 @@ start_directory_picker_helper() {
     return
   fi
 
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    warn "No graphical session detected; native directory picker helper not started. Use host directory browsing or enter paths manually."
+    return
+  fi
+
   local py_bin=""
   if command -v python3 >/dev/null 2>&1; then
     py_bin="python3"
