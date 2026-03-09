@@ -17,11 +17,18 @@ SET sort_seq = nextval('channel_message_sort_seq_seq')
 FROM ordered
 WHERE m.id = ordered.id;
 
-SELECT setval(
-    'channel_message_sort_seq_seq',
-    COALESCE((SELECT MAX(sort_seq) FROM channel_message), 0),
-    true
-);
+DO $$
+DECLARE
+    max_sort_seq BIGINT;
+BEGIN
+    SELECT MAX(sort_seq) INTO max_sort_seq FROM channel_message;
+
+    IF max_sort_seq IS NULL THEN
+        PERFORM setval('channel_message_sort_seq_seq', 1, false);
+    ELSE
+        PERFORM setval('channel_message_sort_seq_seq', max_sort_seq, true);
+    END IF;
+END $$;
 
 ALTER TABLE channel_message
     ALTER COLUMN sort_seq SET NOT NULL;
