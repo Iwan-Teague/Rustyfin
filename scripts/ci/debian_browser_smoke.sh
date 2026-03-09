@@ -33,6 +33,65 @@ ensure_playwright_browser() {
   fi
 }
 
+bootstrap_setup_for_smoke() {
+  local admin_username="${RUSTFIN_ADMIN_USERNAME:-admin}"
+  local admin_password="${RUSTFIN_ADMIN_PASSWORD:-AdminPassword123!}"
+  local owner_token
+  local claim_response
+
+  log_info "Bootstrapping setup state for browser smoke ..."
+
+  claim_response="$(curl -fsS \
+    -X POST "${TEST_BACKEND_URL}/api/v1/setup/session/claim" \
+    -H 'Content-Type: application/json' \
+    -d '{"client_name":"DebianSmoke","force":false,"confirm_takeover":false}')"
+  owner_token="$(printf '%s' "${claim_response}" | jq -r '.owner_token')"
+  [[ -n "${owner_token}" && "${owner_token}" != "null" ]] || die "Failed to claim setup session for smoke run."
+
+  curl -fsS \
+    -X PUT "${TEST_BACKEND_URL}/api/v1/setup/config" \
+    -H 'Content-Type: application/json' \
+    -H "X-Setup-Owner-Token: ${owner_token}" \
+    -H "X-Setup-Remote-Token: ${owner_token}" \
+    -d '{"server_name":"Rustyfin Smoke","default_ui_locale":"en-GB","default_region":"GB","default_time_zone":"Europe/London"}' \
+    >/dev/null
+
+  curl -fsS \
+    -X POST "${TEST_BACKEND_URL}/api/v1/setup/admin" \
+    -H 'Content-Type: application/json' \
+    -H "X-Setup-Owner-Token: ${owner_token}" \
+    -H "X-Setup-Remote-Token: ${owner_token}" \
+    -H "Idempotency-Key: smoke-admin-bootstrap-0001" \
+    -d "{\"username\":\"${admin_username}\",\"password\":\"${admin_password}\"}" \
+    >/dev/null
+
+  curl -fsS \
+    -X PUT "${TEST_BACKEND_URL}/api/v1/setup/metadata" \
+    -H 'Content-Type: application/json' \
+    -H "X-Setup-Owner-Token: ${owner_token}" \
+    -H "X-Setup-Remote-Token: ${owner_token}" \
+    -d '{"metadata_language":"en","metadata_region":"GB"}' \
+    >/dev/null
+
+  curl -fsS \
+    -X PUT "${TEST_BACKEND_URL}/api/v1/setup/network" \
+    -H 'Content-Type: application/json' \
+    -H "X-Setup-Owner-Token: ${owner_token}" \
+    -H "X-Setup-Remote-Token: ${owner_token}" \
+    -d '{"allow_remote_access":false,"trusted_proxies":[]}' \
+    >/dev/null
+
+  curl -fsS \
+    -X POST "${TEST_BACKEND_URL}/api/v1/setup/complete" \
+    -H 'Content-Type: application/json' \
+    -H "X-Setup-Owner-Token: ${owner_token}" \
+    -H "X-Setup-Remote-Token: ${owner_token}" \
+    -d '{"confirm":true}' \
+    >/dev/null
+
+  log_ok "Smoke setup bootstrap completed"
+}
+
 build_smoke_db_url() {
   local base_url="$1"
   local schema_name="$2"
@@ -112,6 +171,7 @@ SMOKE_DB_URL="$(build_smoke_db_url "${BASE_DB_URL}" "${SMOKE_SCHEMA}")"
 SERVER_BIN="$(find_native_server_bin)"
 
 start_native_test_backend "${RUN_DIR}" "${SMOKE_DB_URL}" "${PICKER}" "${SERVER_BIN}"
+bootstrap_setup_for_smoke
 start_ui "${RUN_DIR}"
 
 run_playwright "${RUN_DIR}" "@debian-native-smoke"
