@@ -96,7 +96,11 @@ export async function login(page: Page, username: string, password: string) {
   await page.waitForLoadState('networkidle');
 }
 
-export async function loginViaApi(page: Page, username: string, password: string): Promise<Page> {
+export async function loginViaApi(
+  page: Page,
+  username: string,
+  password: string,
+): Promise<{ page: Page; token: string }> {
   await page.goto('/login');
   await page.waitForLoadState('domcontentloaded');
 
@@ -145,7 +149,7 @@ export async function loginViaApi(page: Page, username: string, password: string
   await authedPage.goto('/');
   await authedPage.waitForLoadState('domcontentloaded');
   await page.close();
-  return authedPage;
+  return { page: authedPage, token };
 }
 
 export async function goAdmin(page: Page) {
