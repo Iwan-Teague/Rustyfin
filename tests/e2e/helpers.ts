@@ -119,13 +119,27 @@ export async function loginViaApi(page: Page, username: string, password: string
     },
   });
   expect(meResponse.ok()).toBeTruthy();
+  const meBody = (await meResponse.json()) as {
+    id?: unknown;
+    username?: unknown;
+    role?: unknown;
+    login_username?: unknown;
+    avatar_url?: unknown;
+  };
 
   await page.context().addInitScript((value) => {
     localStorage.setItem('token', value);
   }, token);
-  await page.evaluate((value) => {
-    localStorage.setItem('token', value);
-  }, token);
+  await page.context().addInitScript((cachedMe) => {
+    localStorage.setItem('rustfin_auth_me_v1', JSON.stringify(cachedMe));
+  }, meBody);
+  await page.evaluate(
+    ([value, cachedMe]) => {
+      localStorage.setItem('token', value);
+      localStorage.setItem('rustfin_auth_me_v1', JSON.stringify(cachedMe));
+    },
+    [token, meBody] as const
+  );
 }
 
 export async function goAdmin(page: Page) {
