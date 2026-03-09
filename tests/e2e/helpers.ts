@@ -122,6 +122,9 @@ export async function loginViaApi(page: Page, username: string, password: string
 
   await page.goto('/');
   await page.waitForLoadState('networkidle');
+  await expect(
+    page.getByRole('heading', { name: new RegExp(`Welcome back,\\s*${username}`, 'i') })
+  ).toBeVisible({ timeout: 40_000 });
 }
 
 export async function goAdmin(page: Page) {
