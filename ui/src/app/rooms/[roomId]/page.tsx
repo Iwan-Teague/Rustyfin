@@ -964,7 +964,7 @@ export default function WatchPartyRoomPage() {
                       playback.hlsSessionStartOffsetSecs + currentWindowDuration;
                     const requiresSessionRestart =
                       targetSeconds < Math.max(0, playback.hlsSessionStartOffsetSecs - 1) ||
-                      (currentWindowDuration > 0 && targetSeconds > bufferedWindowEndSecs + 1);
+                      targetSeconds > bufferedWindowEndSecs + 1;
 
                     if (requiresSessionRestart) {
                       await playback.startHls({

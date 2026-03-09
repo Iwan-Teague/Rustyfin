@@ -127,6 +127,32 @@ function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: n
   }
 }
 
+function extractPlaylistWindowDuration(levelData: unknown): number {
+  const details = (levelData as { details?: Record<string, unknown> } | null)?.details as
+    | {
+        fragments?: Array<{
+          end?: number;
+          start?: number;
+          duration?: number;
+        }>;
+      }
+    | undefined;
+  const fragments = details?.fragments;
+  if (!Array.isArray(fragments) || fragments.length === 0) {
+    return 0;
+  }
+  const last = fragments[fragments.length - 1];
+  const fromEnd = typeof last?.end === 'number' && Number.isFinite(last.end) ? last.end : 0;
+  const fromStartDuration =
+    typeof last?.start === 'number' &&
+    Number.isFinite(last.start) &&
+    typeof last?.duration === 'number' &&
+    Number.isFinite(last.duration)
+      ? last.start + last.duration
+      : 0;
+  return Math.max(fromEnd, fromStartDuration, 0);
+}
+
 function installKnownDurationEnforcer(hls: unknown, durationSeconds: number): () => void {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
     return () => {};
@@ -315,16 +341,9 @@ export function useRoomPlayback({
           hlsRef.current = hls;
           let networkRecoveries = 0;
           const reinforceKnownDuration = (data?: unknown) => {
-            const details = (data as { details?: Record<string, unknown> } | null)?.details as
-              | { totalduration?: number; edge?: number }
-              | undefined;
+            const playlistWindowDuration = extractPlaylistWindowDuration(data);
             const reportedWindowDuration = Math.max(
-              typeof details?.totalduration === 'number' && Number.isFinite(details.totalduration)
-                ? details.totalduration
-                : 0,
-              typeof details?.edge === 'number' && Number.isFinite(details.edge)
-                ? details.edge
-                : 0,
+              playlistWindowDuration,
               readBufferedWindowDuration(video),
             );
             if (reportedWindowDuration > 0) {
@@ -450,7 +469,7 @@ export function useRoomPlayback({
     const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
     const requiresSessionRestart =
       targetSeconds < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
-      (currentWindowDuration > 0 && targetSeconds > bufferedWindowEndSecs + 1);
+      targetSeconds > bufferedWindowEndSecs + 1;
 
     if (requiresSessionRestart) {
       await startHls({
