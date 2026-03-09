@@ -122,17 +122,34 @@ start_ui() {
     die "Port ${TEST_UI_PORT} already in use. Set RUSTFIN_TEST_UI_PORT or free that port and retry."
   fi
 
-  log_info "Starting UI (Next dev server) ..."
+  local standalone_entry="${REPO_ROOT}/ui/.next/standalone/server.js"
+  if [[ ! -f "${standalone_entry}" ]]; then
+    log_info "Building UI standalone bundle for smoke run ..."
+    (
+      cd "${REPO_ROOT}"
+      export TMPDIR="${TMPDIR}"
+      export npm_config_cache="${npm_config_cache}"
+      export RUSTYFIN_API_BASE_URL="${TEST_BACKEND_URL}"
+      npm --prefix ui run build
+    ) >"${run_dir}/logs/ui-build.log" 2>&1 || {
+      log_err "UI build failed. Last 80 lines:"
+      tail -n 80 "${run_dir}/logs/ui-build.log" || true
+      return 1
+    }
+  fi
+
+  log_info "Starting UI (Next standalone server) ..."
   (
-    cd "${REPO_ROOT}"
+    cd "${REPO_ROOT}/ui/.next/standalone"
     export TMPDIR="${TMPDIR}"
     export npm_config_cache="${npm_config_cache}"
+    export PORT="${TEST_UI_PORT}"
+    export HOSTNAME="127.0.0.1"
     export RUSTYFIN_API_BASE_URL="${TEST_BACKEND_URL}"
-    npm --prefix ui run dev -- --port "${TEST_UI_PORT}"
+    node ./server.js
   ) >"${run_dir}/logs/ui.log" 2>&1 &
   echo $! >"${run_dir}/tmp/ui.pid"
 
-  # /health is rewritten, but the UI should still serve.
   if ! wait_http "${TEST_UI_URL}/" 60; then
     log_err "UI did not become ready. Last 80 lines:"
     tail -n 80 "${run_dir}/logs/ui.log" || true
