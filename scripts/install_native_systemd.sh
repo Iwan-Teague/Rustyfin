@@ -23,6 +23,8 @@ Behavior:
 - creates/updates a shared env file at /etc/rustyfin/servers-agent.env
 - enables both services at boot
 - starts/restarts them immediately
+- runtime service intentionally starts with `--no-build`
+- native code updates should be applied with `./scripts/deploy-native.sh`
 
 Environment:
   RUSTFIN_NATIVE_USER            Main service account username (defaults to invoking user)
@@ -167,6 +169,7 @@ info "Installing ${MAIN_SERVICE_NAME} for user ${RUSTFIN_NATIVE_USER}..."
 
 success "Installed and started ${AGENT_SERVICE_NAME}"
 success "Installed and started ${MAIN_SERVICE_NAME}"
+success "For future native updates, use: ./scripts/deploy-native.sh"
 success "Check status with:"
 echo "  systemctl status ${AGENT_SERVICE_NAME}"
 echo "  systemctl status ${MAIN_SERVICE_NAME}"
