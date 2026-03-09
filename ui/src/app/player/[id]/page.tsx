@@ -89,6 +89,22 @@ function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: numbe
   }
 }
 
+function readBufferedWindowDuration(video: HTMLVideoElement | null): number {
+  if (!video) return 0;
+  try {
+    const buffered = video.buffered;
+    if (buffered && buffered.length > 0) {
+      const end = buffered.end(buffered.length - 1);
+      if (Number.isFinite(end) && end > 0) {
+        return end;
+      }
+    }
+  } catch {
+    // Some browsers can throw while buffered ranges are mutating.
+  }
+  return Number.isFinite(video.currentTime) && video.currentTime > 0 ? video.currentTime : 0;
+}
+
 function forceKnownDurationInLevelDetails(
   levelData: LevelLoadedData | LevelUpdatedData | unknown,
   durationSeconds: number,
@@ -165,6 +181,7 @@ export default function PlayerPage() {
   const [downloading, setDownloading] = useState(false);
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
+  const [hlsAvailableWindowDurationSecs, setHlsAvailableWindowDurationSecs] = useState(0);
   const autoStartedRef = useRef(false);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
@@ -257,6 +274,7 @@ export default function PlayerPage() {
         destroyHls();
         setSessionId(data.session_id);
         setHlsSessionStartOffsetSecs(startTimeSecs ?? 0);
+        setHlsAvailableWindowDurationSecs(0);
 
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -291,6 +309,23 @@ export default function PlayerPage() {
           hlsRef.current = hls;
           let networkRecoveries = 0;
           const reinforceKnownDuration = (data?: unknown) => {
+            const details = (data as { details?: LevelDetails } | null)?.details as
+              | (LevelDetails & { totalduration?: number; edge?: number })
+              | undefined;
+            const reportedWindowDuration = Math.max(
+              typeof details?.totalduration === 'number' && Number.isFinite(details.totalduration)
+                ? details.totalduration
+                : 0,
+              typeof details?.edge === 'number' && Number.isFinite(details.edge)
+                ? details.edge
+                : 0,
+              readBufferedWindowDuration(video),
+            );
+            if (reportedWindowDuration > 0) {
+              setHlsAvailableWindowDurationSecs((current) =>
+                reportedWindowDuration > current ? reportedWindowDuration : current,
+              );
+            }
             if (data) {
               forceKnownDurationInLevelDetails(data, knownDurationSeconds);
             }
@@ -364,11 +399,15 @@ export default function PlayerPage() {
       const safeTarget = Math.max(0, Math.min(targetSeconds, effectiveDurationSeconds || targetSeconds));
       if (!Number.isFinite(safeTarget)) return;
 
-      const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + (Number.isFinite(video.duration) ? video.duration : 0);
+      const currentWindowDuration = Math.max(
+        hlsAvailableWindowDurationSecs,
+        readBufferedWindowDuration(video),
+      );
+      const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
       if (
         descriptor?.file_id &&
         (safeTarget < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
-          ((video.duration || 0) > 0 && safeTarget > bufferedWindowEndSecs + 1))
+          (currentWindowDuration > 0 && safeTarget > bufferedWindowEndSecs + 1))
       ) {
         await startHls({
           targetHeightOverride: hlsTargetHeight,
@@ -379,7 +418,15 @@ export default function PlayerPage() {
 
       video.currentTime = Math.max(0, safeTarget - hlsSessionStartOffsetSecs);
     },
-    [descriptor?.duration_ms, descriptor?.file_id, hlsSessionStartOffsetSecs, hlsTargetHeight, mediaInfo?.duration_secs, startHls],
+    [
+      descriptor?.duration_ms,
+      descriptor?.file_id,
+      hlsAvailableWindowDurationSecs,
+      hlsSessionStartOffsetSecs,
+      hlsTargetHeight,
+      mediaInfo?.duration_secs,
+      startHls,
+    ],
   );
 
   const handleDownload = useCallback(async () => {
@@ -425,6 +472,7 @@ export default function PlayerPage() {
     setSessionId(null);
     setError('');
     setHlsSessionStartOffsetSecs(0);
+    setHlsAvailableWindowDurationSecs(0);
 
     apiJson<PlaybackDescriptor>(`/items/${id}/playback`)
       .then((data) => {
@@ -552,6 +600,9 @@ export default function PlayerPage() {
         videoRef={videoRef}
         canStartPlayback={canStartPlayback}
         knownDurationSecs={knownDurationSecs}
+        bufferedWindowEndSecs={
+          hlsSessionStartOffsetSecs + Math.max(hlsAvailableWindowDurationSecs, readBufferedWindowDuration(videoRef.current))
+        }
         sessionStartOffsetSecs={hlsSessionStartOffsetSecs}
         qualityValue={selectedQualityValue}
         qualityOptions={qualityOptions}

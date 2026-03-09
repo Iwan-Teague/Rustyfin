@@ -936,6 +936,9 @@ export default function WatchPartyRoomPage() {
                   videoRef={playback.videoRef}
                   canStartPlayback={Boolean(playback.descriptor)}
                   knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
+                  bufferedWindowEndSecs={
+                    playback.hlsSessionStartOffsetSecs + playback.hlsAvailableWindowDurationSecs
+                  }
                   sessionStartOffsetSecs={playback.hlsSessionStartOffsetSecs}
                   qualityValue={playback.hlsTargetHeight ?? 'auto'}
                   qualityOptions={qualityOptions}
@@ -951,8 +954,12 @@ export default function WatchPartyRoomPage() {
                   onSeekRequest={async (targetSeconds) => {
                     const video = playback.videoRef.current;
                     if (!video || !canSeek) return;
-                    const currentWindowDuration =
-                      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+                    const currentWindowDuration = Math.max(
+                      playback.hlsAvailableWindowDurationSecs,
+                      Number.isFinite(video.currentTime) && video.currentTime > 0
+                        ? video.currentTime
+                        : 0,
+                    );
                     const bufferedWindowEndSecs =
                       playback.hlsSessionStartOffsetSecs + currentWindowDuration;
                     const requiresSessionRestart =

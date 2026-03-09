@@ -97,6 +97,22 @@ function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: numbe
   }
 }
 
+function readBufferedWindowDuration(video: HTMLVideoElement | null): number {
+  if (!video) return 0;
+  try {
+    const buffered = video.buffered;
+    if (buffered && buffered.length > 0) {
+      const end = buffered.end(buffered.length - 1);
+      if (Number.isFinite(end) && end > 0) {
+        return end;
+      }
+    }
+  } catch {
+    // Some browsers can throw while buffered ranges are mutating.
+  }
+  return Number.isFinite(video.currentTime) && video.currentTime > 0 ? video.currentTime : 0;
+}
+
 function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: number): void {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
   const details = (levelData as { details?: Record<string, unknown> } | null)?.details;
@@ -154,6 +170,7 @@ export function useRoomPlayback({
   const [startingHls, setStartingHls] = useState(false);
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
+  const [hlsAvailableWindowDurationSecs, setHlsAvailableWindowDurationSecs] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<unknown>(null);
@@ -205,6 +222,7 @@ export function useRoomPlayback({
     setDescriptor(null);
     setMediaInfo(null);
     setHlsSessionStartOffsetSecs(0);
+    setHlsAvailableWindowDurationSecs(0);
   }, [destroyHls, stopSession]);
 
   const applyRemoteStateRef = useRef<(stateMessage: WsStateMessage) => Promise<void>>(async () => {});
@@ -260,6 +278,7 @@ export function useRoomPlayback({
 
         sessionIdRef.current = session.session_id;
         setHlsSessionStartOffsetSecs(explicitSeekTime ?? 0);
+        setHlsAvailableWindowDurationSecs(0);
 
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -296,6 +315,23 @@ export function useRoomPlayback({
           hlsRef.current = hls;
           let networkRecoveries = 0;
           const reinforceKnownDuration = (data?: unknown) => {
+            const details = (data as { details?: Record<string, unknown> } | null)?.details as
+              | { totalduration?: number; edge?: number }
+              | undefined;
+            const reportedWindowDuration = Math.max(
+              typeof details?.totalduration === 'number' && Number.isFinite(details.totalduration)
+                ? details.totalduration
+                : 0,
+              typeof details?.edge === 'number' && Number.isFinite(details.edge)
+                ? details.edge
+                : 0,
+              readBufferedWindowDuration(video),
+            );
+            if (reportedWindowDuration > 0) {
+              setHlsAvailableWindowDurationSecs((current) =>
+                reportedWindowDuration > current ? reportedWindowDuration : current,
+              );
+            }
             if (data) {
               forceKnownDurationInLevelDetails(data, knownDurationSeconds);
             }
@@ -407,8 +443,10 @@ export function useRoomPlayback({
     applyingRemoteRef.current = true;
 
     const targetSeconds = stateMessage.position_ms / 1000;
-    const currentWindowDuration =
-      Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const currentWindowDuration = Math.max(
+      hlsAvailableWindowDurationSecs,
+      readBufferedWindowDuration(video),
+    );
     const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
     const requiresSessionRestart =
       targetSeconds < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
@@ -444,7 +482,7 @@ export function useRoomPlayback({
     window.setTimeout(() => {
       applyingRemoteRef.current = false;
     }, 60);
-  }, [hlsSessionStartOffsetSecs, hlsTargetHeight, startHls]);
+  }, [hlsAvailableWindowDurationSecs, hlsSessionStartOffsetSecs, hlsTargetHeight, startHls]);
 
   useEffect(() => {
     applyRemoteStateRef.current = applyRemoteState;
@@ -604,6 +642,7 @@ export function useRoomPlayback({
     startingHls,
     hlsTargetHeight,
     hlsSessionStartOffsetSecs,
+    hlsAvailableWindowDurationSecs,
     sourceVideoHeight,
     setHlsTargetHeight,
     isVideoRoom,
