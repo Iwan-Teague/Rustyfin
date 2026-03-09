@@ -71,6 +71,9 @@ else
   RUN_ROOT=(sudo)
 fi
 
+REPO_OWNER_USER="$(id -un)"
+REPO_OWNER_GROUP="$(id -gn)"
+
 MAIN_SERVICE_NAME="${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}"
 AGENT_SERVICE_NAME="${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}"
 
@@ -98,6 +101,23 @@ start_service_required() {
   "${RUN_ROOT[@]}" systemctl start "$service_name"
 }
 
+repair_build_artifact_ownership() {
+  local path=""
+  for path in \
+    "$REPO_ROOT/ui/.next" \
+    "$REPO_ROOT/.native-bins" \
+    "$REPO_ROOT/target" \
+    "$REPO_ROOT/.tmp/native-runtime"
+  do
+    [[ -e "$path" ]] || continue
+    if [[ "$(id -u)" -eq 0 ]]; then
+      chown -R "${REPO_OWNER_USER}:${REPO_OWNER_GROUP}" "$path"
+    else
+      "${RUN_ROOT[@]}" chown -R "${REPO_OWNER_USER}:${REPO_OWNER_GROUP}" "$path"
+    fi
+  done
+}
+
 if [[ "$GIT_PULL" == "true" ]]; then
   branch_name="$(git rev-parse --abbrev-ref HEAD)"
   [[ "$branch_name" != "HEAD" ]] || die "Repository is in detached HEAD state. Check out a branch before deploying."
@@ -121,6 +141,7 @@ else
 fi
 
 info "Rebuilding native artifacts..."
+repair_build_artifact_ownership
 "$REPO_ROOT/scripts/start-native.sh" --build-only
 
 if service_exists "$MAIN_SERVICE_NAME"; then
