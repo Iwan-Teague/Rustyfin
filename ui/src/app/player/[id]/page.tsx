@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type Hls from 'hls.js';
+import type { ErrorData, LevelDetails, LevelLoadedData, LevelUpdatedData } from 'hls.js';
 import { useParams } from 'next/navigation';
 import { apiFetch, apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
@@ -182,17 +184,24 @@ function applyKnownDurationToHlsMediaSource(hls: unknown, durationSeconds: numbe
   }
 }
 
-function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: number): void {
+function forceKnownDurationInLevelDetails(
+  levelData: LevelLoadedData | LevelUpdatedData | unknown,
+  durationSeconds: number,
+): void {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
-  const details = (levelData as { details?: Record<string, unknown> } | null)?.details;
+  const details = (levelData as { details?: LevelDetails } | null)?.details;
   if (!details) return;
+  const mutableDetails = details as LevelDetails & {
+    totalduration: number;
+    edge: number;
+  };
   const currentTotal =
-    typeof details.totalduration === 'number' && Number.isFinite(details.totalduration)
-      ? details.totalduration
+    typeof mutableDetails.totalduration === 'number' && Number.isFinite(mutableDetails.totalduration)
+      ? mutableDetails.totalduration
       : 0;
   if (currentTotal < durationSeconds) {
-    details.totalduration = durationSeconds;
-    details.edge = durationSeconds;
+    mutableDetails.totalduration = durationSeconds;
+    mutableDetails.edge = durationSeconds;
   }
 }
 
@@ -210,7 +219,7 @@ export default function PlayerPage() {
   const params = useParams();
   const id = params.id as string;
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<any>(null);
+  const hlsRef = useRef<Hls | null>(null);
 
   const [mode, setMode] = useState<'direct' | 'hls'>('direct');
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
@@ -269,7 +278,9 @@ export default function PlayerPage() {
 
     const nav = navigator as Navigator & {
       mediaCapabilities?: {
-        decodingInfo?: (config: any) => Promise<{ supported: boolean }>;
+        decodingInfo?: (
+          config: MediaDecodingConfiguration,
+        ) => Promise<{ supported: boolean }>;
       };
     };
 
@@ -422,16 +433,16 @@ export default function PlayerPage() {
             video.pause();
           }
         });
-        hls.on(Hls.Events.LEVEL_LOADED, (_event: any, data: any) => {
+        hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: LevelLoadedData) => {
           reinforceKnownDuration(data);
         });
-        hls.on(Hls.Events.LEVEL_UPDATED, (_event: any, data: any) => {
+        hls.on(Hls.Events.LEVEL_UPDATED, (_event: unknown, data: LevelUpdatedData) => {
           reinforceKnownDuration(data);
         });
         hls.on(Hls.Events.FRAG_BUFFERED, () => {
           reinforceKnownDuration();
         });
-        hls.on(Hls.Events.ERROR, (_event: any, data: any) => {
+        hls.on(Hls.Events.ERROR, (_event: unknown, data: ErrorData) => {
           if (!data?.fatal) return;
           const errorType = data?.type;
           if (errorType === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 10) {

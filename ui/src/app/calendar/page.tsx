@@ -17,6 +17,7 @@ import {
   type UpdateCalendarEventRequest,
 } from '@/lib/calendarApi';
 import { playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 
 type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30' | 'events_30';
 
@@ -52,11 +53,6 @@ function formatYmd(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
-}
-
-function parseYmd(raw: string): Date {
-  const [y, m, d] = raw.split('-').map((part) => Number(part));
-  return withNoon(new Date(y, (m || 1) - 1, d || 1));
 }
 
 function enumerateDays(from: Date, to: Date): Date[] {
@@ -214,8 +210,8 @@ export default function CalendarPage() {
         const fallbackOwner = userRows.find((user) => user.id === me?.id)?.id ?? me?.id ?? '';
         setOwnerUserId(fallbackOwner);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to load calendar data');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to load calendar data'));
     } finally {
       setLoading(false);
     }
@@ -286,8 +282,8 @@ export default function CalendarPage() {
 
       resetForm();
       await reload();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to save event');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to save event'));
     } finally {
       setSaving(false);
     }
@@ -302,8 +298,8 @@ export default function CalendarPage() {
         resetForm();
       }
       await reload();
-    } catch (err: any) {
-      setError(err?.message || 'Failed to delete event');
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to delete event'));
     }
   };
 

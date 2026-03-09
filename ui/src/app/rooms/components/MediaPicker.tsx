@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '@/lib/api';
+import { clientErrorMessage } from '@/lib/errors';
 
 export type MediaLibrary = {
   id: string;
@@ -87,9 +88,9 @@ export default function MediaPicker({
         if (!cancelled) {
           setItems(data);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to load media items');
+          setError(clientErrorMessage(err, 'Failed to load media items'));
         }
       } finally {
         if (!cancelled) {

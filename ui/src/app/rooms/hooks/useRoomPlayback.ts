@@ -18,6 +18,12 @@ type MediaInfo = {
   duration_secs?: number;
 };
 
+type HlsFatalErrorData = {
+  fatal?: boolean;
+  type?: string;
+  details?: string;
+};
+
 type VideoAudioState = {
   muted: boolean;
   volume: number;
@@ -399,7 +405,7 @@ export function useRoomPlayback({
           hls.on(Hls.Events.FRAG_BUFFERED, () => {
             reinforceKnownDuration();
           });
-          hls.on(Hls.Events.ERROR, (_event: unknown, data: any) => {
+          hls.on(Hls.Events.ERROR, (_event: unknown, data: HlsFatalErrorData) => {
             if (!data?.fatal) return;
             const errorType = data?.type;
             if (errorType === Hls.ErrorTypes.NETWORK_ERROR && networkRecoveries < 10) {

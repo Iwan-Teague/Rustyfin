@@ -70,6 +70,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+if [[ -z "${CARGO_HOME:-}" && -f "${HOME}/.cargo/env" ]]; then
+  # shellcheck disable=SC1090
+  source "${HOME}/.cargo/env"
+fi
+
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_ROOT="$REPO_ROOT/.tmp/gates"
 LOG_DIR="$REPORT_ROOT/$RUN_ID"
@@ -302,7 +307,7 @@ check_recent_journal_errors() {
     -u "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" \
     --since '15 minutes ago' \
     -p err \
-    --no-pager)"
+    --no-pager || true)"
   if [[ -n "$entries" ]]; then
     echo "$entries"
     return 1
