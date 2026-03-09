@@ -1,5 +1,6 @@
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Multipart, Path, Query, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Multipart, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -8,6 +9,7 @@ use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -42,6 +44,23 @@ struct LoginAttemptBucket {
 
 static LOGIN_ATTEMPT_BUCKETS: LazyLock<tokio::sync::Mutex<HashMap<String, LoginAttemptBucket>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Copy)]
+struct MaybeConnectInfo(Option<ConnectInfo<std::net::SocketAddr>>);
+
+impl<S> FromRequestParts<S> for MaybeConnectInfo
+where
+    S: Send + Sync,
+{
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.extensions.get::<ConnectInfo<std::net::SocketAddr>>().copied()))
+    }
+}
 
 fn extract_login_client_identity(
     connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
@@ -386,12 +405,12 @@ struct LoginResponse {
 
 async fn auth_login(
     State(state): State<AppState>,
-    ConnectInfo(peer_addr): ConnectInfo<std::net::SocketAddr>,
+    MaybeConnectInfo(connect_info): MaybeConnectInfo,
     headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
-    let peer = ConnectInfo(peer_addr);
-    let login_limit_key = enforce_login_rate_limit(Some(&peer), &headers, &body.username).await?;
+    let login_limit_key =
+        enforce_login_rate_limit(connect_info.as_ref(), &headers, &body.username).await?;
 
     let user = rustfin_db::repo::users::find_by_username(&state.db, &body.username)
         .await
