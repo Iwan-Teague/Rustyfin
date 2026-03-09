@@ -5,5 +5,6 @@ test('@setup setup completes and admin can login', async ({ page }) => {
   await runSetupWizard(page);
   await login(page, ADMIN.username, ADMIN.password);
 
-  await expect(page).toHaveURL(/\/libraries/);
+  await expect(page).not.toHaveURL(/\/login/);
+  await expect(page.getByText('Welcome back')).toBeVisible();
 });

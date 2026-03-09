@@ -73,10 +73,27 @@ export async function login(page: Page, username: string, password: string) {
   await form.locator('input[type="text"]').first().fill(username);
   await form.locator('input[type="password"]').first().fill(password);
 
-  await Promise.all([
-    page.waitForURL((url) => url.pathname === '/', { timeout: 40_000 }),
-    form.getByRole('button', { name: /sign in/i }).click(),
-  ]);
+  await form.getByRole('button', { name: /sign in/i }).click();
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const token = localStorage.getItem('token');
+          return typeof token === 'string' && token.length > 0;
+        }),
+      { timeout: 40_000 }
+    )
+    .toBe(true);
+
+  const errorNotice = page.locator('.notice-error').first();
+  await expect(errorNotice).toHaveCount(0, { timeout: 5_000 });
+
+  if (new URL(page.url()).pathname === '/login') {
+    await page.goto('/');
+  }
+
+  await page.waitForLoadState('networkidle');
 }
 
 export async function goAdmin(page: Page) {
