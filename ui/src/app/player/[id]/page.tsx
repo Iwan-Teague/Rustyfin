@@ -220,6 +220,27 @@ async function ensurePreviewFrame(video: HTMLVideoElement): Promise<void> {
   }
 }
 
+async function attemptPlayWithWarmup(video: HTMLVideoElement): Promise<void> {
+  try {
+    await video.play();
+    return;
+  } catch {
+    // Fall back to waiting for the first decodable frame, then retry.
+  }
+
+  await ensurePreviewFrame(video).catch(() => {});
+
+  if (!video.paused) {
+    return;
+  }
+
+  try {
+    await video.play();
+  } catch {
+    // Leave the preview frame painted even if autoplay is blocked.
+  }
+}
+
 type StartHlsOptions = {
   targetHeightOverride?: number | null;
   seekTimeOverrideSecs?: number;
@@ -392,6 +413,7 @@ export default function PlayerPage() {
             stopDurationEnforcer;
           hlsRef.current = hls;
           let networkRecoveries = 0;
+          let playbackKickPending = true;
           const reinforceKnownDuration = (data?: unknown) => {
             const playlistWindowDuration = extractPlaylistWindowDuration(data);
             const details = (data as { details?: LevelDetails } | null)?.details as
@@ -416,8 +438,9 @@ export default function PlayerPage() {
           };
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             reinforceKnownDuration();
-            void video.play().catch(async () => {
-              await ensurePreviewFrame(video).catch(() => {});
+            if (!playbackKickPending) return;
+            void attemptPlayWithWarmup(video).finally(() => {
+              playbackKickPending = false;
             });
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: LevelLoadedData) => {
@@ -428,6 +451,10 @@ export default function PlayerPage() {
           });
           hls.on(Hls.Events.FRAG_BUFFERED, () => {
             reinforceKnownDuration();
+            if (!playbackKickPending || !video.paused) return;
+            void attemptPlayWithWarmup(video).finally(() => {
+              playbackKickPending = false;
+            });
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: ErrorData) => {
             if (!data?.fatal) return;
@@ -455,9 +482,7 @@ export default function PlayerPage() {
         } else if (canNativeHls) {
           video.src = data.hls_url;
           video.load();
-          void video.play().catch(async () => {
-            await ensurePreviewFrame(video).catch(() => {});
-          });
+          await attemptPlayWithWarmup(video);
         } else {
           throw new Error('HLS playback is not supported in this browser.');
         }
