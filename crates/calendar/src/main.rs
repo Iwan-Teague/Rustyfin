@@ -401,21 +401,24 @@ async fn list_events(
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let scope_filter = query.scope.as_deref();
-    if let Some(filter) = scope_filter {
-        if filter != "all" && filter != "global" && filter != "personal" {
-            return Err(ApiError::validation(serde_json::json!({
-                "scope": ["must be one of: all, global, personal"]
-            }))
-            .into());
-        }
+    if let Some(filter) = scope_filter
+        && filter != "all"
+        && filter != "global"
+        && filter != "personal"
+    {
+        return Err(ApiError::validation(serde_json::json!({
+            "scope": ["must be one of: all, global, personal"]
+        }))
+        .into());
     }
     let mut events = Vec::new();
     for row in rows {
         for (occurrence_date, derived_age) in expanded_occurrences(&row, from, to)? {
-            if let Some(filter) = scope_filter {
-                if filter != "all" && filter != row.scope {
-                    continue;
-                }
+            if let Some(filter) = scope_filter
+                && filter != "all"
+                && filter != row.scope
+            {
+                continue;
             }
             events.push(to_response(&row, &auth, occurrence_date, derived_age));
         }

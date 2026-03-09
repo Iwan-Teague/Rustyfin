@@ -308,11 +308,15 @@ check_recent_journal_errors() {
     --since '15 minutes ago' \
     -p err \
     --no-pager || true)"
+  entries="$(printf '%s' "$entries" | tr -d '\r')"
+  if [[ -z "$entries" || "$entries" == "-- No entries --" ]]; then
+    echo "No recent error-level journal entries."
+    return 0
+  fi
   if [[ -n "$entries" ]]; then
     echo "$entries"
     return 1
   fi
-  echo "No recent error-level journal entries."
 }
 
 write_report() {
