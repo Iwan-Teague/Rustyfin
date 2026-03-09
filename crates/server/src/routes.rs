@@ -3516,7 +3516,7 @@ POSIX path of chosenFolder"#;
 fn open_directory_picker_native() -> Result<String, ApiError> {
     #[cfg(target_os = "linux")]
     {
-        return open_directory_picker_linux();
+        open_directory_picker_linux()
     }
 
     #[cfg(target_os = "windows")]
