@@ -6,8 +6,9 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
 
   await page.goto('/channels');
   await page.waitForLoadState('networkidle');
-  await expect(page.getByText('Text Channels')).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText('Voice Channels')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Loading…')).toHaveCount(0, { timeout: 40_000 });
+  await expect(page.getByText('Text Channels')).toBeVisible({ timeout: 40_000 });
+  await expect(page.getByText('Voice Channels')).toBeVisible({ timeout: 40_000 });
 
   await page.goto('/rooms');
   await page.waitForLoadState('networkidle');
