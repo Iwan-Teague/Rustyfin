@@ -1917,6 +1917,10 @@ impl RoomRuntime {
         *activity = chrono::Utc::now().timestamp_millis();
     }
 
+    pub async fn last_activity_ts_ms(&self) -> i64 {
+        *self.last_activity_ts_ms.read().await
+    }
+
     pub async fn get_presence_members_cache(
         &self,
         now_ms: i64,
@@ -2397,22 +2401,36 @@ impl WatchPartyManager {
         web_url: Option<String>,
         create_state: Option<CreateState>,
     ) -> Arc<RoomRuntime> {
-        {
+        let eviction_candidates = {
             let rooms = self.rooms.read().await;
             if let Some(existing) = rooms.get(room_id) {
                 existing.touch_activity().await;
                 return existing.clone();
             }
+
+            if rooms.len() >= MAX_ACTIVE_ROOMS {
+                rooms
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != room_id)
+                    .map(|(key, room)| (key.clone(), room.clone()))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        };
+
+        let mut evict_key: Option<String> = None;
+        let mut evict_activity_ts = i64::MAX;
+        for (key, room) in &eviction_candidates {
+            let activity_ts = room.last_activity_ts_ms().await;
+            if activity_ts < evict_activity_ts {
+                evict_activity_ts = activity_ts;
+                evict_key = Some(key.clone());
+            }
         }
 
         let mut rooms = self.rooms.write().await;
         if rooms.len() >= MAX_ACTIVE_ROOMS {
-            let evict_key = rooms
-                .iter()
-                .find_map(|(key, room)| {
-                    (key.as_str() != room_id).then(|| (key.clone(), room.clone()))
-                })
-                .map(|(key, _)| key);
             if let Some(key) = evict_key {
                 rooms.remove(&key);
             }

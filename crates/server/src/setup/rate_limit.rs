@@ -4,9 +4,9 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rustfin_core::error::ErrorEnvelope;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 /// Simple in-memory rate limiter state.
@@ -18,14 +18,22 @@ pub struct RateLimiter {
 }
 
 struct RateLimiterInner {
-    buckets: HashMap<String, Vec<Instant>>,
+    buckets: HashMap<String, RateLimitBucket>,
+    last_sweep: Instant,
+}
+
+struct RateLimitBucket {
+    timestamps: VecDeque<Instant>,
+    last_seen: Instant,
 }
 
 impl RateLimiter {
     pub fn new(max_requests: u64, window_secs: u64) -> Self {
+        let now = Instant::now();
         Self {
             inner: Arc::new(Mutex::new(RateLimiterInner {
                 buckets: HashMap::new(),
+                last_sweep: now,
             })),
             max_requests,
             window_secs,
@@ -36,19 +44,58 @@ impl RateLimiter {
     pub async fn check(&self, key: &str) -> Result<u64, u64> {
         let mut inner = self.inner.lock().await;
         let now = Instant::now();
-        let window = std::time::Duration::from_secs(self.window_secs);
+        let window = Duration::from_secs(self.window_secs);
 
-        let entries = inner.buckets.entry(key.to_string()).or_default();
-
-        // Remove expired entries
-        entries.retain(|t| now.duration_since(*t) < window);
-
-        if entries.len() as u64 >= self.max_requests {
-            Err(self.window_secs)
-        } else {
-            entries.push(now);
-            Ok(self.max_requests - entries.len() as u64)
+        if now.duration_since(inner.last_sweep) >= window {
+            inner.buckets.retain(|_, bucket| {
+                prune_bucket(bucket, now, window);
+                !bucket.timestamps.is_empty() || now.duration_since(bucket.last_seen) < window
+            });
+            inner.last_sweep = now;
         }
+
+        let bucket = inner
+            .buckets
+            .entry(key.to_string())
+            .or_insert_with(|| RateLimitBucket {
+                timestamps: VecDeque::new(),
+                last_seen: now,
+            });
+
+        prune_bucket(bucket, now, window);
+        bucket.last_seen = now;
+
+        if bucket.timestamps.len() as u64 >= self.max_requests {
+            let retry_after = bucket
+                .timestamps
+                .front()
+                .map(|front| {
+                    let remaining = front
+                        .checked_add(window)
+                        .and_then(|until| until.checked_duration_since(now))
+                        .unwrap_or_default();
+                    if remaining.subsec_nanos() > 0 {
+                        remaining.as_secs() + 1
+                    } else {
+                        remaining.as_secs()
+                    }
+                })
+                .unwrap_or(self.window_secs)
+                .max(1);
+            Err(retry_after)
+        } else {
+            bucket.timestamps.push_back(now);
+            Ok(self.max_requests - bucket.timestamps.len() as u64)
+        }
+    }
+}
+
+fn prune_bucket(bucket: &mut RateLimitBucket, now: Instant, window: Duration) {
+    while let Some(front) = bucket.timestamps.front().copied() {
+        if now.duration_since(front) < window {
+            break;
+        }
+        bucket.timestamps.pop_front();
     }
 }
 
@@ -93,5 +140,27 @@ pub async fn rate_limit_middleware(request: Request, next: Next) -> Response {
             };
             (StatusCode::TOO_MANY_REQUESTS, Json(envelope)).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rate_limiter_prunes_expired_entries() {
+        let limiter = RateLimiter::new(2, 1);
+
+        assert_eq!(limiter.check("alpha").await.unwrap(), 1);
+        assert_eq!(limiter.check("alpha").await.unwrap(), 0);
+        assert!(limiter.check("alpha").await.is_err());
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        assert_eq!(limiter.check("alpha").await.unwrap(), 1);
+
+        let inner = limiter.inner.lock().await;
+        let bucket = inner.buckets.get("alpha").expect("bucket retained");
+        assert_eq!(bucket.timestamps.len(), 1);
     }
 }
