@@ -75,6 +75,11 @@ if [[ -z "${CARGO_HOME:-}" && -f "${HOME}/.cargo/env" ]]; then
   source "${HOME}/.cargo/env"
 fi
 
+if [[ -f "$REPO_ROOT/.rustyfin.runtime.env" ]]; then
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.rustyfin.runtime.env"
+fi
+
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_ROOT="$REPO_ROOT/.tmp/gates"
 LOG_DIR="$REPORT_ROOT/$RUN_ID"
@@ -89,8 +94,8 @@ if [[ "$(id -u)" -eq 0 ]]; then
   RUN_ROOT=()
   RUN_POSTGRES=(runuser -u postgres -- psql)
 else
-  RUN_ROOT=(sudo)
-  RUN_POSTGRES=(sudo -u postgres psql)
+  RUN_ROOT=(sudo -n)
+  RUN_POSTGRES=(sudo -n -u postgres psql)
 fi
 
 PASS_COUNT=0
@@ -282,15 +287,26 @@ check_latest_migration_applied() {
     echo "psql not installed"
     return 1
   }
-  local latest_migration db_name applied_count
+  local latest_migration db_name applied_count db_target
   latest_migration="$(find "$REPO_ROOT/crates/db/migrations_pg" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -n 1)"
   [[ -n "$latest_migration" ]] || {
     echo "No migrations found"
     return 1
   }
   latest_migration="$(basename "$latest_migration" .sql)"
-  db_name="${RUSTFIN_PG_DB:-rustfin}"
-  applied_count="$("${RUN_POSTGRES[@]}" -At -d "$db_name" -c "select count(*) from _migrations where name = '$latest_migration';")"
+  db_target="${RUSTFIN_DATABASE_URL:-}"
+  if [[ -n "$db_target" ]]; then
+    applied_count="$(psql "$db_target" -At -c "select count(*) from _migrations where name = '$latest_migration';")" || {
+      echo "Failed to query runtime database via RUSTFIN_DATABASE_URL"
+      return 1
+    }
+  else
+    db_name="${RUSTFIN_PG_DB:-rustfin}"
+    applied_count="$("${RUN_POSTGRES[@]}" -At -d "$db_name" -c "select count(*) from _migrations where name = '$latest_migration';")" || {
+      echo "Failed to query postgres directly for migration state"
+      return 1
+    }
+  fi
   echo "latest migration: $latest_migration"
   echo "applied count: ${applied_count:-0}"
   [[ "${applied_count:-0}" == "1" ]]
@@ -302,12 +318,29 @@ check_recent_journal_errors() {
     return "$SKIP_CODE"
   }
   local entries
-  entries="$("${RUN_ROOT[@]}" journalctl \
-    -u "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" \
-    -u "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" \
-    --since '15 minutes ago' \
-    -p err \
-    --no-pager || true)"
+  if entries="$(journalctl \
+      -u "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" \
+      -u "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" \
+      --since '15 minutes ago' \
+      -p err \
+      --no-pager 2>/dev/null)"
+  then
+    :
+  elif [[ "${#RUN_ROOT[@]}" -gt 0 ]]; then
+    entries="$("${RUN_ROOT[@]}" journalctl \
+      -u "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" \
+      -u "${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}" \
+      --since '15 minutes ago' \
+      -p err \
+      --no-pager 2>&1)" || {
+      printf '%s\n' "$entries"
+      echo "Failed to read journal entries"
+      return 1
+    }
+  else
+    echo "Failed to read journal entries"
+    return 1
+  fi
   entries="$(printf '%s' "$entries" | tr -d '\r')"
   if [[ -z "$entries" || "$entries" == "-- No entries --" ]]; then
     echo "No recent error-level journal entries."
