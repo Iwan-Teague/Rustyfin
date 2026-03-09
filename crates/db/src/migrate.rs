@@ -130,6 +130,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "032_setup_table_bigint_alignment",
         include_str!("../migrations_pg/032_setup_table_bigint_alignment.sql"),
     ),
+    (
+        "033_upgrade_current_schema_integer_columns",
+        include_str!("../migrations_pg/033_upgrade_current_schema_integer_columns.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
