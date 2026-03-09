@@ -254,6 +254,7 @@ export default function VideoPlayerSurface({
 }: VideoPlayerSurfaceProps) {
   const localShellRef = useRef<HTMLDivElement>(null);
   const activeShellRef = shellRef ?? localShellRef;
+  const clickTimerRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -317,6 +318,15 @@ export default function VideoPlayerSurface({
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, [syncFromVideo, videoRef]);
+
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current !== null) {
+        window.clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setPendingSeekSecs(null);
@@ -397,6 +407,25 @@ export default function VideoPlayerSurface({
     [syncFromVideo, videoRef],
   );
 
+  const handleVideoSingleClick = useCallback(() => {
+    if (!canStartPlayback || !playbackEnabled) return;
+    if (clickTimerRef.current !== null) {
+      window.clearTimeout(clickTimerRef.current);
+    }
+    clickTimerRef.current = window.setTimeout(() => {
+      clickTimerRef.current = null;
+      void togglePlayback();
+    }, 220);
+  }, [canStartPlayback, playbackEnabled, togglePlayback]);
+
+  const handleVideoDoubleClick = useCallback(() => {
+    if (clickTimerRef.current !== null) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+    void toggleFullscreen();
+  }, [toggleFullscreen]);
+
   return (
     <div
       ref={activeShellRef}
@@ -412,21 +441,21 @@ export default function VideoPlayerSurface({
           {...videoElementProps}
           controls={false}
           playsInline
+          onClick={(event) => {
+            videoElementProps?.onClick?.(event);
+            handleVideoSingleClick();
+          }}
+          onDoubleClick={(event) => {
+            videoElementProps?.onDoubleClick?.(event);
+            handleVideoDoubleClick();
+          }}
           className={
             `${
               isFullscreen
-                ? 'h-full w-full max-h-full object-contain'
-                : `w-full ${maxViewportHeightClassName}`
+                ? 'h-full w-full max-h-full cursor-pointer object-contain'
+                : `w-full cursor-pointer ${maxViewportHeightClassName}`
             } ${(videoElementProps?.className ?? '').trim()}`.trim()
           }
-        />
-        <button
-          type="button"
-          onClick={() => void togglePlayback()}
-          disabled={!canStartPlayback || !playbackEnabled}
-          aria-label={isPlaying ? 'Pause playback' : 'Play playback'}
-          title={playbackDisabledReason ?? 'Toggle playback'}
-          className="absolute inset-0 z-10 cursor-pointer bg-transparent disabled:cursor-not-allowed"
         />
       </div>
       <div className="shrink-0 border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
