@@ -35,6 +35,21 @@ is_macos() { [ "$(uname -s)" = "Darwin" ]; }
 
 port_in_use() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
+find_available_port() {
+  local start_port="$1"
+  local max_offset="${2:-100}"
+  local candidate
+
+  for ((candidate=start_port; candidate<=start_port+max_offset; candidate++)); do
+    if ! port_in_use "${candidate}"; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 clear_test_port() {
   local port="$1"
   local pids=""
@@ -111,7 +126,11 @@ start_server() {
     clear_test_port "${TEST_BACKEND_PORT}"
   fi
   if port_in_use "${TEST_BACKEND_PORT}"; then
-    die "Port ${TEST_BACKEND_PORT} already in use after cleanup. Set RUSTFIN_TEST_BACKEND_PORT or free that port and retry."
+    TEST_BACKEND_PORT="$(find_available_port "$((TEST_BACKEND_PORT + 1))")" || \
+      die "Unable to find a free backend test port."
+    TEST_BACKEND_BIND="127.0.0.1:${TEST_BACKEND_PORT}"
+    TEST_BACKEND_URL="http://127.0.0.1:${TEST_BACKEND_PORT}"
+    log_info "Using alternate backend test port ${TEST_BACKEND_PORT}"
   fi
 
   local db_target
@@ -148,7 +167,10 @@ start_ui() {
     clear_test_port "${TEST_UI_PORT}"
   fi
   if port_in_use "${TEST_UI_PORT}"; then
-    die "Port ${TEST_UI_PORT} already in use after cleanup. Set RUSTFIN_TEST_UI_PORT or free that port and retry."
+    TEST_UI_PORT="$(find_available_port "$((TEST_UI_PORT + 1))")" || \
+      die "Unable to find a free UI test port."
+    TEST_UI_URL="http://127.0.0.1:${TEST_UI_PORT}"
+    log_info "Using alternate UI test port ${TEST_UI_PORT}"
   fi
 
   local standalone_entry="${REPO_ROOT}/ui/.next/standalone/server.js"
