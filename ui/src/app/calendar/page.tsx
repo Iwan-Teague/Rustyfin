@@ -476,6 +476,164 @@ export default function CalendarPage() {
                   )});
                 })()}
               </div>
+            ) : view !== 'month' ? (
+              <>
+                <div className="space-y-2 h-full flex flex-col min-h-0 sm:hidden">
+                  <div className="space-y-2 overflow-y-auto pr-1">
+                    {days.map((day) => {
+                      const key = formatYmd(day);
+                      const dayEvents = eventsByDate.get(key) ?? [];
+                      const isToday = sameCalendarDay(day, today);
+                      return (
+                        <div
+                          key={key}
+                          className={`panel-soft rounded-xl px-3 py-2 space-y-2 border ${
+                            isToday
+                              ? 'calendar-today-outline border-transparent'
+                              : 'border-[var(--border)]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold">
+                                {day.toLocaleDateString(undefined, { weekday: 'long' })}
+                              </p>
+                              <p className="text-xs muted">
+                                {day.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                              </p>
+                            </div>
+                            <span className="text-xs muted">{dayEvents.length} events</span>
+                          </div>
+                          {dayEvents.length === 0 ? (
+                            <p className="text-xs muted">No events</p>
+                          ) : (
+                            <div className="space-y-1">
+                              {dayEvents.map((event) => (
+                                <div
+                                  key={event.occurrence_id}
+                                  data-calendar-event-id={event.id}
+                                  className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}
+                                >
+                                  <p className="font-medium">{event.title}</p>
+                                  {event.display_description && <p className="muted">{event.display_description}</p>}
+                                  {event.owner_username && event.scope === 'personal' && (
+                                    <p className="muted">Owner: {event.owner_username}</p>
+                                  )}
+                                  {(event.can_edit || event.can_delete) && (
+                                    <div className="mt-1 flex gap-2">
+                                      {event.can_edit && (
+                                        <button type="button" className="btn-ghost px-2 py-0.5 text-xs" onClick={() => onEdit(event)}>
+                                          Edit
+                                        </button>
+                                      )}
+                                      {event.can_delete && (
+                                        <button
+                                          type="button"
+                                          className="btn-ghost px-2 py-0.5 text-xs text-red-300"
+                                          onClick={(e) =>
+                                            void onDelete(
+                                              event.id,
+                                              (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                            )
+                                          }
+                                        >
+                                          Delete
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="hidden space-y-2 h-full flex-col min-h-0 sm:flex">
+                  <div className="grid grid-cols-7 gap-2">
+                    {weekdayHeaders.map(({ label, isToday }) => (
+                      <div
+                        key={label}
+                        className={`rounded-lg border px-2 py-1 text-center text-xs font-semibold ${
+                          isToday
+                            ? 'border-white/30 bg-gradient-to-r from-[var(--orange)] via-[var(--danger)] to-[var(--purple-strong)] text-white'
+                            : 'border-[var(--border)] bg-white/5 muted'
+                        }`}
+                      >
+                        {label}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-7 gap-2 flex-1 min-h-0 grid-rows-1">
+                    {days.map((day) => {
+                      const key = formatYmd(day);
+                      const dayEvents = eventsByDate.get(key) ?? [];
+                      const isToday = sameCalendarDay(day, today);
+                      return (
+                        <div
+                          key={key}
+                          className={`rounded-xl border px-2 py-2 overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
+                            isToday
+                              ? 'calendar-today-outline border-transparent bg-white/[0.08]'
+                              : 'border-[var(--border)] bg-white/5'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
+                            <span className="text-[11px] muted">{dayEvents.length}</span>
+                          </div>
+                          <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
+                            {dayEvents.map((event) => (
+                              <div
+                                key={event.occurrence_id}
+                                data-calendar-event-id={event.id}
+                                className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
+                              >
+                                <p className="font-semibold leading-tight">{event.title}</p>
+                                {event.display_description && (
+                                  <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
+                                )}
+                                {event.owner_username && event.scope === 'personal' && (
+                                  <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
+                                )}
+                                {(event.can_edit || event.can_delete) && (
+                                  <div className="mt-1 flex gap-1">
+                                    {event.can_edit && (
+                                      <button
+                                        type="button"
+                                        className="btn-ghost px-1.5 py-0.5 text-[10px]"
+                                        onClick={() => onEdit(event)}
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                    {event.can_delete && (
+                                      <button
+                                        type="button"
+                                        className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
+                                        onClick={(e) =>
+                                          void onDelete(
+                                            event.id,
+                                            (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                          )
+                                        }
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="space-y-2 h-full flex flex-col min-h-0">
                 <div className="grid grid-cols-7 gap-2">
