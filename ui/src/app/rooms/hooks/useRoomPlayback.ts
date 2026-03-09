@@ -365,6 +365,10 @@ export function useRoomPlayback({
 
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
+        const shouldAutoplay =
+          roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
+        video.preload = 'auto';
+        video.autoplay = shouldAutoplay;
 
         // Prefer hls.js whenever possible; browser canPlayType() is not reliable for HLS support.
         if (Hls.isSupported()) {
@@ -397,8 +401,6 @@ export function useRoomPlayback({
             stopDurationEnforcer;
           hlsRef.current = hls;
           let networkRecoveries = 0;
-          const shouldAutoplay =
-            roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
           let playbackKickPending = shouldAutoplay;
           const reinforceKnownDuration = (data?: unknown) => {
             const playlistWindowDuration = extractPlaylistWindowDuration(data);
@@ -471,6 +473,7 @@ export function useRoomPlayback({
           });
           hls.attachMedia(video);
           hls.loadSource(session.hls_url);
+          hls.startLoad(0);
         } else if (canNativeHls) {
           video.src = session.hls_url;
           video.load();

@@ -452,6 +452,7 @@ export default function VideoPlayerSurface({
           ref={videoRef}
           {...videoElementProps}
           controls={false}
+          preload={videoElementProps?.preload ?? 'auto'}
           playsInline
           className={
             `${
