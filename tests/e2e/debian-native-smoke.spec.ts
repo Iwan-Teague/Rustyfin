@@ -36,11 +36,12 @@ test('@debian-native-smoke login, channels, rooms, servers, and playback stay he
   const firstPlayableItem = items.find((item) => item.kind === 'movie' || item.kind === 'episode');
   expect(firstPlayableItem).toBeTruthy();
 
-  await authedPage.goto(`/items/${firstPlayableItem!.id}`);
+  await authedPage.goto(`/player/${firstPlayableItem!.id}`);
   await authedPage.waitForLoadState('networkidle');
-  await expect(authedPage.getByRole('link', { name: 'Play Now' })).toBeVisible({ timeout: 20_000 });
-  await authedPage.getByRole('link', { name: 'Play Now' }).click();
   await expect(authedPage).toHaveURL(/\/player\//);
+  await expect(authedPage.getByRole('button', { name: 'Direct Play', exact: true })).toBeVisible({
+    timeout: 20_000,
+  });
 
   const directReq = authedPage.waitForRequest(
     (req) => req.method() === 'GET' && req.url().includes('/stream/file/'),
