@@ -31,13 +31,13 @@ pub struct IdempotencyRecord {
     pub endpoint: String,
     pub payload_hash: String,
     pub response: String,
-    pub status_code: i32,
+    pub status_code: i64,
     pub created_at: i64,
 }
 
 /// Lookup an existing idempotency key.
 pub async fn lookup(pool: &DbPool, key: &str) -> Result<Option<IdempotencyRecord>, sqlx::Error> {
-    let row: Option<(String, String, String, String, i32, i64)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, i64, i64)> = sqlx::query_as(
         "SELECT key, endpoint, payload_hash, response, status_code, created_at FROM idempotency_keys WHERE key = $1",
     )
     .bind(key)
