@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ConfirmModal from '@/app/components/ConfirmModal';
 
 import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
@@ -891,7 +892,7 @@ export default function ServersPage() {
                         ) : null}
                         <button
                           type="button"
-                          className="btn-ghost px-3 py-2 text-xs"
+                          className="btn-ghost min-w-[7.75rem] px-3 py-2 text-center text-xs"
                           onClick={() => {
                             setServerEdits((prev) => ({
                               ...prev,
@@ -1466,49 +1467,39 @@ export default function ServersPage() {
         </section>
       </div>
 
-      {deleteConfirmServer ? (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]">
-          <div className="panel w-full max-w-md space-y-4 rounded-2xl border border-[var(--border)] p-6">
-            <div className="space-y-2">
-              <h2 className="text-lg font-semibold">Delete Server</h2>
-              <p className="text-sm muted">
-                Delete this Minecraft server record and remove its managed host files? This action
-                is destructive and cannot be undone.
-              </p>
-            </div>
-
-            <div className="panel-soft rounded-xl px-4 py-3 text-sm">
-              <div className="font-medium text-white">{deleteConfirmServer.display_name}</div>
-              <div className="mt-1 text-xs muted">
-                {deleteConfirmServer.server_distribution} {deleteConfirmServer.minecraft_version}
-                {' · '}
-                {deleteConfirmServer.world_name}
-                {' · '}
-                Port {deleteConfirmServer.listen_port}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteConfirmServer(null)}
-                className="btn-ghost px-4 py-2 text-sm"
-                disabled={deletingServerId === deleteConfirmServer.id}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleDeleteServer(deleteConfirmServer)}
-                className="rounded-xl bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-50"
-                disabled={deletingServerId === deleteConfirmServer.id}
-              >
-                {deletingServerId === deleteConfirmServer.id ? 'Deleting…' : 'Delete server'}
-              </button>
+      <ConfirmModal
+        open={Boolean(deleteConfirmServer)}
+        title="Delete Server"
+        description="Delete this Minecraft server record and remove its managed host files? This action is destructive and cannot be undone."
+        confirmLabel={
+          deleteConfirmServer && deletingServerId === deleteConfirmServer.id
+            ? 'Deleting…'
+            : 'Delete server'
+        }
+        confirmDisabled={Boolean(deleteConfirmServer && deletingServerId === deleteConfirmServer.id)}
+        cancelDisabled={Boolean(deleteConfirmServer && deletingServerId === deleteConfirmServer.id)}
+        destructive
+        maxWidthClassName="max-w-md"
+        zIndexClassName="z-[150]"
+        onCancel={() => setDeleteConfirmServer(null)}
+        onConfirm={() => {
+          if (!deleteConfirmServer) return;
+          void handleDeleteServer(deleteConfirmServer);
+        }}
+      >
+        {deleteConfirmServer ? (
+          <div className="panel-soft rounded-xl px-4 py-3 text-sm">
+            <div className="font-medium text-white">{deleteConfirmServer.display_name}</div>
+            <div className="mt-1 text-xs muted">
+              {deleteConfirmServer.server_distribution} {deleteConfirmServer.minecraft_version}
+              {' · '}
+              {deleteConfirmServer.world_name}
+              {' · '}
+              Port {deleteConfirmServer.listen_port}
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </ConfirmModal>
 
       {hostBrowser.open ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center overflow-y-auto bg-black/70 p-4 sm:p-6">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createPortal } from 'react-dom';
+import ConfirmModal from '@/app/components/ConfirmModal';
 import VideoPlayerSurface, { filterPlaybackQualityOptions } from '@/app/components/VideoPlayerSurface';
 import { useAuth } from '@/lib/auth';
 import { apiFetch } from '@/lib/api';
@@ -131,9 +132,9 @@ export default function WatchPartyRoomPage() {
       : 'video';
   const watchWindowShiftClass = isWatchRoom ? 'mt-[55px]' : '';
   const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
-  const createWindowShiftClass = isCreateRoom ? 'mt-[34px]' : '';
+  const createWindowShiftClass = isCreateRoom ? 'mt-[44px]' : '';
   const createTabsCounterShiftClass = isCreateRoom ? 'top-[-17px]' : 'top-0';
-  const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[17px]' : '';
+  const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[27px]' : '';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
@@ -843,35 +844,20 @@ export default function WatchPartyRoomPage() {
       {pendingEndRoomConfirm &&
         portalMounted &&
         createPortal(
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
-            <div className="panel w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] p-6">
-              <h2 className="text-lg font-semibold">End Room</h2>
-              <p className="text-sm muted">
-                End this room for everyone? All participants will be disconnected from this room.
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPendingEndRoomConfirm(false)}
-                  className="btn-ghost px-4 py-2 text-sm"
-                  disabled={ending}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPendingEndRoomConfirm(false);
-                    void handleEndRoom();
-                  }}
-                  className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
-                  disabled={ending}
-                >
-                  {ending ? 'Ending…' : 'End room'}
-                </button>
-              </div>
-            </div>
-          </div>,
+          <ConfirmModal
+            open
+            title="End Room"
+            description="End this room for everyone? All participants will be disconnected from this room."
+            confirmLabel={ending ? 'Ending…' : 'End room'}
+            confirmDisabled={ending}
+            cancelDisabled={ending}
+            destructive
+            onCancel={() => setPendingEndRoomConfirm(false)}
+            onConfirm={() => {
+              setPendingEndRoomConfirm(false);
+              void handleEndRoom();
+            }}
+          />,
           document.body,
         )}
 

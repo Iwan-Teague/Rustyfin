@@ -159,7 +159,8 @@ a {
 
 .btn-primary,
 .btn-secondary,
-.btn-ghost {
+.btn-ghost,
+.btn-danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -180,6 +181,13 @@ a {
   box-shadow: 0 12px 24px rgba(116, 84, 198, 0.4);
 }
 
+.btn-danger {
+  background: linear-gradient(115deg, #ef536c 0%, #ff7588 72%);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 24px rgba(153, 26, 52, 0.32);
+}
+
 .btn-primary > * {
   position: relative;
   z-index: 2;
@@ -194,7 +202,16 @@ a {
   filter: brightness(1.06);
 }
 
+.btn-danger:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
 .btn-primary:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.btn-danger:active {
   transform: translateY(0) scale(0.98);
 }
 
