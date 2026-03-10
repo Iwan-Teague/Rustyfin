@@ -12,6 +12,7 @@ import { apiFetch } from '@/lib/api';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
 import { useListReflowAnimation } from '@/lib/listReflowAnimation';
+import ConfirmModal from '@/app/components/ConfirmModal';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
@@ -514,31 +515,18 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
         {uploadError && <p className="text-xs text-red-400 mt-1">{uploadError}</p>}
       </div>
 
-      {/* Delete message confirmation modal */}
-      {pendingDeleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px]">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
-            <h2 className="font-semibold text-lg">Delete Message</h2>
-            <p className="text-sm muted">
-              This message will be permanently removed for everyone and cannot be undone.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingDeleteId(null)}
-                className="btn-ghost px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => handleDeleteMessage(pendingDeleteId)}
-                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        open={Boolean(pendingDeleteId)}
+        title="Delete Message"
+        description="This message will be permanently removed for everyone and cannot be undone."
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDeleteId(null)}
+        onConfirm={() => {
+          if (!pendingDeleteId) return;
+          void handleDeleteMessage(pendingDeleteId);
+        }}
+      />
     </div>
   );
 }

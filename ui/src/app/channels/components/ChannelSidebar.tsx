@@ -6,6 +6,7 @@ import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { useListReflowAnimation } from '@/lib/listReflowAnimation';
+import ConfirmModal from '@/app/components/ConfirmModal';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
 
@@ -469,63 +470,53 @@ export default function ChannelSidebar({
         </div>
       )}
 
-      {cannotDeleteChannel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
-            <h2 className="font-semibold text-lg">Cannot Delete Channel</h2>
-            <p className="text-sm muted">
+      <ConfirmModal
+        open={Boolean(cannotDeleteChannel)}
+        title="Cannot Delete Channel"
+        description={
+          cannotDeleteChannel ? (
+            <>
               &ldquo;{cannotDeleteChannel.name}&rdquo; still has {cannotDeleteChannel.membersInChannel}{' '}
               {cannotDeleteChannel.membersInChannel === 1 ? 'member' : 'members'} connected. Ask everyone to leave first.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setCannotDeleteChannel(null)}
-                className="btn-primary px-4 py-2 text-sm"
-              >
-                Okay
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </>
+          ) : undefined
+        }
+        confirmLabel="Okay"
+        hideCancel
+        onCancel={() => setCannotDeleteChannel(null)}
+        onConfirm={() => setCannotDeleteChannel(null)}
+      />
 
-      {pendingDeleteChannel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
-            <h2 className="font-semibold text-lg">Delete Channel</h2>
-            <p className="text-sm muted">
+      <ConfirmModal
+        open={Boolean(pendingDeleteChannel)}
+        title="Delete Channel"
+        description={
+          pendingDeleteChannel ? (
+            <>
               Delete &ldquo;{pendingDeleteChannel.name}&rdquo;? All messages will be lost and this cannot be undone.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingDeleteChannel(null)}
-                className="btn-ghost px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  const channelToDelete = pendingDeleteChannel;
-                  if (!channelToDelete) return;
-                  setPendingDeleteChannel(null);
-                  if (menuOpen?.channelId === channelToDelete.id) {
-                    setMenuOpen(null);
-                  }
-                  await new Promise<void>((resolve) => {
-                    window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
-                  });
-                  const target = findDataDeleteTarget('data-channel-row-id', channelToDelete.id);
-                  await playTelegramDeleteAnimation(target);
-                  onDeleteChannel(channelToDelete.id);
-                }}
-                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </>
+          ) : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDeleteChannel(null)}
+        onConfirm={() => {
+          void (async () => {
+            const channelToDelete = pendingDeleteChannel;
+            if (!channelToDelete) return;
+            setPendingDeleteChannel(null);
+            if (menuOpen?.channelId === channelToDelete.id) {
+              setMenuOpen(null);
+            }
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
+            });
+            const target = findDataDeleteTarget('data-channel-row-id', channelToDelete.id);
+            await playTelegramDeleteAnimation(target);
+            onDeleteChannel(channelToDelete.id);
+          })();
+        }}
+      />
     </aside>
   );
 }

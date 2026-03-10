@@ -6,6 +6,7 @@ import { apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
+import ConfirmModal from '@/app/components/ConfirmModal';
 import {
   listMinecraftServerEvents,
   listMinecraftServerLogs,
@@ -173,6 +174,11 @@ interface PendingDeleteAction {
   label: string;
 }
 
+interface PendingRoomEndAction {
+  id: string;
+  label: string;
+}
+
 const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'users', label: 'Users' },
   { key: 'libraries', label: 'Libraries' },
@@ -263,6 +269,9 @@ export default function AdminPage() {
   const [minecraftServerEventsLoading, setMinecraftServerEventsLoading] = useState(false);
   const [minecraftServerLogsLoading, setMinecraftServerLogsLoading] = useState(false);
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
+    null,
+  );
+  const [pendingRoomEndAction, setPendingRoomEndAction] = useState<PendingRoomEndAction | null>(
     null,
   );
 
@@ -1246,20 +1255,24 @@ export default function AdminPage() {
   }
 
   async function endRoom(roomId: string) {
+    setPendingRoomEndAction(null);
     const target = rooms.find((r) => r.room_id === roomId);
     const label = target?.title || roomId;
-    if (!window.confirm(`End room "${label}"?`)) {
-      return;
-    }
     try {
       await apiJson(`/watch-party/admin/rooms/${roomId}/end`, {
         method: 'POST',
       });
-      setOk('Room ended');
+      setOk(`Room "${label}" ended`);
       await loadData();
     } catch (err: unknown) {
       setErr(clientErrorMessage(err, 'Failed to end room'));
     }
+  }
+
+  function requestEndRoom(roomId: string) {
+    const target = rooms.find((r) => r.room_id === roomId);
+    const label = target?.title || roomId;
+    setPendingRoomEndAction({ id: roomId, label: `"${label}"` });
   }
 
   async function deleteRoom(roomId: string) {
@@ -2237,7 +2250,7 @@ export default function AdminPage() {
                           Save Name
                         </button>
                         <button
-                          onClick={() => endRoom(room.room_id)}
+                          onClick={() => requestEndRoom(room.room_id)}
                           disabled={room.status === 'ended'}
                           className="btn-secondary px-3 py-1.5 text-sm disabled:opacity-50"
                         >
@@ -2421,7 +2434,10 @@ export default function AdminPage() {
                       ) : (
                         <div className="max-h-[26rem] space-y-3 overflow-y-auto pr-1">
                           {selectedMinecraftServerEvents.map((event) => (
-                            <div key={event.id} className="panel rounded-xl px-4 py-3 text-sm">
+                            <div
+                              key={event.id}
+                              className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
+                            >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="font-medium text-white">{event.message}</div>
                                 <span className="chip text-[11px]">{titleCase(event.level)}</span>
@@ -2741,32 +2757,38 @@ export default function AdminPage() {
         </div>
       )}
 
-      {pendingDeleteAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
-            <h2 className="font-semibold text-lg">Confirm Delete</h2>
-            <p className="text-sm muted">
-              Delete {pendingDeleteAction.label}? This action cannot be undone.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setPendingDeleteAction(null)}
-                className="btn-ghost px-4 py-2 text-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  void confirmPendingDelete();
-                }}
-                className="btn-primary px-4 py-2 text-sm bg-red-500 hover:bg-red-600"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        open={Boolean(pendingDeleteAction)}
+        title="Confirm Delete"
+        description={
+          pendingDeleteAction
+            ? `Delete ${pendingDeleteAction.label}? This action cannot be undone.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        onCancel={() => setPendingDeleteAction(null)}
+        onConfirm={() => {
+          void confirmPendingDelete();
+        }}
+      />
+
+      <ConfirmModal
+        open={Boolean(pendingRoomEndAction)}
+        title="End Room"
+        description={
+          pendingRoomEndAction
+            ? `End room ${pendingRoomEndAction.label}? All participants will be disconnected.`
+            : undefined
+        }
+        confirmLabel="End room"
+        destructive
+        onCancel={() => setPendingRoomEndAction(null)}
+        onConfirm={() => {
+          if (!pendingRoomEndAction) return;
+          void endRoom(pendingRoomEndAction.id);
+        }}
+      />
     </div>
   );
 }
