@@ -675,7 +675,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setRemoteVolume = useCallback((userId: string, volume: number) => {
-    const clamped = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+    const clamped = Number.isFinite(volume) ? Math.min(2, Math.max(0, volume)) : 1;
     const rounded = Math.round(clamped * 100) / 100;
     setRemoteVolumes((prev) => {
       if (prev[userId] === rounded) return prev;

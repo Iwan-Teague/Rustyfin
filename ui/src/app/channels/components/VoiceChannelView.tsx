@@ -70,6 +70,7 @@ function ParticipantCard({
   sliderLabel,
   sliderDisabled,
   volume,
+  sliderMaxPercent,
   muted,
   deafened,
   showSelfControls,
@@ -84,6 +85,7 @@ function ParticipantCard({
   sliderLabel: string;
   sliderDisabled: boolean;
   volume: number;
+  sliderMaxPercent: number;
   muted: boolean;
   deafened: boolean;
   showSelfControls: boolean;
@@ -94,7 +96,13 @@ function ParticipantCard({
 }) {
   const color = hashColor(userInfo.user_id);
   const initials = userInfo.username.slice(0, 2).toUpperCase();
-  const volumePercent = Math.round(Math.min(1, Math.max(0, volume)) * 100);
+  const safeMaxPercent = Math.max(100, sliderMaxPercent);
+  const maxVolume = safeMaxPercent / 100;
+  const volumePercent = Math.round(Math.min(maxVolume, Math.max(0, volume)) * 100);
+  const sliderFillPercent = Math.max(
+    0,
+    Math.min(100, (volumePercent / safeMaxPercent) * 100),
+  );
   return (
     <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
       <div>
@@ -136,12 +144,12 @@ function ParticipantCard({
         <input
           type="range"
           min={0}
-          max={100}
+          max={safeMaxPercent}
           value={volumePercent}
           disabled={sliderDisabled}
           onChange={(event) => onVolumeChange(Number(event.target.value) / 100)}
           className="rf-gradient-slider w-full disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{ ['--rf-slider-value' as string]: `${volumePercent}%` }}
+          style={{ ['--rf-slider-value' as string]: `${sliderFillPercent}%` }}
           aria-label={sliderLabel}
         />
       </div>
@@ -533,6 +541,7 @@ export default function VoiceChannelView({
                     }
                     sliderDisabled={isSelf && !Boolean(voiceSession?.localStream)}
                     volume={isSelf ? localMicGain : (remoteVolumes[u.user_id] ?? 1)}
+                    sliderMaxPercent={isSelf ? 100 : 200}
                     muted={muted}
                     deafened={deafened}
                     showSelfControls={isSelf && isConnected}
