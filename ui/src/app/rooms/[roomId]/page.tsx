@@ -132,9 +132,9 @@ export default function WatchPartyRoomPage() {
       : 'video';
   const watchWindowShiftClass = isWatchRoom ? 'mt-[55px]' : '';
   const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
-  const createWindowShiftClass = isCreateRoom ? 'mt-[44px]' : '';
+  const createWindowShiftClass = isCreateRoom ? 'mt-[54px]' : '';
   const createTabsCounterShiftClass = isCreateRoom ? 'top-[-17px]' : 'top-0';
-  const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[27px]' : '';
+  const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[37px]' : '';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
