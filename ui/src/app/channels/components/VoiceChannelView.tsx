@@ -324,6 +324,11 @@ export default function VoiceChannelView({
   }, [wsEvents, channel.id, loadTranscriptSessions]);
 
   useEffect(() => {
+    if (wsEvents?.type !== 'error') return;
+    setError(wsEvents.message);
+  }, [wsEvents]);
+
+  useEffect(() => {
     if (transcriptionState?.status === 'running') {
       setTranscriptionStarting(false);
     }
