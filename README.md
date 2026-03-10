@@ -139,6 +139,7 @@ Detailed native operations guide:
   - `./scripts/deploy-native.sh`
   - not a raw `systemctl restart`, because deploy also rebuilds artifacts before restart
 - The main `rustyfin-native.service` now runs under a lightweight native supervisor script so `systemd` can detect child-process failure and restart the stack if required
+- A separate `rustyfin-post-healthcheck.service` now runs after startup to verify backend/UI/agent readiness and recover from half-ready boots
 
 ## Access URLs
 
