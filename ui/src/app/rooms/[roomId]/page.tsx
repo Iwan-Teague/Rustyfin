@@ -131,6 +131,9 @@ export default function WatchPartyRoomPage() {
       : 'video';
   const watchWindowShiftClass = isWatchRoom ? 'mt-[55px]' : '';
   const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
+  const createWindowShiftClass = isCreateRoom ? 'mt-[34px]' : '';
+  const createTabsCounterShiftClass = isCreateRoom ? 'top-[-17px]' : 'top-0';
+  const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[17px]' : '';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
@@ -688,9 +691,9 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isCreateRoom && (
-        <section className="panel relative mt-[17px] p-5 pt-12 sm:p-6 sm:pt-12">
+        <section className={`panel relative p-5 pt-12 sm:p-6 sm:pt-12 ${createWindowShiftClass}`}>
           <CreateToolTabsBar
-            className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
+            className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${createTabsCounterShiftClass}`}
             activeTool={activeCreateTool}
             onSwitchTool={handleSwitchCreateTool}
             switchingDisabled={false}
@@ -1034,7 +1037,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && (
-        <div className="grid gap-5 md:grid-cols-2">
+        <div className={`grid gap-5 md:grid-cols-2 ${createLowerPanelsShiftClass}`}>
           <section className="panel flex h-[22rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
