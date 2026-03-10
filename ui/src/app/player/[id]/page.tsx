@@ -40,6 +40,14 @@ type MediaInfo = {
   }>;
 };
 
+type PlayState = {
+  item_id: string;
+  played: boolean;
+  progress_ms: number;
+  last_played_ts?: number | null;
+  favorite: boolean;
+};
+
 function shouldResumeFromCurrentSource(video: HTMLVideoElement, fileId: string): boolean {
   const src = `${video.currentSrc || video.src || ''}`.toLowerCase();
   if (!src) return false;
@@ -280,8 +288,10 @@ export default function PlayerPage() {
 
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
+  const [playState, setPlayState] = useState<PlayState | null>(null);
   const [error, setError] = useState('');
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
+  const [loadingPlayState, setLoadingPlayState] = useState(true);
   const [startingHls, setStartingHls] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [hlsTargetHeight, setHlsTargetHeight] = useState<number | null>(null);
@@ -575,12 +585,48 @@ export default function PlayerPage() {
     }
   }, [descriptor?.file_id, hlsTargetHeight, id]);
 
+  const sendProgressSnapshot = useCallback(
+    async (keepalive = false) => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      const progressMs = Math.max(
+        0,
+        Math.floor((hlsSessionStartOffsetSecs + currentTime) * 1000),
+      );
+      if (progressMs <= 0 && !video.ended) {
+        return;
+      }
+
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const headers = new Headers({ 'Content-Type': 'application/json' });
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+
+      await fetch('/api/v1/playback/progress', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          item_id: id,
+          progress_ms: progressMs,
+          played: video.ended,
+        }),
+        keepalive,
+      }).catch(() => {});
+    },
+    [hlsSessionStartOffsetSecs, id],
+  );
+
   useEffect(() => {
     let cancelled = false;
     autoStartedRef.current = false;
     setLoadingDescriptor(true);
+    setLoadingPlayState(true);
     setDescriptor(null);
     setMediaInfo(null);
+    setPlayState(null);
     sessionIdRef.current = null;
     setError('');
     setHlsSessionStartOffsetSecs(0);
@@ -605,17 +651,34 @@ export default function PlayerPage() {
         if (!cancelled) setLoadingDescriptor(false);
       });
 
+    apiJson<PlayState>(`/playback/state/${id}`)
+      .then((data) => {
+        if (!cancelled) setPlayState(data);
+      })
+      .catch(() => {
+        if (!cancelled) setPlayState(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPlayState(false);
+      });
+
     return () => {
       cancelled = true;
     };
   }, [id]);
 
   useEffect(() => {
-    if (!loadingDescriptor && canStartPlayback && !autoStartedRef.current) {
+    if (!loadingDescriptor && !loadingPlayState && canStartPlayback && !autoStartedRef.current) {
       autoStartedRef.current = true;
-      void startHls();
+      const resumeSeconds =
+        playState && !playState.played && playState.progress_ms > 0
+          ? playState.progress_ms / 1000
+          : undefined;
+      void startHls(
+        resumeSeconds !== undefined ? { seekTimeOverrideSecs: resumeSeconds } : undefined,
+      );
     }
-  }, [loadingDescriptor, canStartPlayback, startHls]);
+  }, [loadingDescriptor, loadingPlayState, canStartPlayback, playState, startHls]);
 
   useEffect(() => {
     return () => {
@@ -672,19 +735,24 @@ export default function PlayerPage() {
     const video = videoRef.current;
     if (!video) return;
     const interval = setInterval(() => {
-      if (video.currentTime > 0) {
-        apiFetch('/playback/progress', {
-          method: 'POST',
-          body: JSON.stringify({
-            item_id: id,
-            progress_ms: Math.floor((hlsSessionStartOffsetSecs + video.currentTime) * 1000),
-            played: video.ended,
-          }),
-        }).catch(() => {});
+      if (video.currentTime > 0 || video.ended) {
+        void sendProgressSnapshot();
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [hlsSessionStartOffsetSecs, id]);
+  }, [sendProgressSnapshot]);
+
+  useEffect(() => {
+    const flushProgress = () => {
+      void sendProgressSnapshot(true);
+    };
+
+    window.addEventListener('pagehide', flushProgress);
+    return () => {
+      window.removeEventListener('pagehide', flushProgress);
+      flushProgress();
+    };
+  }, [sendProgressSnapshot]);
 
   const knownDurationSecs = Math.max(
     descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,

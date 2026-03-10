@@ -37,6 +37,9 @@ const LOGIN_INITIAL_ATTEMPTS: u64 = 5;
 const LOGIN_COOLDOWN_SECONDS: u64 = 30;
 const LOGIN_COOLDOWN_ATTEMPTS: u64 = 2;
 const LOGIN_BUCKET_IDLE_TTL_SECONDS: u64 = 30 * 60;
+const CONTINUE_WATCHING_MIN_PROGRESS_MS: i64 = 30_000;
+const CONTINUE_WATCHING_PERCENT_NUMERATOR: i64 = 5;
+const CONTINUE_WATCHING_PERCENT_DENOMINATOR: i64 = 100;
 
 #[derive(Debug, Clone)]
 struct LoginAttemptBucket {
@@ -305,6 +308,7 @@ fn api_router() -> Router<AppState> {
         .route("/items/{id}/missing-episodes", get(get_missing_episodes))
         // Playback
         .route("/playback/progress", post(update_progress))
+        .route("/playback/continue", get(list_continue_watching))
         .route("/playback/state/{item_id}", get(get_play_state))
         .route("/playback/sessions", post(create_playback_session))
         .route("/playback/sessions/{sid}/stop", post(stop_playback_session))
@@ -2500,6 +2504,56 @@ struct ProgressRequest {
     played: bool,
 }
 
+fn progress_threshold_ms(duration_ms: Option<i64>, prefer_larger: bool) -> i64 {
+    let percent_threshold = duration_ms
+        .filter(|value| *value > 0)
+        .map(|value| {
+            (value * CONTINUE_WATCHING_PERCENT_NUMERATOR / CONTINUE_WATCHING_PERCENT_DENOMINATOR)
+                .max(1)
+        })
+        .unwrap_or(CONTINUE_WATCHING_MIN_PROGRESS_MS);
+
+    if prefer_larger {
+        percent_threshold.max(CONTINUE_WATCHING_MIN_PROGRESS_MS)
+    } else {
+        percent_threshold.min(CONTINUE_WATCHING_MIN_PROGRESS_MS)
+    }
+}
+
+fn normalize_progress_state(
+    requested_progress_ms: i64,
+    played: bool,
+    duration_ms: Option<i64>,
+) -> (i64, bool) {
+    let clamped_duration_ms = duration_ms.filter(|value| *value > 0);
+    let mut progress_ms = requested_progress_ms.max(0);
+    if let Some(duration_ms) = clamped_duration_ms {
+        progress_ms = progress_ms.min(duration_ms);
+    }
+
+    if played {
+        return (0, true);
+    }
+
+    if progress_ms <= 0 {
+        return (0, false);
+    }
+
+    let start_threshold_ms = progress_threshold_ms(clamped_duration_ms, false);
+    if progress_ms < start_threshold_ms {
+        return (0, false);
+    }
+
+    if let Some(duration_ms) = clamped_duration_ms {
+        let completion_threshold_ms = progress_threshold_ms(Some(duration_ms), true);
+        if duration_ms.saturating_sub(progress_ms) <= completion_threshold_ms {
+            return (0, true);
+        }
+    }
+
+    (progress_ms, false)
+}
+
 async fn update_progress(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -2511,12 +2565,15 @@ async fn update_progress(
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
     ensure_library_access(&auth, &state, &item.library_id).await?;
 
+    let (progress_ms, played) =
+        normalize_progress_state(body.progress_ms, body.played, item.duration_ms);
+
     rustfin_db::repo::playstate::update_progress(
         &state.db,
         &auth.user_id,
         &body.item_id,
-        body.progress_ms,
-        body.played,
+        progress_ms,
+        played,
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -2531,6 +2588,19 @@ struct PlayStateResponse {
     progress_ms: i64,
     last_played_ts: Option<i64>,
     favorite: bool,
+}
+
+#[derive(Serialize)]
+struct ContinueWatchingResponse {
+    id: String,
+    library_id: String,
+    kind: String,
+    title: String,
+    year: Option<i64>,
+    poster_url: Option<String>,
+    progress_ms: i64,
+    duration_ms: Option<i64>,
+    last_played_ts: i64,
 }
 
 async fn get_play_state(
@@ -2564,6 +2634,65 @@ async fn get_play_state(
             favorite: false,
         })),
     }
+}
+
+async fn list_continue_watching(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ContinueWatchingResponse>>, AppError> {
+    let allowed_library_ids = if auth.role == "admin" {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &auth.user_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?,
+        )
+    };
+
+    let rows = rustfin_db::repo::playstate::list_continue_watching(
+        &state.db,
+        &auth.user_id,
+        allowed_library_ids.as_deref(),
+        12,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let library_ids: Vec<String> = rows.iter().map(|row| row.library_id.clone()).collect();
+    let settings_rows =
+        rustfin_db::repo::libraries::get_library_settings_for_libraries(&state.db, &library_ids)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let show_images_by_library: HashMap<String, bool> = settings_rows
+        .into_iter()
+        .map(|settings| (settings.library_id, settings.show_images))
+        .collect();
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| ContinueWatchingResponse {
+                id: row.item_id.clone(),
+                library_id: row.library_id.clone(),
+                kind: row.kind,
+                title: row.title,
+                year: row.year,
+                poster_url: if row.poster_url.is_some()
+                    && show_images_by_library
+                        .get(&row.library_id)
+                        .copied()
+                        .unwrap_or(true)
+                {
+                    item_image_url(&row.item_id, "poster", true)
+                } else {
+                    None
+                },
+                progress_ms: row.progress_ms,
+                duration_ms: row.duration_ms,
+                last_played_ts: row.last_played_ts,
+            })
+            .collect(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

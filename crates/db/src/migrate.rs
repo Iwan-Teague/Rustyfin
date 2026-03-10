@@ -138,6 +138,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "034_job_active_payload_indexes",
         include_str!("../migrations_pg/034_job_active_payload_indexes.sql"),
     ),
+    (
+        "035_continue_watching_indexes",
+        include_str!("../migrations_pg/035_continue_watching_indexes.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
