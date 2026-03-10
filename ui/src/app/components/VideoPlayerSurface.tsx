@@ -40,6 +40,7 @@ type VideoPlayerSurfaceProps = {
   qualityDisabled?: boolean;
   onQualityChange: (value: 'auto' | number) => void;
   onSeekRequest: (targetSeconds: number) => void | Promise<void>;
+  onPlaybackToggleRequest?: () => void | Promise<void>;
   onDownload?: () => void | Promise<void>;
   downloading?: boolean;
   downloadDisabled?: boolean;
@@ -251,6 +252,7 @@ export default function VideoPlayerSurface({
   qualityDisabled = false,
   onQualityChange,
   onSeekRequest,
+  onPlaybackToggleRequest,
   onDownload,
   downloading = false,
   downloadDisabled = false,
@@ -375,6 +377,10 @@ export default function VideoPlayerSurface({
 
   const togglePlayback = useCallback(async () => {
     if (!playbackEnabled) return;
+    if (onPlaybackToggleRequest) {
+      await onPlaybackToggleRequest();
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     if (video.paused || video.ended) {
@@ -382,7 +388,7 @@ export default function VideoPlayerSurface({
     } else {
       video.pause();
     }
-  }, [playbackEnabled, videoRef]);
+  }, [onPlaybackToggleRequest, playbackEnabled, videoRef]);
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;

@@ -309,6 +309,7 @@ export default function PlayerPage() {
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
   const [hlsAvailableWindowDurationSecs, setHlsAvailableWindowDurationSecs] = useState(0);
   const autoStartedRef = useRef(false);
+  const requestedPlaybackRef = useRef(true);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
   const sourceVideoHeight = mediaInfo?.video?.height && mediaInfo.video.height > 0 ? mediaInfo.video.height : null;
@@ -354,7 +355,10 @@ export default function PlayerPage() {
 
       const selectedTargetHeight =
         options?.targetHeightOverride !== undefined ? options.targetHeightOverride : hlsTargetHeight;
-      const shouldAutoPlay = options?.autoPlayOnReady ?? true;
+      if (options?.autoPlayOnReady !== undefined) {
+        requestedPlaybackRef.current = options.autoPlayOnReady;
+      }
+      const shouldAutoPlay = requestedPlaybackRef.current;
       const knownDurationSeconds = Math.max(
         descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
         mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
@@ -465,7 +469,7 @@ export default function PlayerPage() {
             if (!playbackKickPending || playbackKickInFlight) return;
             playbackKickInFlight = true;
             try {
-              if (shouldAutoPlay) {
+              if (requestedPlaybackRef.current) {
                 await attemptPlayWithWarmup(video);
                 playbackKickPending = false;
                 return;
@@ -491,7 +495,7 @@ export default function PlayerPage() {
           hls.on(Hls.Events.FRAG_BUFFERED, () => {
             reinforceKnownDuration();
             if (!playbackKickPending) return;
-            if (shouldAutoPlay && !video.paused) return;
+            if (requestedPlaybackRef.current && !video.paused) return;
             void kickPlaybackOrPreview();
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: ErrorData) => {
@@ -521,7 +525,7 @@ export default function PlayerPage() {
         } else if (canNativeHls) {
           video.src = data.hls_url;
           video.load();
-          if (shouldAutoPlay) {
+          if (requestedPlaybackRef.current) {
             await attemptPlayWithWarmup(video);
           } else {
             await ensurePausedPreviewFrame(video);
@@ -537,6 +541,31 @@ export default function PlayerPage() {
     },
     [descriptor, destroyHls, hlsTargetHeight, mediaInfo, stopSession],
   );
+
+  const handlePlaybackToggleRequest = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const currentlyWantsPlayback = requestedPlaybackRef.current;
+    requestedPlaybackRef.current = !currentlyWantsPlayback;
+
+    if (requestedPlaybackRef.current) {
+      await attemptPlayWithWarmup(video);
+      return;
+    }
+
+    try {
+      video.pause();
+    } catch {
+      // no-op
+    }
+    await ensurePausedPreviewFrame(video).catch(() => {});
+    try {
+      video.pause();
+    } catch {
+      // no-op
+    }
+  }, []);
 
   const handleSeek = useCallback(
     async (targetSeconds: number) => {
@@ -652,6 +681,7 @@ export default function PlayerPage() {
   useEffect(() => {
     let cancelled = false;
     autoStartedRef.current = false;
+    requestedPlaybackRef.current = true;
     setLoadingDescriptor(true);
     setLoadingPlayState(true);
     setDescriptor(null);
@@ -704,6 +734,7 @@ export default function PlayerPage() {
         playState && !playState.played && playState.progress_ms > 0
           ? playState.progress_ms / 1000
           : undefined;
+      requestedPlaybackRef.current = resumeSeconds === undefined;
       void startHls(
         resumeSeconds !== undefined
           ? { seekTimeOverrideSecs: resumeSeconds, autoPlayOnReady: false }
@@ -820,6 +851,7 @@ export default function PlayerPage() {
         qualityValue={selectedQualityValue}
         qualityOptions={qualityOptions}
         qualityDisabled={startingHls}
+        onPlaybackToggleRequest={handlePlaybackToggleRequest}
         onQualityChange={(value) => {
           const nextTargetHeight = value === 'auto' ? null : value;
           setHlsTargetHeight(nextTargetHeight);
