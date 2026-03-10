@@ -61,7 +61,8 @@ export function useRoomReconfigure({
     [allLibraries, eligibleLibraryIds],
   );
 
-  const isWatchReconfigureMode = reconfigureMode === 'video';
+  const isWatchReconfigureMode =
+    reconfigureMode === 'video' || reconfigureMode === 'youtube' || reconfigureMode === 'web';
 
   const markDirty = useCallback(() => {
     setReconfigureDirty(true);
