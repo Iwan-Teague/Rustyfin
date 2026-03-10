@@ -77,6 +77,9 @@ Runtime behavior:
 - `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
   - the supervisor keeps the native child-process set under `systemd` observation
   - if a core child process dies, the service exits and `systemd` restarts the stack
+- `rustyfin-post-healthcheck.service` is installed alongside the native runtime
+  - it verifies backend/UI/agent readiness after startup
+  - it performs one native-service restart if the host boots half-ready
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)

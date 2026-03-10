@@ -18,6 +18,7 @@ Usage:
 Installs systemd units that keep the native Debian Rustyfin runtime online:
 - rustyfin-native.service
 - rustfin-servers-agent.service
+- rustyfin-post-healthcheck.service
 
 Behavior:
 - creates/updates a shared env file at /etc/rustyfin/servers-agent.env
@@ -63,8 +64,10 @@ RUSTFIN_NATIVE_HOME="$(getent passwd "$RUSTFIN_NATIVE_USER" | cut -d: -f6 || tru
 
 MAIN_SERVICE_NAME="${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}"
 AGENT_SERVICE_NAME="${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}"
+POST_HEALTHCHECK_SERVICE_NAME="${RUSTFIN_POST_HEALTHCHECK_SERVICE:-rustyfin-post-healthcheck.service}"
 MAIN_SERVICE_PATH="/etc/systemd/system/${MAIN_SERVICE_NAME}"
 AGENT_SERVICE_PATH="/etc/systemd/system/${AGENT_SERVICE_NAME}"
+POST_HEALTHCHECK_SERVICE_PATH="/etc/systemd/system/${POST_HEALTHCHECK_SERVICE_NAME}"
 ENV_DIR="/etc/rustyfin"
 ENV_FILE="${ENV_DIR}/servers-agent.env"
 LOG_DIR="${REPO_ROOT}/.tmp/native-runtime/logs"
@@ -76,8 +79,9 @@ fi
 
 main_unit_tmp="$(mktemp)"
 agent_unit_tmp="$(mktemp)"
+post_healthcheck_unit_tmp="$(mktemp)"
 env_tmp="$(mktemp)"
-trap 'rm -f "$main_unit_tmp" "$agent_unit_tmp" "$env_tmp"' EXIT
+trap 'rm -f "$main_unit_tmp" "$agent_unit_tmp" "$post_healthcheck_unit_tmp" "$env_tmp"' EXIT
 
 existing_token=""
 if "${RUN_ROOT[@]}" test -f "$ENV_FILE"; then
@@ -148,6 +152,28 @@ StandardError=append:${LOG_DIR}/rustyfin-native-systemd.log
 WantedBy=multi-user.target
 EOF
 
+cat > "$post_healthcheck_unit_tmp" <<EOF
+[Unit]
+Description=Rustyfin Native Post-Start Healthcheck
+Wants=network-online.target ${MAIN_SERVICE_NAME} ${AGENT_SERVICE_NAME}
+After=network-online.target ${MAIN_SERVICE_NAME} ${AGENT_SERVICE_NAME}
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=${REPO_ROOT}
+Environment=HOME=/root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-${ENV_FILE}
+ExecStart=/usr/bin/bash -lc '${REPO_ROOT}/scripts/run-native-post-healthcheck.sh'
+StandardOutput=append:${LOG_DIR}/rustyfin-post-healthcheck.log
+StandardError=append:${LOG_DIR}/rustyfin-post-healthcheck.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 info "Installing shared servers-agent environment..."
 "${RUN_ROOT[@]}" install -d -m 755 "$ENV_DIR"
 "${RUN_ROOT[@]}" cp "$env_tmp" "$ENV_FILE"
@@ -161,16 +187,25 @@ info "Installing ${MAIN_SERVICE_NAME} for user ${RUSTFIN_NATIVE_USER}..."
 "${RUN_ROOT[@]}" cp "$main_unit_tmp" "$MAIN_SERVICE_PATH"
 "${RUN_ROOT[@]}" chmod 644 "$MAIN_SERVICE_PATH"
 
+info "Installing ${POST_HEALTHCHECK_SERVICE_NAME}..."
+"${RUN_ROOT[@]}" cp "$post_healthcheck_unit_tmp" "$POST_HEALTHCHECK_SERVICE_PATH"
+"${RUN_ROOT[@]}" chmod 644 "$POST_HEALTHCHECK_SERVICE_PATH"
+
 "${RUN_ROOT[@]}" systemctl daemon-reload
 "${RUN_ROOT[@]}" systemctl enable "$AGENT_SERVICE_NAME"
 "${RUN_ROOT[@]}" systemctl enable "$MAIN_SERVICE_NAME"
+"${RUN_ROOT[@]}" systemctl enable "$POST_HEALTHCHECK_SERVICE_NAME"
 "${RUN_ROOT[@]}" systemctl stop "$MAIN_SERVICE_NAME" 2>/dev/null || true
+"${RUN_ROOT[@]}" systemctl stop "$POST_HEALTHCHECK_SERVICE_NAME" 2>/dev/null || true
 "${RUN_ROOT[@]}" systemctl restart "$AGENT_SERVICE_NAME"
 "${RUN_ROOT[@]}" systemctl start "$MAIN_SERVICE_NAME"
+"${RUN_ROOT[@]}" systemctl start "$POST_HEALTHCHECK_SERVICE_NAME"
 
 success "Installed and started ${AGENT_SERVICE_NAME}"
 success "Installed and started ${MAIN_SERVICE_NAME}"
+success "Installed and started ${POST_HEALTHCHECK_SERVICE_NAME}"
 success "For future native updates, use: ./scripts/deploy-native.sh"
 success "Check status with:"
 echo "  systemctl status ${AGENT_SERVICE_NAME}"
 echo "  systemctl status ${MAIN_SERVICE_NAME}"
+echo "  systemctl status ${POST_HEALTHCHECK_SERVICE_NAME}"
