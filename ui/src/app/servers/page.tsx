@@ -757,7 +757,7 @@ export default function ServersPage() {
               const lifecycleSupported = runtimeCapabilities?.lifecycle_supported ?? true;
               const statusSupported = runtimeCapabilities?.status_supported ?? true;
               const deleteSupported = runtimeCapabilities?.delete_supported ?? true;
-              const canDelete = me.role === 'admin' || me.id === server.owner_user_id;
+              const canDelete = me.role === 'admin';
               const canStart =
                 lifecycleSupported &&
                 server.observed_state !== 'provisioning' &&
@@ -1107,7 +1107,8 @@ export default function ServersPage() {
 
             {me.role !== 'admin' ? (
               <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                Only admins can create or manage server records.
+                Only admins can create server records. Users can still start, stop, and restart
+                visible servers from the known servers list.
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
@@ -1287,7 +1288,8 @@ export default function ServersPage() {
 
           {me.role !== 'admin' ? (
             <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              Only admins can provision, import, or discover server data.
+              Only admins can provision, import, discover, or delete server data. Users can still
+              control server runtime from the known servers list.
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
