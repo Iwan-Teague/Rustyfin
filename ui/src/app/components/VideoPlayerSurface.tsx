@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type CSSProperties,
   type RefObject,
   type VideoHTMLAttributes,
   useCallback,
@@ -70,6 +71,13 @@ function clampVolume(value: number): number {
   if (!Number.isFinite(value)) return 1;
   if (value < 0) return 0;
   if (value > 1) return 1;
+  return value;
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 100) return 100;
   return value;
 }
 
@@ -344,6 +352,20 @@ export default function VideoPlayerSurface({
   }, [effectiveBufferedWindowEndSecs, knownDurationSecs]);
 
   const effectiveSeekValue = pendingSeekSecs ?? Math.min(currentPositionSecs, effectiveDurationSecs || 0);
+  const seekSliderStyle = useMemo<CSSProperties>(() => {
+    const denominator = effectiveDurationSecs > 0 ? effectiveDurationSecs : 0;
+    const playedPercent =
+      denominator > 0 ? clampPercent((effectiveSeekValue / denominator) * 100) : 0;
+    const bufferedPercent =
+      denominator > 0
+        ? clampPercent((Math.max(effectiveBufferedWindowEndSecs, effectiveSeekValue) / denominator) * 100)
+        : 0;
+
+    return {
+      ['--rf-slider-value' as const]: `${playedPercent}%`,
+      ['--rf-slider-buffered' as const]: `${bufferedPercent}%`,
+    } as CSSProperties;
+  }, [effectiveBufferedWindowEndSecs, effectiveDurationSecs, effectiveSeekValue]);
 
   const commitSeek = useCallback(async () => {
     if (pendingSeekSecs === null) return;
@@ -520,9 +542,10 @@ export default function VideoPlayerSurface({
               void commitSeek();
             }}
             aria-label="Seek video"
-            className="h-2 min-w-[12rem] flex-1 accent-[var(--orange)]"
+            className="rf-gradient-slider h-2 min-w-[12rem] flex-1"
             disabled={!canStartPlayback || !seekEnabled || effectiveDurationSecs <= 0}
             title={seekEnabled ? 'Seek video' : playbackDisabledReason ?? 'Seeking disabled'}
+            style={seekSliderStyle}
           />
           <span className="min-w-[4.75rem] text-sm tabular-nums text-white/85">
             {formatClock(effectiveDurationSecs)}
@@ -599,12 +622,9 @@ export default function VideoPlayerSurface({
             </button>
           </div>
         </div>
-        {(statusText || (knownDurationSecs > 0 && effectiveBufferedWindowEndSecs < knownDurationSecs - 1)) && (
+        {statusText && (
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs muted">
-            {statusText ? <span>{statusText}</span> : null}
-            {knownDurationSecs > 0 && effectiveBufferedWindowEndSecs < knownDurationSecs - 1 ? (
-              <span>Buffered through {formatClock(effectiveBufferedWindowEndSecs)}</span>
-            ) : null}
+            <span>{statusText}</span>
           </div>
         )}
       </div>
