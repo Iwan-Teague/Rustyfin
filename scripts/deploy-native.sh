@@ -176,16 +176,9 @@ else
 fi
 
 if service_exists "$MAIN_SERVICE_NAME"; then
-  if service_exists "$AGENT_SERVICE_NAME"; then
-    start_service_required "$AGENT_SERVICE_NAME"
-  fi
-  start_service_required "$MAIN_SERVICE_NAME"
+  info "Refreshing installed native systemd units..."
+  "${RUN_ROOT[@]}" "$REPO_ROOT/scripts/install_native_systemd.sh"
   success "Native systemd deployment completed."
-  info "Check status with:"
-  echo "  systemctl status ${MAIN_SERVICE_NAME}"
-  if service_exists "$AGENT_SERVICE_NAME"; then
-    echo "  systemctl status ${AGENT_SERVICE_NAME}"
-  fi
 else
   info "No native systemd unit detected; starting runtime directly..."
   start_args=(--no-build)

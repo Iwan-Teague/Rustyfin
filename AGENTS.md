@@ -74,6 +74,9 @@ Runtime behavior:
   - this also installs a dedicated root-run `rustfin-servers-agent.service` for privileged Minecraft host operations
 - After native `systemd` services are installed, use `./scripts/deploy-native.sh` for updates
   - it stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
+- `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
+  - the supervisor keeps the native child-process set under `systemd` observation
+  - if a core child process dies, the service exits and `systemd` restarts the stack
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
