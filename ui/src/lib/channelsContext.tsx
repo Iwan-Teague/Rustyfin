@@ -319,6 +319,13 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               stream: isStreamActive ? stream : null,
             };
             ws.send(JSON.stringify({ type: 'join_voice', channel_id: prevSession.channelId }));
+          } else if (pendingVoiceRef.current) {
+            ws.send(
+              JSON.stringify({
+                type: 'join_voice',
+                channel_id: pendingVoiceRef.current.channelId,
+              }),
+            );
           } else if (!pendingVoiceRef.current) {
             const persisted = loadPersistedVoiceSession();
             if (!persisted) return;
@@ -555,10 +562,6 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       // New join intent supersedes any persisted session.
       clearPersistedVoiceSession();
 
-      if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return 'Realtime channel connection is not ready yet. Wait a moment and try again.';
-      }
-
       // Leave any existing session first
       if (pendingVoiceRef.current || voiceSession) {
         const previousChannelId =
@@ -625,10 +628,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       }
 
       pendingVoiceRef.current = { channelId, channelName, stream };
-      sendWs({ type: 'join_voice', channel_id: channelId });
+      if (wsRef.current?.readyState === WebSocket.OPEN && wsReady) {
+        sendWs({ type: 'join_voice', channel_id: channelId });
+      }
       return micStatusMessage;
     },
-    [voiceSession, sendWs, preferredInputDeviceId, resolvePreferredInputDeviceId],
+    [voiceSession, sendWs, preferredInputDeviceId, resolvePreferredInputDeviceId, wsReady],
   );
 
   const leaveVoice = useCallback(() => {
