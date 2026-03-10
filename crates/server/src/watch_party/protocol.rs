@@ -119,6 +119,13 @@ pub enum ClientMessage {
         red_user_id: Option<String>,
         yellow_user_id: Option<String>,
     },
+    ConnectFourConfigureAi {
+        enabled: bool,
+        #[serde(default)]
+        difficulty: Option<String>,
+        #[serde(default)]
+        human_color: Option<String>,
+    },
     ConnectFourDrop {
         column: usize,
     },
@@ -225,6 +232,9 @@ pub struct ConnectFourState {
     pub winner_color: Option<String>,
     pub red_user_id: Option<String>,
     pub yellow_user_id: Option<String>,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub last_move_row: Option<u8>,
     pub last_move_col: Option<u8>,
     pub reset_requested_red: bool,
