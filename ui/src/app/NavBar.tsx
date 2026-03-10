@@ -50,11 +50,13 @@ export default function NavBar() {
   const deafened = voiceSession?.deafened ?? false;
   const baseVoiceActionClass =
     'inline-flex items-center justify-center rounded-full border transition';
+  const desktopNavVisibilityClass = 'hidden xl:block';
+  const mobileNavVisibilityClass = 'flex xl:hidden';
 
   return (
     <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
       {/* ── Desktop bar (lg+): wrap-aware links | centered logo | session controls ── */}
-      <div className="relative hidden lg:block">
+      <div className={`relative ${desktopNavVisibilityClass}`}>
         <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center">
           <Link
             href="/"
@@ -65,7 +67,7 @@ export default function NavBar() {
           </Link>
         </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-2">
+        <div className="flex flex-nowrap items-center justify-center gap-x-2">
           {desktopLeftNavLinks.map((link) => (
             <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
               {link.label}
@@ -181,7 +183,7 @@ export default function NavBar() {
       </div>
 
       {/* ── Mobile top bar (below lg): hamburger | logo centered | username ── */}
-      <div className="flex items-center lg:hidden">
+      <div className={`items-center ${mobileNavVisibilityClass}`}>
         <button
           type="button"
           className="btn-ghost flex items-center px-3 py-2 text-xl leading-none"
@@ -279,7 +281,7 @@ export default function NavBar() {
 
       {/* ── Mobile dropdown ── */}
       {menuOpen && (
-        <div className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2 lg:hidden">
+        <div className={`mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2 ${mobileNavVisibilityClass}`}>
           {navLinks.map((link) => (
             <Link
               key={link.href}
