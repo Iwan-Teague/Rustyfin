@@ -688,7 +688,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isCreateRoom && (
-        <section className="panel relative p-5 pt-12 sm:p-6 sm:pt-12">
+        <section className="panel relative mt-[17px] p-5 pt-12 sm:p-6 sm:pt-12">
           <CreateToolTabsBar
             className="absolute left-4 right-4 top-0 z-10 -translate-y-[62%] sm:left-6 sm:right-6"
             activeTool={activeCreateTool}
