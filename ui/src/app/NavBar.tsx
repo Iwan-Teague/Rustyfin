@@ -292,7 +292,7 @@ export default function NavBar() {
       ) : null}
 
       {!showDesktopNav ? (
-        <div className="flex items-center lg:hidden">
+        <div className="flex items-center">
           <button
             type="button"
             className="btn-ghost flex items-center px-3 py-2 text-xl leading-none"
@@ -389,7 +389,7 @@ export default function NavBar() {
       ) : null}
 
       {!showDesktopNav && menuOpen ? (
-        <div className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2 lg:hidden">
+        <div className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2">
           {navLinks.map((link) => (
             <Link
               key={link.href}
