@@ -384,7 +384,9 @@ input[type="checkbox"]:disabled {
   -webkit-appearance: none;
   appearance: none;
   --rf-slider-value: 100%;
+  --rf-slider-buffered: 100%;
   --rf-slider-track-empty: rgba(255, 255, 255, 0.18);
+  --rf-slider-track-buffered: rgba(199, 205, 226, 0.34);
   --rf-slider-track-fill: linear-gradient(
     90deg,
     var(--orange) 0%,
@@ -395,6 +397,11 @@ input[type="checkbox"]:disabled {
   border-radius: 999px;
   background:
     var(--rf-slider-track-fill) 0 0 / var(--rf-slider-value) 100% no-repeat,
+    linear-gradient(
+      90deg,
+      var(--rf-slider-track-buffered) 0%,
+      var(--rf-slider-track-buffered) 100%
+    ) 0 0 / var(--rf-slider-buffered) 100% no-repeat,
     var(--rf-slider-track-empty);
   outline: none;
 }
@@ -408,6 +415,11 @@ input[type="checkbox"]:disabled {
   border-radius: 999px;
   background:
     var(--rf-slider-track-fill) 0 0 / var(--rf-slider-value) 100% no-repeat,
+    linear-gradient(
+      90deg,
+      var(--rf-slider-track-buffered) 0%,
+      var(--rf-slider-track-buffered) 100%
+    ) 0 0 / var(--rf-slider-buffered) 100% no-repeat,
     var(--rf-slider-track-empty);
 }
 
@@ -427,7 +439,13 @@ input[type="checkbox"]:disabled {
   height: 0.42rem;
   border-radius: 999px;
   border: 0;
-  background: var(--rf-slider-track-empty);
+  background:
+    linear-gradient(
+      90deg,
+      var(--rf-slider-track-buffered) 0%,
+      var(--rf-slider-track-buffered) 100%
+    ) 0 0 / var(--rf-slider-buffered) 100% no-repeat,
+    var(--rf-slider-track-empty);
 }
 
 .rf-gradient-slider::-moz-range-progress {
