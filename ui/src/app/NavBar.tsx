@@ -41,6 +41,7 @@ export default function NavBar() {
   const desktopNavSplitIndex = Math.ceil(navLinks.length / 2);
   const desktopLeftNavLinks = navLinks.slice(0, desktopNavSplitIndex);
   const desktopRightNavLinks = navLinks.slice(desktopNavSplitIndex);
+  const desktopLogoSpacerClass = 'w-[11rem] min-w-[11rem]';
   const hasLocalStream = voiceSession?.localStream !== null;
   const muted = voiceSession?.muted ?? false;
   const deafened = voiceSession?.deafened ?? false;
@@ -49,36 +50,33 @@ export default function NavBar() {
 
   return (
     <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
-      {/* ── Desktop bar (lg+): nav links left | logo centered | user right ── */}
-      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-4">
+      {/* ── Desktop bar (lg+): wrap-aware links | centered logo | session controls ── */}
+      <div className="relative hidden lg:block">
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center">
+          <Link
+            href="/"
+            className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+            aria-label="Go to Rustyfin home"
+          >
+            Rustyfin
+          </Link>
+        </div>
 
-        {/* Left: nav links */}
-        <div className="flex min-w-0 items-center justify-start gap-1 pr-3">
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-2">
           {desktopLeftNavLinks.map((link) => (
             <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
               {link.label}
             </Link>
           ))}
-        </div>
 
-        {/* Center: logo */}
-        <Link
-          href="/"
-          className="justify-self-center rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
-          aria-label="Go to Rustyfin home"
-        >
-          Rustyfin
-        </Link>
+          <div aria-hidden="true" className={`${desktopLogoSpacerClass} shrink-0`} />
 
-        {/* Right: voice indicator + user section */}
-        <div className="flex min-w-0 items-center justify-end gap-2 pl-3">
-          <div className="flex min-w-0 items-center justify-end gap-1">
-            {desktopRightNavLinks.map((link) => (
-              <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
-                {link.label}
-              </Link>
-            ))}
-          </div>
+          {desktopRightNavLinks.map((link) => (
+            <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+              {link.label}
+            </Link>
+          ))}
+
           {voiceSession && (
             <div className="chip h-10 shrink-0 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
               <Link
