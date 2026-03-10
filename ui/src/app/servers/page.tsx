@@ -705,7 +705,7 @@ export default function ServersPage() {
         </div>
       ) : null}
 
-      <section className="panel relative mt-[42px] flex flex-col gap-4 p-5 pt-[20px] sm:p-6 sm:pt-[24px]">
+      <section className="panel relative mt-[17px] flex flex-col gap-4 p-5 pt-[20px] sm:p-6 sm:pt-[24px]">
         <div className="absolute left-4 right-4 top-[-16px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
           <div className="flex flex-wrap items-end gap-2">
             <button
