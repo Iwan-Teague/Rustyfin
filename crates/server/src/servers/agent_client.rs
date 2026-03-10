@@ -5,7 +5,7 @@ use rustfin_core::{
         ServersAgentDiscoveryScanRequest, ServersAgentDiscoveryScanResponse,
         ServersAgentImportRequest, ServersAgentLifecycleRequest, ServersAgentLogsRequest,
         ServersAgentLogsResponse, ServersAgentProbeRequest, ServersAgentProvisionRequest,
-        ServersAgentStatusRequest, SystemdUnitStatus,
+        ServersAgentStatusRequest, ServersAgentSyncRequest, SystemdUnitStatus,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,19 @@ pub async fn import_existing_instance(
         "/v1/minecraft/import",
         &ServersAgentImportRequest { spec: spec.clone() },
         "failed to import Minecraft server via servers agent",
+    )
+    .await
+}
+
+pub async fn sync_managed_instance(
+    state: &AppState,
+    spec: &rustfin_core::servers_agent::ManagedProvisionSpec,
+) -> Result<rustfin_core::servers_agent::ProvisioningResult, ApiError> {
+    post_json(
+        state,
+        "/v1/minecraft/sync",
+        &ServersAgentSyncRequest { spec: spec.clone() },
+        "failed to sync Minecraft server settings via servers agent",
     )
     .await
 }

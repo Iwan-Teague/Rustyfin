@@ -115,6 +115,21 @@ pub struct CreateServerInstanceEventParams<'a> {
     pub details_json: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct UpdateMinecraftServerSettingsParams<'a> {
+    pub gamemode: &'a str,
+    pub difficulty: &'a str,
+    pub hardcore: bool,
+    pub motd: &'a str,
+    pub max_player_count: Option<i64>,
+    pub autostart: bool,
+    pub online_mode: bool,
+    pub pvp: bool,
+    pub allow_flight: bool,
+    pub enable_command_block: bool,
+    pub white_list_enabled: bool,
+}
+
 fn base_instances_root() -> String {
     std::env::var("RUSTFIN_SERVERS_INSTANCE_ROOT")
         .ok()
@@ -548,6 +563,66 @@ pub async fn create_server_instance_event(
         message: params.message.to_string(),
         created_ts: now,
     })
+}
+
+pub async fn update_minecraft_server_settings(
+    pool: &DbPool,
+    instance_id: &str,
+    params: UpdateMinecraftServerSettingsParams<'_>,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let mut tx = pool.begin().await?;
+
+    let instance_result = sqlx::query(
+        "UPDATE server_instance
+         SET autostart = $1,
+             max_player_count = $2,
+             updated_ts = $3
+         WHERE id = $4
+           AND game_kind = 'minecraft'",
+    )
+    .bind(params.autostart)
+    .bind(params.max_player_count)
+    .bind(now)
+    .bind(instance_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if instance_result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "UPDATE minecraft_server_config
+         SET gamemode = $1,
+             difficulty = $2,
+             hardcore = $3,
+             motd = $4,
+             online_mode = $5,
+             pvp = $6,
+             allow_flight = $7,
+             enable_command_block = $8,
+             white_list_enabled = $9,
+             updated_ts = $10
+         WHERE instance_id = $11",
+    )
+    .bind(params.gamemode)
+    .bind(params.difficulty)
+    .bind(params.hardcore)
+    .bind(params.motd)
+    .bind(params.online_mode)
+    .bind(params.pvp)
+    .bind(params.allow_flight)
+    .bind(params.enable_command_block)
+    .bind(params.white_list_enabled)
+    .bind(now)
+    .bind(instance_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn delete_minecraft_server(

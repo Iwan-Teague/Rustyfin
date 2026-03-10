@@ -108,6 +108,20 @@ export type MinecraftServerDeleteResponse = {
   message: string;
 };
 
+export type UpdateMinecraftServerPayload = {
+  gamemode: 'survival' | 'creative' | 'adventure' | 'spectator';
+  difficulty: 'peaceful' | 'easy' | 'normal' | 'hard';
+  hardcore: boolean;
+  motd: string;
+  max_player_count: number;
+  autostart: boolean;
+  online_mode: boolean;
+  pvp: boolean;
+  allow_flight: boolean;
+  enable_command_block: boolean;
+  white_list_enabled: boolean;
+};
+
 export type MinecraftRuntimeCapabilities = {
   host_mode: string;
   status_supported: boolean;
@@ -163,6 +177,13 @@ export function getMinecraftRuntimeCapabilities() {
 
 export function getMinecraftServer(id: string) {
   return apiJson<MinecraftServer>(`/servers/minecraft/instances/${id}`);
+}
+
+export function updateMinecraftServer(id: string, payload: UpdateMinecraftServerPayload) {
+  return apiJson<MinecraftServer>(`/servers/minecraft/instances/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function refreshMinecraftServerStatus(id: string) {

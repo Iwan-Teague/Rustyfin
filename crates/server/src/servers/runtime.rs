@@ -118,6 +118,19 @@ pub async fn import_existing_instance(
     }
 }
 
+pub async fn sync_managed_instance(
+    state: &AppState,
+    spec: &ManagedProvisionSpec,
+) -> Result<ProvisioningResult, String> {
+    if use_servers_agent(state) {
+        super::agent_client::sync_managed_instance(state, spec)
+            .await
+            .map_err(|error| error.to_string())
+    } else {
+        rustfin_servers_host::sync_managed_instance(spec).await
+    }
+}
+
 pub async fn delete_managed_instance(
     state: &AppState,
     unit_name: &str,

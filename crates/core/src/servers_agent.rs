@@ -63,6 +63,7 @@ pub struct ManagedProvisionSpec {
     pub listen_host: String,
     pub listen_port: i64,
     pub autostart: bool,
+    pub max_player_count: Option<i64>,
     pub server_distribution: String,
     pub minecraft_version: String,
     pub java_path: String,
@@ -113,6 +114,11 @@ pub struct ServersAgentLifecycleRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServersAgentProvisionRequest {
+    pub spec: ManagedProvisionSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServersAgentSyncRequest {
     pub spec: ManagedProvisionSpec,
 }
 

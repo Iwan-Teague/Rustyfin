@@ -11,7 +11,7 @@ use super::runtime::{
     ServerLifecycleAction, ServersAgentDiscoveryScanResponse, ServersAgentLogsResponse,
     SystemdUnitStatus, delete_managed_instance, import_existing_instance, probe_minecraft_server,
     provision_managed_instance, query_unit_logs, query_unit_status, run_lifecycle_action,
-    runtime_capabilities, scan_discovery_candidates,
+    runtime_capabilities, scan_discovery_candidates, sync_managed_instance,
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
@@ -175,6 +175,28 @@ pub struct ImportMinecraftServerRequest {
     pub source_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateMinecraftServerRequest {
+    pub gamemode: String,
+    pub difficulty: String,
+    #[serde(default)]
+    pub hardcore: bool,
+    pub motd: String,
+    pub max_player_count: i64,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default = "default_true")]
+    pub online_mode: bool,
+    #[serde(default = "default_true")]
+    pub pvp: bool,
+    #[serde(default)]
+    pub allow_flight: bool,
+    #[serde(default)]
+    pub enable_command_block: bool,
+    #[serde(default)]
+    pub white_list_enabled: bool,
+}
+
 #[derive(Debug)]
 struct ValidatedCreateMinecraftServer {
     display_name: String,
@@ -197,6 +219,21 @@ struct ValidatedCreateMinecraftServer {
     white_list_enabled: bool,
     autostart: bool,
     eula_accepted: bool,
+}
+
+#[derive(Debug)]
+struct ValidatedUpdateMinecraftServer {
+    gamemode: String,
+    difficulty: String,
+    hardcore: bool,
+    motd: String,
+    max_player_count: i64,
+    autostart: bool,
+    online_mode: bool,
+    pvp: bool,
+    allow_flight: bool,
+    enable_command_block: bool,
+    white_list_enabled: bool,
 }
 
 fn default_listen_port() -> i64 {
@@ -334,6 +371,32 @@ fn validate_create_request(
     })
 }
 
+fn validate_update_request(
+    req: &UpdateMinecraftServerRequest,
+) -> Result<ValidatedUpdateMinecraftServer, AppError> {
+    let gamemode = normalize_choice(&req.gamemode, "gamemode", ALLOWED_GAMEMODES)?;
+    let difficulty = normalize_choice(&req.difficulty, "difficulty", ALLOWED_DIFFICULTIES)?;
+    if req.max_player_count < 1 || req.max_player_count > 500 {
+        return Err(
+            ApiError::BadRequest("max_player_count must be between 1 and 500".into()).into(),
+        );
+    }
+
+    Ok(ValidatedUpdateMinecraftServer {
+        gamemode,
+        difficulty,
+        hardcore: req.hardcore,
+        motd: normalize_non_empty(&req.motd, "motd", 180)?,
+        max_player_count: req.max_player_count,
+        autostart: req.autostart,
+        online_mode: req.online_mode,
+        pvp: req.pvp,
+        allow_flight: req.allow_flight,
+        enable_command_block: req.enable_command_block,
+        white_list_enabled: req.white_list_enabled,
+    })
+}
+
 #[derive(Debug)]
 struct RuntimeProjection {
     install_mode: Option<String>,
@@ -376,6 +439,16 @@ fn can_auto_provision_before_start(
         && matches!(server.observed_state.as_str(), "draft" | "unprovisioned")
 }
 
+fn should_sync_managed_server_settings(
+    server: &rustfin_db::repo::servers::MinecraftServerRow,
+) -> bool {
+    matches!(server.install_mode.as_str(), "managed" | "imported")
+        && !matches!(
+            server.observed_state.as_str(),
+            "draft" | "unprovisioned" | "provisioning" | "importing"
+        )
+}
+
 fn capabilities_to_response(
     capabilities: MinecraftRuntimeCapabilities,
 ) -> MinecraftRuntimeCapabilitiesResponse {
@@ -403,6 +476,7 @@ fn build_managed_provision_spec(
         listen_host: server.listen_host.clone(),
         listen_port: server.listen_port,
         autostart: server.autostart,
+        max_player_count: server.max_player_count,
         server_distribution: server.server_distribution.clone(),
         minecraft_version: server.minecraft_version.clone(),
         java_path: server.java_path.clone(),
@@ -1293,6 +1367,106 @@ pub async fn get_minecraft_server(
         return Err(ApiError::NotFound("server instance not found".into()).into());
     };
     Ok(Json(row_to_response(row)))
+}
+
+pub async fn update_minecraft_server(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateMinecraftServerRequest>,
+) -> Result<Json<MinecraftServerResponse>, AppError> {
+    let validated = validate_update_request(&req)?;
+
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &admin.user_id,
+        true,
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    let mut sync_spec = build_managed_provision_spec(&current);
+    sync_spec.gamemode = validated.gamemode.clone();
+    sync_spec.difficulty = validated.difficulty.clone();
+    sync_spec.hardcore = validated.hardcore;
+    sync_spec.motd = validated.motd.clone();
+    sync_spec.autostart = validated.autostart;
+    sync_spec.online_mode = validated.online_mode;
+    sync_spec.pvp = validated.pvp;
+    sync_spec.allow_flight = validated.allow_flight;
+    sync_spec.enable_command_block = validated.enable_command_block;
+    sync_spec.white_list_enabled = validated.white_list_enabled;
+
+    if should_sync_managed_server_settings(&current) {
+        sync_managed_instance(&state, &sync_spec)
+            .await
+            .map_err(ApiError::BadRequest)?;
+    }
+
+    let updated = rustfin_db::repo::servers::update_minecraft_server_settings(
+        &state.db,
+        &current.id,
+        rustfin_db::repo::servers::UpdateMinecraftServerSettingsParams {
+            gamemode: &validated.gamemode,
+            difficulty: &validated.difficulty,
+            hardcore: validated.hardcore,
+            motd: &validated.motd,
+            max_player_count: Some(validated.max_player_count),
+            autostart: validated.autostart,
+            online_mode: validated.online_mode,
+            pvp: validated.pvp,
+            allow_flight: validated.allow_flight,
+            enable_command_block: validated.enable_command_block,
+            white_list_enabled: validated.white_list_enabled,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if !updated {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    }
+
+    record_server_event(
+        &state,
+        &current.id,
+        None,
+        Some(&admin.user_id),
+        "info",
+        "settings_updated",
+        if current.observed_state == "running" {
+            "Minecraft server settings updated. Restart the server to apply all runtime changes."
+        } else {
+            "Minecraft server settings updated."
+        },
+    )
+    .await;
+
+    crate::audit_log::record_event(
+        &state,
+        "servers.minecraft.update",
+        json!({
+            "instance_id": current.id,
+            "display_name": current.display_name,
+            "updated_by": admin.username,
+            "gamemode": validated.gamemode,
+            "difficulty": validated.difficulty,
+            "max_player_count": validated.max_player_count,
+            "autostart": validated.autostart,
+        }),
+    )
+    .await;
+
+    let refreshed = rustfin_db::repo::servers::get_minecraft_server_by_id(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("server instance not found".into()))?;
+
+    Ok(Json(row_to_response(refreshed)))
 }
 
 pub async fn refresh_minecraft_server_status(

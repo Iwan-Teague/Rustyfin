@@ -348,7 +348,7 @@ export default function WatchPartyPage() {
   const fixedColumnHeightStyle = {
     height: fixedColumnHeightPx ? `${fixedColumnHeightPx}px` : '24rem',
   };
-  const topPanelsHeightClass = 'h-[14rem]';
+  const topPanelsHeightClass = 'h-[14.625rem]';
 
   return (
     <div className="space-y-6 animate-rise">
