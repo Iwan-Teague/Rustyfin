@@ -638,6 +638,7 @@ type ConnectFourPanelProps = {
 
 function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl, sendWs }: ConnectFourPanelProps) {
   const rows = useMemo(() => normalizeConnectFourRows(connectFour.board_rows), [connectFour.board_rows]);
+  const [dropPending, setDropPending] = useState(false);
   const redUserId = connectFour.red_user_id ?? null;
   const yellowUserId = connectFour.yellow_user_id ?? null;
   const myColor: 'red' | 'yellow' | null =
@@ -657,7 +658,20 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
   const canDrop =
     canControl &&
     status === 'active' &&
-    ((!turnUserId && !myColor) || !turnUserId || turnUserId === currentUserId);
+    !dropPending &&
+    !!myColor &&
+    turnUserId === currentUserId &&
+    myColor === turn;
+
+  useEffect(() => {
+    setDropPending(false);
+  }, [
+    connectFour.updated_ts_ms,
+    connectFour.turn,
+    connectFour.status,
+    connectFour.last_move_col,
+    connectFour.last_move_row,
+  ]);
 
   function handleAssignPlayers(nextRed: string | null, nextYellow: string | null) {
     if (!canControl) return;
@@ -670,7 +684,10 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
 
   function handleDrop(column: number) {
     if (!canDrop) return;
-    sendWs({ type: 'connect_four_drop', column });
+    const sent = sendWs({ type: 'connect_four_drop', column });
+    if (sent) {
+      setDropPending(true);
+    }
   }
 
   function handleRandomSeats() {
@@ -715,9 +732,9 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
                   <span
                     className={`h-[70%] w-[70%] rounded-full border border-white/20 ${
                       isRed
-                        ? 'bg-[var(--orange-soft)]'
+                        ? 'bg-red-500'
                         : isYellow
-                          ? 'bg-yellow-300'
+                          ? 'bg-sky-500'
                           : 'bg-black/35'
                     }`}
                   />
@@ -731,7 +748,7 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
       <aside className="panel-soft space-y-3 rounded-xl p-3 sm:p-4">
         <div className="space-y-1">
           <p className="text-xs uppercase tracking-wide muted">Players</p>
-          <p className="text-xs muted">Assign Red/Yellow seats to room members.</p>
+          <p className="text-xs muted">Assign Red/Blue seats to room members.</p>
         </div>
 
         <label className="block text-sm">
@@ -752,7 +769,7 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
         </label>
 
         <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Yellow</span>
+          <span className="mb-1 block text-xs uppercase tracking-wide muted">Blue</span>
           <select
             className="select px-2 py-2 text-sm"
             value={yellowUserId ?? ''}
@@ -774,7 +791,7 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
 
         <div className="space-y-1 text-xs muted">
           <p>Red: {nameForUser(redUserId, members)}</p>
-          <p>Yellow: {nameForUser(yellowUserId, members)}</p>
+          <p>Blue: {nameForUser(yellowUserId, members)}</p>
           <p>Turn owner: {nameForUser(turnUserId, members)}</p>
         </div>
 
@@ -792,7 +809,7 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
         <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/55 p-4 backdrop-blur-[2px]">
           <div className="panel w-full max-w-md space-y-3 rounded-2xl border border-[var(--border)] p-5">
             <h3 className="text-xl font-semibold">
-              {status === 'draw' ? 'Draw' : `${winnerColor === 'red' ? 'Red' : 'Yellow'} won`}
+              {status === 'draw' ? 'Draw' : `${winnerColor === 'red' ? 'Red' : 'Blue'} won`}
             </h3>
             <p className="text-sm muted">
               {status === 'draw' ? 'Board is full with no winner.' : 'Connect Four complete.'}
@@ -1075,9 +1092,9 @@ export default function PlayTogetherChess({
     }
   } else if (activeGame === 'connect_four') {
     badges.push(`Status: ${displayConnectFourStatus(connectFour.status)}`);
-    badges.push(`Turn: ${connectFour.turn === 'yellow' ? 'Yellow' : 'Red'}`);
+    badges.push(`Turn: ${connectFour.turn === 'yellow' ? 'Blue' : 'Red'}`);
     if (connectFour.winner_color) {
-      badges.push(`Winner: ${connectFour.winner_color === 'yellow' ? 'Yellow' : 'Red'}`);
+      badges.push(`Winner: ${connectFour.winner_color === 'yellow' ? 'Blue' : 'Red'}`);
     }
   } else {
     badges.push(`Phase: ${displayBattleshipPhase(battleship.phase)}`);
