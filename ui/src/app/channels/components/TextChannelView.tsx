@@ -21,7 +21,7 @@ interface Props {
   currentUserId: string;
   isAdmin: boolean;
   wsEvents: ChannelEvent | null;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (content: string) => Promise<ChannelMessage | null>;
 }
 
 function relativeTime(ts: number): string {
@@ -321,8 +321,20 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
     }
     const trimmed = draft.trim();
     if (!trimmed) return;
-    onSendMessage(trimmed);
-    setDraft('');
+    try {
+      const sent = await onSendMessage(trimmed);
+      if (sent) {
+        setMessages((prev) => {
+          if (prev.some((message) => message.id === sent.id)) {
+            return prev;
+          }
+          return [...prev, sent];
+        });
+      }
+      setDraft('');
+    } catch (error: unknown) {
+      setUploadError(clientErrorMessage(error, 'Failed to send message'));
+    }
   }, [draft, handleUploadAttachment, onSendMessage, pendingFile, uploading]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

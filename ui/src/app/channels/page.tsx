@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
-import { createChannel, deleteChannel } from '@/lib/channelsApi';
+import { createChannel, deleteChannel, postMessage } from '@/lib/channelsApi';
 
 import ChannelSidebar from './components/ChannelSidebar';
 import TextChannelView from './components/TextChannelView';
@@ -16,7 +16,6 @@ export default function ChannelsPage() {
   const router = useRouter();
   const {
     wsReady,
-    sendWs,
     channels,
     voicePresence,
     voiceActiveSince,
@@ -70,9 +69,9 @@ export default function ChannelsPage() {
 
   const activeChannel = channels.find((c) => c.id === activeChannelId) ?? null;
 
-  const handleSendMessage = (content: string) => {
-    if (!activeChannelId) return;
-    sendWs({ type: 'send_message', channel_id: activeChannelId, content });
+  const handleSendMessage = async (content: string) => {
+    if (!activeChannelId) return null;
+    return postMessage(activeChannelId, content);
   };
 
   const handleCreateChannel = async () => {
