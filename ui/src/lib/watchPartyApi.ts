@@ -360,6 +360,9 @@ export type WsConnectFourState = {
   winner_color?: 'red' | 'yellow' | string | null;
   red_user_id?: string | null;
   yellow_user_id?: string | null;
+  ai_enabled?: boolean;
+  ai_difficulty?: 'easy' | 'medium' | 'hard' | string;
+  ai_color?: 'red' | 'yellow' | string | null;
   last_move_row?: number | null;
   last_move_col?: number | null;
   reset_requested_red?: boolean;

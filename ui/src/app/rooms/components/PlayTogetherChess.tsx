@@ -636,17 +636,43 @@ type ConnectFourPanelProps = {
   sendWs: (payload: Record<string, unknown>) => boolean;
 };
 
+type ConnectFourHumanColorPreference = 'red' | 'blue' | 'random';
+
 function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl, sendWs }: ConnectFourPanelProps) {
   const rows = useMemo(() => normalizeConnectFourRows(connectFour.board_rows), [connectFour.board_rows]);
   const [dropPending, setDropPending] = useState(false);
+  const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('local');
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('medium');
+  const [humanColorPreference, setHumanColorPreference] =
+    useState<ConnectFourHumanColorPreference>('red');
   const redUserId = connectFour.red_user_id ?? null;
   const yellowUserId = connectFour.yellow_user_id ?? null;
+  const aiEnabled = connectFour.ai_enabled === true;
+  const aiDifficultyValue: AiDifficulty =
+    connectFour.ai_difficulty === 'easy' || connectFour.ai_difficulty === 'hard'
+      ? connectFour.ai_difficulty
+      : 'medium';
+  const aiColor =
+    connectFour.ai_color === 'red' || connectFour.ai_color === 'yellow'
+      ? connectFour.ai_color
+      : null;
+  const humanColorActive: 'red' | 'blue' | null = aiColor
+    ? aiColor === 'red'
+      ? 'blue'
+      : 'red'
+    : null;
   const myColor: 'red' | 'yellow' | null =
     redUserId === currentUserId ? 'red' : yellowUserId === currentUserId ? 'yellow' : null;
   const turn = connectFour.turn === 'yellow' ? 'yellow' : 'red';
   const turnUserId = turn === 'red' ? redUserId : yellowUserId;
   const status = connectFour.status;
   const winnerColor = connectFour.winner_color === 'yellow' ? 'yellow' : connectFour.winner_color === 'red' ? 'red' : null;
+  const aiStatusLabel = aiEnabled
+    ? `AI (${aiDifficultyValue[0].toUpperCase()}${aiDifficultyValue.slice(1)})`
+    : null;
+  const redSeatName = aiColor === 'red' ? aiStatusLabel ?? 'AI' : nameForUser(redUserId, members);
+  const blueSeatName = aiColor === 'yellow' ? aiStatusLabel ?? 'AI' : nameForUser(yellowUserId, members);
+  const turnOwnerName = turn === 'red' ? redSeatName : blueSeatName;
 
   const hasRedPlayer = !!redUserId;
   const hasYellowPlayer = !!yellowUserId;
@@ -673,6 +699,19 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
     connectFour.last_move_row,
   ]);
 
+  useEffect(() => {
+    if (aiEnabled) {
+      setSidePanelTab('ai');
+    }
+  }, [aiEnabled]);
+
+  useEffect(() => {
+    setAiDifficulty(aiDifficultyValue);
+    if (humanColorActive) {
+      setHumanColorPreference(humanColorActive);
+    }
+  }, [aiDifficultyValue, humanColorActive]);
+
   function handleAssignPlayers(nextRed: string | null, nextYellow: string | null) {
     if (!canControl) return;
     sendWs({
@@ -695,6 +734,37 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
     const assignment = randomSeatAssignment(members);
     if (!assignment) return;
     handleAssignPlayers(assignment.firstUserId, assignment.secondUserId);
+  }
+
+  function sendAiConfig(
+    enabled: boolean,
+    nextDifficulty: AiDifficulty = aiDifficulty,
+    nextHumanColorPreference: ConnectFourHumanColorPreference = humanColorPreference,
+  ) {
+    if (!canControl) return;
+    const resolvedHumanColor: 'red' | 'blue' =
+      nextHumanColorPreference === 'random'
+        ? Math.random() < 0.5
+          ? 'red'
+          : 'blue'
+        : nextHumanColorPreference;
+    sendWs({
+      type: 'connect_four_configure_ai',
+      enabled,
+      difficulty: nextDifficulty,
+      human_color: enabled ? resolvedHumanColor : undefined,
+    });
+  }
+
+  function handleSelectSidePanelTab(nextTab: SidePanelTab) {
+    setSidePanelTab(nextTab);
+    if (nextTab === 'ai' && !aiEnabled) {
+      sendAiConfig(true);
+      return;
+    }
+    if (nextTab === 'local' && aiEnabled) {
+      sendAiConfig(false);
+    }
   }
 
   const isGameOver = status === 'win' || status === 'draw';
@@ -746,53 +816,135 @@ function ConnectFourGamePanel({ connectFour, members, currentUserId, canControl,
       </div>
 
       <aside className="panel-soft space-y-3 rounded-xl p-3 sm:p-4">
-        <div className="space-y-1">
-          <p className="text-xs uppercase tracking-wide muted">Players</p>
-          <p className="text-xs muted">Assign Red/Blue seats to room members.</p>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                sidePanelTab === 'local' ? 'btn-primary' : 'btn-secondary'
+              }`}
+              onClick={() => handleSelectSidePanelTab('local')}
+            >
+              Local
+            </button>
+            <button
+              type="button"
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                sidePanelTab === 'ai' ? 'btn-primary' : 'btn-secondary'
+              }`}
+              onClick={() => handleSelectSidePanelTab('ai')}
+            >
+              AI
+            </button>
+          </div>
         </div>
 
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Red</span>
-          <select
-            className="select px-2 py-2 text-sm"
-            value={redUserId ?? ''}
-            onChange={(event) => handleAssignPlayers(event.target.value || null, yellowUserId)}
-            disabled={!canControl}
-          >
-            <option value="">Unassigned</option>
-            {members.map((member) => (
-              <option key={member.user_id} value={member.user_id}>
-                {member.username}
-              </option>
-            ))}
-          </select>
-        </label>
+        {sidePanelTab === 'local' ? (
+          <>
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wide muted">Players</p>
+              <p className="text-xs muted">Assign Red/Blue seats to room members.</p>
+            </div>
 
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Blue</span>
-          <select
-            className="select px-2 py-2 text-sm"
-            value={yellowUserId ?? ''}
-            onChange={(event) => handleAssignPlayers(redUserId, event.target.value || null)}
-            disabled={!canControl}
-          >
-            <option value="">Unassigned</option>
-            {members.map((member) => (
-              <option key={member.user_id} value={member.user_id}>
-                {member.username}
-              </option>
-            ))}
-          </select>
-        </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Red</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={redUserId ?? ''}
+                onChange={(event) => handleAssignPlayers(event.target.value || null, yellowUserId)}
+                disabled={!canControl}
+              >
+                <option value="">Unassigned</option>
+                {members.map((member) => (
+                  <option key={member.user_id} value={member.user_id}>
+                    {member.username}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <button type="button" className="btn-secondary w-full px-3 py-2 text-sm" onClick={handleRandomSeats} disabled={!canControl}>
-          Random Seats
-        </button>
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Blue</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={yellowUserId ?? ''}
+                onChange={(event) => handleAssignPlayers(redUserId, event.target.value || null)}
+                disabled={!canControl}
+              >
+                <option value="">Unassigned</option>
+                {members.map((member) => (
+                  <option key={member.user_id} value={member.user_id}>
+                    {member.username}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              className="btn-secondary w-full px-3 py-2 text-sm"
+              onClick={handleRandomSeats}
+              disabled={!canControl}
+            >
+              Random Seats
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wide muted">AI Opponent</p>
+              <p className="text-xs muted">Play against a server AI. Choose a difficulty and your side.</p>
+            </div>
+
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Difficulty</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={aiDifficulty}
+                onChange={(event) => {
+                  const nextDifficulty = event.target.value as AiDifficulty;
+                  setAiDifficulty(nextDifficulty);
+                  if (sidePanelTab === 'ai') {
+                    sendAiConfig(true, nextDifficulty, humanColorPreference);
+                  }
+                }}
+                disabled={!canControl}
+              >
+                {AI_DIFFICULTY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">You Play As</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={humanColorPreference}
+                onChange={(event) => {
+                  const nextPreference = event.target.value as ConnectFourHumanColorPreference;
+                  setHumanColorPreference(nextPreference);
+                  if (sidePanelTab === 'ai') {
+                    sendAiConfig(true, aiDifficulty, nextPreference);
+                  }
+                }}
+                disabled={!canControl}
+              >
+                <option value="red">Red</option>
+                <option value="blue">Blue</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+          </>
+        )}
 
         <div className="space-y-1 text-xs muted">
-          <p>Red: {nameForUser(redUserId, members)}</p>
-          <p>Blue: {nameForUser(yellowUserId, members)}</p>
-          <p>Turn owner: {nameForUser(turnUserId, members)}</p>
+          <p>Red: {redSeatName}</p>
+          <p>Blue: {blueSeatName}</p>
+          <p>Turn owner: {turnOwnerName}</p>
+          {aiEnabled && aiColor && <p>AI side: {aiColor === 'red' ? 'Red' : 'Blue'}</p>}
         </div>
 
         <button

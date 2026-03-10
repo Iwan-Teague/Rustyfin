@@ -150,6 +150,9 @@ pub struct ConnectFourState {
     pub winner_color: Option<String>,
     pub red_user_id: Option<String>,
     pub yellow_user_id: Option<String>,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub last_move_row: Option<u8>,
     pub last_move_col: Option<u8>,
     pub reset_requested_red: bool,
@@ -166,6 +169,9 @@ impl Default for ConnectFourState {
             winner_color: None,
             red_user_id: None,
             yellow_user_id: None,
+            ai_enabled: false,
+            ai_difficulty: "medium".to_string(),
+            ai_color: None,
             last_move_row: None,
             last_move_col: None,
             reset_requested_red: false,
@@ -1027,6 +1033,142 @@ impl RoomRuntime {
         Ok(true)
     }
 
+    pub async fn configure_connect_four_ai(
+        &self,
+        configured_by_user_id: &str,
+        enabled: bool,
+        difficulty: Option<String>,
+        human_color: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "connect_four" {
+            return Err("active play game is not connect_four".to_string());
+        }
+
+        if enabled {
+            let difficulty = normalize_ai_difficulty(
+                difficulty
+                    .as_deref()
+                    .unwrap_or(guard.connect_four.ai_difficulty.as_str()),
+            )?;
+            let preferred_human_color = human_color
+                .as_deref()
+                .and_then(parse_connect_four_color_name)
+                .or_else(|| {
+                    if guard.connect_four.red_user_id.as_deref() == Some(configured_by_user_id) {
+                        Some(ConnectFourColor::Red)
+                    } else if guard.connect_four.yellow_user_id.as_deref()
+                        == Some(configured_by_user_id)
+                    {
+                        Some(ConnectFourColor::Yellow)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(ConnectFourColor::Red);
+
+            let ai_color = opposite_connect_four_color(preferred_human_color);
+            guard.connect_four.ai_enabled = true;
+            guard.connect_four.ai_difficulty = difficulty.to_string();
+            guard.connect_four.ai_color = Some(connect_four_color_name(ai_color).to_string());
+
+            match preferred_human_color {
+                ConnectFourColor::Red => {
+                    guard.connect_four.red_user_id = Some(configured_by_user_id.to_string());
+                    guard.connect_four.yellow_user_id = None;
+                }
+                ConnectFourColor::Yellow => {
+                    guard.connect_four.yellow_user_id = Some(configured_by_user_id.to_string());
+                    guard.connect_four.red_user_id = None;
+                }
+            }
+        } else {
+            guard.connect_four.ai_enabled = false;
+            guard.connect_four.ai_color = None;
+        }
+
+        guard.connect_four.reset_requested_red = false;
+        guard.connect_four.reset_requested_yellow = false;
+        guard.connect_four.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn apply_connect_four_ai_move_if_needed(&self) -> Result<bool, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(false),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "connect_four"
+            || !guard.connect_four.ai_enabled
+            || guard.connect_four.status != "active"
+        {
+            return Ok(false);
+        }
+
+        let ai_color = match guard
+            .connect_four
+            .ai_color
+            .as_deref()
+            .and_then(parse_connect_four_color_name)
+        {
+            Some(color) => color,
+            None => return Ok(false),
+        };
+        if connect_four_turn_to_color(&guard.connect_four.turn) != ai_color {
+            return Ok(false);
+        }
+
+        let selected_column = match select_connect_four_ai_column(
+            &guard.connect_four.board,
+            ai_color,
+            &guard.connect_four.ai_difficulty,
+        ) {
+            Some(column) => column,
+            None => return Ok(false),
+        };
+
+        let token = connect_four_color_to_token(ai_color);
+        let Some(row) =
+            connect_four_drop_in_place(&mut guard.connect_four.board, selected_column, token)
+        else {
+            return Ok(false);
+        };
+
+        if connect_four_has_winning_line(&guard.connect_four.board, row, selected_column, token) {
+            guard.connect_four.status = "win".to_string();
+            guard.connect_four.winner_color = Some(connect_four_color_name(ai_color).to_string());
+        } else if guard.connect_four.board.iter().all(|cell| *cell != 0) {
+            guard.connect_four.status = "draw".to_string();
+            guard.connect_four.winner_color = None;
+        } else {
+            guard.connect_four.turn =
+                connect_four_color_name(opposite_connect_four_color(ai_color)).to_string();
+        }
+
+        guard.connect_four.last_move_row = Some(row as u8);
+        guard.connect_four.last_move_col = Some(selected_column as u8);
+        guard.connect_four.reset_requested_red = false;
+        guard.connect_four.reset_requested_yellow = false;
+        guard.connect_four.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        drop(guard);
+        self.touch_activity().await;
+        Ok(true)
+    }
+
     pub async fn set_connect_four_players(
         &self,
         actor_user_id: &str,
@@ -1062,7 +1204,8 @@ impl RoomRuntime {
             actor_user_id,
         )?;
 
-        let next_state = fresh_connect_four_state(red, yellow, now_ms);
+        let next_state =
+            fresh_connect_four_state(red, yellow, false, "medium".to_string(), None, now_ms);
         guard.connect_four = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1092,7 +1235,11 @@ impl RoomRuntime {
         let has_yellow = yellow.is_some();
 
         if !has_red && !has_yellow {
-            let next_state = fresh_connect_four_state(red, yellow, now_ms);
+            let ai_enabled = guard.connect_four.ai_enabled;
+            let ai_difficulty = guard.connect_four.ai_difficulty.clone();
+            let ai_color = guard.connect_four.ai_color.clone();
+            let next_state =
+                fresh_connect_four_state(red, yellow, ai_enabled, ai_difficulty, ai_color, now_ms);
             guard.connect_four = next_state;
             guard.updated_ts_ms = now_ms;
             let snapshot = guard.clone();
@@ -1128,7 +1275,11 @@ impl RoomRuntime {
             }
         }
 
-        let next_state = fresh_connect_four_state(red, yellow, now_ms);
+        let ai_enabled = guard.connect_four.ai_enabled;
+        let ai_difficulty = guard.connect_four.ai_difficulty.clone();
+        let ai_color = guard.connect_four.ai_color.clone();
+        let next_state =
+            fresh_connect_four_state(red, yellow, ai_enabled, ai_difficulty, ai_color, now_ms);
         guard.connect_four = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -1159,13 +1310,27 @@ impl RoomRuntime {
         if guard.connect_four.status != "active" {
             return Err("connect four game is not active".to_string());
         }
+        if guard.connect_four.ai_enabled
+            && guard
+                .connect_four
+                .ai_color
+                .as_deref()
+                .and_then(parse_connect_four_color_name)
+                == Some(connect_four_turn_to_color(&guard.connect_four.turn))
+        {
+            return Err("it is AI's turn".to_string());
+        }
 
         let (turn_code, turn_name) = if guard.connect_four.turn == "yellow" {
             (2_u8, "yellow")
         } else {
             (1_u8, "red")
         };
-        let display_turn_name = if turn_name == "yellow" { "blue" } else { turn_name };
+        let display_turn_name = if turn_name == "yellow" {
+            "blue"
+        } else {
+            turn_name
+        };
         let assigned_user = if turn_code == 1 {
             guard.connect_four.red_user_id.as_deref()
         } else {
@@ -1182,17 +1347,9 @@ impl RoomRuntime {
             ));
         }
 
-        let mut placed_row = None;
-        for row in (0..CONNECT_FOUR_ROWS).rev() {
-            let idx = row * CONNECT_FOUR_COLS + column;
-            if guard.connect_four.board[idx] == 0 {
-                guard.connect_four.board[idx] = turn_code;
-                placed_row = Some(row);
-                break;
-            }
-        }
-
-        let Some(row) = placed_row else {
+        let Some(row) =
+            connect_four_drop_in_place(&mut guard.connect_four.board, column, turn_code)
+        else {
             return Err("selected column is full".to_string());
         };
 
@@ -2009,11 +2166,17 @@ fn fresh_chess_state(
 fn fresh_connect_four_state(
     red_user_id: Option<String>,
     yellow_user_id: Option<String>,
+    ai_enabled: bool,
+    ai_difficulty: String,
+    ai_color: Option<String>,
     now_ms: i64,
 ) -> ConnectFourState {
     ConnectFourState {
         red_user_id,
         yellow_user_id,
+        ai_enabled,
+        ai_difficulty,
+        ai_color,
         updated_ts_ms: now_ms,
         ..ConnectFourState::default()
     }
@@ -2029,6 +2192,210 @@ fn fresh_battleship_state(
         red_user_id,
         updated_ts_ms: now_ms,
         ..BattleshipState::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectFourColor {
+    Red,
+    Yellow,
+}
+
+fn connect_four_color_name(color: ConnectFourColor) -> &'static str {
+    match color {
+        ConnectFourColor::Red => "red",
+        ConnectFourColor::Yellow => "yellow",
+    }
+}
+
+fn parse_connect_four_color_name(raw: &str) -> Option<ConnectFourColor> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "red" => Some(ConnectFourColor::Red),
+        "yellow" | "blue" => Some(ConnectFourColor::Yellow),
+        _ => None,
+    }
+}
+
+fn opposite_connect_four_color(color: ConnectFourColor) -> ConnectFourColor {
+    match color {
+        ConnectFourColor::Red => ConnectFourColor::Yellow,
+        ConnectFourColor::Yellow => ConnectFourColor::Red,
+    }
+}
+
+fn connect_four_color_to_token(color: ConnectFourColor) -> u8 {
+    match color {
+        ConnectFourColor::Red => 1,
+        ConnectFourColor::Yellow => 2,
+    }
+}
+
+fn connect_four_turn_to_color(turn: &str) -> ConnectFourColor {
+    if turn == "yellow" {
+        ConnectFourColor::Yellow
+    } else {
+        ConnectFourColor::Red
+    }
+}
+
+fn connect_four_drop_in_place(
+    board: &mut [u8; CONNECT_FOUR_CELLS],
+    column: usize,
+    token: u8,
+) -> Option<usize> {
+    for row in (0..CONNECT_FOUR_ROWS).rev() {
+        let idx = row * CONNECT_FOUR_COLS + column;
+        if board[idx] == 0 {
+            board[idx] = token;
+            return Some(row);
+        }
+    }
+    None
+}
+
+fn connect_four_preview_drop(
+    board: &[u8; CONNECT_FOUR_CELLS],
+    column: usize,
+    token: u8,
+) -> Option<([u8; CONNECT_FOUR_CELLS], usize)> {
+    let mut next = *board;
+    let row = connect_four_drop_in_place(&mut next, column, token)?;
+    Some((next, row))
+}
+
+fn connect_four_valid_columns(board: &[u8; CONNECT_FOUR_CELLS]) -> Vec<usize> {
+    (0..CONNECT_FOUR_COLS)
+        .filter(|column| board[*column] == 0)
+        .collect()
+}
+
+fn select_connect_four_ai_column(
+    board: &[u8; CONNECT_FOUR_CELLS],
+    ai_color: ConnectFourColor,
+    difficulty: &str,
+) -> Option<usize> {
+    let valid_columns = connect_four_valid_columns(board);
+    if valid_columns.is_empty() {
+        return None;
+    }
+
+    if difficulty == "easy" {
+        let mut rng = StdRng::seed_from_u64(
+            chrono::Utc::now().timestamp_millis().unsigned_abs() ^ 0xC0DEC4u64,
+        );
+        return valid_columns
+            .get(rng.gen_range(0..valid_columns.len()))
+            .copied();
+    }
+
+    let ai_token = connect_four_color_to_token(ai_color);
+    let opponent_color = opposite_connect_four_color(ai_color);
+    let opponent_token = connect_four_color_to_token(opponent_color);
+
+    for column in &valid_columns {
+        if let Some((preview, row)) = connect_four_preview_drop(board, *column, ai_token) {
+            if connect_four_has_winning_line(&preview, row, *column, ai_token) {
+                return Some(*column);
+            }
+        }
+    }
+
+    for column in &valid_columns {
+        if let Some((preview, row)) = connect_four_preview_drop(board, *column, opponent_token) {
+            if connect_four_has_winning_line(&preview, row, *column, opponent_token) {
+                return Some(*column);
+            }
+        }
+    }
+
+    if difficulty == "medium" {
+        return valid_columns
+            .into_iter()
+            .min_by_key(|column| (*column as i32 - 3).abs());
+    }
+
+    valid_columns.into_iter().max_by_key(|column| {
+        let Some((preview, _row)) = connect_four_preview_drop(board, *column, ai_token) else {
+            return i32::MIN;
+        };
+        let center_bonus = 6 - ((*column as i32 - 3).abs() * 2);
+        center_bonus + evaluate_connect_four_board(&preview, ai_token)
+    })
+}
+
+fn evaluate_connect_four_board(board: &[u8; CONNECT_FOUR_CELLS], ai_token: u8) -> i32 {
+    let opponent_token = if ai_token == 1 { 2 } else { 1 };
+    let mut score = 0_i32;
+
+    for row in 0..CONNECT_FOUR_ROWS {
+        let center_idx = row * CONNECT_FOUR_COLS + 3;
+        if board[center_idx] == ai_token {
+            score += 6;
+        } else if board[center_idx] == opponent_token {
+            score -= 6;
+        }
+    }
+
+    for row in 0..CONNECT_FOUR_ROWS {
+        for col in 0..CONNECT_FOUR_COLS {
+            if col + 3 < CONNECT_FOUR_COLS {
+                score += evaluate_connect_four_window(board, row, col, 1, 0, ai_token);
+            }
+            if row + 3 < CONNECT_FOUR_ROWS {
+                score += evaluate_connect_four_window(board, row, col, 0, 1, ai_token);
+            }
+            if row + 3 < CONNECT_FOUR_ROWS && col + 3 < CONNECT_FOUR_COLS {
+                score += evaluate_connect_four_window(board, row, col, 1, 1, ai_token);
+            }
+            if row + 3 < CONNECT_FOUR_ROWS && col >= 3 {
+                score += evaluate_connect_four_window(board, row, col, -1, 1, ai_token);
+            }
+        }
+    }
+
+    score
+}
+
+fn evaluate_connect_four_window(
+    board: &[u8; CONNECT_FOUR_CELLS],
+    start_row: usize,
+    start_col: usize,
+    dx: isize,
+    dy: isize,
+    ai_token: u8,
+) -> i32 {
+    let opponent_token = if ai_token == 1 { 2 } else { 1 };
+    let mut ai_count = 0;
+    let mut opponent_count = 0;
+    let mut empty_count = 0;
+
+    for step in 0..4 {
+        let row = (start_row as isize + dy * step) as usize;
+        let col = (start_col as isize + dx * step) as usize;
+        let value = board[row * CONNECT_FOUR_COLS + col];
+        if value == ai_token {
+            ai_count += 1;
+        } else if value == opponent_token {
+            opponent_count += 1;
+        } else {
+            empty_count += 1;
+        }
+    }
+
+    if ai_count > 0 && opponent_count > 0 {
+        return 0;
+    }
+
+    match (ai_count, opponent_count, empty_count) {
+        (4, 0, 0) => 100_000,
+        (3, 0, 1) => 120,
+        (2, 0, 2) => 18,
+        (1, 0, 3) => 2,
+        (0, 4, 0) => -100_000,
+        (0, 3, 1) => -140,
+        (0, 2, 2) => -22,
+        (0, 1, 3) => -2,
+        _ => 0,
     }
 }
 
@@ -2647,6 +3014,81 @@ mod tests {
             .await
             .expect_err("blue turn without assigned blue player should be rejected");
         assert_eq!(second_err, "no blue player is assigned for this turn");
+    }
+
+    #[tokio::test]
+    async fn connect_four_ai_configuration_assigns_human_and_ai_sides() {
+        let runtime = RoomRuntime::new_play("room-connect-four".to_string());
+        runtime
+            .set_play_game("connect_four".to_string())
+            .await
+            .expect("activate connect four");
+
+        let snapshot = runtime
+            .configure_connect_four_ai(
+                "user-blue",
+                true,
+                Some("hard".to_string()),
+                Some("blue".to_string()),
+            )
+            .await
+            .expect("configure connect four ai")
+            .expect("play state snapshot");
+
+        assert!(snapshot.connect_four.ai_enabled);
+        assert_eq!(snapshot.connect_four.ai_difficulty, "hard");
+        assert_eq!(snapshot.connect_four.ai_color.as_deref(), Some("red"));
+        assert_eq!(snapshot.connect_four.red_user_id, None);
+        assert_eq!(
+            snapshot.connect_four.yellow_user_id.as_deref(),
+            Some("user-blue")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_four_ai_can_take_opening_move() {
+        let runtime = RoomRuntime::new_play("room-connect-four".to_string());
+        runtime
+            .set_play_game("connect_four".to_string())
+            .await
+            .expect("activate connect four");
+        runtime
+            .configure_connect_four_ai(
+                "user-blue",
+                true,
+                Some("medium".to_string()),
+                Some("blue".to_string()),
+            )
+            .await
+            .expect("configure connect four ai");
+
+        let moved = runtime
+            .apply_connect_four_ai_move_if_needed()
+            .await
+            .expect("apply connect four ai move");
+        assert!(moved);
+
+        let play_state = runtime.snapshot_play_state().await.expect("play state");
+        let red_count = play_state
+            .connect_four
+            .board
+            .iter()
+            .filter(|cell| **cell == 1)
+            .count();
+        let blue_count = play_state
+            .connect_four
+            .board
+            .iter()
+            .filter(|cell| **cell == 2)
+            .count();
+
+        assert_eq!(red_count, 1, "expected exactly one AI disc on the board");
+        assert_eq!(blue_count, 0, "human should not have moved yet");
+        assert_eq!(play_state.connect_four.turn, "yellow");
+        assert_eq!(play_state.connect_four.status, "active");
+        assert_eq!(play_state.connect_four.ai_color.as_deref(), Some("red"));
+        assert!(play_state.connect_four.last_move_col.is_some());
+        assert!(play_state.connect_four.last_move_row.is_some());
     }
 
     #[test]

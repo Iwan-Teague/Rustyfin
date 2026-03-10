@@ -16,7 +16,10 @@ use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
-use super::manager::{AudioAction, ChessResetOutcome, CreateState, PlaybackAction, RoomRuntime};
+use super::manager::{
+    AudioAction, ChessResetOutcome, ConnectFourResetOutcome, CreateState, PlaybackAction,
+    RoomRuntime,
+};
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::presence::build_presence_members;
 use super::protocol::{
@@ -47,6 +50,7 @@ const MAX_CANVAS_POINTS_PER_STROKE: usize = 1024;
 const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
 const MAX_CANVAS_BYTES: usize = 30 * 1024 * 1024;
 const CHESS_AI_MOVE_DELAY_SECONDS: u64 = 3;
+const CONNECT_FOUR_AI_MOVE_DELAY_SECONDS: u64 = 3;
 const EMPTY_RICH_PAGE_HTML: &str = "<p><br></p>";
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
@@ -2289,6 +2293,8 @@ async fn handle_client_message(
             broadcast_current_state(state, runtime, &context.room_id).await?;
             if normalized_game == "chess" {
                 schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
+            } else if normalized_game == "connect_four" {
+                schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
             }
             Ok(())
         }
@@ -2575,6 +2581,52 @@ async fn handle_client_message(
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
+            Ok(())
+        }
+        ClientMessage::ConnectFourConfigureAi {
+            enabled,
+            difficulty,
+            human_color,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "connect_four_configure_ai is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(
+                    socket,
+                    "configuring connect four AI is not allowed for this user",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            runtime
+                .configure_connect_four_ai(&context.user_id, enabled, difficulty, human_color)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
             Ok(())
         }
         ClientMessage::ConnectFourDrop { column } => {
@@ -2612,6 +2664,7 @@ async fn handle_client_message(
             {
                 Ok(_) => {
                     broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
@@ -2649,7 +2702,9 @@ async fn handle_client_message(
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
-            let _ = reset_outcome;
+            if matches!(reset_outcome, ConnectFourResetOutcome::Applied) {
+                schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
+            }
             Ok(())
         }
         ClientMessage::BattleshipSetPlayers {
@@ -3230,6 +3285,9 @@ fn build_play_state_payload(
             winner_color: play_state.connect_four.winner_color,
             red_user_id: play_state.connect_four.red_user_id,
             yellow_user_id: play_state.connect_four.yellow_user_id,
+            ai_enabled: play_state.connect_four.ai_enabled,
+            ai_difficulty: play_state.connect_four.ai_difficulty,
+            ai_color: play_state.connect_four.ai_color,
             last_move_row: play_state.connect_four.last_move_row,
             last_move_col: play_state.connect_four.last_move_col,
             reset_requested_red: play_state.connect_four.reset_requested_red,
@@ -3371,6 +3429,36 @@ fn schedule_delayed_chess_ai_move(state: AppState, room_id: String) {
                     room_id = %room_id,
                     error = %err,
                     "failed to apply delayed chess ai move"
+                );
+            }
+        }
+    });
+}
+
+fn schedule_delayed_connect_four_ai_move(state: AppState, room_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(CONNECT_FOUR_AI_MOVE_DELAY_SECONDS)).await;
+
+        let Some(runtime) = state.watch_party.get_runtime(&room_id).await else {
+            return;
+        };
+
+        match runtime.apply_connect_four_ai_move_if_needed().await {
+            Ok(true) => {
+                if let Err(err) = broadcast_current_state(&state, &runtime, &room_id).await {
+                    warn!(
+                        room_id = %room_id,
+                        error = %err.0,
+                        "failed to broadcast delayed connect four ai move"
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!(
+                    room_id = %room_id,
+                    error = %err,
+                    "failed to apply delayed connect four ai move"
                 );
             }
         }
