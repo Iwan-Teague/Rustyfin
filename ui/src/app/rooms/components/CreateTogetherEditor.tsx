@@ -784,6 +784,18 @@ export default function CreateTogetherEditor({
     }
   }, [pages]);
 
+  useEffect(() => {
+    for (const page of pages) {
+      const node = pageRefs.current[page.id];
+      if (!node) continue;
+      const sanitized = sanitizePageHtml(page.html);
+      const current = sanitizePageHtml(node.innerHTML);
+      if (current !== sanitized) {
+        node.innerHTML = sanitized;
+      }
+    }
+  }, [pages]);
+
   const canvasMessage = useMemo(() => {
     const zoomPercent = Math.round(canvasViewport.scale * 100);
     if (!canEdit) {
@@ -1690,13 +1702,21 @@ export default function CreateTogetherEditor({
                     >
                       <div
                         ref={(node) => {
+                          if (!node) {
+                            delete pageRefs.current[page.id];
+                            return;
+                          }
                           pageRefs.current[page.id] = node;
+                          const sanitized = sanitizePageHtml(page.html);
+                          const current = sanitizePageHtml(node.innerHTML);
+                          if (current !== sanitized) {
+                            node.innerHTML = sanitized;
+                          }
                         }}
                         contentEditable={canEdit}
                         suppressContentEditableWarning
                         className="outline-none px-14 py-14 text-[15px] leading-7"
                         style={{ minHeight: `${metrics.heightPx - 112}px` }}
-                        dangerouslySetInnerHTML={{ __html: page.html }}
                         onFocus={() => {
                           setActivePageId(page.id);
                           window.setTimeout(() => updateToolbarState(), 0);
