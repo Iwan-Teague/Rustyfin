@@ -1165,17 +1165,21 @@ impl RoomRuntime {
         } else {
             (1_u8, "red")
         };
+        let display_turn_name = if turn_name == "yellow" { "blue" } else { turn_name };
         let assigned_user = if turn_code == 1 {
             guard.connect_four.red_user_id.as_deref()
         } else {
             guard.connect_four.yellow_user_id.as_deref()
         };
-        if let Some(assigned_user_id) = assigned_user {
-            if assigned_user_id != user_id {
-                return Err(format!(
-                    "only the assigned {turn_name} player may move right now"
-                ));
-            }
+        let Some(assigned_user_id) = assigned_user else {
+            return Err(format!(
+                "no {display_turn_name} player is assigned for this turn"
+            ));
+        };
+        if assigned_user_id != user_id {
+            return Err(format!(
+                "only the assigned {display_turn_name} player may move right now"
+            ));
         }
 
         let mut placed_row = None;
@@ -2618,6 +2622,31 @@ mod tests {
         board[2 * CONNECT_FOUR_COLS + 1] = 1;
 
         assert!(connect_four_has_winning_line(&board, 2, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn connect_four_requires_assigned_player_for_current_turn() {
+        let runtime = RoomRuntime::new_play("room-connect-four".to_string());
+        runtime
+            .set_play_game("connect_four".to_string())
+            .await
+            .expect("activate connect four");
+        runtime
+            .set_connect_four_players("admin", Some("user-red".to_string()), None)
+            .await
+            .expect("assign red seat");
+
+        let err = runtime
+            .apply_connect_four_drop("user-red", 0)
+            .await
+            .expect("first red move should succeed");
+        assert!(err.is_some());
+
+        let second_err = runtime
+            .apply_connect_four_drop("user-red", 1)
+            .await
+            .expect_err("blue turn without assigned blue player should be rejected");
+        assert_eq!(second_err, "no blue player is assigned for this turn");
     }
 
     #[test]
