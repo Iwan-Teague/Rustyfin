@@ -628,6 +628,10 @@ fn desired_server_properties(spec: &ManagedProvisionSpec) -> BTreeMap<&'static s
     properties.insert("hardcore", bool_prop(spec.hardcore).to_string());
     properties.insert("level-name", spec.world_name.clone());
     properties.insert("motd", spec.motd.clone());
+    properties.insert(
+        "max-players",
+        spec.max_player_count.unwrap_or(20).max(1).to_string(),
+    );
     properties.insert("online-mode", bool_prop(spec.online_mode).to_string());
     properties.insert("pvp", bool_prop(spec.pvp).to_string());
     properties.insert("server-port", spec.listen_port.to_string());
@@ -1106,6 +1110,44 @@ pub async fn provision_managed_instance(
     Ok(result)
 }
 
+pub async fn sync_managed_instance(
+    spec: &ManagedProvisionSpec,
+) -> Result<ProvisioningResult, String> {
+    ensure_native_runtime_supported()?;
+
+    let runtime_jar = PathBuf::from(&spec.server_work_dir).join("server.jar");
+    let server_jar_source = if runtime_jar.is_file() {
+        runtime_jar
+    } else if spec.install_mode == "managed" {
+        ensure_managed_server_artifact(spec).await?
+    } else {
+        return Err(format!(
+            "server.jar was not found in {}. Provision or import this server again first.",
+            spec.server_work_dir
+        ));
+    };
+
+    let spec_for_task = spec.clone();
+    let unit_name = spec.systemd_unit_name.clone();
+    let autostart = spec.autostart;
+    let result = tokio::task::spawn_blocking(move || {
+        let existing_props_path =
+            PathBuf::from(&spec_for_task.server_work_dir).join("server.properties");
+        let existing_props = std::fs::read_to_string(&existing_props_path).ok();
+        write_runtime_files(
+            &spec_for_task,
+            existing_props.as_deref(),
+            &server_jar_source,
+        )
+    })
+    .await
+    .map_err(|error| format!("managed sync task failed: {error}"))??;
+
+    daemon_reload().await?;
+    sync_unit_enabled(&unit_name, autostart).await?;
+    Ok(result)
+}
+
 pub async fn import_existing_instance(
     spec: &ImportProvisionSpec,
 ) -> Result<ProvisioningResult, String> {
@@ -1429,6 +1471,7 @@ mod tests {
             listen_host: "0.0.0.0".to_string(),
             listen_port: 25565,
             autostart: false,
+            max_player_count: Some(20),
             server_distribution: "paper".to_string(),
             minecraft_version: "1.21.1".to_string(),
             java_path: "/usr/bin/java".to_string(),

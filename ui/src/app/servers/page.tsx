@@ -12,15 +12,10 @@ import {
   MinecraftRuntimeCapabilities,
   MinecraftServer,
   MinecraftServerActionResponse,
-  MinecraftServerLogsResponse,
-  MinecraftServerEvent,
   MinecraftServerOperationResponse,
-  ServerLogLine,
   createMinecraftServer,
   getMinecraftRuntimeCapabilities,
   HostDirectoryListEntry,
-  listMinecraftServerLogs,
-  listMinecraftServerEvents,
   listBackendHostDirectories,
   listMinecraftServers,
   importMinecraftServer,
@@ -28,6 +23,7 @@ import {
   refreshMinecraftServerStatus,
   requestMinecraftServerAction,
   scanMinecraftDiscoveryCandidates,
+  updateMinecraftServer,
 } from '@/lib/serversApi';
 
 type CreateFormState = {
@@ -61,6 +57,20 @@ type HostDirectoryBrowserState = {
   parentPath: string | null;
   roots: string[];
   directories: HostDirectoryListEntry[];
+};
+
+type ServerSettingsFormState = {
+  gamemode: 'survival' | 'creative' | 'adventure' | 'spectator';
+  difficulty: 'peaceful' | 'easy' | 'normal' | 'hard';
+  hardcore: boolean;
+  motd: string;
+  max_player_count: string;
+  autostart: boolean;
+  online_mode: boolean;
+  pvp: boolean;
+  allow_flight: boolean;
+  enable_command_block: boolean;
+  white_list_enabled: boolean;
 };
 
 type ServersGameTab = 'minecraft' | 'more-soon';
@@ -107,14 +117,31 @@ const TOGGLE_FIELDS: Array<{ key: keyof Pick<
   { key: 'hardcore', label: 'Hardcore mode' },
 ];
 
+const SERVER_SETTINGS_TOGGLE_FIELDS: Array<{
+  key: keyof Pick<
+    ServerSettingsFormState,
+    | 'online_mode'
+    | 'pvp'
+    | 'allow_flight'
+    | 'enable_command_block'
+    | 'white_list_enabled'
+    | 'autostart'
+    | 'hardcore'
+  >;
+  label: string;
+}> = [
+  { key: 'online_mode', label: 'Online mode' },
+  { key: 'pvp', label: 'PVP enabled' },
+  { key: 'allow_flight', label: 'Allow flight' },
+  { key: 'enable_command_block', label: 'Enable command blocks' },
+  { key: 'white_list_enabled', label: 'Enable whitelist' },
+  { key: 'autostart', label: 'Autostart on host boot' },
+  { key: 'hardcore', label: 'Hardcore mode' },
+];
+
 function formatTs(ts?: number | null) {
   if (!ts) return 'Never';
   return new Date(ts * 1000).toLocaleString();
-}
-
-function formatTsMs(ts?: number | null) {
-  if (!ts) return 'Unknown';
-  return new Date(ts).toLocaleString();
 }
 
 function titleCase(value: string) {
@@ -123,6 +150,22 @@ function titleCase(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
+}
+
+function serverToSettingsForm(server: MinecraftServer): ServerSettingsFormState {
+  return {
+    gamemode: server.gamemode as ServerSettingsFormState['gamemode'],
+    difficulty: server.difficulty as ServerSettingsFormState['difficulty'],
+    hardcore: server.hardcore,
+    motd: server.motd,
+    max_player_count: String(server.max_player_count ?? 20),
+    autostart: server.autostart,
+    online_mode: server.online_mode,
+    pvp: server.pvp,
+    allow_flight: server.allow_flight,
+    enable_command_block: server.enable_command_block,
+    white_list_enabled: server.white_list_enabled,
+  };
 }
 
 function getServerIndicator(server: MinecraftServer) {
@@ -254,14 +297,12 @@ export default function ServersPage() {
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [managementServerId, setManagementServerId] = useState<string | null>(null);
-  const [selectedEvents, setSelectedEvents] = useState<MinecraftServerEvent[]>([]);
-  const [selectedLogs, setSelectedLogs] = useState<ServerLogLine[]>([]);
+  const [serverEdits, setServerEdits] = useState<Record<string, ServerSettingsFormState>>({});
   const [loading, setLoading] = useState(true);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [logsLoading, setLogsLoading] = useState(false);
   const [statusRefreshingServerId, setStatusRefreshingServerId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
   const [actionServerId, setActionServerId] = useState<string | null>(null);
+  const [savingServerId, setSavingServerId] = useState<string | null>(null);
   const [provisioning, setProvisioning] = useState(false);
   const [importing, setImporting] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
@@ -307,6 +348,13 @@ export default function ServersPage() {
         if (cancelled) return;
         setServers(rows);
         setRuntimeCapabilities(capabilities);
+        setServerEdits((prev) => {
+          const next: Record<string, ServerSettingsFormState> = {};
+          for (const row of rows) {
+            next[row.id] = prev[row.id] ?? serverToSettingsForm(row);
+          }
+          return next;
+        });
         setSelectedServerId((current) => {
           if (current && rows.some((row) => row.id === current)) {
             return current;
@@ -334,46 +382,6 @@ export default function ServersPage() {
       cancelled = true;
     };
   }, [me]);
-
-  useEffect(() => {
-    if (!me || !selectedServerId) {
-      setSelectedEvents([]);
-      setSelectedLogs([]);
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const tasks: Array<Promise<unknown>> = [
-          loadSelectedServerEvents(selectedServerId, true),
-          loadSelectedServerLogs(selectedServerId, true),
-        ];
-        if (runtimeCapabilities?.status_supported ?? true) {
-          tasks.unshift(refreshSelectedServerStatus(selectedServerId, true));
-        }
-        await Promise.all(tasks);
-      } catch (err: unknown) {
-        if (!cancelled) {
-          setError(clientErrorMessage(err, 'Failed to refresh selected server status'));
-        }
-      }
-    })();
-
-    const interval = window.setInterval(() => {
-      if (cancelled) return;
-      if (runtimeCapabilities?.status_supported ?? true) {
-        void refreshSelectedServerStatus(selectedServerId, false);
-      }
-      void loadSelectedServerEvents(selectedServerId, false);
-      void loadSelectedServerLogs(selectedServerId, false);
-    }, 5000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [me, runtimeCapabilities?.status_supported, selectedServerId]);
 
   useEffect(() => {
     if (!me || !(runtimeCapabilities?.status_supported ?? true)) {
@@ -487,8 +495,14 @@ export default function ServersPage() {
   async function refreshServers(selectId?: string) {
     const rows = await listMinecraftServers();
     setServers(rows);
+    setServerEdits((prev) => {
+      const next: Record<string, ServerSettingsFormState> = {};
+      for (const row of rows) {
+        next[row.id] = prev[row.id] ?? serverToSettingsForm(row);
+      }
+      return next;
+    });
     setSelectedServerId((current) => {
-      if (selectId && rows.some((row) => row.id === selectId)) return selectId;
       if (current && rows.some((row) => row.id === current)) return current;
       return null;
     });
@@ -497,38 +511,6 @@ export default function ServersPage() {
       if (current && rows.some((row) => row.id === current)) return current;
       return rows[0]?.id ?? null;
     });
-  }
-
-  async function loadSelectedServerEvents(serverId: string, showSpinner = true) {
-    if (showSpinner) {
-      setEventsLoading(true);
-    }
-    try {
-      const rows = await listMinecraftServerEvents(serverId, 20);
-      setSelectedEvents(rows);
-    } catch {
-      setSelectedEvents([]);
-    } finally {
-      if (showSpinner) {
-        setEventsLoading(false);
-      }
-    }
-  }
-
-  async function loadSelectedServerLogs(serverId: string, showSpinner = true) {
-    if (showSpinner) {
-      setLogsLoading(true);
-    }
-    try {
-      const response: MinecraftServerLogsResponse = await listMinecraftServerLogs(serverId, 80);
-      setSelectedLogs(response.lines);
-    } catch {
-      setSelectedLogs([]);
-    } finally {
-      if (showSpinner) {
-        setLogsLoading(false);
-      }
-    }
   }
 
   async function refreshSelectedServerStatus(serverId: string, showSpinner = true) {
@@ -568,12 +550,7 @@ export default function ServersPage() {
     try {
       const response: MinecraftServerActionResponse = await requestMinecraftServerAction(server.id, action);
       upsertServer(response.instance);
-      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
-      if (selectedServerId === response.instance.id) {
-        tasks.push(loadSelectedServerEvents(response.instance.id, false));
-        tasks.push(loadSelectedServerLogs(response.instance.id, false));
-      }
-      await Promise.all(tasks);
+      await refreshSelectedServerStatus(response.instance.id, false);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, `Failed to ${action} server`));
     } finally {
@@ -588,12 +565,7 @@ export default function ServersPage() {
     try {
       const response: MinecraftServerOperationResponse = await provisionMinecraftServer(server.id);
       upsertServer(response.instance);
-      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
-      if (selectedServerId === response.instance.id) {
-        tasks.push(loadSelectedServerEvents(response.instance.id, false));
-        tasks.push(loadSelectedServerLogs(response.instance.id, false));
-      }
-      await Promise.all(tasks);
+      await refreshSelectedServerStatus(response.instance.id, false);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to provision Minecraft server'));
     } finally {
@@ -615,16 +587,59 @@ export default function ServersPage() {
         importSourcePath.trim(),
       );
       upsertServer(response.instance);
-      const tasks: Array<Promise<unknown>> = [refreshSelectedServerStatus(response.instance.id, false)];
-      if (selectedServerId === response.instance.id) {
-        tasks.push(loadSelectedServerEvents(response.instance.id, false));
-        tasks.push(loadSelectedServerLogs(response.instance.id, false));
-      }
-      await Promise.all(tasks);
+      await refreshSelectedServerStatus(response.instance.id, false);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to import Minecraft server'));
     } finally {
       setImporting(false);
+    }
+  }
+
+  function setServerEdit<K extends keyof ServerSettingsFormState>(
+    serverId: string,
+    key: K,
+    value: ServerSettingsFormState[K],
+  ) {
+    const server = servers.find((entry) => entry.id === serverId);
+    if (!server) {
+      return;
+    }
+    setServerEdits((prev) => ({
+      ...prev,
+      [serverId]: {
+        ...(prev[serverId] ?? serverToSettingsForm(server)),
+        [key]: value,
+      },
+    }));
+  }
+
+  async function handleSaveServerSettings(server: MinecraftServer) {
+    const edit = serverEdits[server.id] ?? serverToSettingsForm(server);
+    setSavingServerId(server.id);
+    setError('');
+    try {
+      const updated = await updateMinecraftServer(server.id, {
+        gamemode: edit.gamemode,
+        difficulty: edit.difficulty,
+        hardcore: edit.hardcore,
+        motd: edit.motd.trim(),
+        max_player_count: Number(edit.max_player_count),
+        autostart: edit.autostart,
+        online_mode: edit.online_mode,
+        pvp: edit.pvp,
+        allow_flight: edit.allow_flight,
+        enable_command_block: edit.enable_command_block,
+        white_list_enabled: edit.white_list_enabled,
+      });
+      upsertServer(updated);
+      setServerEdits((prev) => ({
+        ...prev,
+        [server.id]: serverToSettingsForm(updated),
+      }));
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to update Minecraft server settings'));
+    } finally {
+      setSavingServerId((current) => (current === server.id ? null : current));
     }
   }
 
@@ -884,9 +899,13 @@ export default function ServersPage() {
                         <button
                           type="button"
                           className="btn-ghost px-3 py-2 text-xs"
-                          onClick={() =>
-                            setSelectedServerId((current) => (current === server.id ? null : server.id))
-                          }
+                          onClick={() => {
+                            setServerEdits((prev) => ({
+                              ...prev,
+                              [server.id]: prev[server.id] ?? serverToSettingsForm(server),
+                            }));
+                            setSelectedServerId((current) => (current === server.id ? null : server.id));
+                          }}
                         >
                           {expanded ? 'Hide details' : 'Show details'}
                         </button>
@@ -895,19 +914,10 @@ export default function ServersPage() {
 
                     {expanded ? (
                       <>
-                        <div className="text-xs muted">
-                          Lifecycle controls target the native Debian 12 systemd unit for this instance.
-                          If the unit has not been provisioned or imported yet, status refresh will report that clearly.
-                        </div>
-
                         <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
                           <div>
                             <div className="muted">Owner</div>
                             <div>{server.owner_display_name}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Runtime</div>
-                            <div>{titleCase(server.runtime_mode)}</div>
                           </div>
                           <div>
                             <div className="muted">Version</div>
@@ -918,14 +928,6 @@ export default function ServersPage() {
                             <div>{server.world_name}</div>
                           </div>
                           <div>
-                            <div className="muted">Gamemode</div>
-                            <div>{titleCase(server.gamemode)}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Difficulty</div>
-                            <div>{titleCase(server.difficulty)}</div>
-                          </div>
-                          <div>
                             <div className="muted">Port</div>
                             <div>{server.listen_host}:{server.listen_port}</div>
                           </div>
@@ -934,12 +936,8 @@ export default function ServersPage() {
                             <div>{server.min_memory_mb}-{server.max_memory_mb} MB</div>
                           </div>
                           <div>
-                            <div className="muted">Systemd unit</div>
-                            <div className="break-all">{server.systemd_unit_name}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Health</div>
-                            <div>{titleCase(server.health_state)}</div>
+                            <div className="muted">Players</div>
+                            <div>{server.current_player_count} / {server.max_player_count ?? '—'}</div>
                           </div>
                           <div>
                             <div className="muted">Last started</div>
@@ -949,142 +947,114 @@ export default function ServersPage() {
                             <div className="muted">Last stopped</div>
                             <div>{formatTs(server.last_stopped_ts)}</div>
                           </div>
-                          <div>
-                            <div className="muted">Last ready</div>
-                            <div>{formatTs(server.last_ready_ts)}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Updated</div>
-                            <div>{formatTs(server.updated_ts)}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Advertised address</div>
-                            <div>
-                              {server.advertised_host
-                                ? `${server.advertised_host}:${server.advertised_port ?? server.listen_port}`
-                                : 'Not set'}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="muted">Exit code</div>
-                            <div>{server.last_exit_code ?? 'Unknown'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">MOTD</div>
-                            <div>{server.motd || 'Not set'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Autostart</div>
-                            <div>{server.autostart ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Auto stop when empty</div>
-                            <div>
-                              {server.auto_stop_when_empty
-                                ? `Enabled${server.auto_stop_idle_minutes ? ` (${server.auto_stop_idle_minutes} min idle)` : ''}`
-                                : 'Disabled'}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="muted">Online mode</div>
-                            <div>{server.online_mode ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">PVP</div>
-                            <div>{server.pvp ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Allow flight</div>
-                            <div>{server.allow_flight ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Command blocks</div>
-                            <div>{server.enable_command_block ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Whitelist</div>
-                            <div>{server.white_list_enabled ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Hardcore</div>
-                            <div>{server.hardcore ? 'Enabled' : 'Disabled'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Work directory</div>
-                            <div className="break-all">{server.server_work_dir}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Java path</div>
-                            <div className="break-all">{server.java_path}</div>
-                          </div>
-                          <div className="sm:col-span-2 xl:col-span-4">
-                            <div className="muted">Planned root</div>
-                            <div className="break-all">{server.instance_root}</div>
-                          </div>
-                          <div className="sm:col-span-2 xl:col-span-4">
-                            <div className="muted">Last runtime error</div>
-                            <div>{server.last_error_summary || 'None'}</div>
-                          </div>
                         </div>
 
-                        <div className="grid gap-4 xl:grid-cols-2">
-                          <div className="flex min-h-0 flex-col gap-3">
-                            <div className="flex items-center justify-between gap-3">
+                        {me.role === 'admin' ? (
+                          <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4">
+                            <div className="space-y-1">
                               <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                Recent events
+                                Server settings
                               </h4>
-                              {eventsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                              <p className="text-sm muted">
+                                Save writes the managed Minecraft configuration to the Debian host. If the server is already running, restart it to apply all runtime changes cleanly.
+                              </p>
                             </div>
-                            {selectedEvents.length === 0 ? (
-                              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                                No lifecycle events recorded yet.
-                              </div>
-                            ) : (
-                              <div className="max-h-[20rem] space-y-3 overflow-y-auto pr-1">
-                                {selectedEvents.map((event) => (
-                                  <div key={event.id} className="panel-soft rounded-xl px-4 py-3 text-sm">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="font-medium text-white">{event.message}</div>
-                                      <span className="chip text-[11px]">{titleCase(event.level)}</span>
-                                    </div>
-                                    <div className="mt-2 text-xs muted">
-                                      {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
 
-                          <div className="flex min-h-0 flex-col gap-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                Journald logs
-                              </h4>
-                              {logsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              <label className="space-y-2">
+                                <span className="text-sm font-medium text-white">Gamemode</span>
+                                <select
+                                  className="select rounded-xl px-4 py-3"
+                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).gamemode}
+                                  onChange={(event) =>
+                                    setServerEdit(
+                                      server.id,
+                                      'gamemode',
+                                      event.target.value as ServerSettingsFormState['gamemode'],
+                                    )
+                                  }
+                                >
+                                  <option value="survival">Survival</option>
+                                  <option value="creative">Creative</option>
+                                  <option value="adventure">Adventure</option>
+                                  <option value="spectator">Spectator</option>
+                                </select>
+                              </label>
+
+                              <label className="space-y-2">
+                                <span className="text-sm font-medium text-white">Difficulty</span>
+                                <select
+                                  className="select rounded-xl px-4 py-3"
+                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).difficulty}
+                                  onChange={(event) =>
+                                    setServerEdit(
+                                      server.id,
+                                      'difficulty',
+                                      event.target.value as ServerSettingsFormState['difficulty'],
+                                    )
+                                  }
+                                >
+                                  <option value="peaceful">Peaceful</option>
+                                  <option value="easy">Easy</option>
+                                  <option value="normal">Normal</option>
+                                  <option value="hard">Hard</option>
+                                </select>
+                              </label>
+
+                              <label className="space-y-2">
+                                <span className="text-sm font-medium text-white">Max players</span>
+                                <input
+                                  className="input rounded-xl px-4 py-3"
+                                  type="number"
+                                  min={1}
+                                  max={500}
+                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).max_player_count}
+                                  onChange={(event) => setServerEdit(server.id, 'max_player_count', event.target.value)}
+                                />
+                              </label>
+
+                              <label className="space-y-2 sm:col-span-2">
+                                <span className="text-sm font-medium text-white">Message of the day</span>
+                                <input
+                                  className="input rounded-xl px-4 py-3"
+                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).motd}
+                                  onChange={(event) => setServerEdit(server.id, 'motd', event.target.value)}
+                                />
+                              </label>
                             </div>
-                            {selectedLogs.length === 0 ? (
-                              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                                No host logs have been returned for this unit yet.
-                              </div>
-                            ) : (
-                              <div className="max-h-[20rem] space-y-2 overflow-y-auto pr-1">
-                                {selectedLogs.map((line, index) => (
-                                  <div
-                                    key={`${line.ts_ms ?? 'no-ts'}-${index}`}
-                                    className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
-                                  >
-                                    <div className="text-white">{line.message}</div>
-                                    <div className="mt-2 text-xs muted">
-                                      {formatTsMs(line.ts_ms)}
-                                      {line.priority ? ` · priority ${line.priority}` : ''}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
+
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                              {SERVER_SETTINGS_TOGGLE_FIELDS.map(({ key, label }) => (
+                                <label
+                                  key={key}
+                                  className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={(serverEdits[server.id] ?? serverToSettingsForm(server))[key]}
+                                    onChange={(event) => setServerEdit(server.id, key, event.target.checked)}
+                                  />
+                                  <span>{label}</span>
+                                </label>
+                              ))}
+                            </div>
+
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                                disabled={savingServerId === server.id}
+                                onClick={() => void handleSaveServerSettings(server)}
+                              >
+                                {savingServerId === server.id ? 'Saving…' : 'Save settings'}
+                              </button>
+                            </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                            Server settings can be changed by admins. Runtime controls remain available from the server row.
+                          </div>
+                        )}
                       </>
                     ) : null}
                   </div>

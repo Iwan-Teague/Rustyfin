@@ -2758,10 +2758,10 @@ fn validate_target_height_for_source(
         return Ok(None);
     };
     let Some(source_height) = source_height.filter(|value| *value > 0) else {
-        return Err(
-            ApiError::BadRequest("source video height is unavailable for this media file".into())
-                .into(),
-        );
+        return Err(ApiError::BadRequest(
+            "source video height is unavailable for this media file".into(),
+        )
+        .into());
     };
     if height > source_height {
         return Err(ApiError::BadRequest(format!(
@@ -2863,9 +2863,7 @@ async fn spawn_download_transcode_ffmpeg(
         Some(rustfin_transcoder::HwAccel::Vaapi) => Some(format!(
             "format=nv12,hwupload,scale_vaapi=w=-2:h={target_height}"
         )),
-        Some(rustfin_transcoder::HwAccel::Qsv) => {
-            Some(format!("vpp_qsv=w=-2:h={target_height}"))
-        }
+        Some(rustfin_transcoder::HwAccel::Qsv) => Some(format!("vpp_qsv=w=-2:h={target_height}")),
         _ => Some(format!("scale=-2:min(ih\\,{target_height})")),
     };
     if let Some(filter) = vf {
@@ -2946,7 +2944,10 @@ async fn download_playback_media(
         let stream = ReaderStream::new(file_handle);
         return Ok(Response::builder()
             .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, playback_download_content_type(&media_path))
+            .header(
+                header::CONTENT_TYPE,
+                playback_download_content_type(&media_path),
+            )
             .header(
                 header::CONTENT_DISPOSITION,
                 attachment_disposition(&playback_download_filename(&media_path, None)),
@@ -2959,9 +2960,11 @@ async fn download_playback_media(
     }
 
     let media_info = probe_media_info_for_file(&state, &media_path).await?;
-    let target_height =
-        validate_target_height_for_source(requested_target_height, media_info.video.as_ref().map(|v| v.height))?
-            .expect("validated target height must be present");
+    let target_height = validate_target_height_for_source(
+        requested_target_height,
+        media_info.video.as_ref().map(|v| v.height),
+    )?
+    .expect("validated target height must be present");
 
     let mut child = spawn_download_transcode_ffmpeg(&state, &media_path, target_height).await?;
     let stdout = child
@@ -3003,7 +3006,10 @@ async fn download_playback_media(
         .header(header::CONTENT_TYPE, "video/mp4")
         .header(
             header::CONTENT_DISPOSITION,
-            attachment_disposition(&playback_download_filename(&media_path, Some(target_height))),
+            attachment_disposition(&playback_download_filename(
+                &media_path,
+                Some(target_height),
+            )),
         )
         .header("Cache-Control", "no-store")
         .header("Referrer-Policy", "no-referrer")

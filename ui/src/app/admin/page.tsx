@@ -6,6 +6,14 @@ import { apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
+import {
+  listMinecraftServerEvents,
+  listMinecraftServerLogs,
+  listMinecraftServers,
+  MinecraftServer,
+  MinecraftServerEvent,
+  ServerLogLine,
+} from '@/lib/serversApi';
 
 interface Library {
   id: string;
@@ -155,7 +163,7 @@ interface HostDirectoryListResponse {
   directories: HostDirectoryListEntry[];
 }
 
-type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'logs' | 'tmdb';
+type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'server_logs' | 'logs' | 'tmdb';
 type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
 type PendingDeleteKind = 'user' | 'library' | 'channel' | 'room';
 
@@ -170,6 +178,7 @@ const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'libraries', label: 'Libraries' },
   { key: 'channels', label: 'Channels' },
   { key: 'rooms', label: 'Rooms' },
+  { key: 'server_logs', label: 'Server Logs' },
   { key: 'logs', label: 'Logs' },
   { key: 'tmdb', label: 'TMDB Metadata' },
 ];
@@ -194,6 +203,11 @@ function formatTs(ts: number | null | undefined): string {
   return new Date(ts * 1000).toLocaleString();
 }
 
+function formatTsMs(ts: number | null | undefined): string {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleString();
+}
+
 function formatJobStatus(status: string): string {
   switch (status) {
     case 'queued':
@@ -211,6 +225,14 @@ function formatJobStatus(status: string): string {
     default:
       return status;
   }
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 export default function AdminPage() {
@@ -232,6 +254,14 @@ export default function AdminPage() {
   const [channelEdits, setChannelEdits] = useState<Record<string, ChannelEditState>>({});
   const [rooms, setRooms] = useState<RoomRecord[]>([]);
   const [roomEdits, setRoomEdits] = useState<Record<string, RoomEditState>>({});
+  const [minecraftServers, setMinecraftServers] = useState<MinecraftServer[]>([]);
+  const [selectedMinecraftServerId, setSelectedMinecraftServerId] = useState<string | null>(null);
+  const [selectedMinecraftServerEvents, setSelectedMinecraftServerEvents] = useState<
+    MinecraftServerEvent[]
+  >([]);
+  const [selectedMinecraftServerLogs, setSelectedMinecraftServerLogs] = useState<ServerLogLine[]>([]);
+  const [minecraftServerEventsLoading, setMinecraftServerEventsLoading] = useState(false);
+  const [minecraftServerLogsLoading, setMinecraftServerLogsLoading] = useState(false);
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
     null,
   );
@@ -372,7 +402,17 @@ export default function AdminPage() {
     activeJobParams.set('limit', '100');
 
     try {
-      const [libs, logJobList, tmdbJobList, activeJobList, userList, tmdb, channelList, roomList] = await Promise.all([
+      const [
+        libs,
+        logJobList,
+        tmdbJobList,
+        activeJobList,
+        userList,
+        tmdb,
+        channelList,
+        roomList,
+        minecraftServerList,
+      ] = await Promise.all([
         apiJson<Library[]>('/libraries'),
         apiJson<Job[]>(`/jobs?${logJobParams.toString()}`),
         apiJson<Job[]>(`/jobs?${tmdbJobParams.toString()}`),
@@ -381,6 +421,7 @@ export default function AdminPage() {
         apiJson<TmdbConfig>('/system/tmdb'),
         apiJson<ChannelRecord[]>('/channels'),
         apiJson<RoomRecord[]>('/watch-party/admin/rooms'),
+        listMinecraftServers(),
       ]);
 
       setLibraries(libs);
@@ -462,6 +503,13 @@ export default function AdminPage() {
         }
         return nextEdits;
       });
+      setMinecraftServers(minecraftServerList);
+      setSelectedMinecraftServerId((current) => {
+        if (current && minecraftServerList.some((server) => server.id === current)) {
+          return current;
+        }
+        return minecraftServerList[0]?.id ?? null;
+      });
 
       setTmdbConfig({
         configured: tmdb.configured,
@@ -479,6 +527,48 @@ export default function AdminPage() {
       void loadData();
     }
   }, [me, loadData]);
+
+  useEffect(() => {
+    if (me?.role !== 'admin' || activeTab !== 'server_logs' || !selectedMinecraftServerId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadServerDiagnostics = async () => {
+      setMinecraftServerEventsLoading(true);
+      setMinecraftServerLogsLoading(true);
+      try {
+        const [events, logs] = await Promise.all([
+          listMinecraftServerEvents(selectedMinecraftServerId, 30),
+          listMinecraftServerLogs(selectedMinecraftServerId, 120),
+        ]);
+        if (cancelled) return;
+        setSelectedMinecraftServerEvents(events);
+        setSelectedMinecraftServerLogs(logs.lines);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setSelectedMinecraftServerEvents([]);
+        setSelectedMinecraftServerLogs([]);
+        setErr(clientErrorMessage(err, 'Failed to load Minecraft server diagnostics'));
+      } finally {
+        if (!cancelled) {
+          setMinecraftServerEventsLoading(false);
+          setMinecraftServerLogsLoading(false);
+        }
+      }
+    };
+
+    void loadServerDiagnostics();
+    const timer = setInterval(() => {
+      void loadServerDiagnostics();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeTab, me, selectedMinecraftServerId]);
 
   useEffect(() => {
     librariesRef.current = libraries;
@@ -1284,6 +1374,8 @@ export default function AdminPage() {
 
   const adminUsers = users.filter((u) => u.role === 'admin');
   const regularUsers = users.filter((u) => u.role !== 'admin');
+  const selectedMinecraftServer =
+    minecraftServers.find((server) => server.id === selectedMinecraftServerId) ?? null;
 
   return (
     <div className="space-y-8 animate-rise">
@@ -2165,6 +2257,223 @@ export default function AdminPage() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'server_logs' && (
+        <div className="space-y-8">
+          <section className="panel grid gap-6 p-6 xl:grid-cols-[22rem_minmax(0,1fr)]">
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-xl font-semibold">Minecraft Servers</h2>
+                <p className="text-sm muted">
+                  Detailed runtime diagnostics, lifecycle events, and journald output for managed Minecraft instances.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                {minecraftServers.length === 0 ? (
+                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                    No Minecraft servers exist yet.
+                  </div>
+                ) : (
+                  minecraftServers.map((server) => {
+                    const selected = server.id === selectedMinecraftServerId;
+                    return (
+                      <button
+                        key={server.id}
+                        type="button"
+                        onClick={() => setSelectedMinecraftServerId(server.id)}
+                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                          selected
+                            ? 'border-[var(--orange-soft)] bg-[var(--surface)]/90'
+                            : 'border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
+                        }`}
+                      >
+                        <div className="font-medium text-white">{server.display_name}</div>
+                        <div className="mt-1 text-xs muted">
+                          {server.server_distribution} {server.minecraft_version}
+                          {' · '}
+                          {server.world_name}
+                          {' · '}
+                          Port {server.listen_port}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              {selectedMinecraftServer ? (
+                <>
+                  <section className="panel-soft space-y-4 rounded-2xl p-5">
+                    <div>
+                      <h3 className="text-lg font-semibold text-white">{selectedMinecraftServer.display_name}</h3>
+                      <p className="text-sm muted">
+                        Host-facing diagnostics and runtime metadata for this server instance.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-3">
+                      <div>
+                        <div className="muted">Owner</div>
+                        <div>{selectedMinecraftServer.owner_display_name}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Runtime</div>
+                        <div>{titleCase(selectedMinecraftServer.runtime_mode)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Health</div>
+                        <div>{titleCase(selectedMinecraftServer.health_state)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Version</div>
+                        <div>{selectedMinecraftServer.server_distribution} {selectedMinecraftServer.minecraft_version}</div>
+                      </div>
+                      <div>
+                        <div className="muted">World</div>
+                        <div>{selectedMinecraftServer.world_name}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Gamemode</div>
+                        <div>{titleCase(selectedMinecraftServer.gamemode)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Difficulty</div>
+                        <div>{titleCase(selectedMinecraftServer.difficulty)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Port</div>
+                        <div>{selectedMinecraftServer.listen_host}:{selectedMinecraftServer.listen_port}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Memory</div>
+                        <div>{selectedMinecraftServer.min_memory_mb}-{selectedMinecraftServer.max_memory_mb} MB</div>
+                      </div>
+                      <div>
+                        <div className="muted">Systemd unit</div>
+                        <div className="break-all">{selectedMinecraftServer.systemd_unit_name}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Last started</div>
+                        <div>{formatTs(selectedMinecraftServer.last_started_ts)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Last stopped</div>
+                        <div>{formatTs(selectedMinecraftServer.last_stopped_ts)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Last ready</div>
+                        <div>{formatTs(selectedMinecraftServer.last_ready_ts)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Updated</div>
+                        <div>{formatTs(selectedMinecraftServer.updated_ts)}</div>
+                      </div>
+                      <div>
+                        <div className="muted">Advertised address</div>
+                        <div>
+                          {selectedMinecraftServer.advertised_host
+                            ? `${selectedMinecraftServer.advertised_host}:${selectedMinecraftServer.advertised_port ?? selectedMinecraftServer.listen_port}`
+                            : 'Not set'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="muted">Exit code</div>
+                        <div>{selectedMinecraftServer.last_exit_code ?? 'Unknown'}</div>
+                      </div>
+                      <div className="sm:col-span-2 xl:col-span-3">
+                        <div className="muted">Work directory</div>
+                        <div className="break-all">{selectedMinecraftServer.server_work_dir}</div>
+                      </div>
+                      <div className="sm:col-span-2 xl:col-span-3">
+                        <div className="muted">Instance root</div>
+                        <div className="break-all">{selectedMinecraftServer.instance_root}</div>
+                      </div>
+                      <div className="sm:col-span-2 xl:col-span-3">
+                        <div className="muted">Java path</div>
+                        <div className="break-all">{selectedMinecraftServer.java_path}</div>
+                      </div>
+                      <div className="sm:col-span-2 xl:col-span-3">
+                        <div className="muted">Last runtime error</div>
+                        <div>{selectedMinecraftServer.last_error_summary || 'None'}</div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 xl:grid-cols-2">
+                    <div className="panel-soft flex min-h-0 flex-col gap-3 rounded-2xl p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                          Recent Events
+                        </h3>
+                        {minecraftServerEventsLoading ? (
+                          <span className="chip text-[11px]">Refreshing</span>
+                        ) : null}
+                      </div>
+                      {selectedMinecraftServerEvents.length === 0 ? (
+                        <div className="panel rounded-xl px-4 py-3 text-sm muted">
+                          No lifecycle events recorded yet.
+                        </div>
+                      ) : (
+                        <div className="max-h-[26rem] space-y-3 overflow-y-auto pr-1">
+                          {selectedMinecraftServerEvents.map((event) => (
+                            <div key={event.id} className="panel rounded-xl px-4 py-3 text-sm">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="font-medium text-white">{event.message}</div>
+                                <span className="chip text-[11px]">{titleCase(event.level)}</span>
+                              </div>
+                              <div className="mt-2 text-xs muted">
+                                {titleCase(event.event_kind)} · {formatTs(event.created_ts)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="panel-soft flex min-h-0 flex-col gap-3 rounded-2xl p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                          Journald Logs
+                        </h3>
+                        {minecraftServerLogsLoading ? (
+                          <span className="chip text-[11px]">Refreshing</span>
+                        ) : null}
+                      </div>
+                      {selectedMinecraftServerLogs.length === 0 ? (
+                        <div className="panel rounded-xl px-4 py-3 text-sm muted">
+                          No host logs have been returned for this unit yet.
+                        </div>
+                      ) : (
+                        <div className="max-h-[26rem] space-y-2 overflow-y-auto pr-1">
+                          {selectedMinecraftServerLogs.map((line, index) => (
+                            <div
+                              key={`${line.ts_ms ?? 'no-ts'}-${index}`}
+                              className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-4 py-3 text-sm"
+                            >
+                              <div className="text-white">{line.message}</div>
+                              <div className="mt-2 text-xs muted">
+                                {formatTsMs(line.ts_ms)}
+                                {line.priority ? ` · priority ${line.priority}` : ''}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                  Choose a server from the list to inspect its diagnostics.
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       )}
 

@@ -16,7 +16,7 @@ use rustfin_core::{
         ServersAgentDiscoveryScanRequest, ServersAgentDiscoveryScanResponse,
         ServersAgentImportRequest, ServersAgentLifecycleRequest, ServersAgentLogsRequest,
         ServersAgentLogsResponse, ServersAgentProbeRequest, ServersAgentProvisionRequest,
-        ServersAgentStatusRequest, SystemdUnitStatus,
+        ServersAgentStatusRequest, ServersAgentSyncRequest, SystemdUnitStatus,
     },
 };
 use tracing_subscriber::EnvFilter;
@@ -94,6 +94,18 @@ async fn import(
     Ok(Json(result))
 }
 
+async fn sync_instance(
+    State(state): State<AgentState>,
+    headers: HeaderMap,
+    Json(req): Json<ServersAgentSyncRequest>,
+) -> Result<Json<rustfin_core::servers_agent::ProvisioningResult>, AppError> {
+    require_agent_auth(&headers, &state)?;
+    let result = rustfin_servers_host::sync_managed_instance(&req.spec)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    Ok(Json(result))
+}
+
 async fn delete_instance(
     State(state): State<AgentState>,
     headers: HeaderMap,
@@ -148,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/minecraft/probe", post(probe))
         .route("/v1/minecraft/lifecycle", post(run_lifecycle))
         .route("/v1/minecraft/provision", post(provision))
+        .route("/v1/minecraft/sync", post(sync_instance))
         .route("/v1/minecraft/import", post(import))
         .route("/v1/minecraft/delete", post(delete_instance))
         .route("/v1/minecraft/logs", post(logs))
