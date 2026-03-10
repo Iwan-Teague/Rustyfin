@@ -276,10 +276,10 @@ export default function PlayerPage() {
   const playerShellRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
   const [startingHls, setStartingHls] = useState(false);
@@ -362,9 +362,9 @@ export default function PlayerPage() {
       setStartingHls(true);
       setError('');
       try {
-        if (sessionId) {
-          await stopSession(sessionId);
-          setSessionId(null);
+        if (sessionIdRef.current) {
+          await stopSession(sessionIdRef.current);
+          sessionIdRef.current = null;
         }
 
         const data = await apiJson<PlaybackSession>(descriptor.hls_start_url, {
@@ -377,7 +377,7 @@ export default function PlayerPage() {
         });
 
         destroyHls();
-        setSessionId(data.session_id);
+        sessionIdRef.current = data.session_id;
         setHlsSessionStartOffsetSecs(startTimeSecs ?? 0);
         setHlsAvailableWindowDurationSecs(0);
 
@@ -495,7 +495,7 @@ export default function PlayerPage() {
         setStartingHls(false);
       }
     },
-    [descriptor, destroyHls, hlsTargetHeight, mediaInfo, sessionId, stopSession],
+    [descriptor, destroyHls, hlsTargetHeight, mediaInfo, stopSession],
   );
 
   const handleSeek = useCallback(
@@ -581,7 +581,7 @@ export default function PlayerPage() {
     setLoadingDescriptor(true);
     setDescriptor(null);
     setMediaInfo(null);
-    setSessionId(null);
+    sessionIdRef.current = null;
     setError('');
     setHlsSessionStartOffsetSecs(0);
     setHlsAvailableWindowDurationSecs(0);
@@ -620,11 +620,12 @@ export default function PlayerPage() {
   useEffect(() => {
     return () => {
       destroyHls();
-      if (sessionId) {
-        void stopSession(sessionId);
+      if (sessionIdRef.current) {
+        void stopSession(sessionIdRef.current);
+        sessionIdRef.current = null;
       }
     };
-  }, [destroyHls, sessionId, stopSession]);
+  }, [destroyHls, stopSession]);
 
   useEffect(() => {
     const hls = hlsRef.current as { __stopKnownDurationEnforcer?: () => void } | null;
