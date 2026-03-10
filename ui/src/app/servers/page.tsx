@@ -817,11 +817,6 @@ export default function ServersPage() {
                         {server.description ? (
                           <div className="max-w-3xl text-sm muted">{server.description}</div>
                         ) : null}
-                        <div className="flex flex-wrap items-center gap-3 text-sm muted">
-                          <span>{server.server_distribution} {server.minecraft_version}</span>
-                          <span className="text-white/20">•</span>
-                          <span>{server.world_name}</span>
-                        </div>
                         {progressMessage ? (
                           <div
                             className={`max-w-3xl text-sm ${
