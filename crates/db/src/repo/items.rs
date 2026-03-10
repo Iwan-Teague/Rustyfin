@@ -35,16 +35,21 @@ pub async fn get_item(pool: &DbPool, item_id: &str) -> Result<Option<ItemRow>, s
         Option<String>,
         i64,
         i64,
+        Option<i64>,
     )> = sqlx::query_as(
         "SELECT id, library_id, kind, parent_id, title, sort_title, year, overview, \
          poster_url, backdrop_url, logo_url, thumb_url, \
-         created_ts, updated_ts FROM item WHERE id = $1",
+         created_ts, updated_ts, \
+         (SELECT mf.duration_ms FROM episode_file_map efm \
+          JOIN media_file mf ON mf.id = efm.file_id \
+          WHERE efm.episode_item_id = item.id LIMIT 1) AS duration_ms \
+         FROM item WHERE id = $1",
     )
     .bind(item_id)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(row_to_item))
+    Ok(row.map(row_to_item_full))
 }
 
 pub async fn get_children(pool: &DbPool, parent_id: &str) -> Result<Vec<ItemRow>, sqlx::Error> {

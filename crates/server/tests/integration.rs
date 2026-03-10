@@ -1532,12 +1532,32 @@ async fn playback_progress_update_and_get() {
     assert_eq!(body["progress_ms"], 0);
     assert_eq!(body["played"], false);
 
-    // Update progress
+    // Early progress should be ignored for continue watching.
     let resp = server
         .post("/api/v1/playback/progress")
         .add_header(hdr_name.clone(), hdr_val.clone())
         .json(&json!({
             "item_id": item_id,
+            "progress_ms": 20000,
+            "played": false
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    let resp = server
+        .get(&format!("/api/v1/playback/state/{item_id}"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    let body: Value = resp.json();
+    assert_eq!(body["progress_ms"], 0);
+    assert_eq!(body["played"], false);
+
+    // Meaningful progress should be stored.
+    let resp = server
+        .post("/api/v1/playback/progress")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "item_id": item_id.clone(),
             "progress_ms": 120000,
             "played": false
         }))
@@ -1558,7 +1578,7 @@ async fn playback_progress_update_and_get() {
         .post("/api/v1/playback/progress")
         .add_header(hdr_name.clone(), hdr_val.clone())
         .json(&json!({
-            "item_id": item_id,
+            "item_id": item_id.clone(),
             "progress_ms": 120000,
             "played": true
         }))
@@ -1571,9 +1591,80 @@ async fn playback_progress_update_and_get() {
         .await;
     let body: Value = resp.json();
     assert_eq!(body["played"], true);
+    assert_eq!(body["progress_ms"], 0);
     assert!(body["last_played_ts"].as_i64().unwrap() > 0);
 
     // Cleanup
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn continue_watching_feed_lists_only_in_progress_items() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let (hdr_name, hdr_val) = auth_hdr(&token);
+
+    let tmp = std::env::temp_dir().join(format!("rf_continue_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("Arrival (2016).mkv"), "fake video data").unwrap();
+    std::fs::write(tmp.join("Looper (2012).mkv"), "fake video data").unwrap();
+
+    let resp = server
+        .post("/api/v1/libraries")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({ "name": "ContinueMovies", "kind": "movies", "paths": [tmp.to_str().unwrap()] }))
+        .await;
+    let lib_id = resp.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    server
+        .post(&format!("/api/v1/libraries/{lib_id}/scan"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let resp = server
+        .get(&format!("/api/v1/libraries/{lib_id}/items"))
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    let items: Value = resp.json();
+    let items = items.as_array().unwrap();
+    assert!(items.len() >= 2);
+    let first_item_id = items[0]["id"].as_str().unwrap().to_string();
+    let second_item_id = items[1]["id"].as_str().unwrap().to_string();
+
+    server
+        .post("/api/v1/playback/progress")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "item_id": first_item_id,
+            "progress_ms": 120000,
+            "played": false
+        }))
+        .await
+        .assert_status_ok();
+
+    server
+        .post("/api/v1/playback/progress")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .json(&json!({
+            "item_id": second_item_id,
+            "progress_ms": 120000,
+            "played": true
+        }))
+        .await
+        .assert_status_ok();
+
+    let resp = server
+        .get("/api/v1/playback/continue")
+        .add_header(hdr_name.clone(), hdr_val.clone())
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["id"].as_str().unwrap(), first_item_id);
+    assert_eq!(entries[0]["progress_ms"].as_i64().unwrap(), 120000);
+
     std::fs::remove_dir_all(&tmp).ok();
 }
 
