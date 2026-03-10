@@ -833,10 +833,10 @@ export default function ServersPage() {
                         ) : null}
                       </div>
 
-                      <div className="flex min-w-fit flex-wrap justify-end gap-2 self-start">
+                      <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:min-w-fit sm:flex-wrap sm:justify-end sm:self-start">
                         <button
                           type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          className="btn-secondary w-full px-3 py-2 text-center text-xs disabled:opacity-50 sm:w-auto"
                           disabled={
                             statusRefreshingServerId !== null || actionLoading !== null || !statusSupported
                           }
@@ -847,7 +847,7 @@ export default function ServersPage() {
                         </button>
                         <button
                           type="button"
-                          className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                          className="btn-primary w-full px-3 py-2 text-center text-xs disabled:opacity-50 sm:w-auto"
                           disabled={actionLoading !== null || !canStart}
                           onClick={() => void handleRequestAction(server, 'start')}
                         >
@@ -855,7 +855,7 @@ export default function ServersPage() {
                         </button>
                         <button
                           type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          className="btn-secondary w-full px-3 py-2 text-center text-xs disabled:opacity-50 sm:w-auto"
                           disabled={actionLoading !== null || !canRestart}
                           onClick={() => void handleRequestAction(server, 'restart')}
                           title={
@@ -868,7 +868,7 @@ export default function ServersPage() {
                         </button>
                         <button
                           type="button"
-                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          className="btn-secondary w-full px-3 py-2 text-center text-xs disabled:opacity-50 sm:w-auto"
                           disabled={actionLoading !== null || !canStop}
                           onClick={() => void handleRequestAction(server, 'stop')}
                           title={
@@ -882,7 +882,7 @@ export default function ServersPage() {
                         {canDelete ? (
                           <button
                             type="button"
-                            className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50"
+                            className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-center text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50 sm:w-auto"
                             disabled={deletingServerId !== null || actionLoading !== null || !deleteSupported}
                             onClick={() => setDeleteConfirmServer(server)}
                             title={!deleteSupported ? runtimeCapabilities?.reason ?? 'Delete unavailable here' : undefined}
@@ -892,7 +892,7 @@ export default function ServersPage() {
                         ) : null}
                         <button
                           type="button"
-                          className="btn-ghost min-w-[7.75rem] px-3 py-2 text-center text-xs"
+                          className="btn-ghost col-span-2 w-full px-3 py-2 text-center text-xs sm:col-auto sm:min-w-[7.75rem] sm:w-auto"
                           onClick={() => {
                             setServerEdits((prev) => ({
                               ...prev,
