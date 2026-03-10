@@ -43,6 +43,13 @@ type SpeakingMonitor = {
   lastLoudAtMs: number;
 };
 
+type RemoteAudioPipeline = {
+  streamId: string;
+  source: MediaStreamAudioSourceNode;
+  gain: GainNode;
+  destination: MediaStreamAudioDestinationNode;
+};
+
 function createPeerConfig(): RTCConfiguration {
   return {
     iceServers: [{ urls: STUN_URL }],
@@ -70,6 +77,7 @@ export default function VoiceEngine({
 }: Props) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteAudioPipelinesRef = useRef<Map<string, RemoteAudioPipeline>>(new Map());
   const speakingMonitorsRef = useRef<Map<string, SpeakingMonitor>>(new Map());
   const audioContextRef = useRef<AudioContext | null>(null);
   const localMicContextRef = useRef<AudioContext | null>(null);
@@ -409,7 +417,28 @@ export default function VoiceEngine({
   function getPeerVolume(userId: string): number {
     const value = remoteVolumes[userId];
     if (!Number.isFinite(value)) return 1;
-    return Math.min(1, Math.max(0, value));
+    return Math.min(2, Math.max(0, value));
+  }
+
+  function teardownRemoteAudioPipeline(userId: string) {
+    const pipeline = remoteAudioPipelinesRef.current.get(userId);
+    if (!pipeline) return;
+    try {
+      pipeline.source.disconnect();
+    } catch {
+      // no-op
+    }
+    try {
+      pipeline.gain.disconnect();
+    } catch {
+      // no-op
+    }
+    try {
+      pipeline.destination.disconnect();
+    } catch {
+      // no-op
+    }
+    remoteAudioPipelinesRef.current.delete(userId);
   }
 
   function applyPreferredOutputDevice(el: HTMLAudioElement) {
@@ -454,9 +483,37 @@ export default function VoiceEngine({
       audioElementsRef.current.set(userId, el);
     }
     el.muted = deafened;
-    el.volume = getPeerVolume(userId);
     applyPreferredOutputDevice(el);
-    el.srcObject = stream;
+
+    const context = getAudioContext();
+    if (context) {
+      let pipeline = remoteAudioPipelinesRef.current.get(userId);
+      if (!pipeline || pipeline.streamId !== stream.id) {
+        teardownRemoteAudioPipeline(userId);
+        const source = context.createMediaStreamSource(stream);
+        const gain = context.createGain();
+        const destination = context.createMediaStreamDestination();
+        gain.gain.value = getPeerVolume(userId);
+        source.connect(gain);
+        gain.connect(destination);
+        pipeline = {
+          streamId: stream.id,
+          source,
+          gain,
+          destination,
+        };
+        remoteAudioPipelinesRef.current.set(userId, pipeline);
+      } else {
+        pipeline.gain.gain.value = getPeerVolume(userId);
+      }
+      el.volume = 1;
+      el.srcObject = pipeline.destination.stream;
+      void context.resume().catch(() => {});
+    } else {
+      el.volume = Math.min(1, getPeerVolume(userId));
+      el.srcObject = stream;
+    }
+
     const tryPlay = () => {
       const playPromise = el?.play();
       if (playPromise) {
@@ -482,6 +539,7 @@ export default function VoiceEngine({
       el.remove();
       audioElementsRef.current.delete(userId);
     }
+    teardownRemoteAudioPipeline(userId);
     stopSpeakingMonitor(userId);
   }
 
@@ -554,6 +612,9 @@ export default function VoiceEngine({
         el.remove();
       });
       audioElementsRef.current.clear();
+      for (const userId of Array.from(remoteAudioPipelinesRef.current.keys())) {
+        teardownRemoteAudioPipeline(userId);
+      }
       for (const userId of Array.from(speakingMonitorsRef.current.keys())) {
         stopSpeakingMonitor(userId);
       }
@@ -678,7 +739,13 @@ export default function VoiceEngine({
   useEffect(() => {
     audioElementsRef.current.forEach((audio, userId) => {
       audio.muted = deafened;
-      audio.volume = getPeerVolume(userId);
+      const pipeline = remoteAudioPipelinesRef.current.get(userId);
+      if (pipeline) {
+        pipeline.gain.gain.value = getPeerVolume(userId);
+        audio.volume = 1;
+      } else {
+        audio.volume = Math.min(1, getPeerVolume(userId));
+      }
       applyPreferredOutputDevice(audio);
       if (!deafened) {
         const playPromise = audio.play();
