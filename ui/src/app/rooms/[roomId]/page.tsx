@@ -135,6 +135,13 @@ export default function WatchPartyRoomPage() {
   const createWindowShiftClass = isCreateRoom ? 'mt-[54px]' : '';
   const createTabsCounterShiftClass = isCreateRoom ? 'top-[-17px]' : 'top-0';
   const createLowerPanelsShiftClass = isCreateRoom ? 'mt-[37px]' : '';
+  const currentReconfigureCategory = isAudioRoom
+    ? 'audio'
+    : isPlayRoom
+      ? 'play'
+      : isCreateRoom
+        ? 'create'
+        : 'watch';
 
   const infoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetPlaybackRef = useRef<() => Promise<void>>(async () => {});
@@ -165,6 +172,14 @@ export default function WatchPartyRoomPage() {
     setInfo,
     setInfoForDuration,
   });
+  const selectedReconfigureCategory =
+    reconfigure.reconfigureMode === 'audio'
+      ? 'audio'
+      : reconfigure.reconfigureMode === 'play'
+        ? 'play'
+        : reconfigure.reconfigureMode === 'create'
+          ? 'create'
+          : 'watch';
 
   const handleRealtimeRoomReconfigured = useCallback(
     (payload: WsRoomReconfiguredMessage) => {
@@ -758,31 +773,59 @@ export default function WatchPartyRoomPage() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.isWatchReconfigureMode ? 'btn-primary' : 'btn-secondary'}`}
+                        className={`px-4 py-2 text-sm rounded-lg ${
+                          currentReconfigureCategory === 'watch'
+                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            : reconfigure.isWatchReconfigureMode
+                              ? 'btn-primary'
+                              : 'btn-secondary'
+                        }`}
                         onClick={() => reconfigure.selectReconfigureMode('video')}
+                        disabled={currentReconfigureCategory === 'watch'}
                       >
                         Watch Together
                       </button>
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'audio' ? 'btn-primary' : 'btn-secondary'}`}
+                        className={`px-4 py-2 text-sm rounded-lg ${
+                          currentReconfigureCategory === 'audio'
+                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            : reconfigure.reconfigureMode === 'audio'
+                              ? 'btn-primary'
+                              : 'btn-secondary'
+                        }`}
                         onClick={() => reconfigure.selectReconfigureMode('audio')}
+                        disabled={currentReconfigureCategory === 'audio'}
                       >
                         Listen Together
                       </button>
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'create' ? 'btn-primary' : 'btn-secondary'}`}
-                        onClick={() => reconfigure.selectReconfigureMode('create')}
+                        className={`px-4 py-2 text-sm rounded-lg ${
+                          currentReconfigureCategory === 'play'
+                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            : reconfigure.reconfigureMode === 'play'
+                              ? 'btn-primary'
+                              : 'btn-secondary'
+                        }`}
+                        onClick={() => reconfigure.selectReconfigureMode('play')}
+                        disabled={currentReconfigureCategory === 'play'}
                       >
-                        Create Together
+                        Play Together
                       </button>
                       <button
                         type="button"
-                        className={`px-4 py-2 text-sm rounded-lg ${reconfigure.reconfigureMode === 'play' ? 'btn-primary' : 'btn-secondary'}`}
-                        onClick={() => reconfigure.selectReconfigureMode('play')}
+                        className={`px-4 py-2 text-sm rounded-lg ${
+                          currentReconfigureCategory === 'create'
+                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            : reconfigure.reconfigureMode === 'create'
+                              ? 'btn-primary'
+                              : 'btn-secondary'
+                        }`}
+                        onClick={() => reconfigure.selectReconfigureMode('create')}
+                        disabled={currentReconfigureCategory === 'create'}
                       >
-                        Play Together
+                        Create Together
                       </button>
                     </div>
                     <div className="flex w-full justify-end sm:w-auto">
@@ -790,7 +833,10 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className="btn-primary px-5 py-2.5 text-sm disabled:opacity-50"
                         onClick={handleReconfigureRoom}
-                        disabled={reconfigure.reconfiguring}
+                        disabled={
+                          reconfigure.reconfiguring ||
+                          currentReconfigureCategory === selectedReconfigureCategory
+                        }
                       >
                         {reconfigure.reconfiguring ? 'Reconfiguring…' : 'Apply Room Mode'}
                       </button>
