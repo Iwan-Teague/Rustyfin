@@ -134,6 +134,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "033_upgrade_current_schema_integer_columns",
         include_str!("../migrations_pg/033_upgrade_current_schema_integer_columns.sql"),
     ),
+    (
+        "034_job_active_payload_indexes",
+        include_str!("../migrations_pg/034_job_active_payload_indexes.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
