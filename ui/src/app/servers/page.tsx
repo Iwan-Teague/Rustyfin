@@ -832,65 +832,63 @@ export default function ServersPage() {
                         ) : null}
                       </div>
 
-                      <div className="flex min-w-fit flex-col items-end gap-2 self-start">
-                        <div className="flex flex-wrap justify-end gap-2">
+                      <div className="flex min-w-fit flex-wrap justify-end gap-2 self-start">
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={
+                            statusRefreshingServerId !== null || actionLoading !== null || !statusSupported
+                          }
+                          onClick={() => void refreshSelectedServerStatus(server.id, true)}
+                          title={!statusSupported ? runtimeCapabilities?.reason ?? 'Status refresh unavailable here' : undefined}
+                        >
+                          {statusRefreshingServerId === server.id ? 'Refreshing…' : 'Refresh Status'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null || !canStart}
+                          onClick={() => void handleRequestAction(server, 'start')}
+                        >
+                          {actionLoading === 'start' && actionServerId === server.id ? 'Starting…' : 'Start'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null || !canRestart}
+                          onClick={() => void handleRequestAction(server, 'restart')}
+                          title={
+                            needsProvisioning
+                              ? 'Provision or import this Minecraft server before restarting it.'
+                              : undefined
+                          }
+                        >
+                          {actionLoading === 'restart' && actionServerId === server.id ? 'Restarting…' : 'Restart'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
+                          disabled={actionLoading !== null || !canStop}
+                          onClick={() => void handleRequestAction(server, 'stop')}
+                          title={
+                            needsProvisioning
+                              ? 'Provision or import this Minecraft server before stopping it.'
+                              : undefined
+                          }
+                        >
+                          {actionLoading === 'stop' && actionServerId === server.id ? 'Stopping…' : 'Stop'}
+                        </button>
+                        {canDelete ? (
                           <button
                             type="button"
-                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={
-                              statusRefreshingServerId !== null || actionLoading !== null || !statusSupported
-                            }
-                            onClick={() => void refreshSelectedServerStatus(server.id, true)}
-                            title={!statusSupported ? runtimeCapabilities?.reason ?? 'Status refresh unavailable here' : undefined}
+                            className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50"
+                            disabled={deletingServerId !== null || actionLoading !== null || !deleteSupported}
+                            onClick={() => setDeleteConfirmServer(server)}
+                            title={!deleteSupported ? runtimeCapabilities?.reason ?? 'Delete unavailable here' : undefined}
                           >
-                            {statusRefreshingServerId === server.id ? 'Refreshing…' : 'Refresh Status'}
+                            Delete
                           </button>
-                          <button
-                            type="button"
-                            className="btn-primary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={actionLoading !== null || !canStart}
-                            onClick={() => void handleRequestAction(server, 'start')}
-                          >
-                            {actionLoading === 'start' && actionServerId === server.id ? 'Starting…' : 'Start'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={actionLoading !== null || !canRestart}
-                            onClick={() => void handleRequestAction(server, 'restart')}
-                            title={
-                              needsProvisioning
-                                ? 'Provision or import this Minecraft server before restarting it.'
-                                : undefined
-                            }
-                          >
-                            {actionLoading === 'restart' && actionServerId === server.id ? 'Restarting…' : 'Restart'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-secondary px-3 py-2 text-xs disabled:opacity-50"
-                            disabled={actionLoading !== null || !canStop}
-                            onClick={() => void handleRequestAction(server, 'stop')}
-                            title={
-                              needsProvisioning
-                                ? 'Provision or import this Minecraft server before stopping it.'
-                                : undefined
-                            }
-                          >
-                            {actionLoading === 'stop' && actionServerId === server.id ? 'Stopping…' : 'Stop'}
-                          </button>
-                          {canDelete ? (
-                            <button
-                              type="button"
-                              className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-100 transition hover:border-red-300/50 hover:bg-red-500/15 disabled:opacity-50"
-                              disabled={deletingServerId !== null || actionLoading !== null || !deleteSupported}
-                              onClick={() => setDeleteConfirmServer(server)}
-                              title={!deleteSupported ? runtimeCapabilities?.reason ?? 'Delete unavailable here' : undefined}
-                            >
-                              Delete
-                            </button>
-                          ) : null}
-                        </div>
+                        ) : null}
                         <button
                           type="button"
                           className="btn-ghost px-3 py-2 text-xs"
