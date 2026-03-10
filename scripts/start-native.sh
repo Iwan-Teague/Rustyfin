@@ -73,15 +73,18 @@ if ! command -v cargo >/dev/null 2>&1 && [[ -f "${HOME}/.cargo/env" ]]; then
   source "${HOME}/.cargo/env"
 fi
 
-command -v cargo >/dev/null 2>&1 || die "cargo is not installed. Run ./scripts/install_native_debian.sh first."
-command -v rustc >/dev/null 2>&1 || die "rustc is not installed. Run ./scripts/install_native_debian.sh first."
-command -v node >/dev/null 2>&1 || die "node is not installed. Run ./scripts/install_native_debian.sh first."
-command -v npm >/dev/null 2>&1 || die "npm is not installed. Run ./scripts/install_native_debian.sh first."
 command -v caddy >/dev/null 2>&1 || die "caddy is not installed. Run ./scripts/install_native_debian.sh first."
+command -v node >/dev/null 2>&1 || die "node is not installed. Run ./scripts/install_native_debian.sh first."
 command -v curl >/dev/null 2>&1 || die "curl is required for native runtime startup."
 command -v openssl >/dev/null 2>&1 || die "openssl is required for native runtime startup."
 command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg is required for playback/transcoding."
 command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for media probing."
+
+if [[ "$BUILD" == "true" ]]; then
+  command -v cargo >/dev/null 2>&1 || die "cargo is not installed. Run ./scripts/install_native_debian.sh first."
+  command -v rustc >/dev/null 2>&1 || die "rustc is not installed. Run ./scripts/install_native_debian.sh first."
+  command -v npm >/dev/null 2>&1 || die "npm is not installed. Run ./scripts/install_native_debian.sh first."
+fi
 
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 RUSTFIN_ENABLE_SERVERS_AGENT="${RUSTFIN_ENABLE_SERVERS_AGENT:-1}"

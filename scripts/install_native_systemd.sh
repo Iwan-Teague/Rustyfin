@@ -127,8 +127,7 @@ Wants=network-online.target postgresql.service ${AGENT_SERVICE_NAME}
 After=network-online.target postgresql.service ${AGENT_SERVICE_NAME}
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 User=${RUSTFIN_NATIVE_USER}
 Group=${RUSTFIN_NATIVE_USER}
 WorkingDirectory=${REPO_ROOT}
@@ -136,10 +135,12 @@ Environment=HOME=${RUSTFIN_NATIVE_HOME}
 Environment=PATH=${RUSTFIN_NATIVE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RUSTFIN_ENABLE_SERVERS_AGENT=0
 EnvironmentFile=-${ENV_FILE}
-ExecStart=/usr/bin/env RUSTFIN_ENABLE_SERVERS_AGENT=0 /usr/bin/bash -lc 'source ${RUSTFIN_NATIVE_HOME}/.cargo/env && ${REPO_ROOT}/scripts/start-native.sh --no-build'
-ExecStop=/usr/bin/bash -lc '${REPO_ROOT}/scripts/stop-native.sh'
+ExecStart=/usr/bin/env RUSTFIN_ENABLE_SERVERS_AGENT=0 /usr/bin/bash -lc 'source ${RUSTFIN_NATIVE_HOME}/.cargo/env && exec ${REPO_ROOT}/scripts/run-native-supervisor.sh'
 TimeoutStartSec=0
 TimeoutStopSec=120
+Restart=on-failure
+RestartSec=2
+KillMode=process
 StandardOutput=append:${LOG_DIR}/rustyfin-native-systemd.log
 StandardError=append:${LOG_DIR}/rustyfin-native-systemd.log
 
