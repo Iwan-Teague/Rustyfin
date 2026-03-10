@@ -186,6 +186,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
 
   // Refs for reconnect and pagehide access (avoid stale closures)
   const voiceSessionRef = useRef<VoiceSession | null>(null);
+  const voicePresenceRef = useRef<Record<string, UserInfo[]>>({});
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
 
@@ -230,6 +231,10 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     voiceSessionRef.current = voiceSession;
   }, [voiceSession]);
 
+  useEffect(() => {
+    voicePresenceRef.current = voicePresence;
+  }, [voicePresence]);
+
   // ── sendWs ──────────────────────────────────────────────────────────────────
 
   const sendWs = useCallback((msg: object) => {
@@ -264,6 +269,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const currentUserId = me.id;
     let intentionalClose = false;
 
     function connect() {
@@ -344,6 +350,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             })();
           }
         } else if (event.type === 'voice_presence') {
+          const pending = pendingVoiceRef.current;
           setVoicePresence((prev) => {
             const current = prev[event.channel_id] ?? [];
             if (event.joined) {
@@ -367,6 +374,37 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               return next;
             }
           });
+          if (
+            event.joined &&
+            event.user_id === currentUserId &&
+            pending &&
+            pending.channelId === event.channel_id
+          ) {
+            const existingMembers = (voicePresenceRef.current[event.channel_id] ?? []).filter(
+              (member) => member.user_id !== currentUserId,
+            );
+            pendingVoiceRef.current = null;
+            savePersistedVoiceSession({
+              channelId: event.channel_id,
+              channelName: pending.channelName,
+              wantMic: pending.stream !== null,
+            });
+            setVoiceSession({
+              channelId: event.channel_id,
+              channelName: pending.channelName,
+              localStream: pending.stream,
+              existingMembers,
+              muted: false,
+              deafened: false,
+            });
+          } else if (
+            !event.joined &&
+            event.user_id === currentUserId &&
+            voiceSessionRef.current?.channelId === event.channel_id
+          ) {
+            clearPersistedVoiceSession();
+            setVoiceSession(null);
+          }
           if (!event.joined) {
             setVoiceSpeaking((prev) => {
               const channelSpeaking = prev[event.channel_id];
@@ -516,6 +554,10 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     async (channelId: string, channelName: string): Promise<string | null> => {
       // New join intent supersedes any persisted session.
       clearPersistedVoiceSession();
+
+      if (wsRef.current?.readyState !== WebSocket.OPEN) {
+        return 'Realtime channel connection is not ready yet. Wait a moment and try again.';
+      }
 
       // Leave any existing session first
       if (pendingVoiceRef.current || voiceSession) {
