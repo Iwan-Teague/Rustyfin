@@ -38,9 +38,12 @@ export default function NavBar() {
     { href: '/libraries', label: 'Libraries' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
-  const desktopNavSplitIndex = Math.ceil(navLinks.length / 2);
-  const desktopLeftNavLinks = navLinks.slice(0, desktopNavSplitIndex);
-  const desktopRightNavLinks = navLinks.slice(desktopNavSplitIndex);
+  const desktopLeftNavLinks = navLinks.filter((link) =>
+    ['/channels', '/rooms', '/servers', '/calendar'].includes(link.href),
+  );
+  const desktopRightNavLinks = navLinks.filter((link) =>
+    ['/libraries', '/admin'].includes(link.href),
+  );
   const desktopLogoSpacerClass = 'w-[11rem] min-w-[11rem]';
   const hasLocalStream = voiceSession?.localStream !== null;
   const muted = voiceSession?.muted ?? false;
