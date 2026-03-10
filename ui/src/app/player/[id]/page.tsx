@@ -249,9 +249,20 @@ async function attemptPlayWithWarmup(video: HTMLVideoElement): Promise<void> {
   }
 }
 
+async function ensurePausedPreviewFrame(video: HTMLVideoElement): Promise<boolean> {
+  await ensurePreviewFrame(video).catch(() => {});
+  try {
+    video.pause();
+  } catch {
+    // no-op
+  }
+  return video.readyState >= 2;
+}
+
 type StartHlsOptions = {
   targetHeightOverride?: number | null;
   seekTimeOverrideSecs?: number;
+  autoPlayOnReady?: boolean;
 };
 
 function fallbackDownloadName(itemId: string, targetHeight: number | null): string {
@@ -343,6 +354,7 @@ export default function PlayerPage() {
 
       const selectedTargetHeight =
         options?.targetHeightOverride !== undefined ? options.targetHeightOverride : hlsTargetHeight;
+      const shouldAutoPlay = options?.autoPlayOnReady ?? true;
       const knownDurationSeconds = Math.max(
         descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
         mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
@@ -394,7 +406,7 @@ export default function PlayerPage() {
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
         video.preload = 'auto';
-        video.autoplay = true;
+        video.autoplay = shouldAutoPlay;
 
         if (Hls.isSupported()) {
           resetVideoSourceForMse(video);
@@ -426,6 +438,7 @@ export default function PlayerPage() {
           hlsRef.current = hls;
           let networkRecoveries = 0;
           let playbackKickPending = true;
+          let playbackKickInFlight = false;
           const reinforceKnownDuration = (data?: unknown) => {
             const playlistWindowDuration = extractPlaylistWindowDuration(data);
             const details = (data as { details?: LevelDetails } | null)?.details as
@@ -448,12 +461,26 @@ export default function PlayerPage() {
               applyKnownDurationToHlsMediaSource(hls, knownDurationSeconds);
             }, 0);
           };
+          const kickPlaybackOrPreview = async () => {
+            if (!playbackKickPending || playbackKickInFlight) return;
+            playbackKickInFlight = true;
+            try {
+              if (shouldAutoPlay) {
+                await attemptPlayWithWarmup(video);
+                playbackKickPending = false;
+                return;
+              }
+              const previewReady = await ensurePausedPreviewFrame(video);
+              if (previewReady) {
+                playbackKickPending = false;
+              }
+            } finally {
+              playbackKickInFlight = false;
+            }
+          };
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             reinforceKnownDuration();
-            if (!playbackKickPending) return;
-            void attemptPlayWithWarmup(video).finally(() => {
-              playbackKickPending = false;
-            });
+            void kickPlaybackOrPreview();
           });
           hls.on(Hls.Events.LEVEL_LOADED, (_event: unknown, data: LevelLoadedData) => {
             reinforceKnownDuration(data);
@@ -463,10 +490,9 @@ export default function PlayerPage() {
           });
           hls.on(Hls.Events.FRAG_BUFFERED, () => {
             reinforceKnownDuration();
-            if (!playbackKickPending || !video.paused) return;
-            void attemptPlayWithWarmup(video).finally(() => {
-              playbackKickPending = false;
-            });
+            if (!playbackKickPending) return;
+            if (shouldAutoPlay && !video.paused) return;
+            void kickPlaybackOrPreview();
           });
           hls.on(Hls.Events.ERROR, (_event: unknown, data: ErrorData) => {
             if (!data?.fatal) return;
@@ -495,7 +521,11 @@ export default function PlayerPage() {
         } else if (canNativeHls) {
           video.src = data.hls_url;
           video.load();
-          await attemptPlayWithWarmup(video);
+          if (shouldAutoPlay) {
+            await attemptPlayWithWarmup(video);
+          } else {
+            await ensurePausedPreviewFrame(video);
+          }
         } else {
           throw new Error('HLS playback is not supported in this browser.');
         }
@@ -675,7 +705,9 @@ export default function PlayerPage() {
           ? playState.progress_ms / 1000
           : undefined;
       void startHls(
-        resumeSeconds !== undefined ? { seekTimeOverrideSecs: resumeSeconds } : undefined,
+        resumeSeconds !== undefined
+          ? { seekTimeOverrideSecs: resumeSeconds, autoPlayOnReady: false }
+          : undefined,
       );
     }
   }, [loadingDescriptor, loadingPlayState, canStartPlayback, playState, startHls]);
