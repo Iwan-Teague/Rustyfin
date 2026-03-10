@@ -370,7 +370,10 @@ export default function WatchPartyPage() {
               <div className="min-h-0 flex-1 overflow-y-auto pr-1">
                 <div className="grid gap-3 sm:grid-cols-2">
                   {publicRooms.map((room) => (
-                    <div key={room.room_id} className="tile p-4 flex items-center justify-between gap-3">
+                    <div
+                      key={room.room_id}
+                      className="rounded-2xl border border-[var(--border)] bg-black/25 p-4 flex items-center justify-between gap-3 shadow-none"
+                    >
                       <div className="min-w-0 space-y-0.5">
                         <p className="font-semibold truncate">{room.title}</p>
                         <p className="text-xs muted">
