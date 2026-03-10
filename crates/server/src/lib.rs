@@ -9,6 +9,7 @@ pub mod auth;
 pub mod channels;
 pub mod error;
 pub mod host_directories;
+pub mod job_status;
 pub mod library_scan;
 pub mod routes;
 pub mod servers;

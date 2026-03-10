@@ -1,8 +1,7 @@
-use std::time::Duration;
-
 use rustfin_core::error::ApiError;
 
 use crate::error::AppError;
+use crate::job_status::update_job_status_with_retry;
 use crate::state::AppState;
 
 pub async fn enqueue_library_scan(
@@ -11,10 +10,21 @@ pub async fn enqueue_library_scan(
     library_kind: &str,
 ) -> Result<rustfin_db::repo::jobs::JobRow, AppError> {
     let payload = serde_json::json!({ "library_id": library_id });
-    let job =
-        rustfin_db::repo::jobs::create_job(&state.db, "library_scan", Some(&payload.to_string()))
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let payload_json = payload.to_string();
+    if let Some(existing) = rustfin_db::repo::jobs::find_active_job_by_kind_and_payload(
+        &state.db,
+        "library_scan",
+        &payload_json,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    {
+        return Ok(existing);
+    }
+
+    let job = rustfin_db::repo::jobs::create_job(&state.db, "library_scan", Some(&payload_json))
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     // Spawn scan in background.
     let job_id = job.id.clone();
@@ -110,25 +120,4 @@ pub async fn enqueue_library_scan(
     });
 
     Ok(job)
-}
-
-async fn update_job_status_with_retry(
-    pool: &rustfin_db::DbPool,
-    job_id: &str,
-    status: &str,
-    progress: f64,
-    error: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let mut last_err: Option<sqlx::Error> = None;
-    for _ in 0..5 {
-        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                last_err = Some(e);
-                tokio::time::sleep(Duration::from_millis(120)).await;
-            }
-        }
-    }
-    Err(last_err.expect("last_err must be set on retry failure"))
 }

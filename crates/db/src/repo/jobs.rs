@@ -44,6 +44,37 @@ pub async fn create_job(
     })
 }
 
+pub async fn find_active_job_by_kind_and_payload(
+    pool: &DbPool,
+    kind: &str,
+    payload_json: &str,
+) -> Result<Option<JobRow>, sqlx::Error> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        f64,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, kind, status, progress, payload_json, error, created_ts, updated_ts \
+         FROM job \
+         WHERE kind = $1 \
+           AND status IN ('queued', 'running') \
+           AND payload_json = $2 \
+         ORDER BY created_ts DESC \
+         LIMIT 1",
+    )
+    .bind(kind)
+    .bind(payload_json)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(row_to_job))
+}
+
 pub async fn list_jobs(pool: &DbPool) -> Result<Vec<JobRow>, sqlx::Error> {
     list_jobs_filtered(pool, &[], None, None, None).await
 }

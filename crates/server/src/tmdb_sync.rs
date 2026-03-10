@@ -3,6 +3,7 @@ use std::time::Duration;
 use rustfin_core::error::ApiError;
 
 use crate::error::AppError;
+use crate::job_status::update_job_status_with_retry;
 use crate::state::AppState;
 
 pub async fn enqueue_library_tmdb_sync(
@@ -10,13 +11,22 @@ pub async fn enqueue_library_tmdb_sync(
     library_id: &str,
 ) -> Result<rustfin_db::repo::jobs::JobRow, AppError> {
     let payload = serde_json::json!({ "library_id": library_id });
-    let job = rustfin_db::repo::jobs::create_job(
+    let payload_json = payload.to_string();
+    if let Some(existing) = rustfin_db::repo::jobs::find_active_job_by_kind_and_payload(
         &state.db,
         "library_tmdb_sync",
-        Some(&payload.to_string()),
+        &payload_json,
     )
     .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    {
+        return Ok(existing);
+    }
+
+    let job =
+        rustfin_db::repo::jobs::create_job(&state.db, "library_tmdb_sync", Some(&payload_json))
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     spawn_tmdb_sync_job(state.clone(), job.id.clone(), library_id.to_string(), None);
 
@@ -31,20 +41,6 @@ fn tmdb_schedule_to_seconds(schedule: &str) -> Option<i64> {
         "monthly" => Some(60 * 60 * 24 * 30),
         _ => None,
     }
-}
-
-async fn has_running_sync_job(
-    pool: &rustfin_db::DbPool,
-    library_id: &str,
-) -> Result<bool, sqlx::Error> {
-    let payload_like = format!("%\"library_id\":\"{}\"%", library_id);
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT 1 FROM job WHERE kind = 'library_tmdb_sync' AND status = 'running' AND payload_json LIKE $1 LIMIT 1",
-    )
-    .bind(payload_like)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.is_some())
 }
 
 fn spawn_tmdb_sync_job(state: AppState, job_id: String, library_id: String, reason: Option<&str>) {
@@ -130,30 +126,10 @@ pub async fn maybe_enqueue_post_scan_tmdb_sync(
         return Ok(());
     }
 
-    if has_running_sync_job(&state.db, library_id)
+    enqueue_library_tmdb_sync(state, library_id)
         .await
-        .map_err(|e| format!("failed to check running TMDB jobs: {e}"))?
-    {
-        return Ok(());
-    }
-
-    let payload = serde_json::json!({ "library_id": library_id, "reason": "new_media_detected" });
-    let job = rustfin_db::repo::jobs::create_job(
-        &state.db,
-        "library_tmdb_sync",
-        Some(&payload.to_string()),
-    )
-    .await
-    .map_err(|e| format!("failed to create TMDB sync job: {e}"))?;
-
-    spawn_tmdb_sync_job(
-        state.clone(),
-        job.id,
-        library_id.to_string(),
-        Some("new_media_detected"),
-    );
-
-    Ok(())
+        .map(|_| ())
+        .map_err(|e| format!("failed to create TMDB sync job: {}", e.0))
 }
 
 pub async fn run_auto_tmdb_scheduler_tick(state: &AppState) -> Result<(), String> {
@@ -180,13 +156,6 @@ pub async fn run_auto_tmdb_scheduler_tick(state: &AppState) -> Result<(), String
         let Some(interval_seconds) = tmdb_schedule_to_seconds(&settings.tmdb_sync_schedule) else {
             continue;
         };
-
-        if has_running_sync_job(&state.db, &lib.id)
-            .await
-            .map_err(|e| format!("failed checking running job for {}: {e}", lib.id))?
-        {
-            continue;
-        }
 
         let due = settings
             .tmdb_last_sync_ts
@@ -246,25 +215,4 @@ async fn run_tmdb_sync(state: &AppState, library_id: &str) -> Result<(), String>
     );
 
     Ok(())
-}
-
-async fn update_job_status_with_retry(
-    pool: &rustfin_db::DbPool,
-    job_id: &str,
-    status: &str,
-    progress: f64,
-    error: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let mut last_err: Option<sqlx::Error> = None;
-    for _ in 0..5 {
-        match rustfin_db::repo::jobs::update_job_status(pool, job_id, status, progress, error).await
-        {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                last_err = Some(e);
-                tokio::time::sleep(Duration::from_millis(120)).await;
-            }
-        }
-    }
-    Err(last_err.expect("last_err must be set on retry failure"))
 }
