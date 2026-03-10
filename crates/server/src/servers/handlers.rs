@@ -358,13 +358,6 @@ fn can_control_server(
         || matches!(server.current_user_role.as_deref(), Some("manager"))
 }
 
-fn can_delete_server(
-    auth: &AuthUser,
-    server: &rustfin_db::repo::servers::MinecraftServerRow,
-) -> bool {
-    auth.role == "admin" || auth.user_id == server.owner_user_id
-}
-
 fn requires_provisioning_before_lifecycle(
     server: &rustfin_db::repo::servers::MinecraftServerRow,
 ) -> bool {
@@ -1563,13 +1556,13 @@ pub async fn request_minecraft_server_action(
 
 pub async fn provision_minecraft_server(
     State(state): State<AppState>,
-    auth: AuthUser,
+    admin: AdminUser,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<MinecraftServerOperationResponse>), AppError> {
     let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
         &state.db,
-        &auth.user_id,
-        auth.role == "admin",
+        &admin.user_id,
+        true,
         &id,
     )
     .await
@@ -1577,13 +1570,6 @@ pub async fn provision_minecraft_server(
     else {
         return Err(ApiError::NotFound("server instance not found".into()).into());
     };
-
-    if !can_control_server(&auth, &current) {
-        return Err(ApiError::Forbidden(
-            "you do not have permission to provision this server".into(),
-        )
-        .into());
-    }
 
     let job_payload = json!({
         "instance_id": current.id,
@@ -1618,7 +1604,7 @@ pub async fn provision_minecraft_server(
         &state,
         &updated.id,
         Some(&job.id),
-        Some(&auth.user_id),
+        Some(&admin.user_id),
         "info",
         "provision_queued",
         "Managed Minecraft provisioning queued.",
@@ -1631,7 +1617,7 @@ pub async fn provision_minecraft_server(
         json!({
             "instance_id": updated.id,
             "display_name": updated.display_name,
-            "requested_by": auth.username,
+            "requested_by": admin.username,
         }),
     )
     .await;
@@ -1639,7 +1625,7 @@ pub async fn provision_minecraft_server(
     let state_clone = state.clone();
     let instance_id = updated.id.clone();
     let job_id = job.id.clone();
-    let actor_user_id = auth.user_id.clone();
+    let actor_user_id = admin.user_id.clone();
     tokio::spawn(async move {
         run_managed_provision_job(state_clone, instance_id, job_id, actor_user_id).await;
     });
@@ -1656,7 +1642,7 @@ pub async fn provision_minecraft_server(
 
 pub async fn import_minecraft_server(
     State(state): State<AppState>,
-    auth: AuthUser,
+    admin: AdminUser,
     Path(id): Path<String>,
     Json(req): Json<ImportMinecraftServerRequest>,
 ) -> Result<(StatusCode, Json<MinecraftServerOperationResponse>), AppError> {
@@ -1667,8 +1653,8 @@ pub async fn import_minecraft_server(
 
     let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
         &state.db,
-        &auth.user_id,
-        auth.role == "admin",
+        &admin.user_id,
+        true,
         &id,
     )
     .await
@@ -1676,13 +1662,6 @@ pub async fn import_minecraft_server(
     else {
         return Err(ApiError::NotFound("server instance not found".into()).into());
     };
-
-    if !can_control_server(&auth, &current) {
-        return Err(ApiError::Forbidden(
-            "you do not have permission to import into this server".into(),
-        )
-        .into());
-    }
 
     let job_payload = json!({
         "instance_id": current.id,
@@ -1718,7 +1697,7 @@ pub async fn import_minecraft_server(
         &state,
         &updated.id,
         Some(&job.id),
-        Some(&auth.user_id),
+        Some(&admin.user_id),
         "info",
         "import_queued",
         &format!("Import queued for source path {}.", source_path),
@@ -1731,7 +1710,7 @@ pub async fn import_minecraft_server(
         json!({
             "instance_id": updated.id,
             "display_name": updated.display_name,
-            "requested_by": auth.username,
+            "requested_by": admin.username,
             "source_path": source_path,
         }),
     )
@@ -1740,7 +1719,7 @@ pub async fn import_minecraft_server(
     let state_clone = state.clone();
     let instance_id = updated.id.clone();
     let job_id = job.id.clone();
-    let actor_user_id = auth.user_id.clone();
+    let actor_user_id = admin.user_id.clone();
     let source_path_owned = source_path.to_string();
     tokio::spawn(async move {
         run_import_job(
@@ -1765,13 +1744,13 @@ pub async fn import_minecraft_server(
 
 pub async fn delete_minecraft_server(
     State(state): State<AppState>,
-    auth: AuthUser,
+    admin: AdminUser,
     Path(id): Path<String>,
 ) -> Result<Json<MinecraftServerDeleteResponse>, AppError> {
     let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
         &state.db,
-        &auth.user_id,
-        auth.role == "admin",
+        &admin.user_id,
+        true,
         &id,
     )
     .await
@@ -1779,12 +1758,6 @@ pub async fn delete_minecraft_server(
     else {
         return Err(ApiError::NotFound("server instance not found".into()).into());
     };
-
-    if !can_delete_server(&auth, &current) {
-        return Err(
-            ApiError::Forbidden("you do not have permission to delete this server".into()).into(),
-        );
-    }
 
     delete_managed_instance(&state, &current.systemd_unit_name, &current.instance_root)
         .await
@@ -1804,7 +1777,7 @@ pub async fn delete_minecraft_server(
             "instance_id": current.id,
             "display_name": current.display_name,
             "systemd_unit_name": current.systemd_unit_name,
-            "deleted_by": auth.username,
+            "deleted_by": admin.username,
         }),
     )
     .await;
