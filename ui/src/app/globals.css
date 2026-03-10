@@ -175,10 +175,17 @@ a {
   position: relative;
   overflow: hidden;
   isolation: isolate;
-  background: linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%);
+  background: linear-gradient(
+    90deg,
+    var(--orange) 0%,
+    #ff7490 52%,
+    var(--purple-strong) 100%
+  );
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  box-shadow: 0 12px 24px rgba(116, 84, 198, 0.4);
+  border: 1px solid transparent;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 12px 24px rgba(116, 84, 198, 0.4);
 }
 
 .btn-danger {
