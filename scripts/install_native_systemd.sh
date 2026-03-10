@@ -136,7 +136,7 @@ Environment=HOME=${RUSTFIN_NATIVE_HOME}
 Environment=PATH=${RUSTFIN_NATIVE_HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RUSTFIN_ENABLE_SERVERS_AGENT=0
 EnvironmentFile=-${ENV_FILE}
-ExecStart=/usr/bin/bash -lc 'source ${RUSTFIN_NATIVE_HOME}/.cargo/env && ${REPO_ROOT}/scripts/start-native.sh --no-build'
+ExecStart=/usr/bin/env RUSTFIN_ENABLE_SERVERS_AGENT=0 /usr/bin/bash -lc 'source ${RUSTFIN_NATIVE_HOME}/.cargo/env && ${REPO_ROOT}/scripts/start-native.sh --no-build'
 ExecStop=/usr/bin/bash -lc '${REPO_ROOT}/scripts/stop-native.sh'
 TimeoutStartSec=0
 TimeoutStopSec=120

@@ -71,8 +71,18 @@ else
   RUN_ROOT=(sudo)
 fi
 
-REPO_OWNER_USER="$(id -un)"
-REPO_OWNER_GROUP="$(id -gn)"
+REPO_OWNER_USER="$(stat -c '%U' "$REPO_ROOT")"
+REPO_OWNER_GROUP="$(stat -c '%G' "$REPO_ROOT")"
+
+if [[ -z "$REPO_OWNER_USER" || "$REPO_OWNER_USER" == "UNKNOWN" ]]; then
+  die "Unable to determine repository owner for $REPO_ROOT"
+fi
+
+if [[ "$(id -u)" -eq 0 && "$REPO_OWNER_USER" != "root" ]]; then
+  RUN_AS_OWNER=(runuser -u "$REPO_OWNER_USER" --)
+else
+  RUN_AS_OWNER=()
+fi
 
 MAIN_SERVICE_NAME="${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}"
 AGENT_SERVICE_NAME="${RUSTFIN_SERVERS_AGENT_SERVICE:-rustfin-servers-agent.service}"
@@ -107,7 +117,7 @@ repair_build_artifact_ownership() {
     "$REPO_ROOT/ui/.next" \
     "$REPO_ROOT/.native-bins" \
     "$REPO_ROOT/target" \
-    "$REPO_ROOT/.tmp/native-runtime"
+    "$REPO_ROOT/.tmp"
   do
     [[ -e "$path" ]] || continue
     if [[ "$(id -u)" -eq 0 ]]; then
@@ -119,9 +129,18 @@ repair_build_artifact_ownership() {
 }
 
 if [[ "$GIT_PULL" == "true" ]]; then
-  branch_name="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+    branch_name="$("${RUN_AS_OWNER[@]}" git rev-parse --abbrev-ref HEAD)"
+  else
+    branch_name="$(git rev-parse --abbrev-ref HEAD)"
+  fi
   [[ "$branch_name" != "HEAD" ]] || die "Repository is in detached HEAD state. Check out a branch before deploying."
-  if [[ -n "$(git status --short)" ]]; then
+  if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+    worktree_status="$("${RUN_AS_OWNER[@]}" git status --short)"
+  else
+    worktree_status="$(git status --short)"
+  fi
+  if [[ -n "$worktree_status" ]]; then
     die "Working tree is not clean. Commit or stash local changes before deploying."
   fi
 fi
@@ -133,16 +152,28 @@ info "Stopping any running native runtime processes..."
 "$REPO_ROOT/scripts/stop-native.sh" || true
 
 if [[ "$GIT_PULL" == "true" ]]; then
-  branch_name="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+    branch_name="$("${RUN_AS_OWNER[@]}" git rev-parse --abbrev-ref HEAD)"
+  else
+    branch_name="$(git rev-parse --abbrev-ref HEAD)"
+  fi
   info "Pulling latest ${branch_name}..."
-  git pull --ff-only origin "$branch_name"
+  if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+    "${RUN_AS_OWNER[@]}" git pull --ff-only origin "$branch_name"
+  else
+    git pull --ff-only origin "$branch_name"
+  fi
 else
   info "Skipping git pull."
 fi
 
 info "Rebuilding native artifacts..."
 repair_build_artifact_ownership
-"$REPO_ROOT/scripts/start-native.sh" --build-only
+if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+  "${RUN_AS_OWNER[@]}" "$REPO_ROOT/scripts/start-native.sh" --build-only
+else
+  "$REPO_ROOT/scripts/start-native.sh" --build-only
+fi
 
 if service_exists "$MAIN_SERVICE_NAME"; then
   if service_exists "$AGENT_SERVICE_NAME"; then
@@ -164,5 +195,9 @@ else
   if [[ "$HEALTH_CHECK" == "false" ]]; then
     start_args+=(--no-health-check)
   fi
-  "$REPO_ROOT/scripts/start-native.sh" "${start_args[@]}"
+  if [[ "${#RUN_AS_OWNER[@]}" -gt 0 ]]; then
+    "${RUN_AS_OWNER[@]}" "$REPO_ROOT/scripts/start-native.sh" "${start_args[@]}"
+  else
+    "$REPO_ROOT/scripts/start-native.sh" "${start_args[@]}"
+  fi
 fi

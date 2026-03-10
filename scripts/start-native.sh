@@ -308,6 +308,10 @@ is_port_in_use() {
   fi
 }
 
+is_external_servers_agent_configured() {
+  [[ -n "${RUSTFIN_SERVERS_AGENT_URL:-}" && -n "${RUSTFIN_SERVERS_AGENT_TOKEN:-}" ]]
+}
+
 pick_free_port() {
   local preferred="$1"
   local max_hops="${2:-200}"
@@ -482,7 +486,16 @@ tmdb_port="$(pick_free_port "$tmdb_port")"
 youtube_port="$(pick_free_port "$youtube_port")"
 transcription_port="$(pick_free_port "$transcription_port")"
 if [[ "$RUSTFIN_ENABLE_SERVERS_AGENT" == "1" ]]; then
-  servers_agent_port="$(pick_free_port "$servers_agent_port")"
+  if is_port_in_use "$servers_agent_port"; then
+    if is_external_servers_agent_configured; then
+      info "Servers agent port ${servers_agent_port} is already in use; assuming external/systemd-managed servers agent."
+      RUSTFIN_ENABLE_SERVERS_AGENT=0
+    else
+      die "Servers agent port ${servers_agent_port} is already in use and no external servers agent configuration is present."
+    fi
+  else
+    servers_agent_port="$(pick_free_port "$servers_agent_port")"
+  fi
 fi
 ui_internal_port="$(pick_free_port "$ui_internal_port")"
 ui_port="$(pick_free_port "$ui_port")"
