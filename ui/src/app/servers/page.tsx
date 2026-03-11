@@ -469,35 +469,32 @@ export default function ServersPage() {
       return;
     }
 
-    const activeServerIds = servers
-      .filter((server) => shouldAutoRefreshServer(server))
-      .map((server) => server.id);
-
-    if (activeServerIds.length === 0) {
+    if (servers.length === 0) {
       return;
     }
 
     let cancelled = false;
     let inFlight = false;
+    const hasActiveTransitions = servers.some((server) => shouldAutoRefreshServer(server));
+    const refreshIntervalMs = hasActiveTransitions ? 3000 : 15000;
 
-    const refreshActiveServers = async () => {
+    const refreshAllVisibleServers = async () => {
       if (cancelled || inFlight) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
       inFlight = true;
       try {
-        await Promise.all(
-          activeServerIds.map((serverId) =>
-            refreshSelectedServerStatus(serverId, false).catch(() => undefined),
-          ),
-        );
+        await refreshAllServerStatuses(servers);
       } finally {
         inFlight = false;
       }
     };
 
-    void refreshActiveServers();
+    void refreshAllVisibleServers();
     const interval = window.setInterval(() => {
-      void refreshActiveServers();
-    }, 3000);
+      void refreshAllVisibleServers();
+    }, refreshIntervalMs);
 
     return () => {
       cancelled = true;
