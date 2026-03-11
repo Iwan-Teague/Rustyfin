@@ -1160,10 +1160,14 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
     });
   }
 
-  function tokenClass(token: string, hideShips: boolean): string {
+  function tokenClass(token: string, hideShips: boolean, shipColor: 'blue' | 'red'): string {
     if (token === 'x') return 'bg-red-500/80 border-red-300';
     if (token === 'o') return 'bg-white/25 border-white/30';
-    if (token === 's' && !hideShips) return 'bg-[var(--purple)]/60 border-[var(--purple)]';
+    if (token === 's' && !hideShips) {
+      return shipColor === 'blue'
+        ? 'bg-sky-500/70 border-sky-300'
+        : 'bg-red-500/70 border-red-300';
+    }
     return 'bg-black/30 border-white/10';
   }
 
@@ -1182,7 +1186,11 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
                     <button
                       key={`own-${x}-${y}`}
                       type="button"
-                      className={`aspect-square rounded border ${tokenClass(token, false)} ${
+                      className={`aspect-square rounded border ${tokenClass(
+                        token,
+                        false,
+                        myColor ?? 'blue',
+                      )} ${
                         canPlaceShips
                           ? 'ring-1 ring-transparent transition hover:ring-[var(--orange-soft)]'
                           : ''
@@ -1210,7 +1218,11 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
                       <button
                         key={`target-${x}-${y}`}
                         type="button"
-                        className={`aspect-square rounded border ${tokenClass(displayToken, true)} ${
+                        className={`aspect-square rounded border ${tokenClass(
+                          displayToken,
+                          true,
+                          myColor === 'red' ? 'blue' : 'red',
+                        )} ${
                           clickable
                             ? 'ring-1 ring-transparent transition hover:ring-[var(--orange-soft)]'
                             : ''
