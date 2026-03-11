@@ -212,9 +212,9 @@ export default function HomePage() {
                             <span className="chip">Resume</span>
                           </div>
                           <div className="space-y-2">
-                            <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                            <div className="rf-progress-track">
                               <div
-                                className="h-full rounded-full bg-gradient-to-r from-[var(--accent-orange)] via-[var(--accent-pink)] to-[var(--accent-purple)]"
+                                className="rf-progress-fill"
                                 style={{ width: `${progressPct || 0}%` }}
                               />
                             </div>
