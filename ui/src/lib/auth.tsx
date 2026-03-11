@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson } from './api';
+import { clearBrowserToken, readBrowserToken } from './browserAuth';
 
 export type Me = {
   id: string;
@@ -81,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   const refreshMe = useCallback(async () => {
-    const token = localStorage.getItem('token');
+    const token = readBrowserToken();
     if (!token) {
       setMe(null);
       writeCachedMe(null);
@@ -92,21 +93,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setMe(data);
       writeCachedMe(data);
     } catch {
-      localStorage.removeItem('token');
+      clearBrowserToken();
       setMe(null);
       writeCachedMe(null);
     }
   }, []);
 
   const logout = useCallback(() => {
-    localStorage.removeItem('token');
+    clearBrowserToken();
     setMe(null);
     writeCachedMe(null);
     router.push('/login');
   }, [router]);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = readBrowserToken();
     if (!token) {
       setMe(null);
       writeCachedMe(null);

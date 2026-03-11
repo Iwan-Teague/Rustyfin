@@ -74,6 +74,12 @@ export default function HomePage() {
   }, [router]);
 
   useEffect(() => {
+    if (setupChecked && setupComplete && !authLoading && !me) {
+      router.replace('/login');
+    }
+  }, [authLoading, me, router, setupChecked, setupComplete]);
+
+  useEffect(() => {
     let cancelled = false;
     if (!setupComplete || authLoading || !me) {
       return () => {
@@ -163,15 +169,9 @@ export default function HomePage() {
 
   if (!me) {
     return (
-      <section className="panel animate-rise space-y-4 p-6 sm:p-8">
-        <h1 className="text-3xl font-semibold sm:text-4xl">Sign in to open your server home</h1>
-        <p className="text-sm muted sm:text-base">
-          Setup is complete. Sign in to see libraries, active channels, and watch parties.
-        </p>
-        <Link href="/login" className="btn-primary inline-flex px-5 py-2.5 text-sm">
-          Go to Login
-        </Link>
-      </section>
+      <div className="panel-soft animate-rise px-5 py-4">
+        <p className="text-sm muted">Redirecting to login...</p>
+      </div>
     );
   }
 

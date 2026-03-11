@@ -1,3 +1,5 @@
+import { clearBrowserToken, readBrowserToken } from './browserAuth';
+
 const API_BASE = '/api/v1';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -15,7 +17,7 @@ function resolveApiPath(path: string): string {
 }
 
 export async function apiFetch(path: string, options: RequestInit = {}) {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token = readBrowserToken();
   const headers = new Headers(options.headers || {});
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -32,7 +34,7 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
 
   if (res.status === 401) {
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('token');
+      clearBrowserToken();
       window.location.href = '/login';
     }
     throw new Error('Unauthorized');

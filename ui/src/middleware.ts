@@ -65,6 +65,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
   const isSetupRoute = pathname === '/setup' || pathname.startsWith('/setup/');
+  const isLoginRoute = pathname === '/login';
+  const authToken = request.cookies.get('rustfin_token')?.value;
 
   const setupCompleted = await getSetupCompleted(request);
   if (setupCompleted === null) {
@@ -76,6 +78,14 @@ export async function middleware(request: NextRequest) {
   }
 
   if (setupCompleted && isSetupRoute) {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  if (setupCompleted && !isSetupRoute && !isLoginRoute && !authToken) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  if (setupCompleted && isLoginRoute && authToken) {
     return NextResponse.redirect(new URL('/', request.url));
   }
 

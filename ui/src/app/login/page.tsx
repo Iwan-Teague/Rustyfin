@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { extractErrorMessage, parseResponseBody } from '@/lib/api';
 import { toClientError } from '@/lib/errors';
+import { clearBrowserToken, writeBrowserToken } from '@/lib/browserAuth';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -18,7 +19,7 @@ export default function LoginPage() {
     setError('');
 
     try {
-      localStorage.removeItem('token');
+      clearBrowserToken();
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -36,7 +37,7 @@ export default function LoginPage() {
         return;
       }
 
-      localStorage.setItem('token', (body as { token: string }).token);
+      writeBrowserToken((body as { token: string }).token);
       await refreshMe();
       router.push('/');
     } catch (err: unknown) {
