@@ -509,6 +509,18 @@ input[type="checkbox"]:disabled {
   box-shadow: 0 0 0 1px rgba(21, 25, 38, 0.35);
 }
 
+.rf-orange-slider {
+  --rf-slider-track-fill: linear-gradient(
+    90deg,
+    var(--orange) 0%,
+    var(--orange) 100%
+  );
+}
+
+.rf-orange-slider:focus-visible {
+  box-shadow: 0 0 0 3px rgba(255, 145, 77, 0.18);
+}
+
 .calendar-today-outline {
   position: relative;
 }

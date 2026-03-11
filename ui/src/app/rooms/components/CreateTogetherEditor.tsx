@@ -1826,39 +1826,45 @@ export default function CreateTogetherEditor({
             >
               Download PNG
             </button>
-            <button
-              type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
-              onClick={() => adjustCanvasZoom(0.85)}
-              aria-label="Zoom out"
-              title="Zoom out"
-            >
-              -
-            </button>
-            <span className="rounded-md border border-white/10 px-2 py-1 text-xs muted">
-              Zoom {Math.round(canvasViewport.scale * 100)}%
-            </span>
-            <input
-              type="range"
-              min={1}
-              max={200}
-              step={1}
-              value={Math.round(canvasViewport.scale * 100)}
-              onChange={handleCanvasZoomSliderChange}
-              className="h-2 w-32 accent-white"
-              aria-label="Canvas zoom"
-              title="Canvas zoom"
-            />
-            <span className="w-12 text-right text-xs muted">1-200%</span>
-            <button
-              type="button"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
-              onClick={() => adjustCanvasZoom(1.15)}
-              aria-label="Zoom in"
-              title="Zoom in"
-            >
-              +
-            </button>
+            <div className="inline-flex min-w-0 shrink-0 flex-nowrap items-center gap-2">
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
+                onClick={() => adjustCanvasZoom(0.85)}
+                aria-label="Zoom out"
+                title="Zoom out"
+              >
+                -
+              </button>
+              <span className="min-w-[6.5rem] shrink-0 rounded-md border border-white/10 px-2 py-1 text-center text-xs muted">
+                Zoom {Math.round(canvasViewport.scale * 100)}%
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={200}
+                step={1}
+                value={Math.round(canvasViewport.scale * 100)}
+                onChange={handleCanvasZoomSliderChange}
+                className="rf-gradient-slider rf-orange-slider h-2 w-32 shrink-0"
+                style={{
+                  ['--rf-slider-value' as string]: `${Math.round(canvasViewport.scale * 100) / 2}%`,
+                  ['--rf-slider-buffered' as string]: `${Math.round(canvasViewport.scale * 100) / 2}%`,
+                }}
+                aria-label="Canvas zoom"
+                title="Canvas zoom"
+              />
+              <span className="w-[4.5rem] shrink-0 text-right text-xs muted">1-200%</span>
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-transparent p-0 text-sm text-white transition hover:bg-white/8"
+                onClick={() => adjustCanvasZoom(1.15)}
+                aria-label="Zoom in"
+                title="Zoom in"
+              >
+                +
+              </button>
+            </div>
             <button
               type="button"
               className="btn-secondary px-3 py-2 text-sm"
