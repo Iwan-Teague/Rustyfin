@@ -57,6 +57,8 @@ type HostDirectoryBrowserState = {
   directories: HostDirectoryListEntry[];
 };
 
+type CreateWizardStepId = 'core' | 'gameplay' | 'resources' | 'review';
+
 type ServerSettingsFormState = {
   gamemode: 'survival' | 'creative' | 'adventure' | 'spectator';
   difficulty: 'peaceful' | 'easy' | 'normal' | 'hard';
@@ -95,6 +97,38 @@ const DEFAULT_FORM: CreateFormState = {
   autostart: false,
   eula_accepted: false,
 };
+
+const CREATE_WIZARD_STEPS: Array<{
+  id: CreateWizardStepId;
+  shortLabel: string;
+  title: string;
+  description: string;
+}> = [
+  {
+    id: 'core',
+    shortLabel: 'Step 1',
+    title: 'Server basics',
+    description: 'Choose the distribution, version, server identity, and connection port.',
+  },
+  {
+    id: 'gameplay',
+    shortLabel: 'Step 2',
+    title: 'Gameplay',
+    description: 'Set the world behavior players will see when they first join.',
+  },
+  {
+    id: 'resources',
+    shortLabel: 'Step 3',
+    title: 'Resources',
+    description: 'Size the server for memory and player capacity.',
+  },
+  {
+    id: 'review',
+    shortLabel: 'Step 4',
+    title: 'Rules and review',
+    description: 'Confirm server rules, review the setup, and accept the EULA.',
+  },
+];
 
 const TOGGLE_FIELDS: Array<{ key: keyof Pick<
   CreateFormState,
@@ -136,6 +170,58 @@ const SERVER_SETTINGS_TOGGLE_FIELDS: Array<{
   { key: 'autostart', label: 'Autostart on host boot' },
   { key: 'hardcore', label: 'Hardcore mode' },
 ];
+
+function createStepErrors(form: CreateFormState, step: CreateWizardStepId) {
+  switch (step) {
+    case 'core': {
+      const errors: string[] = [];
+      if (!form.display_name.trim()) {
+        errors.push('Display name is required.');
+      }
+      if (!form.minecraft_version.trim()) {
+        errors.push('Minecraft version is required.');
+      }
+      if (!form.world_name.trim()) {
+        errors.push('World name is required.');
+      }
+      const port = Number(form.listen_port);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        errors.push('Port must be a whole number between 1 and 65535.');
+      }
+      return errors;
+    }
+    case 'resources': {
+      const errors: string[] = [];
+      const minMemory = Number(form.min_memory_mb);
+      const maxMemory = Number(form.max_memory_mb);
+      const maxPlayers = Number(form.max_player_count);
+      if (!Number.isInteger(minMemory) || minMemory < 512) {
+        errors.push('Minimum RAM must be at least 512 MB.');
+      }
+      if (!Number.isInteger(maxMemory) || maxMemory < 512) {
+        errors.push('Maximum RAM must be at least 512 MB.');
+      }
+      if (
+        Number.isInteger(minMemory) &&
+        Number.isInteger(maxMemory) &&
+        minMemory >= 512 &&
+        maxMemory >= 512 &&
+        maxMemory < minMemory
+      ) {
+        errors.push('Maximum RAM must be greater than or equal to minimum RAM.');
+      }
+      if (!Number.isInteger(maxPlayers) || maxPlayers < 1) {
+        errors.push('Max players must be at least 1.');
+      }
+      return errors;
+    }
+    case 'review':
+      return form.eula_accepted ? [] : ['You must confirm the Minecraft EULA before creating the server.'];
+    case 'gameplay':
+    default:
+      return [];
+  }
+}
 
 function formatTs(ts?: number | null) {
   if (!ts) return 'Never';
@@ -308,6 +394,7 @@ export default function ServersPage() {
   const [deleteConfirmServer, setDeleteConfirmServer] = useState<MinecraftServer | null>(null);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<MinecraftRuntimeCapabilities | null>(null);
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
+  const [createStep, setCreateStep] = useState<CreateWizardStepId>('core');
   const [importSourcePath, setImportSourcePath] = useState('');
   const [hostBrowser, setHostBrowser] = useState<HostDirectoryBrowserState>({
     open: false,
@@ -692,6 +779,7 @@ export default function ServersPage() {
         minecraft_version: form.minecraft_version,
         server_distribution: form.server_distribution,
       });
+      setCreateStep('core');
       await refreshServers(created.id);
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to create Minecraft server'));
@@ -720,6 +808,28 @@ export default function ServersPage() {
         server.install_mode === 'managed' &&
         (server.observed_state === 'draft' || server.observed_state === 'unprovisioned'),
     ) ?? null;
+
+  const createStepIndex = CREATE_WIZARD_STEPS.findIndex((step) => step.id === createStep);
+  const activeCreateStep = CREATE_WIZARD_STEPS[createStepIndex] ?? CREATE_WIZARD_STEPS[0];
+  const activeCreateStepErrors = createStepErrors(form, createStep);
+  const canAdvanceCreateStep = activeCreateStepErrors.length === 0;
+
+  function goToNextCreateStep() {
+    if (!canAdvanceCreateStep) {
+      return;
+    }
+    const nextStep = CREATE_WIZARD_STEPS[createStepIndex + 1];
+    if (nextStep) {
+      setCreateStep(nextStep.id);
+    }
+  }
+
+  function goToPreviousCreateStep() {
+    const previousStep = CREATE_WIZARD_STEPS[createStepIndex - 1];
+    if (previousStep) {
+      setCreateStep(previousStep.id);
+    }
+  }
 
   if (authLoading || !me) {
     return (
@@ -1103,167 +1213,313 @@ export default function ServersPage() {
               </div>
             ) : (
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Display name</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={form.display_name}
-                    onChange={(event) => updateForm('display_name', event.target.value)}
-                    placeholder="Example: Family SMP"
-                  />
-                </label>
-
-                <label className="space-y-2">
-                  <span className="text-sm font-medium text-white">Description</span>
-                  <textarea
-                    className="input min-h-[5.5rem] rounded-xl px-4 py-3"
-                    value={form.description}
-                    onChange={(event) => updateForm('description', event.target.value)}
-                    placeholder="Optional notes about this server."
-                  />
-                </label>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Distribution</span>
-                    <select
-                      className="select rounded-xl px-4 py-3"
-                      value={form.server_distribution}
-                      onChange={(event) =>
-                        updateForm('server_distribution', event.target.value as CreateFormState['server_distribution'])
-                      }
-                    >
-                      <option value="paper">Paper</option>
-                      <option value="vanilla">Vanilla</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Minecraft version</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      value={form.minecraft_version}
-                      onChange={(event) => updateForm('minecraft_version', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">World name</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      value={form.world_name}
-                      onChange={(event) => updateForm('world_name', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Port</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      type="number"
-                      value={form.listen_port}
-                      onChange={(event) => updateForm('listen_port', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Gamemode</span>
-                    <select
-                      className="select rounded-xl px-4 py-3"
-                      value={form.gamemode}
-                      onChange={(event) =>
-                        updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
-                      }
-                    >
-                      <option value="survival">Survival</option>
-                      <option value="creative">Creative</option>
-                      <option value="adventure">Adventure</option>
-                      <option value="spectator">Spectator</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Difficulty</span>
-                    <select
-                      className="select rounded-xl px-4 py-3"
-                      value={form.difficulty}
-                      onChange={(event) =>
-                        updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
-                      }
-                    >
-                      <option value="peaceful">Peaceful</option>
-                      <option value="easy">Easy</option>
-                      <option value="normal">Normal</option>
-                      <option value="hard">Hard</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Min memory (MB)</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      type="number"
-                      value={form.min_memory_mb}
-                      onChange={(event) => updateForm('min_memory_mb', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Max memory (MB)</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      type="number"
-                      value={form.max_memory_mb}
-                      onChange={(event) => updateForm('max_memory_mb', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium text-white">Max players</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      type="number"
-                      value={form.max_player_count}
-                      onChange={(event) => updateForm('max_player_count', event.target.value)}
-                    />
-                  </label>
-                  <label className="space-y-2 sm:col-span-2">
-                    <span className="text-sm font-medium text-white">Message of the day</span>
-                    <input
-                      className="input rounded-xl px-4 py-3"
-                      value={form.motd}
-                      onChange={(event) => updateForm('motd', event.target.value)}
-                      placeholder="Defaults to the display name if left blank."
-                    />
-                  </label>
+                <div className="grid gap-2 sm:grid-cols-4">
+                  {CREATE_WIZARD_STEPS.map((step, index) => {
+                    const isActive = step.id === createStep;
+                    const isComplete = index < createStepIndex && createStepErrors(form, step.id).length === 0;
+                    return (
+                      <div
+                        key={step.id}
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${
+                          isActive
+                            ? 'border-[var(--orange-soft)] bg-[var(--surface-elevated)]'
+                            : isComplete
+                              ? 'border-emerald-400/30 bg-emerald-500/10'
+                              : 'border-[var(--border-soft)] bg-[var(--surface-soft)]'
+                        }`}
+                      >
+                        <div className="text-[11px] uppercase tracking-[0.28em] muted">{step.shortLabel}</div>
+                        <div className="mt-1 text-sm font-semibold text-white">{step.title}</div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {TOGGLE_FIELDS.map(({ key, label }) => (
-                    <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={form[key]}
-                        onChange={(event) => updateForm(key, event.target.checked)}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                  <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={form.eula_accepted}
-                      onChange={(event) => updateForm('eula_accepted', event.target.checked)}
-                    />
-                    <span>I confirm the Minecraft EULA has been accepted.</span>
-                  </label>
-                </div>
+                <div className="panel-soft flex flex-col gap-4 rounded-2xl px-4 py-4 sm:px-5">
+                  <div>
+                    <div className="text-sm font-semibold text-white">{activeCreateStep.title}</div>
+                    <p className="mt-1 text-sm muted">{activeCreateStep.description}</p>
+                  </div>
 
-                <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                  Draft records appear in known servers immediately. Start auto-provisions managed
-                  servers, and the right column can import an existing host path into the newest draft.
-                </div>
+                  {activeCreateStepErrors.length > 0 ? (
+                    <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                      <ul className="list-disc space-y-1 pl-5">
+                        {activeCreateStepErrors.map((entry) => (
+                          <li key={entry}>{entry}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
 
-                <button
-                  type="button"
-                  className="btn-primary px-5 py-3 text-sm disabled:opacity-60"
-                  disabled={creating}
-                  onClick={() => void handleCreateServer()}
-                >
-                  {creating ? 'Creating…' : 'Create Draft Server'}
-                </button>
+                  {createStep === 'core' ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Distribution</span>
+                        <select
+                          className="select rounded-xl px-4 py-3"
+                          value={form.server_distribution}
+                          onChange={(event) =>
+                            updateForm(
+                              'server_distribution',
+                              event.target.value as CreateFormState['server_distribution'],
+                            )
+                          }
+                        >
+                          <option value="paper">Paper</option>
+                          <option value="vanilla">Vanilla</option>
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Minecraft version</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          value={form.minecraft_version}
+                          onChange={(event) => updateForm('minecraft_version', event.target.value)}
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Port</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          type="number"
+                          value={form.listen_port}
+                          onChange={(event) => updateForm('listen_port', event.target.value)}
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Display name</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          value={form.display_name}
+                          onChange={(event) => updateForm('display_name', event.target.value)}
+                          placeholder="Example: Family SMP"
+                        />
+                      </label>
+                      <label className="space-y-2 sm:col-span-2">
+                        <span className="text-sm font-medium text-white">World name</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          value={form.world_name}
+                          onChange={(event) => updateForm('world_name', event.target.value)}
+                          placeholder="Example: family-world"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {createStep === 'gameplay' ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Gamemode</span>
+                        <select
+                          className="select rounded-xl px-4 py-3"
+                          value={form.gamemode}
+                          onChange={(event) =>
+                            updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
+                          }
+                        >
+                          <option value="survival">Survival</option>
+                          <option value="creative">Creative</option>
+                          <option value="adventure">Adventure</option>
+                          <option value="spectator">Spectator</option>
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Difficulty</span>
+                        <select
+                          className="select rounded-xl px-4 py-3"
+                          value={form.difficulty}
+                          onChange={(event) =>
+                            updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
+                          }
+                        >
+                          <option value="peaceful">Peaceful</option>
+                          <option value="easy">Easy</option>
+                          <option value="normal">Normal</option>
+                          <option value="hard">Hard</option>
+                        </select>
+                      </label>
+                      <label className="space-y-2 sm:col-span-2">
+                        <span className="text-sm font-medium text-white">Description</span>
+                        <textarea
+                          className="input min-h-[5.5rem] rounded-xl px-4 py-3"
+                          value={form.description}
+                          onChange={(event) => updateForm('description', event.target.value)}
+                          placeholder="Optional notes about this server."
+                        />
+                      </label>
+                      <label className="space-y-2 sm:col-span-2">
+                        <span className="text-sm font-medium text-white">Message of the day</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          value={form.motd}
+                          onChange={(event) => updateForm('motd', event.target.value)}
+                          placeholder="Defaults to the display name if left blank."
+                        />
+                      </label>
+                      <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm sm:col-span-2">
+                        <input
+                          type="checkbox"
+                          checked={form.hardcore}
+                          onChange={(event) => updateForm('hardcore', event.target.checked)}
+                        />
+                        <span>Hardcore mode</span>
+                      </label>
+                    </div>
+                  ) : null}
+
+                  {createStep === 'resources' ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Min memory (MB)</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          type="number"
+                          value={form.min_memory_mb}
+                          onChange={(event) => updateForm('min_memory_mb', event.target.value)}
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm font-medium text-white">Max memory (MB)</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          type="number"
+                          value={form.max_memory_mb}
+                          onChange={(event) => updateForm('max_memory_mb', event.target.value)}
+                        />
+                      </label>
+                      <label className="space-y-2 sm:col-span-2">
+                        <span className="text-sm font-medium text-white">Max players</span>
+                        <input
+                          className="input rounded-xl px-4 py-3"
+                          type="number"
+                          value={form.max_player_count}
+                          onChange={(event) => updateForm('max_player_count', event.target.value)}
+                        />
+                      </label>
+                      <div className="panel-soft rounded-xl px-4 py-3 text-sm muted sm:col-span-2">
+                        Rustyfin will use these limits to generate the managed server runtime on the Debian host.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {createStep === 'review' ? (
+                    <div className="flex flex-col gap-4">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="panel rounded-2xl p-4">
+                          <div className="text-xs uppercase tracking-[0.24em] muted">Server</div>
+                          <dl className="mt-3 space-y-2 text-sm">
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Name</dt>
+                              <dd className="text-right text-white">{form.display_name || 'Not set'}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Distribution</dt>
+                              <dd className="text-right text-white">{titleCase(form.server_distribution)}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Version</dt>
+                              <dd className="text-right text-white">{form.minecraft_version || 'Not set'}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">World</dt>
+                              <dd className="text-right text-white">{form.world_name || 'Not set'}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Port</dt>
+                              <dd className="text-right text-white">{form.listen_port || 'Not set'}</dd>
+                            </div>
+                          </dl>
+                        </div>
+
+                        <div className="panel rounded-2xl p-4">
+                          <div className="text-xs uppercase tracking-[0.24em] muted">Gameplay and resources</div>
+                          <dl className="mt-3 space-y-2 text-sm">
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Gamemode</dt>
+                              <dd className="text-right text-white">{titleCase(form.gamemode)}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Difficulty</dt>
+                              <dd className="text-right text-white">{titleCase(form.difficulty)}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">RAM</dt>
+                              <dd className="text-right text-white">
+                                {form.min_memory_mb} MB to {form.max_memory_mb} MB
+                              </dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">Max players</dt>
+                              <dd className="text-right text-white">{form.max_player_count}</dd>
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                              <dt className="muted">MOTD</dt>
+                              <dd className="text-right text-white">{form.motd || 'Defaults to display name'}</dd>
+                            </div>
+                          </dl>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {TOGGLE_FIELDS.map(({ key, label }) => (
+                          <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={form[key]}
+                              onChange={(event) => updateForm(key, event.target.checked)}
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                        <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm sm:col-span-2">
+                          <input
+                            type="checkbox"
+                            checked={form.eula_accepted}
+                            onChange={(event) => updateForm('eula_accepted', event.target.checked)}
+                          />
+                          <span>I confirm the Minecraft EULA has been accepted.</span>
+                        </label>
+                      </div>
+
+                      <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                        Creating the server adds a draft record to known servers immediately. Clicking Start provisions and launches the managed server automatically.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-2">
+                    <button
+                      type="button"
+                      className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                      disabled={createStepIndex === 0}
+                      onClick={goToPreviousCreateStep}
+                    >
+                      Back
+                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {createStep !== 'review' ? (
+                        <button
+                          type="button"
+                          className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                          disabled={!canAdvanceCreateStep}
+                          onClick={goToNextCreateStep}
+                        >
+                          Continue
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                          disabled={creating || activeCreateStepErrors.length > 0}
+                          onClick={() => void handleCreateServer()}
+                        >
+                          {creating ? 'Creating…' : 'Create Draft Server'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
         </section>
