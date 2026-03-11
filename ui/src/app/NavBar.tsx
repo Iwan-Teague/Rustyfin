@@ -41,6 +41,22 @@ export default function NavBar() {
     return null;
   }
 
+  if (!loading && !me) {
+    return (
+      <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
+        <div className="relative flex min-h-10 items-center justify-center">
+          <Link
+            href="/"
+            className="rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+            aria-label="Go to Rustyfin home"
+          >
+            Rustyfin
+          </Link>
+        </div>
+      </nav>
+    );
+  }
+
   const navLinks = [
     { href: '/channels', label: 'Channels' },
     { href: '/rooms', label: 'Rooms' },
