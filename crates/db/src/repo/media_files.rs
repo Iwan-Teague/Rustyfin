@@ -47,3 +47,18 @@ pub async fn get_media_file(
         updated_ts: r.8,
     }))
 }
+
+pub async fn update_media_file_duration(
+    pool: &DbPool,
+    file_id: &str,
+    duration_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query("UPDATE media_file SET duration_ms = $1, updated_ts = $2 WHERE id = $3")
+        .bind(duration_ms)
+        .bind(now)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

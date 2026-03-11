@@ -2422,27 +2422,12 @@ async fn get_item_playback(
             ApiError::Conflict("No playable file mapped to this item; rescan library.".into())
         })?;
 
-    let mut duration_ms = item.duration_ms.filter(|value| *value > 0);
-    if let Some(file) = rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-    {
-        let media_path = std::path::Path::new(&file.path);
-        if media_path.exists() && media_path.is_file() {
-            if let Ok(info) =
-                rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path)
-                    .await
-            {
-                let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
-                if probed_duration_ms > 0 {
-                    duration_ms = Some(probed_duration_ms);
-                }
-            }
-        }
-        if duration_ms.is_none() {
-            duration_ms = file.duration_ms.filter(|value| *value > 0);
-        }
-    }
+    let duration_ms = resolve_and_persist_media_duration_ms(
+        &state,
+        &file_id,
+        item.duration_ms.filter(|value| *value > 0),
+    )
+    .await;
 
     let token = issue_stream_token(
         &auth.user_id,
@@ -2461,6 +2446,49 @@ async fn get_item_playback(
         media_info_url: format!("/api/v1/playback/info/{file_id}"),
         duration_ms,
     }))
+}
+
+async fn resolve_and_persist_media_duration_ms(
+    state: &AppState,
+    file_id: &str,
+    preferred_duration_ms: Option<i64>,
+) -> Option<i64> {
+    let mut duration_ms = preferred_duration_ms.filter(|value| *value > 0);
+    let Ok(Some(file)) = rustfin_db::repo::media_files::get_media_file(&state.db, file_id).await
+    else {
+        return duration_ms;
+    };
+
+    let mut file_duration_ms = file.duration_ms.filter(|value| *value > 0);
+    let media_path = std::path::Path::new(&file.path);
+    if media_path.exists()
+        && media_path.is_file()
+        && (duration_ms.is_none() || file_duration_ms.is_none())
+    {
+        if let Ok(info) =
+            rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_path).await
+        {
+            let probed_duration_ms = (info.duration_secs * 1000.0).round() as i64;
+            if probed_duration_ms > 0 {
+                duration_ms = Some(probed_duration_ms);
+                if file_duration_ms != Some(probed_duration_ms) {
+                    let _ = rustfin_db::repo::media_files::update_media_file_duration(
+                        &state.db,
+                        file_id,
+                        probed_duration_ms,
+                    )
+                    .await;
+                    file_duration_ms = Some(probed_duration_ms);
+                }
+            }
+        }
+    }
+
+    if duration_ms.is_none() {
+        duration_ms = file_duration_ms;
+    }
+
+    duration_ms
 }
 
 async fn get_item_children(
@@ -2669,30 +2697,41 @@ async fn list_continue_watching(
         .map(|settings| (settings.library_id, settings.show_images))
         .collect();
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| ContinueWatchingResponse {
-                id: row.item_id.clone(),
-                library_id: row.library_id.clone(),
-                kind: row.kind,
-                title: row.title,
-                year: row.year,
-                poster_url: if row.poster_url.is_some()
-                    && show_images_by_library
-                        .get(&row.library_id)
-                        .copied()
-                        .unwrap_or(true)
-                {
-                    item_image_url(&row.item_id, "poster", true)
-                } else {
-                    None
-                },
-                progress_ms: row.progress_ms,
-                duration_ms: row.duration_ms,
-                last_played_ts: row.last_played_ts,
-            })
-            .collect(),
-    ))
+    let mut response_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let duration_ms = if row.duration_ms.is_some() {
+            row.duration_ms
+        } else if let Ok(Some(file_id)) =
+            rustfin_db::repo::items::get_item_file_id(&state.db, &row.item_id).await
+        {
+            resolve_and_persist_media_duration_ms(&state, &file_id, None).await
+        } else {
+            None
+        };
+
+        response_rows.push(ContinueWatchingResponse {
+            id: row.item_id.clone(),
+            library_id: row.library_id.clone(),
+            kind: row.kind,
+            title: row.title,
+            year: row.year,
+            poster_url: if row.poster_url.is_some()
+                && show_images_by_library
+                    .get(&row.library_id)
+                    .copied()
+                    .unwrap_or(true)
+            {
+                item_image_url(&row.item_id, "poster", true)
+            } else {
+                None
+            },
+            progress_ms: row.progress_ms,
+            duration_ms,
+            last_played_ts: row.last_played_ts,
+        });
+    }
+
+    Ok(Json(response_rows))
 }
 
 // ---------------------------------------------------------------------------
