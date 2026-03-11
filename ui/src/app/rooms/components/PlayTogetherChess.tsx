@@ -59,6 +59,14 @@ const AI_DIFFICULTY_OPTIONS: Array<{ value: AiDifficulty; label: string }> = [
   { value: 'hard', label: 'Hard' },
 ];
 
+const BATTLESHIP_FLEET = [
+  { id: 1, name: 'Carrier', size: 5 },
+  { id: 2, name: 'Battleship', size: 4 },
+  { id: 3, name: 'Cruiser', size: 3 },
+  { id: 4, name: 'Submarine', size: 3 },
+  { id: 5, name: 'Destroyer', size: 2 },
+] as const;
+
 function parseFenBoard(fen: string): Map<string, string> {
   const board = new Map<string, string>();
   const placement = fen.split(' ')[0] || '';
@@ -157,6 +165,7 @@ type PendingPromotion = {
 type SidePanelTab = 'local' | 'ai';
 type AiDifficulty = 'easy' | 'medium' | 'hard';
 type HumanColorPreference = 'white' | 'black' | 'random';
+type BattleshipOrientation = 'horizontal' | 'vertical';
 
 type ChessPanelProps = {
   chess: WsPlayStateMessage['chess'];
@@ -998,6 +1007,8 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
   const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('medium');
   const [humanColorPreference, setHumanColorPreference] =
     useState<BattleshipHumanColorPreference>('blue');
+  const [selectedShipId, setSelectedShipId] = useState<number>(1);
+  const [shipOrientation, setShipOrientation] = useState<BattleshipOrientation>('horizontal');
   const blueUserId = battleship.blue_user_id ?? null;
   const redUserId = battleship.red_user_id ?? null;
   const aiEnabled = battleship.ai_enabled === true;
@@ -1033,9 +1044,18 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
 
   const ownRows = myColor === 'red' ? redRows : blueRows;
   const opponentRows = myColor === 'red' ? blueRows : redRows;
+  const placedShipIds = useMemo(
+    () =>
+      (myColor === 'red'
+        ? battleship.red_ship_ids_placed ?? []
+        : battleship.blue_ship_ids_placed ?? []
+      ).map((value) => Number(value)).filter((value) => Number.isInteger(value)),
+    [battleship.blue_ship_ids_placed, battleship.red_ship_ids_placed, myColor],
+  );
 
   const ownReady = myColor === 'red' ? battleship.red_ready === true : battleship.blue_ready === true;
   const canFire = canControl && !!myColor && isActive && turnColor === myColor;
+  const canPlaceShips = canControl && !!myColor && isSetup;
 
   const hasBluePlayer = !!blueUserId;
   const hasRedPlayer = !!redUserId;
@@ -1067,6 +1087,15 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
       setHumanColorPreference(humanColorActive);
     }
   }, [aiDifficultyValue, humanColorActive]);
+
+  useEffect(() => {
+    if (placedShipIds.includes(selectedShipId)) {
+      const nextUnplacedShip = BATTLESHIP_FLEET.find((ship) => !placedShipIds.includes(ship.id));
+      if (nextUnplacedShip) {
+        setSelectedShipId(nextUnplacedShip.id);
+      }
+    }
+  }, [placedShipIds, selectedShipId]);
 
   function handleAssignPlayers(nextBlue: string | null, nextRed: string | null) {
     if (!canControl) return;
@@ -1120,6 +1149,17 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
     sendWs({ type: 'battleship_fire', x, y });
   }
 
+  function handlePlaceShip(x: number, y: number) {
+    if (!canPlaceShips) return;
+    sendWs({
+      type: 'battleship_place_ship',
+      ship_id: selectedShipId,
+      x,
+      y,
+      orientation: shipOrientation,
+    });
+  }
+
   function tokenClass(token: string, hideShips: boolean): string {
     if (token === 'x') return 'bg-red-500/80 border-red-300';
     if (token === 'o') return 'bg-white/25 border-white/30';
@@ -1139,9 +1179,16 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
               <div className="grid grid-cols-10 gap-1 rounded-lg border border-white/10 bg-black/20 p-2">
                 {(myColor ? ownRows : blueRows).flatMap((row, y) =>
                   row.map((token, x) => (
-                    <div
+                    <button
                       key={`own-${x}-${y}`}
-                      className={`aspect-square rounded border ${tokenClass(token, false)}`}
+                      type="button"
+                      className={`aspect-square rounded border ${tokenClass(token, false)} ${
+                        canPlaceShips
+                          ? 'ring-1 ring-transparent transition hover:ring-[var(--orange-soft)]'
+                          : ''
+                      }`}
+                      onClick={() => handlePlaceShip(x, y)}
+                      disabled={!canPlaceShips}
                       title={`${x + 1},${y + 1}`}
                     />
                   )),
@@ -1326,6 +1373,47 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
           Auto Place Ships
         </button>
 
+        <div className="space-y-2 rounded-lg border border-white/10 bg-black/20 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs uppercase tracking-wide muted">Manual Fleet Placement</p>
+            <button
+              type="button"
+              className="btn-secondary px-3 py-1.5 text-xs"
+              onClick={() =>
+                setShipOrientation((current) =>
+                  current === 'horizontal' ? 'vertical' : 'horizontal',
+                )
+              }
+              disabled={!canPlaceShips}
+            >
+              {shipOrientation === 'horizontal' ? 'Horizontal' : 'Vertical'}
+            </button>
+          </div>
+          <div className="grid gap-2">
+            {BATTLESHIP_FLEET.map((ship) => {
+              const placed = placedShipIds.includes(ship.id);
+              const selected = selectedShipId === ship.id;
+              return (
+                <button
+                  key={ship.id}
+                  type="button"
+                  className={`flex items-center justify-between rounded-lg px-3 py-2 text-sm ${
+                    selected ? 'btn-primary' : 'btn-secondary'
+                  } ${placed ? 'opacity-100' : ''}`}
+                  onClick={() => setSelectedShipId(ship.id)}
+                  disabled={!canPlaceShips}
+                >
+                  <span>{ship.name}</span>
+                  <span className="text-xs">{placed ? 'Placed' : `${ship.size} cells`}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs muted">
+            Select a ship, choose its orientation, then click your fleet grid to place or move it.
+          </p>
+        </div>
+
         <button
           type="button"
           className="btn-primary w-full px-3 py-2 text-sm disabled:opacity-45"
@@ -1340,8 +1428,12 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
           <p>Red: {redSeatName} {battleship.red_ready ? '(Ready)' : ''}</p>
           <p>Turn owner: {turnOwnerName}</p>
           {aiEnabled && aiColor && <p>AI side: {aiColor === 'blue' ? 'Blue' : 'Red'}</p>}
-          <p>Blue cells left: {battleship.remaining_ship_cells_blue}</p>
-          <p>Red cells left: {battleship.remaining_ship_cells_red}</p>
+          <p>
+            Blue {isSetup ? 'ship cells placed' : 'cells left'}: {battleship.remaining_ship_cells_blue}
+          </p>
+          <p>
+            Red {isSetup ? 'ship cells placed' : 'cells left'}: {battleship.remaining_ship_cells_red}
+          </p>
         </div>
 
         <button

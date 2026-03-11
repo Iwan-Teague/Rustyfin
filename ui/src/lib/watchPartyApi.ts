@@ -389,6 +389,8 @@ export type WsBattleshipState = {
   ai_color?: 'blue' | 'red' | string | null;
   blue_ready?: boolean;
   red_ready?: boolean;
+  blue_ship_ids_placed?: number[];
+  red_ship_ids_placed?: number[];
   blue_grid_rows: string[];
   red_grid_rows: string[];
   remaining_ship_cells_blue: number;

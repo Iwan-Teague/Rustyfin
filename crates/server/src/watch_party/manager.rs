@@ -1550,6 +1550,105 @@ impl RoomRuntime {
         Ok(Some(snapshot))
     }
 
+    pub async fn battleship_place_ship(
+        &self,
+        actor_user_id: &str,
+        ship_id: u8,
+        x: u8,
+        y: u8,
+        orientation: &str,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+        if guard.battleship.phase != "setup" {
+            return Err("battleship board can only be configured during setup".to_string());
+        }
+
+        let actor_color = battleship_color_for_user(&guard.battleship, actor_user_id)
+            .ok_or_else(|| "only assigned players can place battleship ships".to_string())?;
+        let ship_size = battleship_ship_size(ship_id)
+            .ok_or_else(|| "invalid battleship ship selection".to_string())?;
+        let horizontal = match orientation.trim().to_ascii_lowercase().as_str() {
+            "horizontal" | "h" => true,
+            "vertical" | "v" => false,
+            _ => return Err("invalid battleship ship orientation".to_string()),
+        };
+        let x = x as usize;
+        let y = y as usize;
+        if x >= BATTLESHIP_BOARD_SIZE || y >= BATTLESHIP_BOARD_SIZE {
+            return Err("battleship ship placement is outside the board".to_string());
+        }
+
+        let max_x = if horizontal {
+            BATTLESHIP_BOARD_SIZE - ship_size
+        } else {
+            BATTLESHIP_BOARD_SIZE - 1
+        };
+        let max_y = if horizontal {
+            BATTLESHIP_BOARD_SIZE - 1
+        } else {
+            BATTLESHIP_BOARD_SIZE - ship_size
+        };
+        if x > max_x || y > max_y {
+            return Err("selected ship does not fit at that board position".to_string());
+        }
+
+        let ships = if actor_color == "blue" {
+            &mut guard.battleship.blue_ships
+        } else {
+            &mut guard.battleship.red_ships
+        };
+
+        for cell in ships.iter_mut() {
+            if *cell == ship_id {
+                *cell = 0;
+            }
+        }
+
+        for offset in 0..ship_size {
+            let px = if horizontal { x + offset } else { x };
+            let py = if horizontal { y } else { y + offset };
+            let idx = py * BATTLESHIP_BOARD_SIZE + px;
+            if ships[idx] != 0 {
+                return Err("ships cannot overlap in battleship".to_string());
+            }
+        }
+
+        for offset in 0..ship_size {
+            let px = if horizontal { x + offset } else { x };
+            let py = if horizontal { y } else { y + offset };
+            let idx = py * BATTLESHIP_BOARD_SIZE + px;
+            ships[idx] = ship_id;
+        }
+
+        let placed_cells = count_ship_cells(ships);
+        if actor_color == "blue" {
+            guard.battleship.blue_ready = false;
+            guard.battleship.remaining_ship_cells_blue = placed_cells;
+        } else {
+            guard.battleship.red_ready = false;
+            guard.battleship.remaining_ship_cells_red = placed_cells;
+        }
+        guard.battleship.phase = "setup".to_string();
+        guard.battleship.status = "setup".to_string();
+        guard.battleship.last_shot = None;
+        clear_battleship_reset_requests(&mut guard.battleship);
+        guard.battleship.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
     pub async fn battleship_set_ready(
         &self,
         actor_user_id: &str,
@@ -2929,6 +3028,20 @@ fn count_ship_cells(ships: &[u8; BATTLESHIP_BOARD_CELLS]) -> u16 {
     ships.iter().filter(|cell| **cell != 0).count() as u16
 }
 
+pub(crate) fn placed_battleship_ship_ids(ships: &[u8; BATTLESHIP_BOARD_CELLS]) -> Vec<u8> {
+    let mut ids: Vec<u8> = (1..=(BATTLESHIP_SHIP_SIZES.len() as u8))
+        .filter(|ship_id| ships.iter().any(|cell| *cell == *ship_id))
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn battleship_ship_size(ship_id: u8) -> Option<usize> {
+    BATTLESHIP_SHIP_SIZES
+        .get(ship_id.saturating_sub(1) as usize)
+        .map(|size| *size as usize)
+}
+
 fn generate_battleship_ships(seed: u64) -> Result<[u8; BATTLESHIP_BOARD_CELLS], String> {
     let mut rng = StdRng::seed_from_u64(seed);
 
@@ -3590,6 +3703,37 @@ mod tests {
             Some("user-blue")
         );
         assert_eq!(snapshot.battleship.red_user_id, None);
+    }
+
+    #[tokio::test]
+    async fn battleship_manual_ship_placement_updates_board() {
+        let runtime = RoomRuntime::new_play("room-battleship-manual".to_string());
+        runtime
+            .set_play_game("battleship".to_string())
+            .await
+            .expect("activate battleship");
+        runtime
+            .set_battleship_players(
+                "admin",
+                Some("user-blue".to_string()),
+                Some("user-red".to_string()),
+            )
+            .await
+            .expect("assign players");
+
+        let placed = runtime
+            .battleship_place_ship("user-blue", 1, 0, 0, "horizontal")
+            .await
+            .expect("place carrier")
+            .expect("play state");
+
+        assert_eq!(placed.battleship.phase, "setup");
+        assert!(!placed.battleship.blue_ready);
+        assert_eq!(placed.battleship.remaining_ship_cells_blue, 5);
+        assert_eq!(count_ship_cells(&placed.battleship.blue_ships), 5);
+        assert_eq!(placed.battleship.blue_ships[0], 1);
+        assert_eq!(placed.battleship.blue_ships[4], 1);
+        assert_eq!(placed.battleship.blue_ships[5], 0);
     }
 
     #[tokio::test]

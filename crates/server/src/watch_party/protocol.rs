@@ -141,6 +141,12 @@ pub enum ClientMessage {
         #[serde(default)]
         human_color: Option<String>,
     },
+    BattleshipPlaceShip {
+        ship_id: u8,
+        x: u8,
+        y: u8,
+        orientation: String,
+    },
     BattleshipAutoPlace,
     BattleshipSetReady {
         ready: bool,
@@ -270,6 +276,8 @@ pub struct BattleshipState {
     pub ai_color: Option<String>,
     pub blue_ready: bool,
     pub red_ready: bool,
+    pub blue_ship_ids_placed: Vec<u8>,
+    pub red_ship_ids_placed: Vec<u8>,
     pub blue_grid_rows: Vec<String>,
     pub red_grid_rows: Vec<String>,
     pub remaining_ship_cells_blue: u16,
