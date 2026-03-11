@@ -156,112 +156,114 @@ export default function HomePage() {
         </div>
       )}
 
-      <section id="continue-watching" className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
-          <Link href="/libraries#continue-watching" className="text-sm text-[var(--orange-soft)]">
-            View all
-          </Link>
-        </div>
-        {continueWatching.length === 0 ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">
-            Start a movie or episode from a library and Rustyfin will keep your place here.
+      <div className="grid grid-cols-1 gap-7 xl:grid-cols-2 xl:items-start">
+        <section id="continue-watching" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
+            <Link href="/libraries#continue-watching" className="text-sm text-[var(--orange-soft)]">
+              View all
+            </Link>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {continueWatching.slice(0, 3).map((item) => {
-              const totalMs = item.duration_ms && item.duration_ms > 0 ? item.duration_ms : null;
-              const progressPct = totalMs
-                ? Math.max(0, Math.min(100, (item.progress_ms / totalMs) * 100))
-                : 0;
-              const progressLabel = totalMs
-                ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
-                : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
+          {continueWatching.length === 0 ? (
+            <div className="panel-soft px-4 py-3 text-sm muted">
+              Start a movie or episode from a library and Rustyfin will keep your place here.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4">
+              {continueWatching.slice(0, 3).map((item) => {
+                const totalMs = item.duration_ms && item.duration_ms > 0 ? item.duration_ms : null;
+                const progressPct = totalMs
+                  ? Math.max(0, Math.min(100, (item.progress_ms / totalMs) * 100))
+                  : 0;
+                const progressLabel = totalMs
+                  ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
+                  : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
 
-              return (
-                <Link
-                  key={`home-continue-${item.id}`}
-                  href={`/player/${item.id}`}
-                  className="tile tile-hover block overflow-hidden"
-                >
-                  <div className="flex min-h-[9rem] gap-4 p-4">
-                    <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
-                      {item.poster_url ? (
-                        <img
-                          src={item.poster_url}
-                          alt={item.title}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
-                          {item.kind.toUpperCase()}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col justify-between">
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-base font-semibold">{item.title}</p>
-                            <p className="text-xs uppercase tracking-[0.24em] text-white/40">
-                              {item.kind === 'episode' ? 'Episode' : 'Movie'}
-                              {item.year ? ` · ${item.year}` : ''}
-                            </p>
+                return (
+                  <Link
+                    key={`home-continue-${item.id}`}
+                    href={`/player/${item.id}`}
+                    className="tile tile-hover block overflow-hidden"
+                  >
+                    <div className="flex min-h-[9rem] gap-4 p-4">
+                      <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
+                        {item.poster_url ? (
+                          <img
+                            src={item.poster_url}
+                            alt={item.title}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
+                            {item.kind.toUpperCase()}
                           </div>
-                          <span className="chip">Resume</span>
-                        </div>
+                        )}
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col justify-between">
                         <div className="space-y-2">
-                          <div className="h-2 overflow-hidden rounded-full bg-white/10">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-r from-[var(--accent-orange)] via-[var(--accent-pink)] to-[var(--accent-purple)]"
-                              style={{ width: `${progressPct || 0}%` }}
-                            />
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-base font-semibold">{item.title}</p>
+                              <p className="text-xs uppercase tracking-[0.24em] text-white/40">
+                                {item.kind === 'episode' ? 'Episode' : 'Movie'}
+                                {item.year ? ` · ${item.year}` : ''}
+                              </p>
+                            </div>
+                            <span className="chip">Resume</span>
                           </div>
-                          <p className="text-xs muted">{progressLabel}</p>
+                          <div className="space-y-2">
+                            <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-[var(--accent-orange)] via-[var(--accent-pink)] to-[var(--accent-purple)]"
+                                style={{ width: `${progressPct || 0}%` }}
+                              />
+                            </div>
+                            <p className="text-xs muted">{progressLabel}</p>
+                          </div>
                         </div>
                       </div>
                     </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
+            <Link href="/rooms" className="text-sm text-[var(--orange-soft)]">
+              View all
+            </Link>
+          </div>
+          {loadingData ? (
+            <div className="panel-soft px-4 py-3 text-sm muted">Loading open rooms...</div>
+          ) : publicRooms.length === 0 ? (
+            <div className="panel-soft px-4 py-3 text-sm muted">
+              No open rooms right now.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3">
+              {publicRooms.map((room) => (
+                <Link
+                  key={room.room_id}
+                  href={`/rooms/${room.room_id}`}
+                  className="tile tile-hover p-4 flex flex-col gap-2"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-semibold truncate leading-snug">{room.title}</p>
+                  </div>
+                  <div className="flex items-center justify-between text-xs muted">
+                    <span>Hosted by {room.host_username}</span>
+                    <span>{room.member_count} in room</span>
                   </div>
                 </Link>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
-          <Link href="/rooms" className="text-sm text-[var(--orange-soft)]">
-            View all
-          </Link>
-        </div>
-        {loadingData ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">Loading open rooms...</div>
-        ) : publicRooms.length === 0 ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">
-            No open rooms right now.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {publicRooms.map((room) => (
-              <Link
-                key={room.room_id}
-                href={`/rooms/${room.room_id}`}
-                className="tile tile-hover p-4 flex flex-col gap-2"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-semibold truncate leading-snug">{room.title}</p>
-                </div>
-                <div className="flex items-center justify-between text-xs muted">
-                  <span>Hosted by {room.host_username}</span>
-                  <span>{room.member_count} in room</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
