@@ -163,7 +163,7 @@ export default function NavBar() {
 
       {showDesktopNav ? (
         <div className="relative hidden lg:block">
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center">
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
             <Link
               href="/"
               className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
