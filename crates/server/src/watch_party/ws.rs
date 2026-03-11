@@ -17,8 +17,8 @@ use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 
 use super::manager::{
-    AudioAction, ChessResetOutcome, ConnectFourResetOutcome, CreateState, PlaybackAction,
-    RoomRuntime,
+    AudioAction, BattleshipResetOutcome, ChessResetOutcome, ConnectFourResetOutcome, CreateState,
+    PlaybackAction, RoomRuntime,
 };
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::presence::build_presence_members;
@@ -51,6 +51,7 @@ const MAX_CANVAS_STROKE_ID_LEN: usize = 64;
 const MAX_CANVAS_BYTES: usize = 30 * 1024 * 1024;
 const CHESS_AI_MOVE_DELAY_SECONDS: u64 = 3;
 const CONNECT_FOUR_AI_MOVE_DELAY_SECONDS: u64 = 3;
+const BATTLESHIP_AI_MOVE_DELAY_SECONDS: u64 = 3;
 const EMPTY_RICH_PAGE_HTML: &str = "<p><br></p>";
 
 static WS_CONNECT_RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
@@ -2295,6 +2296,8 @@ async fn handle_client_message(
                 schedule_delayed_chess_ai_move(state.clone(), context.room_id.clone());
             } else if normalized_game == "connect_four" {
                 schedule_delayed_connect_four_ai_move(state.clone(), context.room_id.clone());
+            } else if normalized_game == "battleship" {
+                schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
             }
             Ok(())
         }
@@ -2789,6 +2792,52 @@ async fn handle_client_message(
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
+            Ok(())
+        }
+        ClientMessage::BattleshipConfigureAi {
+            enabled,
+            difficulty,
+            human_color,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_configure_ai is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(
+                    socket,
+                    "configuring battleship AI is not allowed for this user",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            runtime
+                .configure_battleship_ai(&context.user_id, enabled, difficulty, human_color)
+                .await
+                .map_err(ApiError::BadRequest)?;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
             Ok(())
         }
         ClientMessage::BattleshipAutoPlace => {
@@ -2823,6 +2872,7 @@ async fn handle_client_message(
             match runtime.battleship_auto_place(&context.user_id).await {
                 Ok(_) => {
                     broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
@@ -2870,6 +2920,7 @@ async fn handle_client_message(
             match runtime.battleship_set_ready(&context.user_id, ready).await {
                 Ok(_) => {
                     broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
@@ -2917,6 +2968,7 @@ async fn handle_client_message(
             match runtime.battleship_fire(&context.user_id, x, y).await {
                 Ok(_) => {
                     broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
                 }
                 Err(message) => {
                     send_error(socket, &message).await?;
@@ -2954,7 +3006,9 @@ async fn handle_client_message(
                 .await
                 .map_err(ApiError::BadRequest)?;
             broadcast_current_state(state, runtime, &context.room_id).await?;
-            let _ = reset_outcome;
+            if matches!(reset_outcome, BattleshipResetOutcome::Applied) {
+                schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
+            }
             Ok(())
         }
         ClientMessage::SearchYouTube { query } => {
@@ -3301,6 +3355,9 @@ fn build_play_state_payload(
             winner_color: play_state.battleship.winner_color,
             blue_user_id: play_state.battleship.blue_user_id,
             red_user_id: play_state.battleship.red_user_id,
+            ai_enabled: play_state.battleship.ai_enabled,
+            ai_difficulty: play_state.battleship.ai_difficulty,
+            ai_color: play_state.battleship.ai_color,
             blue_ready: play_state.battleship.blue_ready,
             red_ready: play_state.battleship.red_ready,
             blue_grid_rows: battleship_blue_rows,
@@ -3459,6 +3516,36 @@ fn schedule_delayed_connect_four_ai_move(state: AppState, room_id: String) {
                     room_id = %room_id,
                     error = %err,
                     "failed to apply delayed connect four ai move"
+                );
+            }
+        }
+    });
+}
+
+fn schedule_delayed_battleship_ai_action(state: AppState, room_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(BATTLESHIP_AI_MOVE_DELAY_SECONDS)).await;
+
+        let Some(runtime) = state.watch_party.get_runtime(&room_id).await else {
+            return;
+        };
+
+        match runtime.apply_battleship_ai_action_if_needed().await {
+            Ok(true) => {
+                if let Err(err) = broadcast_current_state(&state, &runtime, &room_id).await {
+                    warn!(
+                        room_id = %room_id,
+                        error = %err.0,
+                        "failed to broadcast delayed battleship ai action"
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!(
+                    room_id = %room_id,
+                    error = %err,
+                    "failed to apply delayed battleship ai action"
                 );
             }
         }

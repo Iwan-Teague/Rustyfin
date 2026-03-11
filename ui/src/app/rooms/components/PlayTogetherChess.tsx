@@ -991,18 +991,45 @@ type BattleshipPanelProps = {
   sendWs: (payload: Record<string, unknown>) => boolean;
 };
 
+type BattleshipHumanColorPreference = 'blue' | 'red' | 'random';
+
 function BattleshipGamePanel({ battleship, members, currentUserId, canControl, sendWs }: BattleshipPanelProps) {
+  const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('local');
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('medium');
+  const [humanColorPreference, setHumanColorPreference] =
+    useState<BattleshipHumanColorPreference>('blue');
   const blueUserId = battleship.blue_user_id ?? null;
   const redUserId = battleship.red_user_id ?? null;
+  const aiEnabled = battleship.ai_enabled === true;
+  const aiDifficultyValue: AiDifficulty =
+    battleship.ai_difficulty === 'easy' || battleship.ai_difficulty === 'hard'
+      ? battleship.ai_difficulty
+      : 'medium';
+  const aiColor =
+    battleship.ai_color === 'blue' || battleship.ai_color === 'red' ? battleship.ai_color : null;
+  const humanColorActive: 'blue' | 'red' | null = aiColor
+    ? aiColor === 'blue'
+      ? 'red'
+      : 'blue'
+    : null;
   const myColor: 'blue' | 'red' | null =
     blueUserId === currentUserId ? 'blue' : redUserId === currentUserId ? 'red' : null;
   const turnColor = battleship.turn_color === 'red' ? 'red' : 'blue';
   const isSetup = battleship.phase !== 'active' && battleship.phase !== 'finished';
   const isActive = battleship.phase === 'active' && battleship.status === 'active';
   const isFinished = battleship.phase === 'finished' || battleship.status === 'finished';
+  const aiStatusLabel = aiEnabled
+    ? `AI (${aiDifficultyValue[0].toUpperCase()}${aiDifficultyValue.slice(1)})`
+    : null;
 
-  const blueRows = useMemo(() => normalizeBattleshipRows(battleship.blue_grid_rows), [battleship.blue_grid_rows]);
-  const redRows = useMemo(() => normalizeBattleshipRows(battleship.red_grid_rows), [battleship.red_grid_rows]);
+  const blueRows = useMemo(
+    () => normalizeBattleshipRows(battleship.blue_grid_rows),
+    [battleship.blue_grid_rows],
+  );
+  const redRows = useMemo(
+    () => normalizeBattleshipRows(battleship.red_grid_rows),
+    [battleship.red_grid_rows],
+  );
 
   const ownRows = myColor === 'red' ? redRows : blueRows;
   const opponentRows = myColor === 'red' ? blueRows : redRows;
@@ -1015,9 +1042,31 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
   const hasAnyAssignedPlayer = hasBluePlayer || hasRedPlayer;
   const requiresDualResetConfirm = hasBluePlayer && hasRedPlayer && blueUserId !== redUserId;
   const canRequestBoardReset = !hasAnyAssignedPlayer || !!myColor;
-  const myResetRequested = myColor === 'blue' ? battleship.reset_requested_blue : myColor === 'red' ? battleship.reset_requested_red : false;
+  const myResetRequested =
+    myColor === 'blue'
+      ? battleship.reset_requested_blue
+      : myColor === 'red'
+        ? battleship.reset_requested_red
+        : false;
 
-  const winnerColor = battleship.winner_color === 'red' ? 'red' : battleship.winner_color === 'blue' ? 'blue' : null;
+  const winnerColor =
+    battleship.winner_color === 'red' ? 'red' : battleship.winner_color === 'blue' ? 'blue' : null;
+  const blueSeatName = aiColor === 'blue' ? aiStatusLabel ?? 'AI' : nameForUser(blueUserId, members);
+  const redSeatName = aiColor === 'red' ? aiStatusLabel ?? 'AI' : nameForUser(redUserId, members);
+  const turnOwnerName = turnColor === 'blue' ? blueSeatName : redSeatName;
+
+  useEffect(() => {
+    if (aiEnabled) {
+      setSidePanelTab('ai');
+    }
+  }, [aiEnabled]);
+
+  useEffect(() => {
+    setAiDifficulty(aiDifficultyValue);
+    if (humanColorActive) {
+      setHumanColorPreference(humanColorActive);
+    }
+  }, [aiDifficultyValue, humanColorActive]);
 
   function handleAssignPlayers(nextBlue: string | null, nextRed: string | null) {
     if (!canControl) return;
@@ -1033,6 +1082,37 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
     const assignment = randomSeatAssignment(members);
     if (!assignment) return;
     handleAssignPlayers(assignment.firstUserId, assignment.secondUserId);
+  }
+
+  function sendAiConfig(
+    enabled: boolean,
+    nextDifficulty: AiDifficulty = aiDifficulty,
+    nextHumanColorPreference: BattleshipHumanColorPreference = humanColorPreference,
+  ) {
+    if (!canControl) return;
+    const resolvedHumanColor: 'blue' | 'red' =
+      nextHumanColorPreference === 'random'
+        ? Math.random() < 0.5
+          ? 'blue'
+          : 'red'
+        : nextHumanColorPreference;
+    sendWs({
+      type: 'battleship_configure_ai',
+      enabled,
+      difficulty: nextDifficulty,
+      human_color: enabled ? resolvedHumanColor : undefined,
+    });
+  }
+
+  function handleSelectSidePanelTab(nextTab: SidePanelTab) {
+    setSidePanelTab(nextTab);
+    if (nextTab === 'ai' && !aiEnabled) {
+      sendAiConfig(true);
+      return;
+    }
+    if (nextTab === 'local' && aiEnabled) {
+      sendAiConfig(false);
+    }
   }
 
   function handleFire(x: number, y: number) {
@@ -1053,7 +1133,9 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
         <div className="panel-soft rounded-xl p-3 sm:p-4">
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <p className="mb-2 text-xs uppercase tracking-wide muted">{myColor ? 'Your Fleet' : 'Blue Fleet'}</p>
+              <p className="mb-2 text-xs uppercase tracking-wide muted">
+                {myColor ? 'Your Fleet' : 'Blue Fleet'}
+              </p>
               <div className="grid grid-cols-10 gap-1 rounded-lg border border-white/10 bg-black/20 p-2">
                 {(myColor ? ownRows : blueRows).flatMap((row, y) =>
                   row.map((token, x) => (
@@ -1068,7 +1150,9 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
             </div>
 
             <div>
-              <p className="mb-2 text-xs uppercase tracking-wide muted">{myColor ? 'Target Grid' : 'Red Fleet'}</p>
+              <p className="mb-2 text-xs uppercase tracking-wide muted">
+                {myColor ? 'Target Grid' : 'Red Fleet'}
+              </p>
               <div className="grid grid-cols-10 gap-1 rounded-lg border border-white/10 bg-black/20 p-2">
                 {(myColor ? opponentRows : redRows).flatMap((row, y) =>
                   row.map((token, x) => {
@@ -1080,7 +1164,9 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
                         key={`target-${x}-${y}`}
                         type="button"
                         className={`aspect-square rounded border ${tokenClass(displayToken, true)} ${
-                          clickable ? 'ring-1 ring-transparent transition hover:ring-[var(--orange-soft)]' : ''
+                          clickable
+                            ? 'ring-1 ring-transparent transition hover:ring-[var(--orange-soft)]'
+                            : ''
                         }`}
                         onClick={() => handleFire(x, y)}
                         disabled={!clickable}
@@ -1097,8 +1183,8 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
         <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">
           {battleship.last_shot ? (
             <p>
-              Last shot: {battleship.last_shot.by_color.toUpperCase()} fired at {battleship.last_shot.x + 1},
-              {battleship.last_shot.y + 1} ({battleship.last_shot.result}).
+              Last shot: {battleship.last_shot.by_color.toUpperCase()} fired at{' '}
+              {battleship.last_shot.x + 1},{battleship.last_shot.y + 1} ({battleship.last_shot.result}).
             </p>
           ) : (
             <p>No shots fired yet.</p>
@@ -1107,48 +1193,129 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
       </div>
 
       <aside className="panel-soft space-y-3 rounded-xl p-3 sm:p-4">
-        <div className="space-y-1">
-          <p className="text-xs uppercase tracking-wide muted">Players</p>
-          <p className="text-xs muted">Assign Blue/Red seats, place ships, then mark ready.</p>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                sidePanelTab === 'local' ? 'btn-primary' : 'btn-secondary'
+              }`}
+              onClick={() => handleSelectSidePanelTab('local')}
+            >
+              Local
+            </button>
+            <button
+              type="button"
+              className={`flex-1 rounded-lg px-3 py-2 text-xs font-medium ${
+                sidePanelTab === 'ai' ? 'btn-primary' : 'btn-secondary'
+              }`}
+              onClick={() => handleSelectSidePanelTab('ai')}
+            >
+              AI
+            </button>
+          </div>
         </div>
 
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Blue</span>
-          <select
-            className="select px-2 py-2 text-sm"
-            value={blueUserId ?? ''}
-            onChange={(event) => handleAssignPlayers(event.target.value || null, redUserId)}
-            disabled={!canControl}
-          >
-            <option value="">Unassigned</option>
-            {members.map((member) => (
-              <option key={member.user_id} value={member.user_id}>
-                {member.username}
-              </option>
-            ))}
-          </select>
-        </label>
+        {sidePanelTab === 'local' ? (
+          <>
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wide muted">Players</p>
+              <p className="text-xs muted">Assign Blue/Red seats, place ships, then mark ready.</p>
+            </div>
 
-        <label className="block text-sm">
-          <span className="mb-1 block text-xs uppercase tracking-wide muted">Red</span>
-          <select
-            className="select px-2 py-2 text-sm"
-            value={redUserId ?? ''}
-            onChange={(event) => handleAssignPlayers(blueUserId, event.target.value || null)}
-            disabled={!canControl}
-          >
-            <option value="">Unassigned</option>
-            {members.map((member) => (
-              <option key={member.user_id} value={member.user_id}>
-                {member.username}
-              </option>
-            ))}
-          </select>
-        </label>
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Blue</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={blueUserId ?? ''}
+                onChange={(event) => handleAssignPlayers(event.target.value || null, redUserId)}
+                disabled={!canControl}
+              >
+                <option value="">Unassigned</option>
+                {members.map((member) => (
+                  <option key={member.user_id} value={member.user_id}>
+                    {member.username}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-        <button type="button" className="btn-secondary w-full px-3 py-2 text-sm" onClick={handleRandomSeats} disabled={!canControl}>
-          Random Seats
-        </button>
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Red</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={redUserId ?? ''}
+                onChange={(event) => handleAssignPlayers(blueUserId, event.target.value || null)}
+                disabled={!canControl}
+              >
+                <option value="">Unassigned</option>
+                {members.map((member) => (
+                  <option key={member.user_id} value={member.user_id}>
+                    {member.username}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              className="btn-secondary w-full px-3 py-2 text-sm"
+              onClick={handleRandomSeats}
+              disabled={!canControl}
+            >
+              Random Seats
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wide muted">AI Opponent</p>
+              <p className="text-xs muted">Play against a server AI. Choose a difficulty and your side.</p>
+            </div>
+
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">Difficulty</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={aiDifficulty}
+                onChange={(event) => {
+                  const nextDifficulty = event.target.value as AiDifficulty;
+                  setAiDifficulty(nextDifficulty);
+                  if (sidePanelTab === 'ai') {
+                    sendAiConfig(true, nextDifficulty, humanColorPreference);
+                  }
+                }}
+                disabled={!canControl}
+              >
+                {AI_DIFFICULTY_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm">
+              <span className="mb-1 block text-xs uppercase tracking-wide muted">You Play As</span>
+              <select
+                className="select px-2 py-2 text-sm"
+                value={humanColorPreference}
+                onChange={(event) => {
+                  const nextPreference = event.target.value as BattleshipHumanColorPreference;
+                  setHumanColorPreference(nextPreference);
+                  if (sidePanelTab === 'ai') {
+                    sendAiConfig(true, aiDifficulty, nextPreference);
+                  }
+                }}
+                disabled={!canControl}
+              >
+                <option value="blue">Blue</option>
+                <option value="red">Red</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+          </>
+        )}
 
         <button
           type="button"
@@ -1169,9 +1336,10 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
         </button>
 
         <div className="space-y-1 text-xs muted">
-          <p>Blue: {nameForUser(blueUserId, members)} {battleship.blue_ready ? '(Ready)' : ''}</p>
-          <p>Red: {nameForUser(redUserId, members)} {battleship.red_ready ? '(Ready)' : ''}</p>
-          <p>Turn owner: {nameForUser(turnColor === 'blue' ? blueUserId : redUserId, members)}</p>
+          <p>Blue: {blueSeatName} {battleship.blue_ready ? '(Ready)' : ''}</p>
+          <p>Red: {redSeatName} {battleship.red_ready ? '(Ready)' : ''}</p>
+          <p>Turn owner: {turnOwnerName}</p>
+          {aiEnabled && aiColor && <p>AI side: {aiColor === 'blue' ? 'Blue' : 'Red'}</p>}
           <p>Blue cells left: {battleship.remaining_ship_cells_blue}</p>
           <p>Red cells left: {battleship.remaining_ship_cells_red}</p>
         </div>
@@ -1189,7 +1357,9 @@ function BattleshipGamePanel({ battleship, members, currentUserId, canControl, s
       {isFinished && (
         <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/55 p-4 backdrop-blur-[2px]">
           <div className="panel w-full max-w-md space-y-3 rounded-2xl border border-[var(--border)] p-5">
-            <h3 className="text-xl font-semibold">{winnerColor ? `${winnerColor.toUpperCase()} won` : 'Game finished'}</h3>
+            <h3 className="text-xl font-semibold">
+              {winnerColor ? `${winnerColor.toUpperCase()} won` : 'Game finished'}
+            </h3>
             <p className="text-sm muted">Start a new Battleship round when both players are ready.</p>
             <div className="flex justify-end">
               <button

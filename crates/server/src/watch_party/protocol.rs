@@ -134,6 +134,13 @@ pub enum ClientMessage {
         blue_user_id: Option<String>,
         red_user_id: Option<String>,
     },
+    BattleshipConfigureAi {
+        enabled: bool,
+        #[serde(default)]
+        difficulty: Option<String>,
+        #[serde(default)]
+        human_color: Option<String>,
+    },
     BattleshipAutoPlace,
     BattleshipSetReady {
         ready: bool,
@@ -258,6 +265,9 @@ pub struct BattleshipState {
     pub winner_color: Option<String>,
     pub blue_user_id: Option<String>,
     pub red_user_id: Option<String>,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub blue_ready: bool,
     pub red_ready: bool,
     pub blue_grid_rows: Vec<String>,
