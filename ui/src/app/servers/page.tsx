@@ -8,7 +8,6 @@ import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
 import {
   deleteMinecraftServer,
-  DiscoveryCandidate,
   MinecraftServerAction,
   MinecraftRuntimeCapabilities,
   MinecraftServer,
@@ -22,7 +21,6 @@ import {
   importMinecraftServer,
   refreshMinecraftServerStatus,
   requestMinecraftServerAction,
-  scanMinecraftDiscoveryCandidates,
   updateMinecraftServer,
 } from '@/lib/serversApi';
 
@@ -297,7 +295,6 @@ export default function ServersPage() {
   const activeGameTab: ServersGameTab = 'minecraft';
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
-  const [managementServerId, setManagementServerId] = useState<string | null>(null);
   const [serverEdits, setServerEdits] = useState<Record<string, ServerSettingsFormState>>({});
   const [loading, setLoading] = useState(true);
   const [statusRefreshingServerId, setStatusRefreshingServerId] = useState<string | null>(null);
@@ -305,7 +302,6 @@ export default function ServersPage() {
   const [actionServerId, setActionServerId] = useState<string | null>(null);
   const [savingServerId, setSavingServerId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deletingServerId, setDeletingServerId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -322,9 +318,6 @@ export default function ServersPage() {
     roots: [],
     directories: [],
   });
-  const [discoveryRootPath, setDiscoveryRootPath] = useState('');
-  const [discoveryRoots, setDiscoveryRoots] = useState<string[]>([]);
-  const [discoveryCandidates, setDiscoveryCandidates] = useState<DiscoveryCandidate[]>([]);
 
   useEffect(() => {
     serversRef.current = servers;
@@ -364,12 +357,6 @@ export default function ServersPage() {
             return current;
           }
           return null;
-        });
-        setManagementServerId((current) => {
-          if (current && rows.some((row) => row.id === current)) {
-            return current;
-          }
-          return rows[0]?.id ?? null;
         });
         if (capabilities.status_supported && rows.length > 0) {
           void refreshAllServerStatuses(rows);
@@ -538,11 +525,6 @@ export default function ServersPage() {
       if (current && rows.some((row) => row.id === current)) return current;
       return null;
     });
-    setManagementServerId((current) => {
-      if (selectId && rows.some((row) => row.id === selectId)) return selectId;
-      if (current && rows.some((row) => row.id === current)) return current;
-      return rows[0]?.id ?? null;
-    });
   }
 
   async function refreshSelectedServerStatus(serverId: string, showSpinner = true) {
@@ -591,21 +573,6 @@ export default function ServersPage() {
       }
       return next;
     });
-  }
-
-  async function handleDiscoveryScan(rootPath?: string) {
-    setDiscoveryLoading(true);
-    setError('');
-    try {
-      const response = await scanMinecraftDiscoveryCandidates(rootPath, 64);
-      setDiscoveryRoots(response.roots);
-      setDiscoveryCandidates(response.candidates);
-    } catch (err: unknown) {
-      setError(clientErrorMessage(err, 'Failed to scan for existing Minecraft servers'));
-      setDiscoveryCandidates([]);
-    } finally {
-      setDiscoveryLoading(false);
-    }
   }
 
   async function handleRequestAction(server: MinecraftServer, action: MinecraftServerAction) {
@@ -747,7 +714,12 @@ export default function ServersPage() {
     }
   }
 
-  const managementServer = servers.find((server) => server.id === managementServerId) ?? null;
+  const importTargetServer =
+    servers.find(
+      (server) =>
+        server.install_mode === 'managed' &&
+        (server.observed_state === 'draft' || server.observed_state === 'unprovisioned'),
+    ) ?? null;
 
   if (authLoading || !me) {
     return (
@@ -1280,8 +1252,8 @@ export default function ServersPage() {
                 </div>
 
                 <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                  Draft records appear in known servers immediately. Provisioning and import now live
-                  in the dedicated management column beside this form.
+                  Draft records appear in known servers immediately. Start auto-provisions managed
+                  servers, and the right column can import an existing host path into the newest draft.
                 </div>
 
                 <button
@@ -1298,50 +1270,35 @@ export default function ServersPage() {
 
         <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
           <div>
-            <h2 className="text-xl font-semibold">Server management</h2>
+            <h2 className="text-xl font-semibold">Import Existing Server</h2>
             <p className="text-sm muted">
-              Provisioning and import act on a chosen server record. Discovery scan is host-wide and
-              feeds import paths into that target.
+              Import a prepared Minecraft server directory from the Debian host into the newest
+              draft or unprovisioned managed server record.
             </p>
           </div>
 
           {me.role !== 'admin' ? (
             <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              Only admins can import, discover, or delete server data. Users can still
+              Only admins can import or delete server data. Users can still
               control server runtime from the known servers list.
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-              <label className="space-y-2">
-                <span className="text-sm font-medium text-white">Target server</span>
-                <select
-                  className="select rounded-xl px-4 py-3"
-                  value={managementServerId ?? ''}
-                  onChange={(event) => setManagementServerId(event.target.value || null)}
-                >
-                  <option value="">Choose a server record</option>
-                  {servers.map((server) => (
-                    <option key={server.id} value={server.id}>
-                      {server.display_name} · {server.server_distribution} {server.minecraft_version} · Port {server.listen_port}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {managementServer ? (
+              {importTargetServer ? (
                 <div className="panel-soft rounded-xl px-4 py-3 text-sm">
-                  <div className="font-medium text-white">{managementServer.display_name}</div>
+                  <div className="font-medium text-white">{importTargetServer.display_name}</div>
                   <div className="mt-1 text-xs muted">
-                    {managementServer.server_distribution} {managementServer.minecraft_version}
+                    Targeting {importTargetServer.server_distribution} {importTargetServer.minecraft_version}
                     {' · '}
-                    {managementServer.world_name}
+                    {importTargetServer.world_name}
                     {' · '}
-                    Port {managementServer.listen_port}
+                    Port {importTargetServer.listen_port}
                   </div>
                 </div>
               ) : (
                 <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                  Choose a server record before importing or applying discovery paths.
+                  Create a draft server first. Rustyfin will import into the newest draft or
+                  unprovisioned managed server automatically.
                 </div>
               )}
 
@@ -1351,8 +1308,8 @@ export default function ServersPage() {
                     Import Existing Server
                   </h4>
                   <p className="text-sm muted">
-                    Copy an existing Minecraft server directory from the host into the managed target
-                    path, normalize the server jar, and install the native unit.
+                    Copy an existing Minecraft server directory from the host into that managed
+                    target path, normalize the server jar, and install the native unit.
                   </p>
                 </div>
                 <label className="mt-4 block space-y-2">
@@ -1376,113 +1333,15 @@ export default function ServersPage() {
                     type="button"
                     className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
                     disabled={
-                      !managementServer ||
+                      !importTargetServer ||
                       importing ||
                       actionLoading !== null ||
                       !(runtimeCapabilities?.import_supported ?? true)
                     }
-                    onClick={() => managementServer && void handleImportServer(managementServer)}
+                    onClick={() => importTargetServer && void handleImportServer(importTargetServer)}
                   >
                     {importing ? 'Importing…' : 'Import Existing Server'}
                   </button>
-                </div>
-              </div>
-
-              <div className="panel rounded-xl px-4 py-4">
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                    Discovery Scan
-                  </h4>
-                  <p className="text-sm muted">
-                    Scan configured import roots on the Debian host for existing Minecraft directories,
-                    then push a discovered path into the import field for the chosen target server.
-                  </p>
-                </div>
-                <label className="mt-4 block space-y-2">
-                  <span className="text-sm font-medium text-white">Optional scan root</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={discoveryRootPath}
-                    onChange={(event) => setDiscoveryRootPath(event.target.value)}
-                    placeholder="/srv/minecraft"
-                  />
-                </label>
-                {discoveryRoots.length > 0 ? (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {discoveryRoots.map((root) => (
-                      <button
-                        key={root}
-                        type="button"
-                        className="btn-ghost px-2.5 py-1 text-xs"
-                        onClick={() => {
-                          setDiscoveryRootPath(root);
-                          void handleDiscoveryScan(root);
-                        }}
-                      >
-                        {root}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-                    disabled={discoveryLoading}
-                    onClick={() => void handleDiscoveryScan(discoveryRootPath || undefined)}
-                  >
-                    {discoveryLoading ? 'Scanning…' : 'Scan For Existing Servers'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
-                    disabled={discoveryLoading}
-                    onClick={() => void handleDiscoveryScan(undefined)}
-                  >
-                    Scan All Roots
-                  </button>
-                </div>
-                <div className="mt-4 max-h-[17rem] space-y-2 overflow-y-auto pr-1">
-                  {discoveryCandidates.length === 0 ? (
-                    <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm muted">
-                      No discovery results yet.
-                    </div>
-                  ) : (
-                    discoveryCandidates.map((candidate) => (
-                      <div
-                        key={candidate.path}
-                        className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/55 px-3 py-3 text-sm"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate font-medium text-white" title={candidate.path}>
-                              {candidate.name}
-                            </div>
-                            <div className="truncate text-xs muted" title={candidate.path}>
-                              {candidate.path}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="btn-primary shrink-0 px-3 py-1.5 text-xs"
-                            onClick={() => setImportSourcePath(candidate.path)}
-                          >
-                            Use Path
-                          </button>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2 text-xs muted">
-                          {candidate.world_name ? <span className="chip">{candidate.world_name}</span> : null}
-                          {candidate.top_level_jars[0] ? <span className="chip">{candidate.top_level_jars[0]}</span> : null}
-                          <span className="chip">
-                            {candidate.server_properties_present ? 'server.properties' : 'jar only'}
-                          </span>
-                          {candidate.last_modified_ts ? (
-                            <span className="chip">Updated {formatTs(candidate.last_modified_ts)}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))
-                  )}
                 </div>
               </div>
             </div>
