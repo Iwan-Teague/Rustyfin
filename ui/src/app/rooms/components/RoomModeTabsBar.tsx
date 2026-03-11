@@ -24,8 +24,8 @@ export default function RoomModeTabsBar<T extends string>({
 }: Props<T>) {
   return (
     <div className={className}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-2">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-end gap-2 self-start">
           {options.map(({ key, label }) => (
             <button
               key={key}
@@ -42,7 +42,9 @@ export default function RoomModeTabsBar<T extends string>({
             </button>
           ))}
         </div>
-        <div className={`ml-auto flex flex-wrap items-center justify-end gap-2 ${badgesClassName}`.trim()}>
+        <div
+          className={`min-w-0 flex flex-wrap items-center justify-end gap-2 self-start ${badgesClassName}`.trim()}
+        >
           {badges.map((badge) => (
             <span key={badge} className="chip">
               {badge}

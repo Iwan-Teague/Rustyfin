@@ -1257,10 +1257,10 @@ export default function PlayTogetherChess({
   }
 
   return (
-    <section className="panel relative mt-[55px] p-5 pt-[40px] sm:p-6 sm:pt-[44px]">
+    <section className="panel relative mt-[55px] p-5 pt-[60px] sm:p-6 sm:pt-[64px]">
       <div className="absolute left-4 right-4 top-[-17px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-end gap-2">
+        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
+          <div className="flex flex-wrap items-end gap-2 self-start">
             <button
               type="button"
               className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
@@ -1287,7 +1287,7 @@ export default function PlayTogetherChess({
             </button>
           </div>
 
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <div className="min-w-0 flex flex-wrap items-center justify-end gap-2 self-start">
             {badges.map((badge) => (
               <span key={badge} className="chip">
                 {badge}

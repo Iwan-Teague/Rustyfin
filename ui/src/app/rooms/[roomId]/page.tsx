@@ -658,7 +658,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className={`panel relative p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -683,7 +683,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className={`panel relative p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -707,7 +707,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isCreateRoom && (
-        <section className={`panel relative p-5 pt-12 sm:p-6 sm:pt-12 ${createWindowShiftClass}`}>
+        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${createWindowShiftClass}`}>
           <CreateToolTabsBar
             className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${createTabsCounterShiftClass}`}
             activeTool={activeCreateTool}
@@ -910,7 +910,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`panel relative space-y-4 p-5 pt-[36px] sm:p-6 sm:pt-[40px] ${watchWindowShiftClass}`}
+            className={`panel relative space-y-4 p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
