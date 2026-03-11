@@ -711,7 +711,7 @@ fn render_systemd_unit(spec: &ManagedProvisionSpec) -> String {
         "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'\n",
     );
     unit.push_str("KillSignal=SIGINT\n");
-    unit.push_str("SuccessExitStatus=0 130 143\n");
+    unit.push_str("SuccessExitStatus=0 130 143 SIGINT\n");
     unit.push_str("Restart=on-failure\n");
     unit.push_str("RestartSec=5\n");
     unit.push_str("TimeoutStopSec=120\n");
@@ -1557,7 +1557,7 @@ mod tests {
         assert!(rendered.contains(
             "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'"
         ));
-        assert!(rendered.contains("SuccessExitStatus=0 130 143"));
+        assert!(rendered.contains("SuccessExitStatus=0 130 143 SIGINT"));
     }
 
     #[test]
