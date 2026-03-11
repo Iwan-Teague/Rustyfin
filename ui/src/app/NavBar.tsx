@@ -50,10 +50,10 @@ export default function NavBar() {
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
   const desktopLeftNavLinks = navLinks.filter((link) =>
-    ['/channels', '/rooms', '/servers', '/calendar'].includes(link.href),
+    ['/channels', '/rooms', '/servers', '/calendar', '/libraries'].includes(link.href),
   );
   const desktopRightNavLinks = navLinks.filter((link) =>
-    ['/libraries', '/admin'].includes(link.href),
+    ['/admin'].includes(link.href),
   );
   const hasLocalStream = voiceSession?.localStream !== null;
   const muted = voiceSession?.muted ?? false;
