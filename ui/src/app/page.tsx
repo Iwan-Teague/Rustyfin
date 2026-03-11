@@ -25,6 +25,18 @@ interface Item {
   poster_url?: string;
 }
 
+interface ContinueWatchingItem {
+  id: string;
+  library_id: string;
+  title: string;
+  kind: string;
+  year?: number;
+  poster_url?: string;
+  progress_ms: number;
+  duration_ms?: number | null;
+  last_played_ts: number;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -35,6 +47,7 @@ export default function HomePage() {
   const [loadingData, setLoadingData] = useState(false);
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [featuredItems, setFeaturedItems] = useState<Item[]>([]);
+  const [continueWatching, setContinueWatching] = useState<ContinueWatchingItem[]>([]);
   const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -80,6 +93,12 @@ export default function HomePage() {
         if (cancelled) return;
         setLibraries(libs);
         setPublicRooms(rooms);
+
+        const continueItems = await apiJson<ContinueWatchingItem[]>('/playback/continue').catch(
+          () => [] as ContinueWatchingItem[],
+        );
+        if (cancelled) return;
+        setContinueWatching(continueItems);
 
         const libraryItems = await Promise.all(
           libs.slice(0, 4).map((lib) =>
@@ -173,7 +192,16 @@ export default function HomePage() {
 
       {/* Quick navigation tiles */}
       <section>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-6">
+          <Link href="/libraries#continue-watching" className="tile tile-hover p-5 flex flex-col gap-1">
+            <span className="font-semibold">Continue Watching</span>
+            <span className="text-xs muted">
+              {continueWatching.length > 0
+                ? `Resume ${continueWatching.length} item${continueWatching.length === 1 ? '' : 's'}`
+                : 'Pick up where you left off'}
+            </span>
+          </Link>
+
           <Link href="/libraries" className="tile tile-hover p-5 flex flex-col gap-1">
             <span className="font-semibold">Libraries</span>
             <span className="text-xs muted">
@@ -194,16 +222,26 @@ export default function HomePage() {
           </Link>
 
           <Link href="/rooms" className="tile tile-hover p-5 flex flex-col gap-1">
-            <span className="font-semibold">Watch Party</span>
-            <span className="text-xs muted">Watch together</span>
+            <span className="font-semibold">Rooms</span>
+            <span className="text-xs muted">Watch, listen, play, create</span>
           </Link>
 
-          {me.role === 'admin' && (
+          <Link href="/servers" className="tile tile-hover p-5 flex flex-col gap-1">
+            <span className="font-semibold">Servers</span>
+            <span className="text-xs muted">Minecraft and more</span>
+          </Link>
+
+          <Link href="/calendar" className="tile tile-hover p-5 flex flex-col gap-1">
+            <span className="font-semibold">Calendar</span>
+            <span className="text-xs muted">Events and planning</span>
+          </Link>
+
+          {me.role === 'admin' ? (
             <Link href="/admin" className="tile tile-hover p-5 flex flex-col gap-1">
               <span className="font-semibold">Admin</span>
               <span className="text-xs muted">Manage server</span>
             </Link>
-          )}
+          ) : null}
         </div>
       </section>
 
