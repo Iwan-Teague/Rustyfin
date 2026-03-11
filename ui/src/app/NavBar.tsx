@@ -147,11 +147,6 @@ export default function NavBar() {
               Rustyfin
             </Link>
             <div ref={desktopRightMeasureRef} className="flex items-center justify-end gap-2">
-              {desktopRightNavLinks.map((link) => (
-                <span key={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
-                  {link.label}
-                </span>
-              ))}
               {voiceSession && (
                 <div className="chip h-10 shrink-0 gap-2 border-green-500/50 px-2 py-1.5 text-green-300">
                   <span className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300">
@@ -167,6 +162,11 @@ export default function NavBar() {
               ) : me ? (
                 <>
                   <span className="chip h-10 shrink-0 px-4 text-sm">{me.username}</span>
+                  {desktopRightNavLinks.map((link) => (
+                    <span key={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                      {link.label}
+                    </span>
+                  ))}
                   <span className="btn-secondary h-10 shrink-0 px-4 py-2 text-sm">Logout</span>
                 </>
               ) : (
@@ -199,12 +199,6 @@ export default function NavBar() {
             </div>
 
             <div className="flex min-w-0 items-center justify-end gap-2">
-              {desktopRightNavLinks.map((link) => (
-                <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
-                  {link.label}
-                </Link>
-              ))}
-
               {voiceSession && (
                 <div className="chip h-10 shrink-0 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
                   <Link
@@ -293,6 +287,11 @@ export default function NavBar() {
               ) : me ? (
                 <>
                   <span className="chip h-10 shrink-0 px-4 text-sm">{me.username}</span>
+                  {desktopRightNavLinks.map((link) => (
+                    <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                      {link.label}
+                    </Link>
+                  ))}
                   <button onClick={logout} className="btn-secondary h-10 shrink-0 px-4 text-sm">
                     Logout
                   </button>
