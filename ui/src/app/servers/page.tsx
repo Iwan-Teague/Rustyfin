@@ -57,7 +57,8 @@ type HostDirectoryBrowserState = {
   directories: HostDirectoryListEntry[];
 };
 
-type CreateWizardStepId = 'core' | 'gameplay' | 'resources' | 'review';
+type CreateWizardMode = 'create' | 'import';
+type CreateWizardStepId = 'mode' | 'core' | 'gameplay' | 'resources' | 'source' | 'review';
 
 type ServerSettingsFormState = {
   gamemode: 'survival' | 'creative' | 'adventure' | 'spectator';
@@ -98,37 +99,47 @@ const DEFAULT_FORM: CreateFormState = {
   eula_accepted: false,
 };
 
-const CREATE_WIZARD_STEPS: Array<{
-  id: CreateWizardStepId;
-  shortLabel: string;
-  title: string;
-  description: string;
-}> = [
+const CREATE_WIZARD_STEP_META: Record<
+  CreateWizardStepId,
   {
-    id: 'core',
-    shortLabel: 'Step 1',
+    title: string;
+    description: string;
+  }
+> = {
+  mode: {
+    title: 'Server type',
+    description: 'Choose whether Rustyfin should build a new managed server or import an existing one.',
+  },
+  core: {
     title: 'Server basics',
     description: 'Choose the distribution, version, server identity, and connection port.',
   },
-  {
-    id: 'gameplay',
-    shortLabel: 'Step 2',
+  gameplay: {
     title: 'Gameplay',
     description: 'Set the world behavior players will see when they first join.',
   },
-  {
-    id: 'resources',
-    shortLabel: 'Step 3',
+  resources: {
     title: 'Resources',
     description: 'Size the server for memory and player capacity.',
   },
-  {
-    id: 'review',
-    shortLabel: 'Step 4',
+  source: {
+    title: 'Import source',
+    description: 'Point Rustyfin at the existing Minecraft server directory on the Debian host.',
+  },
+  review: {
     title: 'Rules and review',
     description: 'Confirm server rules, review the setup, and accept the EULA.',
   },
-];
+};
+
+function createWizardSteps(mode: CreateWizardMode | null) {
+  const base: CreateWizardStepId[] = ['mode', 'core', 'gameplay', 'resources'];
+  if (mode === 'import') {
+    base.push('source');
+  }
+  base.push('review');
+  return base;
+}
 
 const TOGGLE_FIELDS: Array<{ key: keyof Pick<
   CreateFormState,
@@ -171,8 +182,15 @@ const SERVER_SETTINGS_TOGGLE_FIELDS: Array<{
   { key: 'hardcore', label: 'Hardcore mode' },
 ];
 
-function createStepErrors(form: CreateFormState, step: CreateWizardStepId) {
+function createStepErrors(
+  form: CreateFormState,
+  step: CreateWizardStepId,
+  mode: CreateWizardMode | null,
+  importSourcePath: string,
+) {
   switch (step) {
+    case 'mode':
+      return mode ? [] : ['Choose whether this should be a new managed server or an imported server.'];
     case 'core': {
       const errors: string[] = [];
       if (!form.display_name.trim()) {
@@ -190,6 +208,8 @@ function createStepErrors(form: CreateFormState, step: CreateWizardStepId) {
       }
       return errors;
     }
+    case 'source':
+      return importSourcePath.trim() ? [] : ['Host source path is required for an imported server.'];
     case 'resources': {
       const errors: string[] = [];
       const minMemory = Number(form.min_memory_mb);
@@ -217,7 +237,6 @@ function createStepErrors(form: CreateFormState, step: CreateWizardStepId) {
     }
     case 'review':
       return form.eula_accepted ? [] : ['You must confirm the Minecraft EULA before creating the server.'];
-    case 'gameplay':
     default:
       return [];
   }
@@ -394,8 +413,10 @@ export default function ServersPage() {
   const [deleteConfirmServer, setDeleteConfirmServer] = useState<MinecraftServer | null>(null);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<MinecraftRuntimeCapabilities | null>(null);
   const [form, setForm] = useState<CreateFormState>(DEFAULT_FORM);
-  const [createStep, setCreateStep] = useState<CreateWizardStepId>('core');
+  const [createMode, setCreateMode] = useState<CreateWizardMode | null>(null);
+  const [createStep, setCreateStep] = useState<CreateWizardStepId>('mode');
   const [importSourcePath, setImportSourcePath] = useState('');
+  const [pendingImportServerId, setPendingImportServerId] = useState<string | null>(null);
   const [hostBrowser, setHostBrowser] = useState<HostDirectoryBrowserState>({
     open: false,
     loading: false,
@@ -675,28 +696,6 @@ export default function ServersPage() {
     }
   }
 
-  async function handleImportServer(server: MinecraftServer) {
-    if (!importSourcePath.trim()) {
-      setError('Import source path is required');
-      return;
-    }
-
-    setImporting(true);
-    setError('');
-    try {
-      const response: MinecraftServerOperationResponse = await importMinecraftServer(
-        server.id,
-        importSourcePath.trim(),
-      );
-      upsertServer(response.instance);
-      await refreshSelectedServerStatus(response.instance.id, false);
-    } catch (err: unknown) {
-      setError(clientErrorMessage(err, 'Failed to import Minecraft server'));
-    } finally {
-      setImporting(false);
-    }
-  }
-
   function setServerEdit<K extends keyof ServerSettingsFormState>(
     serverId: string,
     key: K,
@@ -747,41 +746,75 @@ export default function ServersPage() {
 
   async function handleCreateServer() {
     setCreating(true);
+    setImporting(createMode === 'import');
     setError('');
     try {
-      const created = await createMinecraftServer({
-        display_name: form.display_name,
-        description: form.description,
-        server_distribution: form.server_distribution,
-        minecraft_version: form.minecraft_version,
-        world_name: form.world_name,
-        listen_port: Number(form.listen_port),
-        gamemode: form.gamemode,
-        difficulty: form.difficulty,
-        hardcore: form.hardcore,
-        motd: form.motd,
-        max_player_count: Number(form.max_player_count),
-        min_memory_mb: Number(form.min_memory_mb),
-        max_memory_mb: Number(form.max_memory_mb),
-        online_mode: form.online_mode,
-        pvp: form.pvp,
-        allow_flight: form.allow_flight,
-        enable_command_block: form.enable_command_block,
-        white_list_enabled: form.white_list_enabled,
-        autostart: form.autostart,
-        eula_accepted: form.eula_accepted,
-      });
+      const created =
+        pendingImportServerId !== null
+          ? servers.find((server) => server.id === pendingImportServerId) ?? null
+          : await createMinecraftServer({
+              display_name: form.display_name,
+              description: form.description,
+              server_distribution: form.server_distribution,
+              minecraft_version: form.minecraft_version,
+              world_name: form.world_name,
+              listen_port: Number(form.listen_port),
+              gamemode: form.gamemode,
+              difficulty: form.difficulty,
+              hardcore: form.hardcore,
+              motd: form.motd,
+              max_player_count: Number(form.max_player_count),
+              min_memory_mb: Number(form.min_memory_mb),
+              max_memory_mb: Number(form.max_memory_mb),
+              online_mode: form.online_mode,
+              pvp: form.pvp,
+              allow_flight: form.allow_flight,
+              enable_command_block: form.enable_command_block,
+              white_list_enabled: form.white_list_enabled,
+              autostart: form.autostart,
+              eula_accepted: form.eula_accepted,
+            });
+
+      if (!created) {
+        throw new Error('Import target is no longer available. Restart the import wizard.');
+      }
+
+      if (createMode === 'import') {
+        if (pendingImportServerId === null) {
+          upsertServer(created);
+          setPendingImportServerId(created.id);
+        }
+        const response: MinecraftServerOperationResponse = await importMinecraftServer(
+          created.id,
+          importSourcePath.trim(),
+        );
+        upsertServer(response.instance);
+      } else {
+        upsertServer(created);
+      }
+
       setForm({
         ...DEFAULT_FORM,
         minecraft_version: form.minecraft_version,
         server_distribution: form.server_distribution,
       });
-      setCreateStep('core');
+      setCreateMode(null);
+      setCreateStep('mode');
+      setImportSourcePath('');
+      setPendingImportServerId(null);
       await refreshServers(created.id);
     } catch (err: unknown) {
-      setError(clientErrorMessage(err, 'Failed to create Minecraft server'));
+      if (createMode === 'import') {
+        setCreateStep('source');
+      }
+      const message =
+        createMode === 'import'
+          ? clientErrorMessage(err, 'Failed to import Minecraft server')
+          : clientErrorMessage(err, 'Failed to create Minecraft server');
+      setError(message);
     } finally {
       setCreating(false);
+      setImporting(false);
     }
   }
 
@@ -799,32 +832,28 @@ export default function ServersPage() {
     }
   }
 
-  const importTargetServer =
-    servers.find(
-      (server) =>
-        server.install_mode === 'managed' &&
-        (server.observed_state === 'draft' || server.observed_state === 'unprovisioned'),
-    ) ?? null;
-
-  const createStepIndex = CREATE_WIZARD_STEPS.findIndex((step) => step.id === createStep);
-  const activeCreateStep = CREATE_WIZARD_STEPS[createStepIndex] ?? CREATE_WIZARD_STEPS[0];
-  const activeCreateStepErrors = createStepErrors(form, createStep);
+  const createSteps = createWizardSteps(createMode);
+  const createStepIndex = createSteps.findIndex((step) => step === createStep);
+  const normalizedCreateStepIndex = createStepIndex === -1 ? 0 : createStepIndex;
+  const activeCreateStepId = createSteps[normalizedCreateStepIndex] ?? createSteps[0];
+  const activeCreateStep = CREATE_WIZARD_STEP_META[activeCreateStepId];
+  const activeCreateStepErrors = createStepErrors(form, activeCreateStepId, createMode, importSourcePath);
   const canAdvanceCreateStep = activeCreateStepErrors.length === 0;
 
   function goToNextCreateStep() {
     if (!canAdvanceCreateStep) {
       return;
     }
-    const nextStep = CREATE_WIZARD_STEPS[createStepIndex + 1];
+    const nextStep = createSteps[normalizedCreateStepIndex + 1];
     if (nextStep) {
-      setCreateStep(nextStep.id);
+      setCreateStep(nextStep);
     }
   }
 
   function goToPreviousCreateStep() {
-    const previousStep = CREATE_WIZARD_STEPS[createStepIndex - 1];
+    const previousStep = createSteps[normalizedCreateStepIndex - 1];
     if (previousStep) {
-      setCreateStep(previousStep.id);
+      setCreateStep(previousStep);
     }
   }
 
@@ -1193,414 +1222,430 @@ export default function ServersPage() {
         )}
       </section>
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
-            <div>
-              <h2 className="text-xl font-semibold">Create Minecraft server</h2>
-              <p className="text-sm muted">
-                    Create the server record here. Rustyfin now provisions managed servers automatically
-                    when Start is clicked, or you can import an existing server from the Debian host.
-              </p>
+      <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+        <div>
+          <h2 className="text-xl font-semibold">Create Minecraft server</h2>
+          <p className="text-sm muted">
+            Choose whether Rustyfin should create a new managed server or import an existing one from the Debian host, then walk through the setup step by step.
+          </p>
+        </div>
+
+        {me.role !== 'admin' ? (
+          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+            Only admins can create or import server records. Users can still start, stop, and restart visible servers from the known servers list.
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+            <div className="grid gap-2 sm:grid-cols-5">
+              {createSteps.map((stepId, index) => {
+                const step = CREATE_WIZARD_STEP_META[stepId];
+                const isActive = stepId === activeCreateStepId;
+                const isComplete =
+                  index < normalizedCreateStepIndex &&
+                  createStepErrors(form, stepId, createMode, importSourcePath).length === 0;
+                return (
+                  <div
+                    key={stepId}
+                    className={`rounded-2xl border px-4 py-3 text-left transition ${
+                      isActive
+                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))] shadow-[0_0_0_1px_rgba(255,159,67,0.22)]'
+                        : isComplete
+                          ? 'border-emerald-400/30 bg-emerald-500/10'
+                          : 'border-[var(--border-soft)] bg-[var(--surface-soft)]'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-white">{step.title}</div>
+                  </div>
+                );
+              })}
             </div>
 
-            {me.role !== 'admin' ? (
-              <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                Only admins can create server records. Users can still start, stop, and restart
-                visible servers from the known servers list.
+            <div className="panel-soft flex flex-col gap-4 rounded-2xl px-4 py-4 sm:px-5">
+              <div>
+                <div className="text-sm font-semibold text-white">{activeCreateStep.title}</div>
+                <p className="mt-1 text-sm muted">{activeCreateStep.description}</p>
               </div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-                <div className="grid gap-2 sm:grid-cols-4">
-                  {CREATE_WIZARD_STEPS.map((step, index) => {
-                    const isActive = step.id === createStep;
-                    const isComplete = index < createStepIndex && createStepErrors(form, step.id).length === 0;
-                    return (
-                      <div
-                        key={step.id}
-                        className={`rounded-2xl border px-4 py-3 text-left transition ${
-                          isActive
-                            ? 'border-[var(--orange-soft)] bg-[var(--surface-elevated)]'
-                            : isComplete
-                              ? 'border-emerald-400/30 bg-emerald-500/10'
-                              : 'border-[var(--border-soft)] bg-[var(--surface-soft)]'
-                        }`}
-                      >
-                        <div className="text-[11px] uppercase tracking-[0.28em] muted">{step.shortLabel}</div>
-                        <div className="mt-1 text-sm font-semibold text-white">{step.title}</div>
-                      </div>
-                    );
-                  })}
+
+              {activeCreateStepErrors.length > 0 ? (
+                <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  <ul className="list-disc space-y-1 pl-5">
+                    {activeCreateStepErrors.map((entry) => (
+                      <li key={entry}>{entry}</li>
+                    ))}
+                  </ul>
                 </div>
+              ) : null}
 
-                <div className="panel-soft flex flex-col gap-4 rounded-2xl px-4 py-4 sm:px-5">
-                  <div>
-                    <div className="text-sm font-semibold text-white">{activeCreateStep.title}</div>
-                    <p className="mt-1 text-sm muted">{activeCreateStep.description}</p>
+              {activeCreateStepId === 'mode' ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                      createMode === 'create'
+                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))]'
+                        : 'panel-soft'
+                    }`}
+                    onClick={() => {
+                      setCreateMode('create');
+                      setPendingImportServerId(null);
+                    }}
+                  >
+                    <div className="text-base font-semibold text-white">Create new managed server</div>
+                    <p className="mt-2 text-sm muted">
+                      Rustyfin generates the server files, installs the native service, and launches it when you click Start.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                      createMode === 'import'
+                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))]'
+                        : 'panel-soft'
+                    }`}
+                    onClick={() => setCreateMode('import')}
+                  >
+                    <div className="text-base font-semibold text-white">Import existing server</div>
+                    <p className="mt-2 text-sm muted">
+                      Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
+                    </p>
+                  </button>
+                </div>
+              ) : null}
+
+              {activeCreateStepId === 'core' ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Distribution</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.server_distribution}
+                      onChange={(event) =>
+                        updateForm(
+                          'server_distribution',
+                          event.target.value as CreateFormState['server_distribution'],
+                        )
+                      }
+                    >
+                      <option value="paper">Paper</option>
+                      <option value="vanilla">Vanilla</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Minecraft version</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.minecraft_version}
+                      onChange={(event) => updateForm('minecraft_version', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Port</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.listen_port}
+                      onChange={(event) => updateForm('listen_port', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Display name</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.display_name}
+                      onChange={(event) => updateForm('display_name', event.target.value)}
+                      placeholder="Example: Family SMP"
+                    />
+                  </label>
+                  <label className="space-y-2 sm:col-span-2">
+                    <span className="text-sm font-medium text-white">World name</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.world_name}
+                      onChange={(event) => updateForm('world_name', event.target.value)}
+                      placeholder="Example: family-world"
+                    />
+                  </label>
+                </div>
+              ) : null}
+
+              {activeCreateStepId === 'gameplay' ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Gamemode</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.gamemode}
+                      onChange={(event) =>
+                        updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
+                      }
+                    >
+                      <option value="survival">Survival</option>
+                      <option value="creative">Creative</option>
+                      <option value="adventure">Adventure</option>
+                      <option value="spectator">Spectator</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Difficulty</span>
+                    <select
+                      className="select rounded-xl px-4 py-3"
+                      value={form.difficulty}
+                      onChange={(event) =>
+                        updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
+                      }
+                    >
+                      <option value="peaceful">Peaceful</option>
+                      <option value="easy">Easy</option>
+                      <option value="normal">Normal</option>
+                      <option value="hard">Hard</option>
+                    </select>
+                  </label>
+                  <label className="space-y-2 sm:col-span-2">
+                    <span className="text-sm font-medium text-white">Description</span>
+                    <textarea
+                      className="input min-h-[5.5rem] rounded-xl px-4 py-3"
+                      value={form.description}
+                      onChange={(event) => updateForm('description', event.target.value)}
+                      placeholder="Optional notes about this server."
+                    />
+                  </label>
+                  <label className="space-y-2 sm:col-span-2">
+                    <span className="text-sm font-medium text-white">Message of the day</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={form.motd}
+                      onChange={(event) => updateForm('motd', event.target.value)}
+                      placeholder="Defaults to the display name if left blank."
+                    />
+                  </label>
+                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm sm:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={form.hardcore}
+                      onChange={(event) => updateForm('hardcore', event.target.checked)}
+                    />
+                    <span>Hardcore mode</span>
+                  </label>
+                </div>
+              ) : null}
+
+              {activeCreateStepId === 'resources' ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Min memory (MB)</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.min_memory_mb}
+                      onChange={(event) => updateForm('min_memory_mb', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Max memory (MB)</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.max_memory_mb}
+                      onChange={(event) => updateForm('max_memory_mb', event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-2 sm:col-span-2">
+                    <span className="text-sm font-medium text-white">Max players</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      type="number"
+                      value={form.max_player_count}
+                      onChange={(event) => updateForm('max_player_count', event.target.value)}
+                    />
+                  </label>
+                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted sm:col-span-2">
+                    Rustyfin will use these limits to generate the managed server runtime on the Debian host.
                   </div>
+                </div>
+              ) : null}
 
-                  {activeCreateStepErrors.length > 0 ? (
-                    <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                      <ul className="list-disc space-y-1 pl-5">
-                        {activeCreateStepErrors.map((entry) => (
-                          <li key={entry}>{entry}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {createStep === 'core' ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Distribution</span>
-                        <select
-                          className="select rounded-xl px-4 py-3"
-                          value={form.server_distribution}
-                          onChange={(event) =>
-                            updateForm(
-                              'server_distribution',
-                              event.target.value as CreateFormState['server_distribution'],
-                            )
-                          }
-                        >
-                          <option value="paper">Paper</option>
-                          <option value="vanilla">Vanilla</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Minecraft version</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          value={form.minecraft_version}
-                          onChange={(event) => updateForm('minecraft_version', event.target.value)}
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Port</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          type="number"
-                          value={form.listen_port}
-                          onChange={(event) => updateForm('listen_port', event.target.value)}
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Display name</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          value={form.display_name}
-                          onChange={(event) => updateForm('display_name', event.target.value)}
-                          placeholder="Example: Family SMP"
-                        />
-                      </label>
-                      <label className="space-y-2 sm:col-span-2">
-                        <span className="text-sm font-medium text-white">World name</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          value={form.world_name}
-                          onChange={(event) => updateForm('world_name', event.target.value)}
-                          placeholder="Example: family-world"
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-
-                  {createStep === 'gameplay' ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Gamemode</span>
-                        <select
-                          className="select rounded-xl px-4 py-3"
-                          value={form.gamemode}
-                          onChange={(event) =>
-                            updateForm('gamemode', event.target.value as CreateFormState['gamemode'])
-                          }
-                        >
-                          <option value="survival">Survival</option>
-                          <option value="creative">Creative</option>
-                          <option value="adventure">Adventure</option>
-                          <option value="spectator">Spectator</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Difficulty</span>
-                        <select
-                          className="select rounded-xl px-4 py-3"
-                          value={form.difficulty}
-                          onChange={(event) =>
-                            updateForm('difficulty', event.target.value as CreateFormState['difficulty'])
-                          }
-                        >
-                          <option value="peaceful">Peaceful</option>
-                          <option value="easy">Easy</option>
-                          <option value="normal">Normal</option>
-                          <option value="hard">Hard</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2 sm:col-span-2">
-                        <span className="text-sm font-medium text-white">Description</span>
-                        <textarea
-                          className="input min-h-[5.5rem] rounded-xl px-4 py-3"
-                          value={form.description}
-                          onChange={(event) => updateForm('description', event.target.value)}
-                          placeholder="Optional notes about this server."
-                        />
-                      </label>
-                      <label className="space-y-2 sm:col-span-2">
-                        <span className="text-sm font-medium text-white">Message of the day</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          value={form.motd}
-                          onChange={(event) => updateForm('motd', event.target.value)}
-                          placeholder="Defaults to the display name if left blank."
-                        />
-                      </label>
-                      <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm sm:col-span-2">
-                        <input
-                          type="checkbox"
-                          checked={form.hardcore}
-                          onChange={(event) => updateForm('hardcore', event.target.checked)}
-                        />
-                        <span>Hardcore mode</span>
-                      </label>
-                    </div>
-                  ) : null}
-
-                  {createStep === 'resources' ? (
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Min memory (MB)</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          type="number"
-                          value={form.min_memory_mb}
-                          onChange={(event) => updateForm('min_memory_mb', event.target.value)}
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium text-white">Max memory (MB)</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          type="number"
-                          value={form.max_memory_mb}
-                          onChange={(event) => updateForm('max_memory_mb', event.target.value)}
-                        />
-                      </label>
-                      <label className="space-y-2 sm:col-span-2">
-                        <span className="text-sm font-medium text-white">Max players</span>
-                        <input
-                          className="input rounded-xl px-4 py-3"
-                          type="number"
-                          value={form.max_player_count}
-                          onChange={(event) => updateForm('max_player_count', event.target.value)}
-                        />
-                      </label>
-                      <div className="panel-soft rounded-xl px-4 py-3 text-sm muted sm:col-span-2">
-                        Rustyfin will use these limits to generate the managed server runtime on the Debian host.
+              {activeCreateStepId === 'source' ? (
+                <div className="flex flex-col gap-4">
+                  {pendingImportServerId ? (
+                    <div className="panel-soft rounded-xl px-4 py-3 text-sm">
+                      <div className="font-medium text-white">Retrying import into the existing draft</div>
+                      <div className="mt-1 text-xs muted">
+                        Rustyfin already created the managed record. Fix the path below and retry the import without creating another draft.
                       </div>
                     </div>
-                  ) : null}
-
-                  {createStep === 'review' ? (
-                    <div className="flex flex-col gap-4">
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="panel rounded-2xl p-4">
-                          <div className="text-xs uppercase tracking-[0.24em] muted">Server</div>
-                          <dl className="mt-3 space-y-2 text-sm">
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Name</dt>
-                              <dd className="text-right text-white">{form.display_name || 'Not set'}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Distribution</dt>
-                              <dd className="text-right text-white">{titleCase(form.server_distribution)}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Version</dt>
-                              <dd className="text-right text-white">{form.minecraft_version || 'Not set'}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">World</dt>
-                              <dd className="text-right text-white">{form.world_name || 'Not set'}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Port</dt>
-                              <dd className="text-right text-white">{form.listen_port || 'Not set'}</dd>
-                            </div>
-                          </dl>
-                        </div>
-
-                        <div className="panel rounded-2xl p-4">
-                          <div className="text-xs uppercase tracking-[0.24em] muted">Gameplay and resources</div>
-                          <dl className="mt-3 space-y-2 text-sm">
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Gamemode</dt>
-                              <dd className="text-right text-white">{titleCase(form.gamemode)}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Difficulty</dt>
-                              <dd className="text-right text-white">{titleCase(form.difficulty)}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">RAM</dt>
-                              <dd className="text-right text-white">
-                                {form.min_memory_mb} MB to {form.max_memory_mb} MB
-                              </dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">Max players</dt>
-                              <dd className="text-right text-white">{form.max_player_count}</dd>
-                            </div>
-                            <div className="flex items-center justify-between gap-4">
-                              <dt className="muted">MOTD</dt>
-                              <dd className="text-right text-white">{form.motd || 'Defaults to display name'}</dd>
-                            </div>
-                          </dl>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {TOGGLE_FIELDS.map(({ key, label }) => (
-                          <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={form[key]}
-                              onChange={(event) => updateForm(key, event.target.checked)}
-                            />
-                            <span>{label}</span>
-                          </label>
-                        ))}
-                        <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm sm:col-span-2">
-                          <input
-                            type="checkbox"
-                            checked={form.eula_accepted}
-                            onChange={(event) => updateForm('eula_accepted', event.target.checked)}
-                          />
-                          <span>I confirm the Minecraft EULA has been accepted.</span>
-                        </label>
-                      </div>
-
-                      <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                        Creating the server adds a draft record to known servers immediately. Clicking Start provisions and launches the managed server automatically.
-                      </div>
+                  ) : (
+                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                      Rustyfin will create the managed server record first, then import this host path into it.
                     </div>
-                  ) : null}
+                  )}
 
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium text-white">Host source path</span>
+                    <input
+                      className="input rounded-xl px-4 py-3"
+                      value={importSourcePath}
+                      onChange={(event) => setImportSourcePath(event.target.value)}
+                      placeholder="/srv/minecraft/existing-world"
+                    />
+                  </label>
+
+                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
-                      disabled={createStepIndex === 0}
-                      onClick={goToPreviousCreateStep}
+                      className="btn-secondary px-4 py-2 text-sm"
+                      onClick={() => openHostDirectoryBrowser(importSourcePath)}
                     >
-                      Back
+                      Browse Host Directories
                     </button>
-                    <div className="flex flex-wrap items-center gap-3">
-                      {createStep !== 'review' ? (
-                        <button
-                          type="button"
-                          className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
-                          disabled={!canAdvanceCreateStep}
-                          onClick={goToNextCreateStep}
-                        >
-                          Continue
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
-                          disabled={creating || activeCreateStepErrors.length > 0}
-                          onClick={() => void handleCreateServer()}
-                        >
-                          {creating ? 'Creating…' : 'Create Draft Server'}
-                        </button>
-                      )}
+                  </div>
+                </div>
+              ) : null}
+
+              {activeCreateStepId === 'review' ? (
+                <div className="flex flex-col gap-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="panel rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.24em] muted">Server</div>
+                      <dl className="mt-3 space-y-2 text-sm">
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Mode</dt>
+                          <dd className="text-right text-white">
+                            {createMode === 'import' ? 'Import existing server' : 'Create managed server'}
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Name</dt>
+                          <dd className="text-right text-white">{form.display_name || 'Not set'}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Distribution</dt>
+                          <dd className="text-right text-white">{titleCase(form.server_distribution)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Version</dt>
+                          <dd className="text-right text-white">{form.minecraft_version || 'Not set'}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">World</dt>
+                          <dd className="text-right text-white">{form.world_name || 'Not set'}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Port</dt>
+                          <dd className="text-right text-white">{form.listen_port || 'Not set'}</dd>
+                        </div>
+                        {createMode === 'import' ? (
+                          <div className="flex items-center justify-between gap-4">
+                            <dt className="muted">Source path</dt>
+                            <dd className="text-right text-white">{importSourcePath || 'Not set'}</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+                    </div>
+
+                    <div className="panel rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.24em] muted">Gameplay and resources</div>
+                      <dl className="mt-3 space-y-2 text-sm">
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Gamemode</dt>
+                          <dd className="text-right text-white">{titleCase(form.gamemode)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Difficulty</dt>
+                          <dd className="text-right text-white">{titleCase(form.difficulty)}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">RAM</dt>
+                          <dd className="text-right text-white">
+                            {form.min_memory_mb} MB to {form.max_memory_mb} MB
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">Max players</dt>
+                          <dd className="text-right text-white">{form.max_player_count}</dd>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <dt className="muted">MOTD</dt>
+                          <dd className="text-right text-white">{form.motd || 'Defaults to display name'}</dd>
+                        </div>
+                      </dl>
                     </div>
                   </div>
-                </div>
-              </div>
-            )}
-        </section>
 
-        <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
-          <div>
-            <h2 className="text-xl font-semibold">Import Existing Server</h2>
-            <p className="text-sm muted">
-              Import a prepared Minecraft server directory from the Debian host into the newest
-              draft or unprovisioned managed server record.
-            </p>
-          </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {TOGGLE_FIELDS.map(({ key, label }) => (
+                      <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={form[key]}
+                          onChange={(event) => updateForm(key, event.target.checked)}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                    <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm sm:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={form.eula_accepted}
+                        onChange={(event) => updateForm('eula_accepted', event.target.checked)}
+                      />
+                      <span>I confirm the Minecraft EULA has been accepted.</span>
+                    </label>
+                  </div>
 
-          {me.role !== 'admin' ? (
-            <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              Only admins can import or delete server data. Users can still
-              control server runtime from the known servers list.
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-              {importTargetServer ? (
-                <div className="panel-soft rounded-xl px-4 py-3 text-sm">
-                  <div className="font-medium text-white">{importTargetServer.display_name}</div>
-                  <div className="mt-1 text-xs muted">
-                    Targeting {importTargetServer.server_distribution} {importTargetServer.minecraft_version}
-                    {' · '}
-                    {importTargetServer.world_name}
-                    {' · '}
-                    Port {importTargetServer.listen_port}
+                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                    {createMode === 'import'
+                      ? 'Rustyfin will create the managed server record, then import the host directory into it and install the native unit.'
+                      : 'Creating the server adds a draft record to known servers immediately. Clicking Start provisions and launches the managed server automatically.'}
                   </div>
                 </div>
-              ) : (
-                <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                  Create a draft server first. Rustyfin will import into the newest draft or
-                  unprovisioned managed server automatically.
-                </div>
-              )}
+              ) : null}
 
-              <div className="panel rounded-xl px-4 py-4">
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                    Import Existing Server
-                  </h4>
-                  <p className="text-sm muted">
-                    Copy an existing Minecraft server directory from the host into that managed
-                    target path, normalize the server jar, and install the native unit.
-                  </p>
-                </div>
-                <label className="mt-4 block space-y-2">
-                  <span className="text-sm font-medium text-white">Host source path</span>
-                  <input
-                    className="input rounded-xl px-4 py-3"
-                    value={importSourcePath}
-                    onChange={(event) => setImportSourcePath(event.target.value)}
-                    placeholder="/srv/minecraft/existing-world"
-                  />
-                </label>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn-secondary px-4 py-2 text-sm"
-                    onClick={() => openHostDirectoryBrowser(importSourcePath)}
-                  >
-                    Browse Host Directories
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-                    disabled={
-                      !importTargetServer ||
-                      importing ||
-                      actionLoading !== null ||
-                      !(runtimeCapabilities?.import_supported ?? true)
-                    }
-                    onClick={() => importTargetServer && void handleImportServer(importTargetServer)}
-                  >
-                    {importing ? 'Importing…' : 'Import Existing Server'}
-                  </button>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-2">
+                <button
+                  type="button"
+                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                  disabled={normalizedCreateStepIndex === 0}
+                  onClick={goToPreviousCreateStep}
+                >
+                  Back
+                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  {activeCreateStepId !== 'review' ? (
+                    <button
+                      type="button"
+                      className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                      disabled={!canAdvanceCreateStep}
+                      onClick={goToNextCreateStep}
+                    >
+                      Continue
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                      disabled={
+                        creating ||
+                        importing ||
+                        activeCreateStepErrors.length > 0 ||
+                        (createMode === 'import' && !(runtimeCapabilities?.import_supported ?? true))
+                      }
+                      onClick={() => void handleCreateServer()}
+                    >
+                      {creating || importing
+                        ? createMode === 'import'
+                          ? 'Importing…'
+                          : 'Creating…'
+                        : createMode === 'import'
+                          ? 'Create and Import Server'
+                          : 'Create Draft Server'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
-          )}
-        </section>
-      </div>
+          </div>
+        )}
+      </section>
 
       <ConfirmModal
         open={Boolean(deleteConfirmServer)}
