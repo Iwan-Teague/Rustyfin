@@ -292,7 +292,17 @@ export default function NavBar() {
       ) : null}
 
       {!showDesktopNav ? (
-        <div className="flex items-center">
+        <div className="relative flex items-center justify-between">
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
+            <Link
+              href="/"
+              className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+              aria-label="Go to Rustyfin home"
+            >
+              Rustyfin
+            </Link>
+          </div>
+
           <button
             type="button"
             className="btn-ghost flex items-center px-3 py-2 text-xl leading-none"
@@ -303,88 +313,84 @@ export default function NavBar() {
             ☰
           </button>
 
-          <Link
-            href="/"
-            className="mx-auto rounded-full text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
-            aria-label="Go to Rustyfin home"
-          >
-            Rustyfin
-          </Link>
-
-          {voiceSession && (
-            <div className="mr-2 flex items-center gap-1 rounded-full border border-green-500/50 bg-black/35 px-1.5 py-1">
-              <Link
-                href="/channels"
-                className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 text-[11px] text-green-300"
-                title={`Open channel: ${voiceSession.channelName}`}
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
-                <span className="max-w-[5.5rem] truncate">{voiceSession.channelName}</span>
-              </Link>
-              <button
-                type="button"
-                onClick={toggleMute}
-                disabled={!hasLocalStream}
-                className={`${baseVoiceActionClass} h-6 w-6 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  muted
-                    ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                    : 'border-[var(--border)] bg-black/45 text-white/85'
-                }`}
-                aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-                title={
-                  hasLocalStream
-                    ? muted
-                      ? 'Unmute microphone'
-                      : 'Mute microphone'
-                    : 'No microphone — listening only'
-                }
-              >
-                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                  <rect x="9" y="3.5" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.8" />
-                  <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  {muted && (
-                    <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  )}
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={toggleDeafen}
-                className={`${baseVoiceActionClass} h-6 w-6 ${
-                  deafened
-                    ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                    : 'border-[var(--border)] bg-black/45 text-white/85'
-                }`}
-                aria-label={deafened ? 'Undeafen' : 'Deafen'}
-                title={deafened ? 'Undeafen' : 'Deafen'}
-              >
-                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                  <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                  <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                  <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  {deafened && (
-                    <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                  )}
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={() => setConfirmLeaveVoiceOpen(true)}
-                className={`${baseVoiceActionClass} h-6 w-6 border-[var(--border)] bg-black/55 text-white/90`}
-                aria-label="Disconnect from voice"
-                title="Disconnect from voice"
-              >
-                <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                  <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                </svg>
-              </button>
-            </div>
-          )}
-
-          {!loading && me && !voiceSession && <span className="chip">{me.username}</span>}
+          <div className="flex items-center justify-end gap-2">
+            {voiceSession ? (
+              <div className="mr-2 flex items-center gap-1 rounded-full border border-green-500/50 bg-black/35 px-1.5 py-1">
+                <Link
+                  href="/channels"
+                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 text-[11px] text-green-300"
+                  title={`Open channel: ${voiceSession.channelName}`}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+                  <span className="max-w-[5.5rem] truncate">{voiceSession.channelName}</span>
+                </Link>
+                <button
+                  type="button"
+                  onClick={toggleMute}
+                  disabled={!hasLocalStream}
+                  className={`${baseVoiceActionClass} h-6 w-6 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    muted
+                      ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                      : 'border-[var(--border)] bg-black/45 text-white/85'
+                  }`}
+                  aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+                  title={
+                    hasLocalStream
+                      ? muted
+                        ? 'Unmute microphone'
+                        : 'Mute microphone'
+                      : 'No microphone — listening only'
+                  }
+                >
+                  <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
+                    <rect x="9" y="3.5" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.8" />
+                    <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    {muted && (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    )}
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleDeafen}
+                  className={`${baseVoiceActionClass} h-6 w-6 ${
+                    deafened
+                      ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                      : 'border-[var(--border)] bg-black/45 text-white/85'
+                  }`}
+                  aria-label={deafened ? 'Undeafen' : 'Deafen'}
+                  title={deafened ? 'Undeafen' : 'Deafen'}
+                >
+                  <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
+                    <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                    <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                    <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    {deafened && (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    )}
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmLeaveVoiceOpen(true)}
+                  className={`${baseVoiceActionClass} h-6 w-6 border-[var(--border)] bg-black/55 text-white/90`}
+                  aria-label="Disconnect from voice"
+                  title="Disconnect from voice"
+                >
+                  <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
+                    <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            ) : !loading && me ? (
+              <span className="chip">{me.username}</span>
+            ) : (
+              <span className="w-10 shrink-0" aria-hidden="true" />
+            )}
+          </div>
         </div>
       ) : null}
 
