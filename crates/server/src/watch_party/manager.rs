@@ -197,6 +197,9 @@ pub struct BattleshipState {
     pub winner_color: Option<String>,
     pub blue_user_id: Option<String>,
     pub red_user_id: Option<String>,
+    pub ai_enabled: bool,
+    pub ai_difficulty: String,
+    pub ai_color: Option<String>,
     pub blue_ready: bool,
     pub red_ready: bool,
     pub blue_ships: [u8; BATTLESHIP_BOARD_CELLS],
@@ -220,6 +223,9 @@ impl Default for BattleshipState {
             winner_color: None,
             blue_user_id: None,
             red_user_id: None,
+            ai_enabled: false,
+            ai_difficulty: "medium".to_string(),
+            ai_color: None,
             blue_ready: false,
             red_ready: false,
             blue_ships: [0; BATTLESHIP_BOARD_CELLS],
@@ -1415,8 +1421,76 @@ impl RoomRuntime {
         )?;
         validate_chess_seat_change("red", current_red.as_deref(), red.as_deref(), actor_user_id)?;
 
-        let next_state = fresh_battleship_state(blue, red, now_ms);
+        let next_state =
+            fresh_battleship_state(blue, red, false, "medium".to_string(), None, now_ms);
         guard.battleship = next_state;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn configure_battleship_ai(
+        &self,
+        configured_by_user_id: &str,
+        enabled: bool,
+        difficulty: Option<String>,
+        human_color: Option<String>,
+    ) -> Result<Option<PlayState>, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(None),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" {
+            return Err("active play game is not battleship".to_string());
+        }
+
+        if enabled {
+            let difficulty = normalize_ai_difficulty(
+                difficulty
+                    .as_deref()
+                    .unwrap_or(guard.battleship.ai_difficulty.as_str()),
+            )?;
+            let preferred_human_color = human_color
+                .as_deref()
+                .and_then(parse_battleship_color_name)
+                .or_else(|| {
+                    if guard.battleship.blue_user_id.as_deref() == Some(configured_by_user_id) {
+                        Some(BattleshipColor::Blue)
+                    } else if guard.battleship.red_user_id.as_deref() == Some(configured_by_user_id)
+                    {
+                        Some(BattleshipColor::Red)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(BattleshipColor::Blue);
+
+            let ai_color = opposite_battleship_color(preferred_human_color);
+            let (blue_user_id, red_user_id) = match preferred_human_color {
+                BattleshipColor::Blue => (Some(configured_by_user_id.to_string()), None),
+                BattleshipColor::Red => (None, Some(configured_by_user_id.to_string())),
+            };
+            let next_state = fresh_battleship_state(
+                blue_user_id,
+                red_user_id,
+                true,
+                difficulty.to_string(),
+                Some(battleship_color_name(ai_color).to_string()),
+                now_ms,
+            );
+            guard.battleship = next_state;
+        } else {
+            guard.battleship.ai_enabled = false;
+            guard.battleship.ai_color = None;
+            clear_battleship_reset_requests(&mut guard.battleship);
+            guard.battleship.updated_ts_ms = now_ms;
+        }
+
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
         drop(guard);
@@ -1516,9 +1590,16 @@ impl RoomRuntime {
             guard.battleship.red_ready = false;
         }
 
-        let both_assigned =
-            guard.battleship.blue_user_id.is_some() && guard.battleship.red_user_id.is_some();
-        if both_assigned && guard.battleship.blue_ready && guard.battleship.red_ready {
+        let ai_color = guard
+            .battleship
+            .ai_color
+            .as_deref()
+            .and_then(parse_battleship_color_name);
+        let blue_active =
+            guard.battleship.blue_user_id.is_some() || ai_color == Some(BattleshipColor::Blue);
+        let red_active =
+            guard.battleship.red_user_id.is_some() || ai_color == Some(BattleshipColor::Red);
+        if blue_active && red_active && guard.battleship.blue_ready && guard.battleship.red_ready {
             guard.battleship.phase = "active".to_string();
             guard.battleship.status = "active".to_string();
             guard.battleship.turn_color = if now_ms % 2 == 0 {
@@ -1538,6 +1619,224 @@ impl RoomRuntime {
         drop(guard);
         self.touch_activity().await;
         Ok(Some(snapshot))
+    }
+
+    pub async fn apply_battleship_ai_action_if_needed(&self) -> Result<bool, String> {
+        let state = match self.play_state.as_ref() {
+            Some(state) => state,
+            None => return Ok(false),
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.active_game != "battleship" || !guard.battleship.ai_enabled {
+            return Ok(false);
+        }
+
+        let ai_color = match guard
+            .battleship
+            .ai_color
+            .as_deref()
+            .and_then(parse_battleship_color_name)
+        {
+            Some(color) => color,
+            None => return Ok(false),
+        };
+
+        if guard.battleship.phase == "setup" {
+            let already_placed = match ai_color {
+                BattleshipColor::Blue => {
+                    count_ship_cells(&guard.battleship.blue_ships) == BATTLESHIP_TOTAL_SHIP_CELLS
+                }
+                BattleshipColor::Red => {
+                    count_ship_cells(&guard.battleship.red_ships) == BATTLESHIP_TOTAL_SHIP_CELLS
+                }
+            };
+
+            let needs_ready = match ai_color {
+                BattleshipColor::Blue => !guard.battleship.blue_ready,
+                BattleshipColor::Red => !guard.battleship.red_ready,
+            };
+
+            let mut changed = false;
+            if !already_placed || needs_ready {
+                let seed = chrono::Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or_default()
+                    .unsigned_abs()
+                    ^ 0xB47713541u64;
+                let ships = if already_placed {
+                    None
+                } else {
+                    Some(generate_battleship_ships(seed)?)
+                };
+
+                match ai_color {
+                    BattleshipColor::Blue => {
+                        if let Some(ships) = ships {
+                            guard.battleship.blue_ships = ships;
+                            guard.battleship.blue_shots = [0; BATTLESHIP_BOARD_CELLS];
+                            guard.battleship.remaining_ship_cells_blue =
+                                BATTLESHIP_TOTAL_SHIP_CELLS;
+                            changed = true;
+                        }
+                        changed |= !guard.battleship.blue_ready;
+                        guard.battleship.blue_ready = true;
+                    }
+                    BattleshipColor::Red => {
+                        if let Some(ships) = ships {
+                            guard.battleship.red_ships = ships;
+                            guard.battleship.red_shots = [0; BATTLESHIP_BOARD_CELLS];
+                            guard.battleship.remaining_ship_cells_red = BATTLESHIP_TOTAL_SHIP_CELLS;
+                            changed = true;
+                        }
+                        changed |= !guard.battleship.red_ready;
+                        guard.battleship.red_ready = true;
+                    }
+                }
+            }
+            let blue_active =
+                guard.battleship.blue_user_id.is_some() || ai_color == BattleshipColor::Blue;
+            let red_active =
+                guard.battleship.red_user_id.is_some() || ai_color == BattleshipColor::Red;
+            if blue_active
+                && red_active
+                && guard.battleship.blue_ready
+                && guard.battleship.red_ready
+            {
+                if guard.battleship.phase != "active" || guard.battleship.status != "active" {
+                    guard.battleship.phase = "active".to_string();
+                    guard.battleship.status = "active".to_string();
+                    guard.battleship.turn_color = if now_ms % 2 == 0 {
+                        "blue".to_string()
+                    } else {
+                        "red".to_string()
+                    };
+                    changed = true;
+                }
+            } else if guard.battleship.phase != "setup" || guard.battleship.status != "setup" {
+                guard.battleship.phase = "setup".to_string();
+                guard.battleship.status = "setup".to_string();
+                changed = true;
+            }
+
+            if changed {
+                clear_battleship_reset_requests(&mut guard.battleship);
+                guard.battleship.updated_ts_ms = now_ms;
+                guard.updated_ts_ms = now_ms;
+                drop(guard);
+                self.touch_activity().await;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
+        if guard.battleship.phase != "active" || guard.battleship.status != "active" {
+            return Ok(false);
+        }
+        if parse_battleship_color_name(&guard.battleship.turn_color) != Some(ai_color) {
+            return Ok(false);
+        }
+
+        let ai_difficulty = guard.battleship.ai_difficulty.clone();
+        let (x, y, result, did_win) = match ai_color {
+            BattleshipColor::Blue => {
+                let target_ships = guard.battleship.red_ships;
+                let Some((x, y)) = select_battleship_ai_target(
+                    &guard.battleship.red_shots,
+                    ai_color,
+                    &ai_difficulty,
+                ) else {
+                    return Ok(false);
+                };
+                let target_idx = y * BATTLESHIP_BOARD_SIZE + x;
+                if guard.battleship.red_shots[target_idx] != 0 {
+                    return Ok(false);
+                }
+
+                let (result, did_win) = if target_ships[target_idx] == 0 {
+                    guard.battleship.red_shots[target_idx] = 1;
+                    ("miss".to_string(), false)
+                } else {
+                    guard.battleship.red_shots[target_idx] = 2;
+                    if guard.battleship.remaining_ship_cells_red > 0 {
+                        guard.battleship.remaining_ship_cells_red -= 1;
+                    }
+                    let ship_id = target_ships[target_idx];
+                    if guard.battleship.remaining_ship_cells_red == 0 {
+                        ("win".to_string(), true)
+                    } else if is_battleship_ship_sunk(
+                        &target_ships,
+                        &guard.battleship.red_shots,
+                        ship_id,
+                    ) {
+                        ("sunk".to_string(), false)
+                    } else {
+                        ("hit".to_string(), false)
+                    }
+                };
+                (x, y, result, did_win)
+            }
+            BattleshipColor::Red => {
+                let target_ships = guard.battleship.blue_ships;
+                let Some((x, y)) = select_battleship_ai_target(
+                    &guard.battleship.blue_shots,
+                    ai_color,
+                    &ai_difficulty,
+                ) else {
+                    return Ok(false);
+                };
+                let target_idx = y * BATTLESHIP_BOARD_SIZE + x;
+                if guard.battleship.blue_shots[target_idx] != 0 {
+                    return Ok(false);
+                }
+
+                let (result, did_win) = if target_ships[target_idx] == 0 {
+                    guard.battleship.blue_shots[target_idx] = 1;
+                    ("miss".to_string(), false)
+                } else {
+                    guard.battleship.blue_shots[target_idx] = 2;
+                    if guard.battleship.remaining_ship_cells_blue > 0 {
+                        guard.battleship.remaining_ship_cells_blue -= 1;
+                    }
+                    let ship_id = target_ships[target_idx];
+                    if guard.battleship.remaining_ship_cells_blue == 0 {
+                        ("win".to_string(), true)
+                    } else if is_battleship_ship_sunk(
+                        &target_ships,
+                        &guard.battleship.blue_shots,
+                        ship_id,
+                    ) {
+                        ("sunk".to_string(), false)
+                    } else {
+                        ("hit".to_string(), false)
+                    }
+                };
+                (x, y, result, did_win)
+            }
+        };
+
+        if did_win {
+            guard.battleship.phase = "finished".to_string();
+            guard.battleship.status = "finished".to_string();
+            guard.battleship.winner_color = Some(battleship_color_name(ai_color).to_string());
+        } else {
+            guard.battleship.turn_color =
+                battleship_color_name(opposite_battleship_color(ai_color)).to_string();
+        }
+
+        guard.battleship.last_shot = Some(BattleshipLastShot {
+            by_color: battleship_color_name(ai_color).to_string(),
+            x: x as u8,
+            y: y as u8,
+            result,
+        });
+        clear_battleship_reset_requests(&mut guard.battleship);
+        guard.battleship.updated_ts_ms = now_ms;
+        guard.updated_ts_ms = now_ms;
+        drop(guard);
+        self.touch_activity().await;
+        Ok(true)
     }
 
     pub async fn battleship_fire(
@@ -1678,7 +1977,11 @@ impl RoomRuntime {
         let has_red = red.is_some();
 
         if !has_blue && !has_red {
-            let next_state = fresh_battleship_state(blue, red, now_ms);
+            let ai_enabled = guard.battleship.ai_enabled;
+            let ai_difficulty = guard.battleship.ai_difficulty.clone();
+            let ai_color = guard.battleship.ai_color.clone();
+            let next_state =
+                fresh_battleship_state(blue, red, ai_enabled, ai_difficulty, ai_color, now_ms);
             guard.battleship = next_state;
             guard.updated_ts_ms = now_ms;
             let snapshot = guard.clone();
@@ -1712,7 +2015,11 @@ impl RoomRuntime {
             }
         }
 
-        let next_state = fresh_battleship_state(blue, red, now_ms);
+        let ai_enabled = guard.battleship.ai_enabled;
+        let ai_difficulty = guard.battleship.ai_difficulty.clone();
+        let ai_color = guard.battleship.ai_color.clone();
+        let next_state =
+            fresh_battleship_state(blue, red, ai_enabled, ai_difficulty, ai_color, now_ms);
         guard.battleship = next_state;
         guard.updated_ts_ms = now_ms;
         let snapshot = guard.clone();
@@ -2185,11 +2492,17 @@ fn fresh_connect_four_state(
 fn fresh_battleship_state(
     blue_user_id: Option<String>,
     red_user_id: Option<String>,
+    ai_enabled: bool,
+    ai_difficulty: String,
+    ai_color: Option<String>,
     now_ms: i64,
 ) -> BattleshipState {
     BattleshipState {
         blue_user_id,
         red_user_id,
+        ai_enabled,
+        ai_difficulty,
+        ai_color,
         updated_ts_ms: now_ms,
         ..BattleshipState::default()
     }
@@ -2199,6 +2512,12 @@ fn fresh_battleship_state(
 enum ConnectFourColor {
     Red,
     Yellow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BattleshipColor {
+    Blue,
+    Red,
 }
 
 fn connect_four_color_name(color: ConnectFourColor) -> &'static str {
@@ -2235,6 +2554,28 @@ fn connect_four_turn_to_color(turn: &str) -> ConnectFourColor {
         ConnectFourColor::Yellow
     } else {
         ConnectFourColor::Red
+    }
+}
+
+fn battleship_color_name(color: BattleshipColor) -> &'static str {
+    match color {
+        BattleshipColor::Blue => "blue",
+        BattleshipColor::Red => "red",
+    }
+}
+
+fn parse_battleship_color_name(raw: &str) -> Option<BattleshipColor> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "blue" => Some(BattleshipColor::Blue),
+        "red" => Some(BattleshipColor::Red),
+        _ => None,
+    }
+}
+
+fn opposite_battleship_color(color: BattleshipColor) -> BattleshipColor {
+    match color {
+        BattleshipColor::Blue => BattleshipColor::Red,
+        BattleshipColor::Red => BattleshipColor::Blue,
     }
 }
 
@@ -2666,6 +3007,137 @@ fn is_battleship_ship_sunk(
     true
 }
 
+fn select_battleship_ai_target(
+    shots: &[u8; BATTLESHIP_BOARD_CELLS],
+    ai_color: BattleshipColor,
+    difficulty: &str,
+) -> Option<(usize, usize)> {
+    let untargeted = battleship_untargeted_cells(shots);
+    if untargeted.is_empty() {
+        return None;
+    }
+
+    if difficulty == "easy" {
+        let mut rng = StdRng::seed_from_u64(
+            chrono::Utc::now().timestamp_millis().unsigned_abs()
+                ^ match ai_color {
+                    BattleshipColor::Blue => 0xB100u64,
+                    BattleshipColor::Red => 0xB200u64,
+                },
+        );
+        return untargeted.get(rng.gen_range(0..untargeted.len())).copied();
+    }
+
+    let adjacent_targets = battleship_adjacent_targets_from_hits(shots);
+    if !adjacent_targets.is_empty() {
+        if difficulty == "hard" {
+            return adjacent_targets
+                .into_iter()
+                .max_by_key(|(x, y)| battleship_target_score(shots, *x, *y))
+                .or_else(|| untargeted.first().copied());
+        }
+        return adjacent_targets.first().copied();
+    }
+
+    if difficulty == "hard" {
+        let parity_targets: Vec<(usize, usize)> = untargeted
+            .iter()
+            .copied()
+            .filter(|(x, y)| (x + y) % 2 == 0)
+            .collect();
+        if !parity_targets.is_empty() {
+            let mut rng = StdRng::seed_from_u64(
+                chrono::Utc::now().timestamp_millis().unsigned_abs()
+                    ^ match ai_color {
+                        BattleshipColor::Blue => 0xB300u64,
+                        BattleshipColor::Red => 0xB400u64,
+                    },
+            );
+            return parity_targets
+                .get(rng.gen_range(0..parity_targets.len()))
+                .copied();
+        }
+    }
+
+    untargeted.first().copied()
+}
+
+fn battleship_untargeted_cells(shots: &[u8; BATTLESHIP_BOARD_CELLS]) -> Vec<(usize, usize)> {
+    let mut cells = Vec::new();
+    for y in 0..BATTLESHIP_BOARD_SIZE {
+        for x in 0..BATTLESHIP_BOARD_SIZE {
+            let idx = y * BATTLESHIP_BOARD_SIZE + x;
+            if shots[idx] == 0 {
+                cells.push((x, y));
+            }
+        }
+    }
+    cells
+}
+
+fn battleship_adjacent_targets_from_hits(
+    shots: &[u8; BATTLESHIP_BOARD_CELLS],
+) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let mut seen = [false; BATTLESHIP_BOARD_CELLS];
+
+    for y in 0..BATTLESHIP_BOARD_SIZE {
+        for x in 0..BATTLESHIP_BOARD_SIZE {
+            let idx = y * BATTLESHIP_BOARD_SIZE + x;
+            if shots[idx] != 2 {
+                continue;
+            }
+
+            for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+                let next_x = x as i32 + dx;
+                let next_y = y as i32 + dy;
+                if next_x < 0
+                    || next_x >= BATTLESHIP_BOARD_SIZE as i32
+                    || next_y < 0
+                    || next_y >= BATTLESHIP_BOARD_SIZE as i32
+                {
+                    continue;
+                }
+                let next_x = next_x as usize;
+                let next_y = next_y as usize;
+                let next_idx = next_y * BATTLESHIP_BOARD_SIZE + next_x;
+                if shots[next_idx] != 0 || seen[next_idx] {
+                    continue;
+                }
+                seen[next_idx] = true;
+                results.push((next_x, next_y));
+            }
+        }
+    }
+
+    results
+}
+
+fn battleship_target_score(shots: &[u8; BATTLESHIP_BOARD_CELLS], x: usize, y: usize) -> i32 {
+    let mut score = 0_i32;
+    for (dx, dy) in [(1_i32, 0_i32), (-1, 0), (0, 1), (0, -1)] {
+        let next_x = x as i32 + dx;
+        let next_y = y as i32 + dy;
+        if next_x < 0
+            || next_x >= BATTLESHIP_BOARD_SIZE as i32
+            || next_y < 0
+            || next_y >= BATTLESHIP_BOARD_SIZE as i32
+        {
+            continue;
+        }
+        let next_idx = next_y as usize * BATTLESHIP_BOARD_SIZE + next_x as usize;
+        if shots[next_idx] == 2 {
+            score += 10;
+        } else if shots[next_idx] == 0 {
+            score += 1;
+        }
+    }
+
+    // Bias slightly toward the center when otherwise equal.
+    let center = (BATTLESHIP_BOARD_SIZE as i32 - 1) / 2;
+    score - ((x as i32 - center).abs() + (y as i32 - center).abs())
+}
+
 fn validate_chess_seat_change(
     seat_name: &str,
     current: Option<&str>,
@@ -3089,6 +3561,119 @@ mod tests {
         assert_eq!(play_state.connect_four.ai_color.as_deref(), Some("red"));
         assert!(play_state.connect_four.last_move_col.is_some());
         assert!(play_state.connect_four.last_move_row.is_some());
+    }
+
+    #[tokio::test]
+    async fn battleship_ai_configuration_assigns_human_and_ai_sides() {
+        let runtime = RoomRuntime::new_play("room-battleship".to_string());
+        runtime
+            .set_play_game("battleship".to_string())
+            .await
+            .expect("activate battleship");
+
+        let snapshot = runtime
+            .configure_battleship_ai(
+                "user-blue",
+                true,
+                Some("hard".to_string()),
+                Some("blue".to_string()),
+            )
+            .await
+            .expect("configure battleship ai")
+            .expect("play state snapshot");
+
+        assert!(snapshot.battleship.ai_enabled);
+        assert_eq!(snapshot.battleship.ai_difficulty, "hard");
+        assert_eq!(snapshot.battleship.ai_color.as_deref(), Some("red"));
+        assert_eq!(
+            snapshot.battleship.blue_user_id.as_deref(),
+            Some("user-blue")
+        );
+        assert_eq!(snapshot.battleship.red_user_id, None);
+    }
+
+    #[tokio::test]
+    async fn battleship_ai_can_prepare_and_take_turn() {
+        let runtime = RoomRuntime::new_play("room-battleship".to_string());
+        runtime
+            .set_play_game("battleship".to_string())
+            .await
+            .expect("activate battleship");
+        runtime
+            .configure_battleship_ai(
+                "user-blue",
+                true,
+                Some("medium".to_string()),
+                Some("blue".to_string()),
+            )
+            .await
+            .expect("configure battleship ai");
+
+        let prepared = runtime
+            .apply_battleship_ai_action_if_needed()
+            .await
+            .expect("apply battleship ai setup");
+        assert!(prepared);
+
+        let after_ai_setup = runtime.snapshot_play_state().await.expect("play state");
+        assert_eq!(
+            count_ship_cells(&after_ai_setup.battleship.red_ships),
+            BATTLESHIP_TOTAL_SHIP_CELLS
+        );
+        assert!(after_ai_setup.battleship.red_ready);
+        assert!(!after_ai_setup.battleship.blue_ready);
+        assert_eq!(after_ai_setup.battleship.phase, "setup");
+
+        runtime
+            .battleship_auto_place("user-blue")
+            .await
+            .expect("human auto place");
+        runtime
+            .battleship_set_ready("user-blue", true)
+            .await
+            .expect("human ready");
+
+        let active_state = runtime
+            .snapshot_play_state()
+            .await
+            .expect("active play state");
+        assert_eq!(active_state.battleship.phase, "active");
+        assert_eq!(active_state.battleship.status, "active");
+
+        if active_state.battleship.turn_color == "blue" {
+            runtime
+                .battleship_fire("user-blue", 0, 0)
+                .await
+                .expect("human opening shot");
+        }
+
+        let moved = runtime
+            .apply_battleship_ai_action_if_needed()
+            .await
+            .expect("apply battleship ai move");
+        assert!(moved);
+
+        let final_state = runtime
+            .snapshot_play_state()
+            .await
+            .expect("final play state");
+        assert_eq!(final_state.battleship.ai_color.as_deref(), Some("red"));
+        assert_eq!(
+            final_state
+                .battleship
+                .last_shot
+                .as_ref()
+                .map(|shot| shot.by_color.as_str()),
+            Some("red")
+        );
+        assert!(
+            final_state
+                .battleship
+                .blue_shots
+                .iter()
+                .any(|cell| *cell != 0),
+            "expected AI to target at least one blue cell"
+        );
     }
 
     #[test]

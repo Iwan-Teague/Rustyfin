@@ -384,6 +384,9 @@ export type WsBattleshipState = {
   winner_color?: 'blue' | 'red' | string | null;
   blue_user_id?: string | null;
   red_user_id?: string | null;
+  ai_enabled?: boolean;
+  ai_difficulty?: 'easy' | 'medium' | 'hard' | string;
+  ai_color?: 'blue' | 'red' | string | null;
   blue_ready?: boolean;
   red_ready?: boolean;
   blue_grid_rows: string[];
