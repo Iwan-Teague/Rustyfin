@@ -20,7 +20,6 @@ import {
   listBackendHostDirectories,
   listMinecraftServers,
   importMinecraftServer,
-  provisionMinecraftServer,
   refreshMinecraftServerStatus,
   requestMinecraftServerAction,
   scanMinecraftDiscoveryCandidates,
@@ -305,7 +304,6 @@ export default function ServersPage() {
   const [actionLoading, setActionLoading] = useState<MinecraftServerAction | null>(null);
   const [actionServerId, setActionServerId] = useState<string | null>(null);
   const [savingServerId, setSavingServerId] = useState<string | null>(null);
-  const [provisioning, setProvisioning] = useState(false);
   const [importing, setImporting] = useState(false);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -623,20 +621,6 @@ export default function ServersPage() {
     } finally {
       setActionLoading(null);
       setActionServerId((current) => (current === server.id ? null : current));
-    }
-  }
-
-  async function handleProvisionServer(server: MinecraftServer) {
-    setProvisioning(true);
-    setError('');
-    try {
-      const response: MinecraftServerOperationResponse = await provisionMinecraftServer(server.id);
-      upsertServer(response.instance);
-      await refreshSelectedServerStatus(response.instance.id, false);
-    } catch (err: unknown) {
-      setError(clientErrorMessage(err, 'Failed to provision Minecraft server'));
-    } finally {
-      setProvisioning(false);
     }
   }
 
@@ -1135,8 +1119,8 @@ export default function ServersPage() {
             <div>
               <h2 className="text-xl font-semibold">Create Minecraft server</h2>
               <p className="text-sm muted">
-                Draft creation is the entry point for brand-new Minecraft servers. Create the record
-                here, then use the management column to provision or import it on the Debian host.
+                    Create the server record here. Rustyfin now provisions managed servers automatically
+                    when Start is clicked, or you can import an existing server from the Debian host.
               </p>
             </div>
 
@@ -1323,7 +1307,7 @@ export default function ServersPage() {
 
           {me.role !== 'admin' ? (
             <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-              Only admins can provision, import, discover, or delete server data. Users can still
+              Only admins can import, discover, or delete server data. Users can still
               control server runtime from the known servers list.
             </div>
           ) : (
@@ -1357,40 +1341,9 @@ export default function ServersPage() {
                 </div>
               ) : (
                 <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-                  Choose a server record before provisioning or importing.
+                  Choose a server record before importing or applying discovery paths.
                 </div>
               )}
-
-              <div className="panel rounded-xl px-4 py-4">
-                <div className="space-y-2">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                    Managed Provision
-                  </h4>
-                  <p className="text-sm muted">
-                    Download the configured Minecraft artifact, render `server.properties`, write
-                    `eula.txt`, and install the native systemd unit for the target server.
-                  </p>
-                </div>
-                <div className="mt-3 text-xs muted">
-                  {managementServer
-                    ? `Distribution: ${managementServer.server_distribution} ${managementServer.minecraft_version} · Java: ${managementServer.java_path}`
-                    : 'Choose a target server first.'}
-                </div>
-                <button
-                  type="button"
-                  className="btn-primary mt-4 px-4 py-2 text-sm disabled:opacity-50"
-                  disabled={
-                    !managementServer ||
-                    provisioning ||
-                    importing ||
-                    actionLoading !== null ||
-                    !(runtimeCapabilities?.provision_supported ?? true)
-                  }
-                  onClick={() => managementServer && void handleProvisionServer(managementServer)}
-                >
-                  {provisioning ? 'Provisioning…' : 'Provision Managed Server'}
-                </button>
-              </div>
 
               <div className="panel rounded-xl px-4 py-4">
                 <div className="space-y-2">
@@ -1425,7 +1378,6 @@ export default function ServersPage() {
                     disabled={
                       !managementServer ||
                       importing ||
-                      provisioning ||
                       actionLoading !== null ||
                       !(runtimeCapabilities?.import_supported ?? true)
                     }
