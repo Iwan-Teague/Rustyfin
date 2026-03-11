@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import ConfirmModal from '@/app/components/ConfirmModal';
 
@@ -293,6 +293,7 @@ function shouldAutoRefreshServer(server: MinecraftServer) {
 export default function ServersPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
+  const serversRef = useRef<MinecraftServer[]>([]);
 
   const activeGameTab: ServersGameTab = 'minecraft';
   const [servers, setServers] = useState<MinecraftServer[]>([]);
@@ -326,6 +327,10 @@ export default function ServersPage() {
   const [discoveryRootPath, setDiscoveryRootPath] = useState('');
   const [discoveryRoots, setDiscoveryRoots] = useState<string[]>([]);
   const [discoveryCandidates, setDiscoveryCandidates] = useState<DiscoveryCandidate[]>([]);
+
+  useEffect(() => {
+    serversRef.current = servers;
+  }, [servers]);
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -368,6 +373,9 @@ export default function ServersPage() {
           }
           return rows[0]?.id ?? null;
         });
+        if (capabilities.status_supported && rows.length > 0) {
+          void refreshAllServerStatuses(rows);
+        }
       } catch (err: unknown) {
         if (!cancelled) {
           setError(clientErrorMessage(err, 'Failed to load servers'));
@@ -424,6 +432,31 @@ export default function ServersPage() {
       window.clearInterval(interval);
     };
   }, [me, runtimeCapabilities?.status_supported, servers]);
+
+  useEffect(() => {
+    if (!me || !(runtimeCapabilities?.status_supported ?? true)) {
+      return;
+    }
+
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      void refreshAllServerStatuses(serversRef.current);
+    };
+
+    const handleWindowFocus = () => {
+      void refreshAllServerStatuses(serversRef.current);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [me, runtimeCapabilities?.status_supported]);
 
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -527,6 +560,39 @@ export default function ServersPage() {
         setStatusRefreshingServerId((current) => (current === serverId ? null : current));
       }
     }
+  }
+
+  async function refreshAllServerStatuses(serverRows: MinecraftServer[]) {
+    if (!(runtimeCapabilities?.status_supported ?? true) || serverRows.length === 0) {
+      return;
+    }
+
+    const refreshedRows = await Promise.all(
+      serverRows.map((server) =>
+        refreshMinecraftServerStatus(server.id).catch(() => null),
+      ),
+    );
+
+    const refreshedById = new Map(
+      refreshedRows
+        .filter((row): row is MinecraftServer => row !== null)
+        .map((row) => [row.id, row] as const),
+    );
+
+    if (refreshedById.size === 0) {
+      return;
+    }
+
+    setServers((prev) =>
+      prev.map((server) => refreshedById.get(server.id) ?? server),
+    );
+    setServerEdits((prev) => {
+      const next = { ...prev };
+      for (const updated of refreshedById.values()) {
+        next[updated.id] = next[updated.id] ?? serverToSettingsForm(updated);
+      }
+      return next;
+    });
   }
 
   async function handleDiscoveryScan(rootPath?: string) {
