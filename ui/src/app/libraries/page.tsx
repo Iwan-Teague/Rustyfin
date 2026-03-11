@@ -133,7 +133,7 @@ export default function LibrariesPage() {
       )}
 
       {/* Continue Watching */}
-      <section className="space-y-3">
+      <section id="continue-watching" className="space-y-3 scroll-mt-24">
         <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
         {continueWatching.length === 0 ? (
           <div className="panel-soft px-4 py-3 text-sm muted">
