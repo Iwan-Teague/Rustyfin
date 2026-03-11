@@ -800,7 +800,7 @@ export default function ServersPage() {
                 >
                   <div className="flex flex-col gap-4">
                     <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div className="min-w-0 flex-1 space-y-2">
+                      <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-3">
                           <h3 className="text-lg font-semibold text-white">{server.display_name}</h3>
                           <span
@@ -815,22 +815,6 @@ export default function ServersPage() {
                           </span>
                           <span className="chip">{server.server_distribution} {server.minecraft_version}</span>
                         </div>
-                        {server.description ? (
-                          <div className="max-w-3xl text-sm muted">{server.description}</div>
-                        ) : null}
-                        {progressMessage ? (
-                          <div
-                            className={`max-w-3xl text-sm ${
-                              server.health_state === 'error' ||
-                              server.observed_state === 'failed' ||
-                              server.observed_state === 'error'
-                                ? 'text-rose-200'
-                                : 'text-amber-100'
-                            }`}
-                          >
-                            {progressMessage}
-                          </div>
-                        ) : null}
                       </div>
 
                       <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:min-w-fit sm:flex-wrap sm:justify-end sm:self-start">
@@ -903,6 +887,27 @@ export default function ServersPage() {
                         >
                           {expanded ? 'Hide details' : 'Show details'}
                         </button>
+                      </div>
+                    </div>
+
+                    <div className="w-full space-y-2">
+                      {server.description ? (
+                        <div className="w-full text-sm muted">{server.description}</div>
+                      ) : null}
+                      <div className="min-h-[3.5rem] w-full">
+                        {progressMessage ? (
+                          <div
+                            className={`w-full text-sm leading-6 ${
+                              server.health_state === 'error' ||
+                              server.observed_state === 'failed' ||
+                              server.observed_state === 'error'
+                                ? 'text-rose-200'
+                                : 'text-amber-100'
+                            }`}
+                          >
+                            {progressMessage}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
 
