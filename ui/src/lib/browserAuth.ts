@@ -1,5 +1,3 @@
-'use client';
-
 export const AUTH_TOKEN_STORAGE_KEY = 'token';
 export const AUTH_TOKEN_COOKIE_KEY = 'rustfin_token';
 
