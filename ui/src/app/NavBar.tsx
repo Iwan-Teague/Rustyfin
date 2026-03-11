@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
 import { usePathname } from 'next/navigation';
 import { createPortal } from 'react-dom';
+import ConfirmModal from '@/app/components/ConfirmModal';
 
 export default function NavBar() {
   const { me, loading, logout } = useAuth();
@@ -13,6 +14,7 @@ export default function NavBar() {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
+  const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
   const [showDesktopNav, setShowDesktopNav] = useState(false);
   const desktopShellRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +62,12 @@ export default function NavBar() {
   const deafened = voiceSession?.deafened ?? false;
   const baseVoiceActionClass =
     'inline-flex items-center justify-center rounded-full border transition';
+
+  function handleConfirmLogout() {
+    logout();
+    setConfirmLogoutOpen(false);
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -292,7 +300,11 @@ export default function NavBar() {
                       {link.label}
                     </Link>
                   ))}
-                  <button onClick={logout} className="btn-secondary h-10 shrink-0 px-4 text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmLogoutOpen(true)}
+                    className="btn-secondary h-10 shrink-0 px-4 text-sm"
+                  >
                     Logout
                   </button>
                 </>
@@ -427,10 +439,8 @@ export default function NavBar() {
             ) : me ? (
               <div className="flex items-center justify-end gap-2 px-1">
                 <button
-                  onClick={() => {
-                    logout();
-                    setMenuOpen(false);
-                  }}
+                  type="button"
+                  onClick={() => setConfirmLogoutOpen(true)}
                   className="btn-secondary px-4 py-2 text-sm"
                 >
                   Logout
@@ -448,6 +458,17 @@ export default function NavBar() {
           </div>
         </div>
       ) : null}
+
+      <ConfirmModal
+        open={confirmLogoutOpen}
+        title="Log Out?"
+        description="You will be signed out of Rustyfin on this browser."
+        confirmLabel="Log Out"
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={handleConfirmLogout}
+        onCancel={() => setConfirmLogoutOpen(false)}
+      />
 
       {voiceSession &&
         confirmLeaveVoiceOpen &&
