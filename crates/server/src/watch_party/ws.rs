@@ -18,7 +18,7 @@ use crate::state::AppState;
 
 use super::manager::{
     AudioAction, BattleshipResetOutcome, ChessResetOutcome, ConnectFourResetOutcome, CreateState,
-    PlaybackAction, RoomRuntime,
+    PlaybackAction, RoomRuntime, placed_battleship_ship_ids,
 };
 use super::permissions::{RoomPolicy, can_play_pause, can_seek};
 use super::presence::build_presence_members;
@@ -2840,6 +2840,62 @@ async fn handle_client_message(
             schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
             Ok(())
         }
+        ClientMessage::BattleshipPlaceShip {
+            ship_id,
+            x,
+            y,
+            orientation,
+        } => {
+            if context.room_mode != "play" {
+                send_error(
+                    socket,
+                    "battleship_place_ship is only valid in play-together rooms",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let (room_status, policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_play_pause(&role, &policy) {
+                send_error(socket, "battleship setup is not allowed for this user").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            match runtime
+                .battleship_place_ship(&context.user_id, ship_id, x, y, &orientation)
+                .await
+            {
+                Ok(_) => {
+                    broadcast_current_state(state, runtime, &context.room_id).await?;
+                    schedule_delayed_battleship_ai_action(state.clone(), context.room_id.clone());
+                }
+                Err(message) => {
+                    send_error(socket, &message).await?;
+                    send_current_state_for_user(
+                        socket,
+                        state,
+                        runtime,
+                        &context.room_id,
+                        Some(&context.user_id),
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        }
         ClientMessage::BattleshipAutoPlace => {
             if context.room_mode != "play" {
                 send_error(
@@ -3360,6 +3416,8 @@ fn build_play_state_payload(
             ai_color: play_state.battleship.ai_color,
             blue_ready: play_state.battleship.blue_ready,
             red_ready: play_state.battleship.red_ready,
+            blue_ship_ids_placed: placed_battleship_ship_ids(&play_state.battleship.blue_ships),
+            red_ship_ids_placed: placed_battleship_ship_ids(&play_state.battleship.red_ships),
             blue_grid_rows: battleship_blue_rows,
             red_grid_rows: battleship_red_rows,
             remaining_ship_cells_blue: play_state.battleship.remaining_ship_cells_blue,
