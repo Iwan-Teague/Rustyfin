@@ -495,6 +495,13 @@ fn build_managed_provision_spec(
     }
 }
 
+fn status_represents_clean_stop(status: &SystemdUnitStatus) -> bool {
+    status.active_state == "failed"
+        && status.sub_state == "failed"
+        && status.result == "exit-code"
+        && matches!(status.exec_main_status, Some(130 | 143))
+}
+
 fn apply_runtime_status_projection(
     current: &rustfin_db::repo::servers::MinecraftServerRow,
     status: &SystemdUnitStatus,
@@ -569,6 +576,18 @@ fn apply_runtime_status_projection(
             projection.last_error_summary = None;
         }
         "inactive" => {
+            projection.observed_state = "stopped".to_string();
+            projection.health_state = "idle".to_string();
+            projection.current_player_count = 0;
+            projection.last_stopped_ts = Some(
+                current
+                    .last_stopped_ts
+                    .filter(|_| current.observed_state == "stopped")
+                    .unwrap_or(now),
+            );
+            projection.last_error_summary = None;
+        }
+        "failed" if status_represents_clean_stop(status) => {
             projection.observed_state = "stopped".to_string();
             projection.health_state = "idle".to_string();
             projection.current_player_count = 0;
@@ -2025,9 +2044,64 @@ pub async fn create_minecraft_server(
 #[cfg(test)]
 mod tests {
     use super::{
-        CreateMinecraftServerRequest, default_difficulty, default_gamemode, default_listen_port,
-        default_max_memory_mb, default_max_players, default_min_memory_mb, validate_create_request,
+        CreateMinecraftServerRequest, RuntimeProjection, SystemdUnitStatus,
+        apply_runtime_status_projection, default_difficulty, default_gamemode, default_listen_port,
+        default_max_memory_mb, default_max_players, default_min_memory_mb,
+        status_represents_clean_stop, validate_create_request,
     };
+    use rustfin_db::repo::servers::MinecraftServerRow;
+
+    fn sample_server_row() -> MinecraftServerRow {
+        MinecraftServerRow {
+            id: "server-1".to_string(),
+            display_name: "Family SMP".to_string(),
+            slug: "family-smp".to_string(),
+            description: None,
+            owner_user_id: "user-1".to_string(),
+            owner_display_name: "admin".to_string(),
+            install_mode: "managed".to_string(),
+            runtime_mode: "native_systemd".to_string(),
+            desired_state: "stopped".to_string(),
+            observed_state: "running".to_string(),
+            health_state: "healthy".to_string(),
+            instance_root: "/srv/rustyfin-servers/minecraft/instances/server-1".to_string(),
+            server_work_dir: "/srv/rustyfin-servers/minecraft/instances/server-1/server"
+                .to_string(),
+            systemd_unit_name: "rustyfin-minecraft-server-1.service".to_string(),
+            listen_host: "0.0.0.0".to_string(),
+            listen_port: 25565,
+            advertised_host: None,
+            advertised_port: None,
+            autostart: false,
+            auto_stop_when_empty: false,
+            auto_stop_idle_minutes: None,
+            current_player_count: 0,
+            max_player_count: Some(20),
+            last_ready_ts: None,
+            last_started_ts: None,
+            last_stopped_ts: None,
+            last_exit_code: None,
+            last_error_summary: None,
+            created_ts: 0,
+            updated_ts: 0,
+            server_distribution: "paper".to_string(),
+            minecraft_version: "1.21.1".to_string(),
+            java_path: "/usr/bin/java".to_string(),
+            world_name: "family-world".to_string(),
+            gamemode: "survival".to_string(),
+            difficulty: "normal".to_string(),
+            hardcore: false,
+            motd: "Welcome".to_string(),
+            min_memory_mb: 1024,
+            max_memory_mb: 4096,
+            online_mode: true,
+            pvp: true,
+            allow_flight: false,
+            enable_command_block: false,
+            white_list_enabled: false,
+            current_user_role: Some("manager".to_string()),
+        }
+    }
 
     fn valid_request() -> CreateMinecraftServerRequest {
         CreateMinecraftServerRequest {
@@ -2083,5 +2157,48 @@ mod tests {
         let error = validate_create_request(&request).expect_err("missing eula should fail");
         let message = format!("{error:?}");
         assert!(message.contains("EULA"));
+    }
+
+    #[test]
+    fn clean_sigint_stop_status_is_not_treated_as_failure() {
+        let status = SystemdUnitStatus {
+            load_state: "loaded".to_string(),
+            active_state: "failed".to_string(),
+            sub_state: "failed".to_string(),
+            unit_file_state: "disabled".to_string(),
+            result: "exit-code".to_string(),
+            exec_main_status: Some(130),
+        };
+        assert!(status_represents_clean_stop(&status));
+
+        let projection: RuntimeProjection =
+            apply_runtime_status_projection(&sample_server_row(), &status, None);
+        assert_eq!(projection.observed_state, "stopped");
+        assert_eq!(projection.health_state, "idle");
+        assert!(projection.last_error_summary.is_none());
+    }
+
+    #[test]
+    fn unexpected_failed_status_stays_failed() {
+        let status = SystemdUnitStatus {
+            load_state: "loaded".to_string(),
+            active_state: "failed".to_string(),
+            sub_state: "failed".to_string(),
+            unit_file_state: "disabled".to_string(),
+            result: "exit-code".to_string(),
+            exec_main_status: Some(1),
+        };
+        assert!(!status_represents_clean_stop(&status));
+
+        let projection = apply_runtime_status_projection(&sample_server_row(), &status, None);
+        assert_eq!(projection.observed_state, "failed");
+        assert_eq!(projection.health_state, "error");
+        assert!(
+            projection
+                .last_error_summary
+                .as_deref()
+                .unwrap_or_default()
+                .contains("systemd reported")
+        );
     }
 }

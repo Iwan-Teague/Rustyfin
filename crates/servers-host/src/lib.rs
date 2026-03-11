@@ -295,7 +295,18 @@ pub async fn run_lifecycle_action(
     unit_name: &str,
     action: ServerLifecycleAction,
 ) -> Result<(), String> {
-    run_systemctl(&[action.as_str(), unit_name]).await
+    run_systemctl(&[action.as_str(), unit_name]).await?;
+
+    if action == ServerLifecycleAction::Stop {
+        match run_systemctl(&["reset-failed", unit_name]).await {
+            Ok(()) => {}
+            Err(error)
+                if is_systemctl_unavailable_error(&error) || is_missing_unit_error(&error) => {}
+            Err(_) => {}
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn daemon_reload() -> Result<(), String> {
@@ -700,7 +711,7 @@ fn render_systemd_unit(spec: &ManagedProvisionSpec) -> String {
         "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'\n",
     );
     unit.push_str("KillSignal=SIGINT\n");
-    unit.push_str("SuccessExitStatus=0 143\n");
+    unit.push_str("SuccessExitStatus=0 130 143\n");
     unit.push_str("Restart=on-failure\n");
     unit.push_str("RestartSec=5\n");
     unit.push_str("TimeoutStopSec=120\n");
@@ -1546,6 +1557,7 @@ mod tests {
         assert!(rendered.contains(
             "ExecStop=/bin/sh -c 'if [ -n \"$MAINPID\" ]; then kill -s INT \"$MAINPID\"; fi'"
         ));
+        assert!(rendered.contains("SuccessExitStatus=0 130 143"));
     }
 
     #[test]
