@@ -459,16 +459,21 @@ export default function NavBar() {
         </div>
       ) : null}
 
-      <ConfirmModal
-        open={confirmLogoutOpen}
-        title="Log Out?"
-        description="You will be signed out of Rustyfin on this browser."
-        confirmLabel="Log Out"
-        cancelLabel="Cancel"
-        destructive
-        onConfirm={handleConfirmLogout}
-        onCancel={() => setConfirmLogoutOpen(false)}
-      />
+      {confirmLogoutOpen &&
+        portalMounted &&
+        createPortal(
+          <ConfirmModal
+            open={confirmLogoutOpen}
+            title="Log Out?"
+            description="You will be signed out of Rustyfin on this browser."
+            confirmLabel="Log Out"
+            cancelLabel="Cancel"
+            destructive
+            onConfirm={handleConfirmLogout}
+            onCancel={() => setConfirmLogoutOpen(false)}
+          />,
+          document.body,
+        )}
 
       {voiceSession &&
         confirmLeaveVoiceOpen &&
