@@ -37,6 +37,17 @@ interface ContinueWatchingItem {
   last_played_ts: number;
 }
 
+function formatDurationLabel(totalSeconds: number): string {
+  const safeTotal = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeTotal / 3600);
+  const minutes = Math.floor((safeTotal % 3600) / 60);
+  const seconds = safeTotal % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -193,15 +204,6 @@ export default function HomePage() {
       {/* Quick navigation tiles */}
       <section>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-6">
-          <Link href="/libraries#continue-watching" className="tile tile-hover p-5 flex flex-col gap-1">
-            <span className="font-semibold">Continue Watching</span>
-            <span className="text-xs muted">
-              {continueWatching.length > 0
-                ? `Resume ${continueWatching.length} item${continueWatching.length === 1 ? '' : 's'}`
-                : 'Pick up where you left off'}
-            </span>
-          </Link>
-
           <Link href="/libraries" className="tile tile-hover p-5 flex flex-col gap-1">
             <span className="font-semibold">Libraries</span>
             <span className="text-xs muted">
@@ -243,6 +245,79 @@ export default function HomePage() {
             </Link>
           ) : null}
         </div>
+      </section>
+
+      <section id="continue-watching" className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
+          <Link href="/libraries#continue-watching" className="text-sm text-[var(--orange-soft)]">
+            View all
+          </Link>
+        </div>
+        {continueWatching.length === 0 ? (
+          <div className="panel-soft px-4 py-3 text-sm muted">
+            Start a movie or episode from a library and Rustyfin will keep your place here.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {continueWatching.slice(0, 3).map((item) => {
+              const totalMs = item.duration_ms && item.duration_ms > 0 ? item.duration_ms : null;
+              const progressPct = totalMs
+                ? Math.max(0, Math.min(100, (item.progress_ms / totalMs) * 100))
+                : 0;
+              const progressLabel = totalMs
+                ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
+                : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
+
+              return (
+                <Link
+                  key={`home-continue-${item.id}`}
+                  href={`/player/${item.id}`}
+                  className="tile tile-hover block overflow-hidden"
+                >
+                  <div className="flex min-h-[9rem] gap-4 p-4">
+                    <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
+                      {item.poster_url ? (
+                        <img
+                          src={item.poster_url}
+                          alt={item.title}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
+                          {item.kind.toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col justify-between">
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-base font-semibold">{item.title}</p>
+                            <p className="text-xs uppercase tracking-[0.24em] text-white/40">
+                              {item.kind === 'episode' ? 'Episode' : 'Movie'}
+                              {item.year ? ` · ${item.year}` : ''}
+                            </p>
+                          </div>
+                          <span className="chip">Resume</span>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-[var(--accent-orange)] via-[var(--accent-pink)] to-[var(--accent-purple)]"
+                              style={{ width: `${progressPct || 0}%` }}
+                            />
+                          </div>
+                          <p className="text-xs muted">{progressLabel}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Libraries detail */}
