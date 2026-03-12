@@ -19,14 +19,7 @@ struct VanillaVersionManifest {
     versions: Vec<VanillaVersionEntry>,
 }
 
-static OUTBOUND_HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .user_agent(format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .expect("failed to build servers-host HTTP client")
-});
+static OUTBOUND_HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 #[derive(Debug, Deserialize)]
 struct VanillaVersionEntry {
@@ -961,6 +954,10 @@ fn write_runtime_files(
 async fn resolve_vanilla_server_download(version: &str) -> Result<String, String> {
     let manifest: VanillaVersionManifest = OUTBOUND_HTTP
         .get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
         .map_err(|error| format!("failed to fetch vanilla version manifest: {error}"))?
@@ -979,6 +976,10 @@ async fn resolve_vanilla_server_download(version: &str) -> Result<String, String
 
     let details: VanillaVersionDetails = OUTBOUND_HTTP
         .get(version_url)
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
         .map_err(|error| format!("failed to fetch vanilla version details: {error}"))?
@@ -1000,6 +1001,10 @@ async fn resolve_paper_server_download(version: &str) -> Result<String, String> 
         .get(format!(
             "https://api.papermc.io/v2/projects/paper/versions/{version}/builds"
         ))
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
         .send()
         .await
         .map_err(|error| format!("failed to fetch Paper builds for {version}: {error}"))?
