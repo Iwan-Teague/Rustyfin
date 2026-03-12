@@ -144,20 +144,16 @@ function createWizardSteps(mode: CreateWizardMode | null) {
 const TOGGLE_FIELDS: Array<{ key: keyof Pick<
   CreateFormState,
   | 'online_mode'
-  | 'pvp'
   | 'allow_flight'
   | 'enable_command_block'
   | 'white_list_enabled'
   | 'autostart'
-  | 'hardcore'
 >; label: string }> = [
   { key: 'online_mode', label: 'Online mode' },
-  { key: 'pvp', label: 'PVP enabled' },
   { key: 'allow_flight', label: 'Allow flight' },
   { key: 'enable_command_block', label: 'Enable command blocks' },
   { key: 'white_list_enabled', label: 'Enable whitelist' },
   { key: 'autostart', label: 'Autostart on host boot' },
-  { key: 'hardcore', label: 'Hardcore mode' },
 ];
 
 const SERVER_SETTINGS_TOGGLE_FIELDS: Array<{
@@ -1436,13 +1432,21 @@ export default function ServersPage() {
                       placeholder="Defaults to the display name if left blank."
                     />
                   </label>
-                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm sm:col-span-2">
+                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
                     <input
                       type="checkbox"
                       checked={form.hardcore}
                       onChange={(event) => updateForm('hardcore', event.target.checked)}
                     />
                     <span>Hardcore mode</span>
+                  </label>
+                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={form.pvp}
+                      onChange={(event) => updateForm('pvp', event.target.checked)}
+                    />
+                    <span>PVP enabled</span>
                   </label>
                 </div>
               ) : null}
