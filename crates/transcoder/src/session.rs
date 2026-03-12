@@ -151,26 +151,27 @@ impl SessionManager {
     }
 
     async fn stop_sessions_for_owner_file(&self, owner_user_id: &str, file_id: &str) {
-        let mut sessions = self.sessions.lock().await;
-        let ids_to_remove: Vec<String> = sessions
-            .iter()
-            .filter(|(_, s)| s.owner_user_id == owner_user_id && s.file_id == file_id)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let removed_sessions = {
+            let mut sessions = self.sessions.lock().await;
+            let ids_to_remove: Vec<String> = sessions
+                .iter()
+                .filter(|(_, s)| s.owner_user_id == owner_user_id && s.file_id == file_id)
+                .map(|(id, _)| id.clone())
+                .collect();
 
-        for id in ids_to_remove {
-            if let Some(mut session) = sessions.remove(&id) {
-                if let Some(ref mut child) = session.child {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
-                if session.output_dir.exists() {
-                    if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
-                        warn!(session_id = %id, error = %e, "failed to clean replaced session dir");
-                    }
-                }
-                info!(session_id = %id, "replaced existing HLS session for same user/file");
-            }
+            ids_to_remove
+                .into_iter()
+                .filter_map(|id| sessions.remove(&id).map(|session| (id, session)))
+                .collect::<Vec<_>>()
+        };
+
+        for (id, session) in removed_sessions {
+            cleanup_removed_session(
+                id,
+                session,
+                "replaced existing HLS session for same user/file",
+            )
+            .await;
         }
     }
 
@@ -199,18 +200,14 @@ impl SessionManager {
             }
         }
 
-        for id in ids_to_remove {
-            if let Some(mut session) = sessions.remove(&id) {
-                if let Some(ref mut child) = session.child {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
-                if session.output_dir.exists() {
-                    if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
-                        warn!(session_id = %id, error = %e, "failed to clean reaped session dir");
-                    }
-                }
-            }
+        let removed_sessions = ids_to_remove
+            .into_iter()
+            .filter_map(|id| sessions.remove(&id).map(|session| (id, session)))
+            .collect::<Vec<_>>();
+        drop(sessions);
+
+        for (id, session) in removed_sessions {
+            cleanup_removed_session(id, session, "reaped finished HLS session").await;
         }
     }
 
@@ -241,19 +238,14 @@ impl SessionManager {
 
     /// Stop and clean up a session.
     pub async fn stop_session(&self, session_id: &str) -> Result<(), TranscodeError> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut session) = sessions.remove(session_id) {
-            if let Some(ref mut child) = session.child {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-            }
-            // Clean up files
-            if session.output_dir.exists() {
-                if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
-                    warn!(session_id, error = %e, "failed to clean up transcode dir");
-                }
-            }
-            info!(session_id, "HLS session stopped and cleaned up");
+        let removed_session = self.sessions.lock().await.remove(session_id);
+        if let Some(session) = removed_session {
+            cleanup_removed_session(
+                session_id.to_string(),
+                session,
+                "HLS session stopped and cleaned up",
+            )
+            .await;
             Ok(())
         } else {
             Err(TranscodeError::SessionNotFound(session_id.into()))
@@ -264,24 +256,22 @@ impl SessionManager {
     pub async fn cleanup_idle(&self) {
         self.reap_finished_sessions().await;
         let timeout = self.config.idle_timeout_secs;
-        let mut sessions = self.sessions.lock().await;
-        let idle_ids: Vec<String> = sessions
-            .iter()
-            .filter(|(_, s)| s.is_idle(timeout))
-            .map(|(id, _)| id.clone())
-            .collect();
+        let idle_sessions = {
+            let mut sessions = self.sessions.lock().await;
+            let idle_ids: Vec<String> = sessions
+                .iter()
+                .filter(|(_, s)| s.is_idle(timeout))
+                .map(|(id, _)| id.clone())
+                .collect();
 
-        for id in &idle_ids {
-            if let Some(mut session) = sessions.remove(id) {
-                if let Some(ref mut child) = session.child {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                }
-                if session.output_dir.exists() {
-                    let _ = tokio::fs::remove_dir_all(&session.output_dir).await;
-                }
-                info!(session_id = %id, "cleaned up idle HLS session");
-            }
+            idle_ids
+                .into_iter()
+                .filter_map(|id| sessions.remove(&id).map(|session| (id, session)))
+                .collect::<Vec<_>>()
+        };
+
+        for (id, session) in idle_sessions {
+            cleanup_removed_session(id, session, "cleaned up idle HLS session").await;
         }
     }
 
@@ -321,6 +311,35 @@ impl SessionManager {
     pub fn hw_device_path(&self) -> Option<&Path> {
         self.config.hw_device_path.as_deref()
     }
+}
+
+async fn cleanup_removed_session(
+    session_id: String,
+    mut session: TranscodeSession,
+    success_message: &'static str,
+) {
+    if let Some(mut child) = session.child.take() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    match tokio::fs::try_exists(&session.output_dir).await {
+        Ok(true) => {
+            if let Err(e) = tokio::fs::remove_dir_all(&session.output_dir).await {
+                warn!(session_id = %session_id, error = %e, "failed to clean transcode dir");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(
+                session_id = %session_id,
+                error = %e,
+                "failed to check transcode dir before cleanup"
+            );
+        }
+    }
+
+    info!(session_id = %session_id, "{success_message}");
 }
 
 /// Build and spawn ffmpeg for HLS output.

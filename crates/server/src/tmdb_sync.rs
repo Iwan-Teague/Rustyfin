@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use rustfin_core::error::ApiError;
@@ -137,15 +138,26 @@ pub async fn run_auto_tmdb_scheduler_tick(state: &AppState) -> Result<(), String
         .await
         .map_err(|e| format!("failed to list libraries: {e}"))?;
     let now = chrono::Utc::now().timestamp();
+    let media_library_ids = libraries
+        .iter()
+        .filter(|lib| lib.kind == "movies" || lib.kind == "tv_shows")
+        .map(|lib| lib.id.clone())
+        .collect::<Vec<_>>();
+    let settings_by_library_id = rustfin_db::repo::libraries::get_library_settings_for_libraries(
+        &state.db,
+        &media_library_ids,
+    )
+    .await
+    .map_err(|e| format!("failed to read TMDB library settings batch: {e}"))?
+    .into_iter()
+    .map(|settings| (settings.library_id.clone(), settings))
+    .collect::<HashMap<_, _>>();
 
     for lib in libraries {
         if lib.kind != "movies" && lib.kind != "tv_shows" {
             continue;
         }
-        let Some(settings) = rustfin_db::repo::libraries::get_library_settings(&state.db, &lib.id)
-            .await
-            .map_err(|e| format!("failed to read settings for {}: {e}", lib.id))?
-        else {
+        let Some(settings) = settings_by_library_id.get(&lib.id) else {
             continue;
         };
 
