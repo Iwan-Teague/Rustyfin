@@ -20,6 +20,11 @@ The supported runtime target is native Debian 12. The repository no longer ships
 
 ## Product Areas
 
+- Vault
+  - Client-side encrypted password vault
+  - Rust vault API and PostgreSQL ciphertext storage
+  - Web `/vault` management UI
+  - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
   - TMDB metadata enrichment and artwork sync
@@ -81,6 +86,7 @@ Native Rustyfin on Debian 12 runs these services directly on the host:
 - `/Users/iwanteague/Desktop/Rustyfin/crates/servers-host` - native Minecraft host/runtime operations
 - `/Users/iwanteague/Desktop/Rustyfin/crates/servers-agent` - privileged Minecraft host agent
 - `/Users/iwanteague/Desktop/Rustyfin/ui` - Next.js frontend
+- `/Users/iwanteague/Desktop/Rustyfin/extensions/rustfin-vault-webext` - browser extension MVP for Rustyfin Vault
 - `/Users/iwanteague/Desktop/Rustyfin/scripts` - native install/start/stop/deploy/systemd scripts
 - `/Users/iwanteague/Desktop/Rustyfin/tests` - tests and E2E harnesses
 - `/Users/iwanteague/Desktop/Rustyfin/docs` - reports, plans, references, setup docs

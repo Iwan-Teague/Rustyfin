@@ -329,6 +329,7 @@ fn api_router() -> Router<AppState> {
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
+        .nest("/vault", crate::vault::router::vault_router())
         .nest("/servers", crate::servers::router::servers_router())
         .nest(
             "/watch-party",
@@ -3131,13 +3132,13 @@ fn playback_download_filename(path: &StdPath, target_height: Option<u32>) -> Str
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("rustyfin-media");
-    let stem = stem.replace('"', "").replace(';', "");
+    let stem = stem.replace(['"', ';'], "");
     match target_height {
         Some(height) => format!("{stem}-{height}p.mp4"),
         None => path
             .file_name()
             .and_then(|value| value.to_str())
-            .map(|value| value.replace('"', "").replace(';', ""))
+            .map(|value| value.replace(['"', ';'], ""))
             .unwrap_or_else(|| format!("{stem}.bin")),
     }
 }

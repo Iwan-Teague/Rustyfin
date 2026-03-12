@@ -244,6 +244,10 @@ check_ui_dependencies_present() {
   }
 }
 
+check_media_fixtures() {
+  "$REPO_ROOT/tests/check_media_fixtures.sh"
+}
+
 runtime_service_present() {
   systemctl cat "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" >/dev/null 2>&1
 }
@@ -494,6 +498,7 @@ if [[ "$SKIP_UI" == "true" ]]; then
   warn "Skipping UI gates by request."
 else
   run_gate "UI dependencies present" check_ui_dependencies_present
+  run_gate "Media fixtures are playable" check_media_fixtures
   run_gate "UI lint" npm --prefix ui run lint
   run_gate "UI typecheck" "$REPO_ROOT/ui/node_modules/.bin/tsc" --noEmit -p "$REPO_ROOT/ui/tsconfig.json"
   run_gate "UI production build" npm --prefix ui run build

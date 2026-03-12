@@ -9,8 +9,10 @@ Rustyfin is a native-Debian-first local media platform with:
 - Rust backend (`crates/server`, Axum + PostgreSQL)
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`, `crates/servers-agent`)
 - Next.js frontend (`ui`)
+- Browser extension MVP (`extensions/rustfin-vault-webext`)
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`, `crates/servers-host`)
 - A `Servers` product area for native game-server management, currently focused on Minecraft on Debian 12 through `systemd`
+- A `Vault` product area for client-side encrypted password storage, web management, and browser-extension pairing/autofill
 
 ## Core Rules
 

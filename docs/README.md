@@ -22,6 +22,8 @@ Read these first:
   - current Minecraft `Servers` implementation plan
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-minecraft-rust-native-design-2026-03-08.md`
   - adopted Rust-native Debian design rationale for `Servers`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/password-vault-design-2026-03-12.md`
+  - current Rustyfin Vault security and implementation design
 
 ## Directory Map
 

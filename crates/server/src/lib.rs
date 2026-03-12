@@ -22,4 +22,5 @@ pub mod tmdb_sync;
 pub mod transcription_agent;
 pub mod user_activity;
 pub mod user_pipeline;
+pub mod vault;
 pub mod watch_party;

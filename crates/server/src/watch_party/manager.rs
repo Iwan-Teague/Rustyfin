@@ -3240,7 +3240,7 @@ fn count_ship_cells(ships: &[u8; BATTLESHIP_BOARD_CELLS]) -> u16 {
 
 pub(crate) fn placed_battleship_ship_ids(ships: &[u8; BATTLESHIP_BOARD_CELLS]) -> Vec<u8> {
     let mut ids: Vec<u8> = (1..=(BATTLESHIP_SHIP_SIZES.len() as u8))
-        .filter(|ship_id| ships.iter().any(|cell| *cell == *ship_id))
+        .filter(|ship_id| ships.contains(ship_id))
         .collect();
     ids.sort_unstable();
     ids

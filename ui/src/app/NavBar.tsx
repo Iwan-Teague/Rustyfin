@@ -39,20 +39,17 @@ export default function NavBar() {
     }
   }, [menuOpen, showDesktopNav]);
 
-  if (pathname.startsWith('/setup')) {
-    return null;
-  }
-
   const navLinks = [
     { href: '/channels', label: 'Channels' },
     { href: '/rooms', label: 'Rooms' },
     { href: '/servers', label: 'Servers' },
     { href: '/calendar', label: 'Calendar' },
     { href: '/libraries', label: 'Libraries' },
+    { href: '/vault', label: 'Vault' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
   const desktopLeftNavLinks = navLinks.filter((link) =>
-    ['/channels', '/rooms', '/servers', '/calendar', '/libraries'].includes(link.href),
+    ['/channels', '/rooms', '/servers', '/calendar', '/libraries', '/vault'].includes(link.href),
   );
   const desktopRightNavLinks = navLinks.filter((link) =>
     ['/admin'].includes(link.href),
@@ -62,12 +59,6 @@ export default function NavBar() {
   const deafened = voiceSession?.deafened ?? false;
   const baseVoiceActionClass =
     'inline-flex items-center justify-center rounded-full border transition';
-
-  function handleConfirmLogout() {
-    logout();
-    setConfirmLogoutOpen(false);
-    setMenuOpen(false);
-  }
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -117,6 +108,16 @@ export default function NavBar() {
       window.removeEventListener('resize', updateLayoutMode);
     };
   }, [loading, me?.role, me?.username, voiceSession?.channelName, hasLocalStream, muted, deafened]);
+
+  if (pathname.startsWith('/setup')) {
+    return null;
+  }
+
+  function handleConfirmLogout() {
+    logout();
+    setConfirmLogoutOpen(false);
+    setMenuOpen(false);
+  }
 
   if (!loading && !me) {
     return (
