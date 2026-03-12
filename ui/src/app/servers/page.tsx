@@ -1234,7 +1234,7 @@ export default function ServersPage() {
         )}
       </section>
 
-      <section className="panel flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+      <section className="panel-soft flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
         <div>
           <h2 className="text-xl font-semibold">Create Minecraft server</h2>
           <p className="text-sm muted">
@@ -1705,7 +1705,7 @@ export default function ServersPage() {
 
       {hostBrowser.open ? (
         <div className="fixed inset-0 z-[150] flex items-center justify-center overflow-y-auto bg-black/70 p-4 sm:p-6">
-          <div className="panel my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col gap-4 overflow-hidden rounded-2xl p-5 sm:max-h-[calc(100vh-3rem)] sm:p-6">
+          <div className="panel-soft my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col gap-4 overflow-hidden rounded-2xl p-5 sm:max-h-[calc(100vh-3rem)] sm:p-6">
             <div className="flex shrink-0 items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-semibold">Browse Backend Directories</h2>
