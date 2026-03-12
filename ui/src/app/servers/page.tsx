@@ -1254,7 +1254,6 @@ export default function ServersPage() {
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
             <div className="panel-soft space-y-3 p-4 sm:p-5">
               <div className="flex items-center justify-between gap-3">
-                <span className="chip chip-accent">Server Setup</span>
                 <span className="text-xs muted">
                   {normalizedCreateStepIndex + 1}/{createSteps.length}
                 </span>
@@ -1301,7 +1300,7 @@ export default function ServersPage() {
                     type="button"
                     className={`rounded-2xl border px-5 py-5 text-left transition ${
                       createMode === 'create'
-                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.92)_52%,rgba(157,116,255,0.95)_100%)_border-box]'
+                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.95)_100%)_border-box]'
                         : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => {
@@ -1318,7 +1317,7 @@ export default function ServersPage() {
                     type="button"
                     className={`rounded-2xl border px-5 py-5 text-left transition ${
                       createMode === 'import'
-                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.92)_52%,rgba(157,116,255,0.95)_100%)_border-box]'
+                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.95)_100%)_border-box]'
                         : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => setCreateMode('import')}
