@@ -399,6 +399,14 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    {
+        let activity_pool = pool.clone();
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
+            rustfin_server::user_activity::run_maintenance_loop(activity_pool, task_shutdown).await;
+        }));
+    }
+
     let app_state = rustfin_server::state::AppState {
         db: pool,
         jwt_secret,

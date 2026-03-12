@@ -1,16 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import type { Me } from '@/lib/auth';
-import {
-  deleteMyAvatar,
-  getMyPreferences,
-  getMyProfile,
-  updateMyPreferences,
-  updateMyProfile,
-  uploadMyAvatar,
-  type MyProfile,
-} from '@/lib/userProfileApi';
+import { useMyAccount } from '@/app/account/hooks/useMyAccount';
 
 type AudioDeviceOption = {
   id: string;
@@ -30,22 +23,6 @@ interface Props {
   preferredInputDeviceId: string | null;
   preferredOutputDeviceId: string | null;
   setPreferredAudioDevices: (inputDeviceId: string | null, outputDeviceId: string | null) => void;
-  onProfileSaved: () => Promise<void>;
-}
-
-function readAudioPrefs(prefs: Record<string, unknown>): { input: string | null; output: string | null } {
-  const audio = prefs.audio;
-  if (!audio || typeof audio !== 'object' || Array.isArray(audio)) {
-    return { input: null, output: null };
-  }
-  const record = audio as Record<string, unknown>;
-  const input = typeof record.input_device_id === 'string' && record.input_device_id.trim()
-    ? record.input_device_id.trim()
-    : null;
-  const output = typeof record.output_device_id === 'string' && record.output_device_id.trim()
-    ? record.output_device_id.trim()
-    : null;
-  return { input, output };
 }
 
 export default function ChannelUserSettings({
@@ -53,12 +30,14 @@ export default function ChannelUserSettings({
   preferredInputDeviceId,
   preferredOutputDeviceId,
   setPreferredAudioDevices,
-  onProfileSaved,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [profile, setProfile] = useState<MyProfile | null>(null);
-  const [prefsSnapshot, setPrefsSnapshot] = useState<Record<string, unknown>>({});
+  const account = useMyAccount({
+    enabled: open,
+    onApplyAudioPreferences: setPreferredAudioDevices,
+  });
   const [displayName, setDisplayName] = useState(me.username);
+  const [timeZone, setTimeZone] = useState(me.time_zone ?? '');
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState<string | null>(
     preferredInputDeviceId,
   );
@@ -69,7 +48,6 @@ export default function ChannelUserSettings({
   const [outputDevices, setOutputDevices] = useState<AudioDeviceOption[]>([]);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [removeAvatar, setRemoveAvatar] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -82,8 +60,8 @@ export default function ChannelUserSettings({
     if (removeAvatar) {
       return null;
     }
-    return profile?.avatar_url ?? me.avatar_url ?? null;
-  }, [avatarFile, removeAvatar, profile?.avatar_url, me.avatar_url]);
+    return account.profile?.avatar_url ?? me.avatar_url ?? null;
+  }, [account.profile?.avatar_url, avatarFile, me.avatar_url, removeAvatar]);
 
   useEffect(() => {
     return () => {
@@ -92,6 +70,24 @@ export default function ChannelUserSettings({
       }
     };
   }, [avatarFile, avatarPreviewUrl]);
+
+  useEffect(() => {
+    if (!account.profile) return;
+    setDisplayName(account.profile.username);
+    setTimeZone(account.profile.time_zone ?? '');
+  }, [account.profile]);
+
+  useEffect(() => {
+    setSelectedInputDeviceId(account.preferences.audio.input_device_id ?? preferredInputDeviceId ?? null);
+    setSelectedOutputDeviceId(
+      account.preferences.audio.output_device_id ?? preferredOutputDeviceId ?? null,
+    );
+  }, [
+    account.preferences.audio.input_device_id,
+    account.preferences.audio.output_device_id,
+    preferredInputDeviceId,
+    preferredOutputDeviceId,
+  ]);
 
   async function loadDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -108,20 +104,14 @@ export default function ChannelUserSettings({
       for (const device of devices) {
         if (device.kind === 'audioinput') {
           inputIndex += 1;
-          const normalizedDeviceId = device.deviceId?.trim() || '';
-          const stableId =
-            normalizedDeviceId || `${SYNTHETIC_INPUT_PREFIX}${inputIndex}`;
           nextInputs.push({
-            id: stableId,
+            id: device.deviceId?.trim() || `${SYNTHETIC_INPUT_PREFIX}${inputIndex}`,
             label: device.label || `Microphone ${inputIndex}`,
           });
         } else if (device.kind === 'audiooutput') {
           outputIndex += 1;
-          const normalizedDeviceId = device.deviceId?.trim() || '';
-          const stableId =
-            normalizedDeviceId || `${SYNTHETIC_OUTPUT_PREFIX}${outputIndex}`;
           nextOutputs.push({
-            id: stableId,
+            id: device.deviceId?.trim() || `${SYNTHETIC_OUTPUT_PREFIX}${outputIndex}`,
             label: device.label || `Speaker ${outputIndex}`,
           });
         }
@@ -136,7 +126,6 @@ export default function ChannelUserSettings({
 
   async function openSettings() {
     setOpen(true);
-    setLoading(true);
     setError(null);
     setSuccess(null);
     setAvatarFile(null);
@@ -149,64 +138,29 @@ export default function ChannelUserSettings({
         }
       ).setSinkId === 'function';
     setSupportsOutputDeviceSelection(sinkCapable);
-    try {
-      const [nextProfile, nextPrefs] = await Promise.all([getMyProfile(), getMyPreferences()]);
-      const audioPrefs = readAudioPrefs(nextPrefs);
-      setProfile(nextProfile);
-      setPrefsSnapshot(nextPrefs);
-      setDisplayName(nextProfile.username);
-      setSelectedInputDeviceId(audioPrefs.input ?? preferredInputDeviceId ?? null);
-      setSelectedOutputDeviceId(audioPrefs.output ?? preferredOutputDeviceId ?? null);
-      await loadDevices();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load user settings');
-    } finally {
-      setLoading(false);
-    }
+    await loadDevices();
   }
 
   async function saveSettings() {
-    const normalizedDisplayName = displayName.trim().replace(/\s+/g, ' ');
-    if (normalizedDisplayName.length < 2 || normalizedDisplayName.length > 40) {
-      setError('Display name must be between 2 and 40 characters.');
-      return;
-    }
     setSaving(true);
     setError(null);
     setSuccess(null);
     try {
-      let nextProfile = profile;
-      if (!nextProfile || normalizedDisplayName !== nextProfile.username) {
-        nextProfile = await updateMyProfile(normalizedDisplayName);
-      }
+      await account.saveProfile({
+        displayName,
+        timeZone,
+        avatarFile,
+        removeAvatar,
+      });
 
-      if (removeAvatar) {
-        nextProfile = await deleteMyAvatar();
-      } else if (avatarFile) {
-        nextProfile = await uploadMyAvatar(avatarFile);
-      }
+      await account.savePreferences({
+        ...account.preferences,
+        audio: {
+          input_device_id: selectedInputDeviceId,
+          output_device_id: supportsOutputDeviceSelection ? selectedOutputDeviceId : null,
+        },
+      });
 
-      const audioPrefs = readAudioPrefs(prefsSnapshot);
-      const desiredInput = selectedInputDeviceId || null;
-      const desiredOutput = supportsOutputDeviceSelection ? (selectedOutputDeviceId || null) : audioPrefs.output;
-      if (audioPrefs.input !== desiredInput || audioPrefs.output !== desiredOutput) {
-        const nextPrefs = { ...prefsSnapshot };
-        const nextAudio =
-          nextPrefs.audio && typeof nextPrefs.audio === 'object' && !Array.isArray(nextPrefs.audio)
-            ? { ...(nextPrefs.audio as Record<string, unknown>) }
-            : {};
-        nextAudio.input_device_id = desiredInput;
-        nextAudio.output_device_id = desiredOutput;
-        nextPrefs.audio = nextAudio;
-        const updatedPrefs = await updateMyPreferences(nextPrefs);
-        setPrefsSnapshot(updatedPrefs);
-      }
-
-      setPreferredAudioDevices(desiredInput, desiredOutput);
-      if (nextProfile) {
-        setProfile(nextProfile);
-      }
-      await onProfileSaved();
       setAvatarFile(null);
       setRemoveAvatar(false);
       setSuccess('Settings saved.');
@@ -252,15 +206,24 @@ export default function ChannelUserSettings({
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4">
           <div className="panel w-full max-w-2xl rounded-2xl border border-[var(--border)] p-5 md:p-6 space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">User Settings</h2>
-              <button type="button" className="btn-ghost px-2 py-1 text-sm" onClick={() => setOpen(false)}>
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/account"
+                  className="btn-ghost px-3 py-2 text-sm"
+                  onClick={() => setOpen(false)}
+                >
+                  Open account page
+                </Link>
+                <button type="button" className="btn-ghost px-2 py-1 text-sm" onClick={() => setOpen(false)}>
+                  Close
+                </button>
+              </div>
             </div>
 
-            {loading ? (
-              <p className="muted text-sm">Loading settings…</p>
+            {(account.loading || !account.profile) ? (
+              <p className="muted text-sm">Loading settings...</p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
@@ -307,11 +270,18 @@ export default function ChannelUserSettings({
                     onChange={(event) => setDisplayName(event.target.value)}
                     maxLength={40}
                   />
+                  <label className="text-xs muted">Time Zone</label>
+                  <input
+                    className="panel w-full rounded-lg px-3 py-2 text-sm"
+                    value={timeZone}
+                    onChange={(event) => setTimeZone(event.target.value)}
+                    placeholder="Europe/Dublin"
+                  />
                 </section>
 
                 <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
                   <h3 className="text-sm font-semibold">Audio Devices</h3>
-                  <label className="text-xs muted">Input Device (Microphone)</label>
+                  <label className="text-xs muted">Input Device</label>
                   <select
                     className="panel w-full rounded-lg px-3 py-2 text-sm"
                     value={selectedInputDeviceId ?? ''}
@@ -326,11 +296,11 @@ export default function ChannelUserSettings({
                   </select>
                   {isSyntheticDeviceId(selectedInputDeviceId) && (
                     <p className="text-xs muted">
-                      Browser privacy mode is hiding microphone IDs. Selection will be remembered as shown.
+                      Browser privacy mode is hiding microphone IDs.
                     </p>
                   )}
 
-                  <label className="text-xs muted">Output Device (Speaker/Headphones)</label>
+                  <label className="text-xs muted">Output Device</label>
                   <select
                     className="panel w-full rounded-lg px-3 py-2 text-sm"
                     value={selectedOutputDeviceId ?? ''}
@@ -344,14 +314,9 @@ export default function ChannelUserSettings({
                       </option>
                     ))}
                   </select>
-                  {isSyntheticDeviceId(selectedOutputDeviceId) && supportsOutputDeviceSelection && (
-                    <p className="text-xs muted">
-                      Browser privacy mode is hiding speaker IDs. Selection will be remembered as shown.
-                    </p>
-                  )}
                   {!supportsOutputDeviceSelection && (
                     <p className="text-xs muted">
-                      Your browser does not support speaker/output device selection in-app.
+                      This browser does not support speaker selection in-app.
                     </p>
                   )}
 
@@ -368,7 +333,7 @@ export default function ChannelUserSettings({
               </div>
             )}
 
-            {error && <p className="text-sm text-red-300">{error}</p>}
+            {(error || account.error) && <p className="text-sm text-red-300">{error ?? account.error}</p>}
             {success && <p className="text-sm text-emerald-300">{success}</p>}
 
             <div className="flex justify-end gap-2">
@@ -378,12 +343,12 @@ export default function ChannelUserSettings({
               <button
                 type="button"
                 className="btn-primary px-4 py-2 text-sm"
-                disabled={loading || saving}
+                disabled={account.loading || saving}
                 onClick={() => {
                   void saveSettings();
                 }}
               >
-                {saving ? 'Saving…' : 'Save Settings'}
+                {saving ? 'Saving...' : 'Save Settings'}
               </button>
             </div>
           </div>

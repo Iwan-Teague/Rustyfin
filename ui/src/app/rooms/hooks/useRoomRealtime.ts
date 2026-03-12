@@ -6,11 +6,20 @@ import type {
   WsOnlineAudioStatusMessage,
   WsPlayStateMessage,
   WsRoomReconfiguredMessage,
+  WsScreenAnswerMessage,
+  WsScreenIceMessage,
+  WsScreenOfferMessage,
+  WsScreenStateMessage,
   WsWebStateMessage,
   WsYouTubeStateMessage,
 } from '@/lib/watchPartyApi';
 import { clientErrorMessage } from '@/lib/errors';
 import type { RuntimeConfig, WsMessage, WsPresenceMember, WsPresenceMessage, WsStateMessage } from '../realtimeTypes';
+
+type WsScreenSignalMessage =
+  | WsScreenOfferMessage
+  | WsScreenAnswerMessage
+  | WsScreenIceMessage;
 
 type UseRoomRealtimeArgs = {
   roomId: string;
@@ -73,6 +82,8 @@ export function useRoomRealtime({
     WsOnlineAudioStatusMessage[]
   >([]);
   const [webState, setWebState] = useState<WsWebStateMessage | null>(null);
+  const [screenState, setScreenState] = useState<WsScreenStateMessage | null>(null);
+  const [screenSignalEvent, setScreenSignalEvent] = useState<WsScreenSignalMessage | null>(null);
   const [youtubeState, setYoutubeState] = useState<WsYouTubeStateMessage | null>(null);
   const [createState, setCreateState] = useState<WsCreateStateMessage | null>(null);
   const [playState, setPlayState] = useState<WsPlayStateMessage | null>(null);
@@ -82,6 +93,8 @@ export function useRoomRealtime({
     setAudioState(null);
     setOnlineAudioStatusEvents([]);
     setWebState(null);
+    setScreenState(null);
+    setScreenSignalEvent(null);
     setYoutubeState(null);
     setCreateState(null);
     setPlayState(null);
@@ -192,6 +205,24 @@ export function useRoomRealtime({
             return;
           }
 
+          if (payload.type === 'screen_state') {
+            appendDebug(
+              `screen state active=${payload.active} presenter=${payload.presenter_user_id || 'none'} session=${payload.session_id || 'none'} viewers=${payload.viewer_count}`,
+            );
+            setScreenState(payload);
+            setRoomState((prev) => (prev ? { ...prev, members: payload.members } : prev));
+            return;
+          }
+
+          if (
+            payload.type === 'screen_offer' ||
+            payload.type === 'screen_answer' ||
+            payload.type === 'screen_ice'
+          ) {
+            setScreenSignalEvent(payload);
+            return;
+          }
+
           if (payload.type === 'create_state') {
             appendDebug(
               `create state tool=${payload.active_tool} doc=${payload.document_name} updated_ts_ms=${payload.updated_ts_ms}`,
@@ -243,6 +274,7 @@ export function useRoomRealtime({
             setAudioState((prev) => applyPresenceToState(prev, payload));
             setYoutubeState((prev) => applyPresenceToState(prev, payload));
             setWebState((prev) => applyPresenceToState(prev, payload));
+            setScreenState((prev) => applyPresenceToState(prev, payload));
             setCreateState((prev) => applyPresenceToState(prev, payload));
             setPlayState((prev) => applyPresenceToState(prev, payload));
             return;
@@ -434,6 +466,9 @@ export function useRoomRealtime({
     setOnlineAudioStatusEvents,
     webState,
     setWebState,
+    screenState,
+    setScreenState,
+    screenSignalEvent,
     youtubeState,
     setYoutubeState,
     createState,

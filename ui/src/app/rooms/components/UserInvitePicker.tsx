@@ -61,7 +61,11 @@ export default function UserInvitePicker({
             const isSelected = Boolean(selected[user.id]);
             const role = isSelected ? selected[user.id].role : (pendingRoles[user.id] ?? 'viewer');
             return (
-              <li key={user.id} className="tile rounded-xl px-3 py-2">
+              <li
+                key={user.id}
+                className="tile rounded-xl px-3 py-2"
+                style={{ boxShadow: 'none' }}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <input

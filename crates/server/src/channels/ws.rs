@@ -15,6 +15,7 @@ use crate::auth::validate_token;
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
+use crate::user_activity;
 
 use super::protocol::{ChannelEvent, ClientMsg, MessageInfo, VoiceTranscriptionStateInfo};
 
@@ -344,6 +345,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let (runtime_username, runtime_avatar_url) =
         resolve_runtime_profile(&state, &user_id, &username, &avatar_url).await;
     for left in left_channels {
+        let _ = user_activity::track_voice_leave(&state, &user_id, &left.channel_id).await;
         state
             .channel_manager
             .broadcast(ChannelEvent::VoicePresence {
@@ -396,6 +398,7 @@ async fn dispatch(
                 resolve_runtime_profile(state, user_id, username, avatar_url).await;
 
             for left in left_channels {
+                let _ = user_activity::track_voice_leave(state, user_id, &left.channel_id).await;
                 state
                     .channel_manager
                     .broadcast(ChannelEvent::VoicePresence {
@@ -417,6 +420,7 @@ async fn dispatch(
                     runtime_avatar_url.as_deref(),
                 )
                 .await;
+            let _ = user_activity::track_voice_join(state, user_id, &channel_id).await;
 
             // Broadcast to everyone that this user joined
             state
@@ -452,6 +456,7 @@ async fn dispatch(
                 .channel_manager
                 .leave_voice(&channel_id, user_id)
                 .await;
+            let _ = user_activity::track_voice_leave(state, user_id, &channel_id).await;
 
             state
                 .channel_manager

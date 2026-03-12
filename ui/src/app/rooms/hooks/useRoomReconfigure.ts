@@ -18,7 +18,7 @@ type UseRoomReconfigureArgs = {
   room: WatchPartyRoomResponse | null;
   me: Me | null;
   joinedRole: string | null;
-  activeWatchSource: 'video' | 'youtube' | 'web';
+  activeWatchSource: 'video' | 'youtube' | 'web' | 'screen';
   setError: (message: string) => void;
   setInfo: (message: string) => void;
   setInfoForDuration: (message: string, durationMs: number) => void;
@@ -62,7 +62,10 @@ export function useRoomReconfigure({
   );
 
   const isWatchReconfigureMode =
-    reconfigureMode === 'video' || reconfigureMode === 'youtube' || reconfigureMode === 'web';
+    reconfigureMode === 'video' ||
+    reconfigureMode === 'youtube' ||
+    reconfigureMode === 'web' ||
+    reconfigureMode === 'screen';
 
   const markDirty = useCallback(() => {
     setReconfigureDirty(true);
@@ -82,6 +85,7 @@ export function useRoomReconfigure({
       payload.room_mode === 'audio' ||
       payload.room_mode === 'youtube' ||
       payload.room_mode === 'web' ||
+      payload.room_mode === 'screen' ||
       payload.room_mode === 'create' ||
       payload.room_mode === 'play'
         ? payload.room_mode
@@ -95,6 +99,7 @@ export function useRoomReconfigure({
       room.room_mode === 'audio' ||
       room.room_mode === 'youtube' ||
       room.room_mode === 'web' ||
+      room.room_mode === 'screen' ||
       room.room_mode === 'create' ||
       room.room_mode === 'play'
         ? room.room_mode
@@ -167,6 +172,10 @@ export function useRoomReconfigure({
       payload = {
         room_mode: 'audio',
       };
+    } else if (reconfigureMode === 'screen') {
+      payload = {
+        room_mode: 'screen',
+      };
     } else if (reconfigureMode === 'play') {
       payload = {
         room_mode: 'play',
@@ -197,7 +206,7 @@ export function useRoomReconfigure({
   }, [joinedRole, reconfigureMode, reconfigureCreateTool, roomId, setError, setInfo]);
 
   const handleSwitchWatchSource = useCallback(
-    async (target: 'video' | 'youtube' | 'web') => {
+    async (target: 'video' | 'youtube' | 'web' | 'screen') => {
       if (joinedRole !== 'host') {
         setError('Only the room host can change watch source.');
         return;
@@ -212,6 +221,8 @@ export function useRoomReconfigure({
         payload = { room_mode: 'video' };
       } else if (target === 'youtube') {
         payload = { room_mode: 'youtube' };
+      } else if (target === 'screen') {
+        payload = { room_mode: 'screen' };
       } else {
         payload = { room_mode: 'web', web_url: (room.web_url || '').trim() || undefined };
       }

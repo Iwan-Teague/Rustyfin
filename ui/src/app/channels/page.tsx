@@ -12,7 +12,7 @@ import VoiceChannelView from './components/VoiceChannelView';
 import ChannelUserSettings from './components/ChannelUserSettings';
 
 export default function ChannelsPage() {
-  const { me, loading: authLoading, refreshMe } = useAuth();
+  const { me, loading: authLoading } = useAuth();
   const router = useRouter();
   const {
     wsReady,
@@ -123,7 +123,6 @@ export default function ChannelsPage() {
               preferredInputDeviceId={preferredInputDeviceId}
               preferredOutputDeviceId={preferredOutputDeviceId}
               setPreferredAudioDevices={setPreferredAudioDevices}
-              onProfileSaved={refreshMe}
             />
           }
         />

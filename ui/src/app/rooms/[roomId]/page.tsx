@@ -24,6 +24,7 @@ import CreateToolTabsBar from '../components/CreateToolTabsBar';
 import CreateTogetherEditor from '../components/CreateTogetherEditor';
 import MediaPicker from '../components/MediaPicker';
 import PlayTogetherChess from '../components/PlayTogetherChess';
+import ScreenPlayer from '../components/ScreenPlayer';
 import WatchSourceTabsBar from '../components/WatchSourceTabsBar';
 import WebPlayer from '../components/WebPlayer';
 import YouTubePlayer from '../components/YouTubePlayer';
@@ -119,16 +120,25 @@ export default function WatchPartyRoomPage() {
 
   const isAudioRoom = room?.room_mode === 'audio';
   const isWebRoom = room?.room_mode === 'web';
+  const isScreenRoom = room?.room_mode === 'screen';
   const isYoutubeRoom = room?.room_mode === 'youtube';
   const isCreateRoom = room?.room_mode === 'create';
   const isPlayRoom = room?.room_mode === 'play';
   const isVideoRoom =
-    room?.room_mode === 'video' || (!isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && !isPlayRoom);
-  const isWatchRoom = isVideoRoom || isYoutubeRoom || isWebRoom;
-  const activeWatchSource: 'video' | 'youtube' | 'web' = isYoutubeRoom
+    room?.room_mode === 'video' ||
+    (!isAudioRoom &&
+      !isWebRoom &&
+      !isScreenRoom &&
+      !isYoutubeRoom &&
+      !isCreateRoom &&
+      !isPlayRoom);
+  const isWatchRoom = isVideoRoom || isYoutubeRoom || isWebRoom || isScreenRoom;
+  const activeWatchSource: 'video' | 'youtube' | 'web' | 'screen' = isYoutubeRoom
     ? 'youtube'
     : isWebRoom
       ? 'web'
+      : isScreenRoom
+        ? 'screen'
       : 'video';
   const watchWindowShiftClass = isWatchRoom ? 'mt-[55px]' : '';
   const watchTabsCounterShiftClass = isWatchRoom ? 'top-[-17px]' : 'top-0';
@@ -261,6 +271,7 @@ export default function WatchPartyRoomPage() {
         (realtime.roomState?.members ??
           realtime.audioState?.members ??
           realtime.webState?.members ??
+          realtime.screenState?.members ??
           realtime.youtubeState?.members ??
           realtime.createState?.members ??
           realtime.playState?.members) ??
@@ -283,6 +294,7 @@ export default function WatchPartyRoomPage() {
       realtime.roomState?.members,
       realtime.audioState?.members,
       realtime.webState?.members,
+      realtime.screenState?.members,
       realtime.youtubeState?.members,
       realtime.createState?.members,
       realtime.playState?.members,
@@ -420,7 +432,6 @@ export default function WatchPartyRoomPage() {
     try {
       const result = await joinWatchPartyRoom(roomId, joinPassword || undefined);
       setJoinedRole(result.role);
-      setInfo('Joined watch-party room.');
       appendDebug(`room join succeeded role=${result.role}`);
       await loadRoom();
     } catch (err: unknown) {
@@ -601,7 +612,7 @@ export default function WatchPartyRoomPage() {
         <section className="panel space-y-4 p-5 sm:p-6">
           <h2 className="text-xl font-semibold">Join Room</h2>
           <p className="text-sm muted">
-            You must join this room before {isAudioRoom ? 'listening together' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : isCreateRoom ? 'creating together' : isPlayRoom ? 'playing together' : 'opening synchronized playback'}.
+            You must join this room before {isAudioRoom ? 'listening together' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : isScreenRoom ? 'sharing a screen together' : isCreateRoom ? 'creating together' : isPlayRoom ? 'playing together' : 'opening synchronized playback'}.
           </p>
 
           {room.password_required && (
@@ -658,7 +669,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -683,7 +694,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}>
+        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -702,6 +713,33 @@ export default function WatchPartyRoomPage() {
             canControl={canPlayPause}
             wsConnected={realtime.wsConnected}
             sendWs={sendWs}
+          />
+        </section>
+      )}
+
+      {joinedRole && isScreenRoom && (
+        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
+          {isWatchRoom && (
+            <WatchSourceTabsBar
+              className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
+              activeSource={activeWatchSource}
+              onSwitchSource={handleSwitchWatchSource}
+              switchingDisabled={reconfigure.reconfiguring || joinedRole !== 'host'}
+              badges={[
+                `Role: ${joinedRoleDisplay}`,
+                `Share: ${joinedRole === 'host' || joinedRole === 'controller' ? 'allowed' : 'host-only'}`,
+              ]}
+            />
+          )}
+          <ScreenPlayer
+            roomId={roomId}
+            currentUserId={me.id}
+            joinedRole={joinedRole}
+            wsConnected={realtime.wsConnected}
+            screenState={realtime.screenState}
+            screenSignalEvent={realtime.screenSignalEvent}
+            sendWs={sendWs}
+            setError={setError}
           />
         </section>
       )}
@@ -871,8 +909,8 @@ export default function WatchPartyRoomPage() {
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Watch Together</p>
                       <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
-                        Watch videos together using Local Media, YouTube, or Web sources. Use shared
-                        controls for play, pause, seek, and queueing.
+                        Watch together using Local Media, YouTube, Web, or Screen sources. Use shared
+                        controls for playback, navigation, or live screen presentation depending on the source.
                       </div>
                     </div>
                   )}
@@ -910,7 +948,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`panel relative space-y-4 p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${watchWindowShiftClass}`}
+            className={`panel relative space-y-4 p-5 sm:p-6 ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar

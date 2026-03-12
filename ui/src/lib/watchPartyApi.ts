@@ -73,6 +73,16 @@ export type CreateWatchPartyRoomRequest =
     }
   | {
       room_name?: string;
+      room_mode: 'screen';
+      item_id?: never;
+      audio_library_id?: never;
+      web_url?: never;
+      invites: WatchPartyInviteInput[];
+      password?: string;
+      policy: WatchPartyPolicy;
+    }
+  | {
+      room_name?: string;
       room_mode: 'create';
       create_tool?: 'text' | 'canvas';
       create_document_name?: string;
@@ -170,6 +180,15 @@ export type ReconfigureWatchPartyRoomRequest =
       create_document_name?: never;
     }
   | {
+      room_mode: 'screen';
+      item_id?: never;
+      audio_library_id?: never;
+      youtube_video_id?: never;
+      web_url?: never;
+      create_tool?: never;
+      create_document_name?: never;
+    }
+  | {
       room_mode: 'create';
       create_tool?: 'text' | 'canvas';
       create_document_name?: string;
@@ -191,7 +210,7 @@ export type ReconfigureWatchPartyRoomRequest =
 export type ReconfigureWatchPartyRoomResponse = {
   ok: boolean;
   audio_source?: 'library' | 'online' | string;
-  room_mode: 'video' | 'audio' | 'youtube' | 'web' | 'create' | 'play' | string;
+  room_mode: 'video' | 'audio' | 'youtube' | 'web' | 'screen' | 'create' | 'play' | string;
 };
 
 export type WatchPartyInvite = {
@@ -303,6 +322,48 @@ export type WsWebStateMessage = {
   updated_ts_ms: number;
   server_ts_ms: number;
   members: WsPresenceMember[];
+};
+
+export type WsScreenStateMessage = {
+  type: 'screen_state';
+  room_id: string;
+  active: boolean;
+  session_id?: string | null;
+  presenter_user_id?: string | null;
+  presenter_username?: string | null;
+  surface_type?: 'browser' | 'window' | 'monitor' | 'unknown' | string | null;
+  audio_enabled: boolean;
+  quality_profile: 'auto' | 'text_clarity' | 'motion' | string;
+  presenter_state: 'idle' | 'requesting_capture' | 'starting' | 'live' | 'ended' | 'error' | string;
+  started_ts_ms?: number | null;
+  updated_ts_ms: number;
+  server_ts_ms: number;
+  viewer_count: number;
+  members: WsPresenceMember[];
+};
+
+export type WsScreenOfferMessage = {
+  type: 'screen_offer';
+  to_user_id: string;
+  from_user_id: string;
+  session_id: string;
+  sdp: string;
+};
+
+export type WsScreenAnswerMessage = {
+  type: 'screen_answer';
+  to_user_id: string;
+  from_user_id: string;
+  session_id: string;
+  sdp: string;
+};
+
+export type WsScreenIceMessage = {
+  type: 'screen_ice';
+  to_user_id: string;
+  from_user_id: string;
+  session_id: string;
+  candidate: string;
 };
 
 export type WsCreateCanvasPoint = {

@@ -1286,34 +1286,46 @@ export default function ServersPage() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <button
                     type="button"
-                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                    className={`w-full rounded-2xl p-[1px] text-left transition ${
                       createMode === 'create'
-                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.95)_100%)_border-box]'
-                        : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
+                        ? 'bg-[linear-gradient(90deg,var(--orange),var(--danger),var(--purple))]'
+                        : 'border border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
                     }`}
                     onClick={() => {
                       setCreateMode('create');
                       setPendingImportServerId(null);
                     }}
                   >
-                    <div className="text-base font-semibold text-white">Create new managed server</div>
-                    <p className="mt-2 text-sm muted">
-                      Rustyfin generates the server files, installs the native service, and launches it when you click Start.
-                    </p>
+                    <div
+                      className={`h-full rounded-[calc(1rem-1px)] px-5 py-5 ${
+                        createMode === 'create' ? 'bg-[var(--surface)]/95' : ''
+                      }`}
+                    >
+                      <div className="text-base font-semibold text-white">Create new managed server</div>
+                      <p className="mt-2 text-sm muted">
+                        Rustyfin generates the server files, installs the native service, and launches it when you click Start.
+                      </p>
+                    </div>
                   </button>
                   <button
                     type="button"
-                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                    className={`w-full rounded-2xl p-[1px] text-left transition ${
                       createMode === 'import'
-                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.95)_100%)_border-box]'
-                        : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
+                        ? 'bg-[linear-gradient(90deg,var(--orange),var(--danger),var(--purple))]'
+                        : 'border border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
                     }`}
                     onClick={() => setCreateMode('import')}
                   >
-                    <div className="text-base font-semibold text-white">Import existing server</div>
-                    <p className="mt-2 text-sm muted">
-                      Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
-                    </p>
+                    <div
+                      className={`h-full rounded-[calc(1rem-1px)] px-5 py-5 ${
+                        createMode === 'import' ? 'bg-[var(--surface)]/95' : ''
+                      }`}
+                    >
+                      <div className="text-base font-semibold text-white">Import existing server</div>
+                      <p className="mt-2 text-sm muted">
+                        Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
+                      </p>
+                    </div>
                   </button>
                 </div>
               ) : null}

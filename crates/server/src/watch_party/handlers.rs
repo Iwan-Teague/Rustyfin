@@ -22,6 +22,7 @@ use crate::runtime_metrics::JobFamily;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::streaming::parse_range_header;
+use crate::user_activity;
 
 use super::permissions::{RoomPolicy, can_play_pause};
 use super::youtube::{
@@ -106,6 +107,7 @@ pub struct CreateRoomRequest {
     pub audio_source: Option<String>,
     /// Explicit room mode override. Use "youtube" for YouTube watch parties.
     pub room_mode: Option<String>,
+    /// For screen rooms: use browser-native screen sharing once participants join.
     /// For create rooms: active tool ("text" or "canvas").
     pub create_tool: Option<String>,
     /// For create rooms: collaborative document display name.
@@ -888,6 +890,9 @@ fn room_title_for_listing(
     if room_mode == "web" {
         return web_room_title(web_url);
     }
+    if room_mode == "screen" {
+        return "Screen Share".to_string();
+    }
     if room_mode == "create" {
         return "Create Together".to_string();
     }
@@ -1308,10 +1313,10 @@ pub async fn create_room(
     if let Some(mode) = requested_mode.as_deref() {
         if !matches!(
             mode,
-            "audio" | "youtube" | "web" | "create" | "play" | "video"
+            "audio" | "youtube" | "web" | "screen" | "create" | "play" | "video"
         ) {
             return Err(ApiError::BadRequest(
-                "room_mode must be one of: video, audio, youtube, web, create, play".into(),
+                "room_mode must be one of: video, audio, youtube, web, screen, create, play".into(),
             )
             .into());
         }
@@ -1385,6 +1390,17 @@ pub async fn create_room(
             None,
             None,
             Some(normalized_url),
+            None,
+            None,
+        )
+    } else if requested_mode.as_deref() == Some("screen") {
+        (
+            "screen".to_string(),
+            "library".to_string(),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -1816,6 +1832,17 @@ pub async fn reconfigure_room(
                 0,
             )
         }
+        "screen" => (
+            "library".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+        ),
         "create" => {
             let create_tool = normalize_create_tool(body.create_tool.as_deref())?;
             let create_document_name = normalize_create_document_name(
@@ -1848,7 +1875,7 @@ pub async fn reconfigure_room(
         ),
         _ => {
             return Err(ApiError::BadRequest(
-                "room_mode must be one of: video, audio, youtube, web, create, play".into(),
+                "room_mode must be one of: video, audio, youtube, web, screen, create, play".into(),
             )
             .into());
         }
@@ -2155,6 +2182,7 @@ pub async fn join_room(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    user_activity::track_room_join(&state, &auth.user_id, &room_id).await?;
     invalidate_runtime_presence_cache(&state, &room_id).await;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 
@@ -2190,6 +2218,7 @@ pub async fn leave_room(
     if !updated {
         return Err(ApiError::NotFound("room membership not found".into()).into());
     }
+    user_activity::track_room_leave(&state, &auth.user_id, &room_id).await?;
     invalidate_runtime_presence_cache(&state, &room_id).await;
     let _ = rustfin_db::repo::watch_party::touch_room_updated(&state.db, &room_id).await;
 

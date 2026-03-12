@@ -264,12 +264,13 @@ export function useRoomPlayback({
 
   const isAudioRoom = room?.room_mode === 'audio';
   const isWebRoom = room?.room_mode === 'web';
+  const isScreenRoom = room?.room_mode === 'screen';
   const isYoutubeRoom = room?.room_mode === 'youtube';
   const isCreateRoom = room?.room_mode === 'create';
   const isPlayRoom = room?.room_mode === 'play';
   const isVideoRoom =
     room?.room_mode === 'video' ||
-    (!isAudioRoom && !isWebRoom && !isYoutubeRoom && !isCreateRoom && !isPlayRoom);
+    (!isAudioRoom && !isWebRoom && !isScreenRoom && !isYoutubeRoom && !isCreateRoom && !isPlayRoom);
 
   const destroyHls = useCallback(() => {
     const hls = hlsRef.current as { destroy?: () => void } | null;
