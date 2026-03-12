@@ -103,17 +103,23 @@ fn probe_binary(path: &Path, name: &str) {
 async fn wait_for_shutdown_signal(shutdown: CancellationToken) {
     #[cfg(unix)]
     {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install SIGTERM handler");
-
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    warn!(error = %error, "failed to listen for ctrl-c shutdown signal");
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result {
+                            warn!(error = %error, "failed to listen for ctrl-c shutdown signal");
+                        }
+                    }
+                    _ = terminate.recv() => {}
                 }
             }
-            _ = terminate.recv() => {}
+            Err(error) => {
+                warn!(error = %error, "failed to install SIGTERM handler; falling back to ctrl-c only");
+                if let Err(ctrl_c_error) = tokio::signal::ctrl_c().await {
+                    warn!(error = %ctrl_c_error, "failed to listen for ctrl-c shutdown signal");
+                }
+            }
         }
     }
 

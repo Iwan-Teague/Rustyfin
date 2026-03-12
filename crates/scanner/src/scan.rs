@@ -1,9 +1,13 @@
 use rustfin_db::DbPool;
 use std::path::Path;
+use std::sync::LazyLock;
 use tracing::{info, warn};
 
 use crate::parser::{self, ParsedMedia};
 use crate::walk;
+
+static PROVIDER_ID_CLEAN_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\s*\[.*?\]\s*").expect("valid provider cleanup regex"));
 
 /// Run a full scan for a library, creating/updating items and media files.
 pub async fn run_library_scan(
@@ -186,8 +190,7 @@ fn parse_tv_entry(rel: &Path) -> ParsedMedia {
                         .first()
                         .map(|_| {
                             // Strip provider IDs from folder name
-                            let cleaned = regex::Regex::new(r"\s*\[.*?\]\s*")
-                                .unwrap()
+                            let cleaned = PROVIDER_ID_CLEAN_RE
                                 .replace_all(&series_dir, "")
                                 .trim()
                                 .to_string();

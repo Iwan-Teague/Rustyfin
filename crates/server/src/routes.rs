@@ -3732,10 +3732,12 @@ async fn get_item_subtitles(
 }
 
 fn base64_url_encode(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    for b in s.bytes() {
-        write!(&mut out, "{b:02x}").unwrap();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
     }
     out
 }

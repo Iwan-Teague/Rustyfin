@@ -123,10 +123,7 @@ pub async fn create_event(
     .execute(pool)
     .await?;
 
-    // Safe unwrap because the row was just inserted.
-    Ok(get_event(pool, &id)
-        .await?
-        .expect("created calendar event must exist"))
+    get_event(pool, &id).await?.ok_or(sqlx::Error::RowNotFound)
 }
 
 pub async fn get_event(
