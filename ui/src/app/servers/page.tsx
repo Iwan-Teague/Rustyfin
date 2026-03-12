@@ -1278,7 +1278,7 @@ export default function ServersPage() {
               </div>
             </div>
 
-            <section className="panel space-y-6 p-6 sm:p-7">
+            <section className={`${activeCreateStepId === 'mode' ? 'panel-soft' : 'panel'} space-y-6 p-6 sm:p-7`}>
               <div>
                 <h3 className="text-2xl font-semibold sm:text-3xl">{activeCreateStep.title}</h3>
                 <p className="mt-2 text-sm muted">{activeCreateStep.description}</p>
