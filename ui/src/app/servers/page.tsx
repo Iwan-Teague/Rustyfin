@@ -1299,19 +1299,16 @@ export default function ServersPage() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <button
                     type="button"
-                    className={`rounded-2xl border bg-[var(--surface)]/70 px-5 py-5 text-left transition ${
+                    className={`rounded-2xl border px-5 py-5 text-left transition ${
                       createMode === 'create'
-                        ? 'border-[var(--orange-soft)] ring-1 ring-[rgba(255,194,122,0.28)]'
-                        : 'border-[var(--border)]/70 hover:border-[var(--orange-soft)]/55'
+                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.92)_52%,rgba(157,116,255,0.95)_100%)_border-box]'
+                        : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => {
                       setCreateMode('create');
                       setPendingImportServerId(null);
                     }}
                   >
-                    {createMode === 'create' ? (
-                      <span className="chip chip-accent mb-3">Selected</span>
-                    ) : null}
                     <div className="text-base font-semibold text-white">Create new managed server</div>
                     <p className="mt-2 text-sm muted">
                       Rustyfin generates the server files, installs the native service, and launches it when you click Start.
@@ -1319,16 +1316,13 @@ export default function ServersPage() {
                   </button>
                   <button
                     type="button"
-                    className={`rounded-2xl border bg-[var(--surface)]/70 px-5 py-5 text-left transition ${
+                    className={`rounded-2xl border px-5 py-5 text-left transition ${
                       createMode === 'import'
-                        ? 'border-[var(--orange-soft)] ring-1 ring-[rgba(255,194,122,0.28)]'
-                        : 'border-[var(--border)]/70 hover:border-[var(--orange-soft)]/55'
+                        ? 'border-transparent bg-[linear-gradient(rgba(26,31,53,0.82),rgba(26,31,53,0.82))_padding-box,linear-gradient(110deg,rgba(255,145,77,0.95)_0%,rgba(255,117,136,0.92)_52%,rgba(157,116,255,0.95)_100%)_border-box]'
+                        : 'border-[var(--border)]/70 bg-[var(--surface)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => setCreateMode('import')}
                   >
-                    {createMode === 'import' ? (
-                      <span className="chip chip-accent mb-3">Selected</span>
-                    ) : null}
                     <div className="text-base font-semibold text-white">Import existing server</div>
                     <p className="mt-2 text-sm muted">
                       Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
