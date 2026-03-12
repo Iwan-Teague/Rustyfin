@@ -1071,133 +1071,65 @@ export default function ServersPage() {
                     </div>
 
                     {expanded ? (
-                      <>
-                        <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
-                          <div>
-                            <div className="muted">Owner</div>
-                            <div>{server.owner_display_name}</div>
+                      <div className="grid gap-4 xl:grid-cols-[minmax(18rem,0.9fr)_minmax(24rem,1.35fr)]">
+                        <section className="panel-soft rounded-xl px-4 py-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                              Server overview
+                            </h4>
+                            <span className="chip text-[11px]">
+                              {server.server_distribution} {server.minecraft_version}
+                            </span>
                           </div>
-                          <div>
-                            <div className="muted">Version</div>
-                            <div>{server.server_distribution} {server.minecraft_version}</div>
-                          </div>
-                          <div>
-                            <div className="muted">World</div>
-                            <div>{server.world_name}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Port</div>
-                            <div>{server.listen_host}:{server.listen_port}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Memory</div>
-                            <div>{server.min_memory_mb}-{server.max_memory_mb} MB</div>
-                          </div>
-                          <div>
-                            <div className="muted">Players</div>
-                            <div>{server.current_player_count} / {server.max_player_count ?? '—'}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Last started</div>
-                            <div>{formatTs(server.last_started_ts)}</div>
-                          </div>
-                          <div>
-                            <div className="muted">Last stopped</div>
-                            <div>{formatTs(server.last_stopped_ts)}</div>
-                          </div>
-                        </div>
+                          <dl className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Owner</dt>
+                              <dd className="mt-1 text-white">{server.owner_display_name}</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">World</dt>
+                              <dd className="mt-1 text-white">{server.world_name}</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Address</dt>
+                              <dd className="mt-1 text-white">{server.listen_host}:{server.listen_port}</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Memory</dt>
+                              <dd className="mt-1 text-white">{server.min_memory_mb}-{server.max_memory_mb} MB</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Players</dt>
+                              <dd className="mt-1 text-white">
+                                {server.current_player_count} / {server.max_player_count ?? '—'}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Last started</dt>
+                              <dd className="mt-1 text-white">{formatTs(server.last_started_ts)}</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">Last stopped</dt>
+                              <dd className="mt-1 text-white">{formatTs(server.last_stopped_ts)}</dd>
+                            </div>
+                            <div>
+                              <dt className="muted text-[11px] uppercase tracking-[0.16em]">MOTD</dt>
+                              <dd className="mt-1 text-white">{server.motd || 'Defaults to display name'}</dd>
+                            </div>
+                          </dl>
+                        </section>
 
                         {me.role === 'admin' ? (
-                          <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4">
-                            <div className="space-y-1">
-                              <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
-                                Server settings
-                              </h4>
-                              <p className="text-sm muted">
-                                Save writes the managed Minecraft configuration to the Debian host. If the server is already running, restart it to apply all runtime changes cleanly.
-                              </p>
-                            </div>
-
-                            <div className="grid gap-4 sm:grid-cols-2">
-                              <label className="space-y-2">
-                                <span className="text-sm font-medium text-white">Gamemode</span>
-                                <select
-                                  className="select rounded-xl px-4 py-3"
-                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).gamemode}
-                                  onChange={(event) =>
-                                    setServerEdit(
-                                      server.id,
-                                      'gamemode',
-                                      event.target.value as ServerSettingsFormState['gamemode'],
-                                    )
-                                  }
-                                >
-                                  <option value="survival">Survival</option>
-                                  <option value="creative">Creative</option>
-                                  <option value="adventure">Adventure</option>
-                                  <option value="spectator">Spectator</option>
-                                </select>
-                              </label>
-
-                              <label className="space-y-2">
-                                <span className="text-sm font-medium text-white">Difficulty</span>
-                                <select
-                                  className="select rounded-xl px-4 py-3"
-                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).difficulty}
-                                  onChange={(event) =>
-                                    setServerEdit(
-                                      server.id,
-                                      'difficulty',
-                                      event.target.value as ServerSettingsFormState['difficulty'],
-                                    )
-                                  }
-                                >
-                                  <option value="peaceful">Peaceful</option>
-                                  <option value="easy">Easy</option>
-                                  <option value="normal">Normal</option>
-                                  <option value="hard">Hard</option>
-                                </select>
-                              </label>
-
-                              <label className="space-y-2">
-                                <span className="text-sm font-medium text-white">Max players</span>
-                                <input
-                                  className="input rounded-xl px-4 py-3"
-                                  type="number"
-                                  min={1}
-                                  max={500}
-                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).max_player_count}
-                                  onChange={(event) => setServerEdit(server.id, 'max_player_count', event.target.value)}
-                                />
-                              </label>
-
-                              <label className="space-y-2 sm:col-span-2">
-                                <span className="text-sm font-medium text-white">Message of the day</span>
-                                <input
-                                  className="input rounded-xl px-4 py-3"
-                                  value={(serverEdits[server.id] ?? serverToSettingsForm(server)).motd}
-                                  onChange={(event) => setServerEdit(server.id, 'motd', event.target.value)}
-                                />
-                              </label>
-                            </div>
-
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                              {SERVER_SETTINGS_TOGGLE_FIELDS.map(({ key, label }) => (
-                                <label
-                                  key={key}
-                                  className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={(serverEdits[server.id] ?? serverToSettingsForm(server))[key]}
-                                    onChange={(event) => setServerEdit(server.id, key, event.target.checked)}
-                                  />
-                                  <span>{label}</span>
-                                </label>
-                              ))}
-                            </div>
-
-                            <div className="flex justify-end">
+                          <section className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/45 px-4 py-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/80">
+                                  Server settings
+                                </h4>
+                                <p className="max-w-2xl text-xs muted">
+                                  Save writes the managed Minecraft configuration to the Debian host. Restart the server afterwards if you need runtime changes applied immediately.
+                                </p>
+                              </div>
                               <button
                                 type="button"
                                 className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
@@ -1207,13 +1139,102 @@ export default function ServersPage() {
                                 {savingServerId === server.id ? 'Saving…' : 'Save settings'}
                               </button>
                             </div>
-                          </div>
+
+                            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <label className="space-y-1.5">
+                                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-white/80">
+                                    Gamemode
+                                  </span>
+                                  <select
+                                    className="select rounded-xl px-3 py-2.5"
+                                    value={(serverEdits[server.id] ?? serverToSettingsForm(server)).gamemode}
+                                    onChange={(event) =>
+                                      setServerEdit(
+                                        server.id,
+                                        'gamemode',
+                                        event.target.value as ServerSettingsFormState['gamemode'],
+                                      )
+                                    }
+                                  >
+                                    <option value="survival">Survival</option>
+                                    <option value="creative">Creative</option>
+                                    <option value="adventure">Adventure</option>
+                                    <option value="spectator">Spectator</option>
+                                  </select>
+                                </label>
+
+                                <label className="space-y-1.5">
+                                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-white/80">
+                                    Difficulty
+                                  </span>
+                                  <select
+                                    className="select rounded-xl px-3 py-2.5"
+                                    value={(serverEdits[server.id] ?? serverToSettingsForm(server)).difficulty}
+                                    onChange={(event) =>
+                                      setServerEdit(
+                                        server.id,
+                                        'difficulty',
+                                        event.target.value as ServerSettingsFormState['difficulty'],
+                                      )
+                                    }
+                                  >
+                                    <option value="peaceful">Peaceful</option>
+                                    <option value="easy">Easy</option>
+                                    <option value="normal">Normal</option>
+                                    <option value="hard">Hard</option>
+                                  </select>
+                                </label>
+
+                                <label className="space-y-1.5">
+                                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-white/80">
+                                    Max players
+                                  </span>
+                                  <input
+                                    className="input rounded-xl px-3 py-2.5"
+                                    type="number"
+                                    min={1}
+                                    max={500}
+                                    value={(serverEdits[server.id] ?? serverToSettingsForm(server)).max_player_count}
+                                    onChange={(event) => setServerEdit(server.id, 'max_player_count', event.target.value)}
+                                  />
+                                </label>
+
+                                <label className="space-y-1.5 sm:col-span-2">
+                                  <span className="text-xs font-medium uppercase tracking-[0.16em] text-white/80">
+                                    Message of the day
+                                  </span>
+                                  <input
+                                    className="input rounded-xl px-3 py-2.5"
+                                    value={(serverEdits[server.id] ?? serverToSettingsForm(server)).motd}
+                                    onChange={(event) => setServerEdit(server.id, 'motd', event.target.value)}
+                                  />
+                                </label>
+                              </div>
+
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                {SERVER_SETTINGS_TOGGLE_FIELDS.map(({ key, label }) => (
+                                  <label
+                                    key={key}
+                                    className="panel-soft flex min-h-[3rem] items-center gap-3 rounded-xl px-3 py-2 text-sm"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={(serverEdits[server.id] ?? serverToSettingsForm(server))[key]}
+                                      onChange={(event) => setServerEdit(server.id, key, event.target.checked)}
+                                    />
+                                    <span>{label}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          </section>
                         ) : (
-                          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                          <section className="panel-soft rounded-xl px-4 py-4 text-sm muted">
                             Server settings can be changed by admins. Runtime controls remain available from the server row.
-                          </div>
+                          </section>
                         )}
-                      </>
+                      </div>
                     ) : null}
                   </div>
                 </div>
