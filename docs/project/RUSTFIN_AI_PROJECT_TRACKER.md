@@ -2,8 +2,9 @@
 Generated: 2026-02-13  
 Purpose: This document is written for an AI agent (and humans) to **structure the Rustfin project**, enforce constraints, and keep an always-up-to-date record of **what’s implemented vs what remains**.
 
-> Status note (2026-03-09): this file is a historical implementation tracker.  
+> Status note (2026-03-12): this file is a historical implementation tracker.  
 > Current runtime/deployment truth lives in `/Users/iwanteague/Desktop/Rustyfin/README.md`, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
+> Do not treat the milestone tables below as the authoritative current feature matrix unless they explicitly match the live code.
 
 > **Rule #1:** Every time you implement anything (even a tiny refactor), update the **Status Ledger** and the relevant checklists in this file.  
 > **Rule #2:** Do not “silently drift” from constraints. If you must change a constraint, record it in **Decision Log** with rationale and tradeoffs.
@@ -20,7 +21,7 @@ Rustfin is a **local-first** media server platform built around **Rust services*
 ### 1.1 Stack constraints
 - **Backend language:** Rust (required).
 - **Server architecture:** Rust-first native Debian service set.
-- **Database:** PostgreSQL (required) using WAL mode.
+- **Database:** PostgreSQL (required).
 - **Media engine:** FFmpeg + ffprobe (required). Do not attempt to implement codecs/containers.
 - **Client/UI:** Next.js (TypeScript/React).
 - **Two-language cap:** Rust + TypeScript for primary product code.
@@ -35,7 +36,8 @@ Rustfin must support:
 - Metadata providers + provider IDs + user overrides
 - Artwork (posters/backdrops/logos/thumbs) + caching/resizing
 - Playback sessions
-- Direct Play via Range
+- HLS-based embedded playback with resume/continue-watching
+- Original-file delivery via HTTP range where raw file access is needed
 - HLS generation for broad device support
 - Subtitle discovery (sidecar + embedded) + selection; optional download provider
 - Missing episodes placeholders (expected vs present) configurable per user
@@ -101,7 +103,7 @@ Maintain **exactly one** authoritative status table here.
 | Subsystem | Status | Notes (what’s done / what’s missing) | Last updated |
 |---|---:|---|---|
 | Repo skeleton + workspace | ✅ | Cargo workspace with core/db/server crates, rustfmt + clippy config | 2026-02-13 |
-| DB migrations + connection | ✅ | PostgreSQL WAL mode, forward-only migration runner, all baseline tables | 2026-02-13 |
+| DB migrations + connection | ✅ | PostgreSQL migration runner and baseline tables | 2026-03-12 |
 | Auth (login, tokens) | ✅ | POST /api/v1/auth/login with Argon2 + JWT, Bearer auth extractor | 2026-02-13 |
 | Users + roles + prefs | ✅ | Admin bootstrap, GET /users/me, GET/PATCH preferences, POST/GET /users (admin create+list), DELETE /users/{id} | 2026-02-14 |
 | Libraries CRUD | ✅ | POST/GET/PATCH /libraries, paths, item counts, admin-only guards | 2026-02-13 |
@@ -122,7 +124,7 @@ Maintain **exactly one** authoritative status table here.
 | GPU acceleration | ✅ | Detection via ffmpeg -encoders, NVENC/VAAPI/QSV/VideoToolbox, GET /system/gpu, native Debian host acceleration controls | 2026-02-13 |
 | SSE/WebSocket events | ✅ | Broadcast channel with typed ServerEvent enum; scan/job/metadata/heartbeat events; real-time SSE endpoint with reconnection support | 2026-02-14 |
 | UI app foundation | ✅ | Next.js app: login, libraries list, library items, item detail (seasons/episodes), API client with auth | 2026-02-14 |
-| UI player + track selection | ✅ | Video player page with Direct Play + HLS (hls.js) mode, progress reporting, quality switching | 2026-02-14 |
+| UI player + track selection | ✅ | Video player page with controlled HLS playback, resume state, continue-watching, and quality switching | 2026-03-12 |
 | Admin dashboard | ✅ | Admin page: create/scan libraries, view jobs; user management API (create/list/delete users) | 2026-02-14 |
 | Native Debian runtime | ✅ | Native host scripts, Debian package install path, host PostgreSQL/Caddy/Node/Rust services | 2026-03-09 |
 | Native GPU runtime | ✅ | Native host GPU detection/config for ffmpeg and transcription workloads | 2026-03-09 |
@@ -144,7 +146,7 @@ After each meaningful change, append a bullet to this section:
 - (2026-02-13) [Milestone 8] GPU detection + native runtime — GPU encoder detection via `ffmpeg -encoders` (NVENC/VAAPI/QSV/VideoToolbox), best-accelerator selection, admin endpoint GET /api/v1/system/gpu. Native Debian runtime scripts now own the supported deployment path. 1 new GPU test. Files: crates/transcoder/src/gpu.rs, scripts/start-native.sh, scripts/install_native_debian.sh. Total: 52 tests passing.
 - (2026-02-14) [Milestone 3] Metadata provider + merge engine — Created rustfin-metadata crate with TMDB API v3 client (search/get movies+series, season episodes, credits), MetadataProvider trait, merge engine with field locks (user overrides survive refresh), provider ID CRUD. Migration 002 adds metadata columns. Routes: POST /items/{id}/metadata/refresh, GET /items/{id}/providers, POST/DELETE /items/{id}/field-locks. 4 metadata tests. Files: crates/metadata/*, crates/db/migrations/002_metadata_columns.sql. Total: 56 tests.
 - (2026-02-14) [Milestone 4] TV correctness — Expected episodes DB repo (upsert_expected, get_expected, get_present, get_missing). Routes: GET /items/{id}/expected-episodes, GET /items/{id}/missing-episodes. File: crates/db/src/repo/episodes.rs.
-- (2026-02-14) [Milestone 9] UI app (Next.js) — Decision recorded in Decision Log. Created Next.js app with pages: login, libraries list, library detail, item detail (seasons/episodes), video player (Direct Play + HLS via hls.js + progress reporting), admin dashboard (create/scan libraries, view jobs). API client helper with auth token management. npm install + build verified. Files: ui/src/app/*, ui/src/lib/api.ts.
+- (2026-02-14) [Milestone 9] UI app (Next.js) — Decision recorded in Decision Log. Created Next.js app with pages: login, libraries list, library detail, item detail (seasons/episodes), video player (initially Direct Play + HLS via hls.js + progress reporting), admin dashboard (create/scan libraries, view jobs). API client helper with auth token management. npm install + build verified. Files: ui/src/app/*, ui/src/lib/api.ts.
 - (2026-02-14) [Milestone 10] User management + artwork + SSE events — Added user management API routes (POST/GET /users, DELETE /users/{id}) with admin guards. Artwork image endpoint (GET /items/{id}/images/{type}?w=&h=) with remote download + local file cache + ETag + Cache-Control. Replaced SSE placeholder with broadcast channel (typed ServerEvent enum: scan_progress, scan_complete, metadata_refresh, job_update, heartbeat). Scan handler emits events. User management integration test. Total: 57 tests passing.
 
 ---
@@ -171,7 +173,7 @@ A feature is **Done ✅** only when:
 
 ### 6.3 DB rules
 - Single migration path (forward-only).
-- WAL mode enabled.
+- PostgreSQL-only runtime.
 - Use transactions for multi-write operations (scan updates, metadata merge).
 
 ### 6.4 File system safety
@@ -206,7 +208,6 @@ A feature is **Done ✅** only when:
 - [x] Add formatting/lints (rustfmt, clippy config)
 
 ### 8.2 Database & migrations
-- [x] Enable WAL mode on startup
 - [x] Implement migration runner
 - [x] Tables: library, library_path, item, media_file, episode_file_map
 - [x] Tables: users, prefs, user_item_state

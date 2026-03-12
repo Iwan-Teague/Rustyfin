@@ -2,6 +2,9 @@
 Generated: 2026-02-13  
 Purpose: This file is the single place to track **what’s done vs what remains** while implementing the Rustyfin first‑run setup wizard.
 
+> Status note (2026-03-12): this file is now a historical implementation tracker.  
+> The current setup/runtime truth lives in `/Users/iwanteague/Desktop/Rustyfin/README.md`, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, `/Users/iwanteague/Desktop/Rustyfin/docs/README.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/setup-wizard/Rustyfin_Setup_Wizard_Package/Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md`.
+
 This tracker is meant for an AI implementer **and** humans. It is intentionally “procedural”: it lists tasks in dependency order, with explicit file touchpoints and acceptance criteria.
 
 ---
