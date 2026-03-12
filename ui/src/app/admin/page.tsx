@@ -307,6 +307,36 @@ function formatUptime(seconds: number): string {
   return `${minutes}m`;
 }
 
+function diagnosticsTrendTone(lastMinute: number, lastFiveMinutes: number): string {
+  if (lastMinute > 0) return 'text-[#ff8a7a]';
+  if (lastFiveMinutes > 0) return 'text-[#f7c67a]';
+  return 'text-[#89d7a1]';
+}
+
+function DiagnosticsTrend({
+  lastMinute,
+  lastFiveMinutes,
+}: {
+  lastMinute: number;
+  lastFiveMinutes: number;
+}) {
+  const tone = diagnosticsTrendTone(lastMinute, lastFiveMinutes);
+  const dotClass =
+    lastMinute > 0
+      ? 'bg-[#ff7a7a]'
+      : lastFiveMinutes > 0
+        ? 'bg-[#f7c67a]'
+        : 'bg-[#89d7a1]';
+  return (
+    <span className={`inline-flex items-center gap-2 font-medium ${tone}`}>
+      <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+      <span>
+        {lastMinute}/{lastFiveMinutes}
+      </span>
+    </span>
+  );
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -2594,7 +2624,12 @@ export default function AdminPage() {
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="muted">Job failures</span>
-                      <span>{runtimeDiagnostics.runtime.jobs.total.failures_last_minute} / {runtimeDiagnostics.runtime.jobs.total.failures_last_five_minutes}</span>
+                      <DiagnosticsTrend
+                        lastMinute={runtimeDiagnostics.runtime.jobs.total.failures_last_minute}
+                        lastFiveMinutes={
+                          runtimeDiagnostics.runtime.jobs.total.failures_last_five_minutes
+                        }
+                      />
                     </div>
                   </div>
                 </div>
@@ -2612,7 +2647,12 @@ export default function AdminPage() {
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="muted">Create failures</span>
-                      <span>{runtimeDiagnostics.transcoding.create_failures_last_minute} / {runtimeDiagnostics.transcoding.create_failures_last_five_minutes}</span>
+                      <DiagnosticsTrend
+                        lastMinute={runtimeDiagnostics.transcoding.create_failures_last_minute}
+                        lastFiveMinutes={
+                          runtimeDiagnostics.transcoding.create_failures_last_five_minutes
+                        }
+                      />
                     </div>
                   </div>
                 </div>
@@ -2645,7 +2685,13 @@ export default function AdminPage() {
                     ].map(({ label, agent }) => (
                       <div key={label} className="flex items-center justify-between gap-3">
                         <span className="muted">{label}</span>
-                        <span>{agent.calls_in_flight} in flight · {agent.failures_last_minute}/{agent.failures_last_five_minutes} fail</span>
+                        <span className="flex items-center gap-3">
+                          <span>{agent.calls_in_flight} in flight</span>
+                          <DiagnosticsTrend
+                            lastMinute={agent.failures_last_minute}
+                            lastFiveMinutes={agent.failures_last_five_minutes}
+                          />
+                        </span>
                       </div>
                     ))}
                   </div>
