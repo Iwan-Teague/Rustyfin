@@ -1305,10 +1305,10 @@ export default function ServersPage() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <button
                     type="button"
-                    className={`panel tile-hover rounded-2xl px-5 py-5 text-left transition ${
+                    className={`rounded-2xl border bg-[var(--surface)]/70 px-5 py-5 text-left transition ${
                       createMode === 'create'
-                        ? 'border-[var(--orange-soft)] shadow-[0_0_0_1px_rgba(255,194,122,0.28),0_18px_44px_rgba(116,84,198,0.28)]'
-                        : ''
+                        ? 'border-[var(--orange-soft)] ring-1 ring-[rgba(255,194,122,0.28)]'
+                        : 'border-[var(--border)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => {
                       setCreateMode('create');
@@ -1325,10 +1325,10 @@ export default function ServersPage() {
                   </button>
                   <button
                     type="button"
-                    className={`panel tile-hover rounded-2xl px-5 py-5 text-left transition ${
+                    className={`rounded-2xl border bg-[var(--surface)]/70 px-5 py-5 text-left transition ${
                       createMode === 'import'
-                        ? 'border-[var(--orange-soft)] shadow-[0_0_0_1px_rgba(255,194,122,0.28),0_18px_44px_rgba(116,84,198,0.28)]'
-                        : ''
+                        ? 'border-[var(--orange-soft)] ring-1 ring-[rgba(255,194,122,0.28)]'
+                        : 'border-[var(--border)]/70 hover:border-[var(--orange-soft)]/55'
                     }`}
                     onClick={() => setCreateMode('import')}
                   >
