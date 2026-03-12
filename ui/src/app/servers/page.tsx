@@ -293,7 +293,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'provisioning' || server.observed_state === 'importing') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -302,7 +302,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'running' && server.health_state === 'pending') {
     return {
       label: 'Booting',
-      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -320,7 +320,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'starting' || server.observed_state === 'restarting') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -329,7 +329,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'stopping') {
     return {
       label: 'Stopping',
-      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
+      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -956,13 +956,9 @@ export default function ServersPage() {
                           >
                             <span
                               className={`inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full ${
-                                indicator.animated ? `animate-spin ${indicator.dotClass}` : indicator.dotClass
+                                indicator.animated ? `rf-server-status-pulse ${indicator.dotClass}` : indicator.dotClass
                               }`}
-                            >
-                              {indicator.animated ? (
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-300/90" />
-                              ) : null}
-                            </span>
+                            />
                             {indicator.label}
                           </span>
                           <span className="chip">Port {server.listen_port}</span>
