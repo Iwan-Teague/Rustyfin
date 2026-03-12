@@ -2401,19 +2401,25 @@ export default function AdminPage() {
                         key={server.id}
                         type="button"
                         onClick={() => setSelectedMinecraftServerId(server.id)}
-                        className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                        className={`w-full rounded-2xl p-[1px] text-left transition ${
                           selected
-                            ? 'border-[var(--orange-soft)] bg-[var(--surface)]/90'
-                            : 'border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
+                            ? 'bg-[linear-gradient(90deg,var(--orange),var(--danger),var(--purple))]'
+                            : 'border border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
                         }`}
                       >
-                        <div className="font-medium text-white">{server.display_name}</div>
-                        <div className="mt-1 text-xs muted">
-                          {server.server_distribution} {server.minecraft_version}
-                          {' · '}
-                          {server.world_name}
-                          {' · '}
-                          Port {server.listen_port}
+                        <div
+                          className={`rounded-[calc(1rem-1px)] px-4 py-3 ${
+                            selected ? 'bg-[var(--surface)]/95' : ''
+                          }`}
+                        >
+                          <div className="font-medium text-white">{server.display_name}</div>
+                          <div className="mt-1 text-xs muted">
+                            {server.server_distribution} {server.minecraft_version}
+                            {' · '}
+                            {server.world_name}
+                            {' · '}
+                            Port {server.listen_port}
+                          </div>
                         </div>
                       </button>
                     );
