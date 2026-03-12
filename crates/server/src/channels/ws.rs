@@ -236,6 +236,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let avatar_url = avatar_url_for_user(&user_id, profile.avatar_path.as_deref());
 
     debug!(user_id = %user_id, "channels ws authenticated");
+    let _ws_metrics_guard = state.runtime_metrics.track_channels_ws_connection();
 
     // ── Register personal mpsc channel ───────────────────────────────────────
     let (personal_tx, mut personal_rx) = mpsc::channel(PERSONAL_EVENT_BUFFER);

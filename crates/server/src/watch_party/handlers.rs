@@ -17,6 +17,8 @@ use tracing::warn;
 
 use crate::auth::{AdminUser, AuthUser, validate_stream_token};
 use crate::error::AppError;
+use crate::runtime_metrics::AgentKind;
+use crate::runtime_metrics::JobFamily;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::streaming::parse_range_header;
@@ -612,6 +614,7 @@ async fn download_youtube_audio_mp3_for_room(
         request = request.header("x-agent-token", token);
     }
 
+    let agent_call = state.runtime_metrics.start_agent_call(AgentKind::YouTube);
     let response = request
         .send()
         .await
@@ -636,6 +639,7 @@ async fn download_youtube_audio_mp3_for_room(
             "youtube-agent returned invalid JSON payload for download response: {e}"
         ))
     })?;
+    agent_call.mark_success();
 
     let file_path =
         reconcile_agent_file_path_for_room(state, room_id, StdPath::new(&payload.file_path)).await;
@@ -921,6 +925,12 @@ async fn log_admin_room_action(
     else {
         return;
     };
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::AdminAudit);
+    state
+        .runtime_metrics
+        .record_job_completed(JobFamily::AdminAudit);
     let _ =
         rustfin_db::repo::jobs::update_job_status(&state.db, &job.id, "completed", 1.0, None).await;
 }

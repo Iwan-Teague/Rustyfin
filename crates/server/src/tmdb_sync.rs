@@ -5,6 +5,7 @@ use rustfin_core::error::ApiError;
 
 use crate::error::AppError;
 use crate::job_status::update_job_status_with_retry;
+use crate::runtime_metrics::{AgentKind, JobFamily};
 use crate::state::AppState;
 
 pub async fn enqueue_library_tmdb_sync(
@@ -28,6 +29,9 @@ pub async fn enqueue_library_tmdb_sync(
         rustfin_db::repo::jobs::create_job(&state.db, "library_tmdb_sync", Some(&payload_json))
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::TmdbSync);
 
     spawn_tmdb_sync_job(state.clone(), job.id.clone(), library_id.to_string(), None);
 
@@ -50,6 +54,9 @@ fn spawn_tmdb_sync_job(state: AppState, job_id: String, library_id: String, reas
     let reason = reason.map(ToOwned::to_owned);
 
     tokio::spawn(async move {
+        state
+            .runtime_metrics
+            .record_job_running(JobFamily::TmdbSync);
         if let Err(e) = update_job_status_with_retry(&pool, &job_id, "running", 0.0, None).await {
             tracing::error!(job_id = %job_id, error = %e, "failed to set TMDB sync job running");
         }
@@ -61,6 +68,9 @@ fn spawn_tmdb_sync_job(state: AppState, job_id: String, library_id: String, reas
 
         match run_tmdb_sync(&state, &library_id).await {
             Ok(_) => {
+                state
+                    .runtime_metrics
+                    .record_job_completed(JobFamily::TmdbSync);
                 let now = chrono::Utc::now().timestamp();
                 let _ =
                     rustfin_db::repo::libraries::touch_tmdb_last_sync_ts(&pool, &library_id, now)
@@ -88,6 +98,7 @@ fn spawn_tmdb_sync_job(state: AppState, job_id: String, library_id: String, reas
                     error = %e,
                     "TMDB sync failed"
                 );
+                state.runtime_metrics.record_job_failed(JobFamily::TmdbSync);
                 if let Err(update_err) =
                     update_job_status_with_retry(&pool, &job_id, "failed", 0.0, Some(&e)).await
                 {
@@ -201,6 +212,7 @@ async fn run_tmdb_sync(state: &AppState, library_id: &str) -> Result<(), String>
         request = request.header("x-agent-token", token);
     }
 
+    let agent_call = state.runtime_metrics.start_agent_call(AgentKind::Tmdb);
     let response = request
         .send()
         .await
@@ -218,6 +230,8 @@ async fn run_tmdb_sync(state: &AppState, library_id: &str) -> Result<(), String>
             status, body_text
         ));
     }
+
+    agent_call.mark_success();
 
     tracing::info!(
         library_id = %library_id,

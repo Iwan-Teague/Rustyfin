@@ -18,6 +18,7 @@ use tracing::warn;
 
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
+use crate::runtime_metrics::JobFamily;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::transcription_agent::{self, AgentTranscribeChunkRequest};
@@ -472,6 +473,12 @@ async fn log_admin_channel_action(
     else {
         return;
     };
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::AdminAudit);
+    state
+        .runtime_metrics
+        .record_job_completed(JobFamily::AdminAudit);
     let _ =
         rustfin_db::repo::jobs::update_job_status(&state.db, &job.id, "completed", 1.0, None).await;
 }

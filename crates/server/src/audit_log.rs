@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::runtime_metrics::JobFamily;
 use crate::state::AppState;
 
 pub async fn record_event(state: &AppState, kind: &str, payload: Value) {
@@ -9,6 +10,12 @@ pub async fn record_event(state: &AppState, kind: &str, payload: Value) {
     else {
         return;
     };
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::AdminAudit);
+    state
+        .runtime_metrics
+        .record_job_completed(JobFamily::AdminAudit);
     let _ =
         rustfin_db::repo::jobs::update_job_status(&state.db, &job.id, "completed", 1.0, None).await;
 }

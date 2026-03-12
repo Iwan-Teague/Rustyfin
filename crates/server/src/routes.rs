@@ -318,6 +318,7 @@ fn api_router() -> Router<AppState> {
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
+        .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
         .nest("/servers", crate::servers::router::servers_router())
         .nest(
             "/watch-party",
@@ -4150,6 +4151,38 @@ async fn get_gpu_caps(
         "selected_hw_accel": state.transcoder_hw_accel,
         "require_hw_accel": state.transcoder_hw_accel_required,
     })))
+}
+
+#[derive(Debug, Serialize)]
+struct TranscodeDiagnosticsResponse {
+    active_sessions: usize,
+    created_total: u64,
+    create_failures_total: u64,
+    cleaned_total: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeDiagnosticsResponse {
+    runtime: crate::runtime_metrics::RuntimeMetricsSnapshot,
+    transcoding: TranscodeDiagnosticsResponse,
+}
+
+async fn get_runtime_diagnostics(
+    _auth: AdminUser,
+    State(state): State<AppState>,
+) -> Result<Json<RuntimeDiagnosticsResponse>, AppError> {
+    let runtime = state.runtime_metrics.snapshot();
+    let transcoding = TranscodeDiagnosticsResponse {
+        active_sessions: state.transcoder.active_count().await,
+        created_total: state.transcoder.created_total(),
+        create_failures_total: state.transcoder.create_failures_total(),
+        cleaned_total: state.transcoder.cleaned_total(),
+    };
+
+    Ok(Json(RuntimeDiagnosticsResponse {
+        runtime,
+        transcoding,
+    }))
 }
 
 #[derive(Serialize)]

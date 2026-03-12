@@ -37,6 +37,7 @@ pub struct AppState {
     pub db: DbPool,
     pub jwt_secret: String,
     pub http: reqwest::Client,
+    pub runtime_metrics: Arc<crate::runtime_metrics::RuntimeMetrics>,
     pub tmdb_agent_url: String,
     pub tmdb_agent_token: Option<String>,
     pub youtube_agent_url: String,
