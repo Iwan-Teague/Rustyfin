@@ -839,6 +839,7 @@ export default function ServersPage() {
   const activeCreateStep = CREATE_WIZARD_STEP_META[activeCreateStepId];
   const activeCreateStepErrors = createStepErrors(form, activeCreateStepId, createMode, importSourcePath);
   const canAdvanceCreateStep = activeCreateStepErrors.length === 0;
+  const createProgressPercent = ((normalizedCreateStepIndex + 1) / createSteps.length) * 100;
 
   function goToNextCreateStep() {
     if (!canAdvanceCreateStep) {
@@ -1236,34 +1237,37 @@ export default function ServersPage() {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-            <div className="grid gap-2 sm:grid-cols-5">
-              {createSteps.map((stepId, index) => {
-                const step = CREATE_WIZARD_STEP_META[stepId];
-                const isActive = stepId === activeCreateStepId;
-                const isComplete =
-                  index < normalizedCreateStepIndex &&
-                  createStepErrors(form, stepId, createMode, importSourcePath).length === 0;
-                return (
+            <div className="panel-soft space-y-3 p-4 sm:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <span className="chip chip-accent">Server Setup</span>
+                <span className="text-xs muted">
+                  {normalizedCreateStepIndex + 1}/{createSteps.length}
+                </span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-[var(--orange)] to-[var(--purple)]"
+                  style={{ width: `${Math.max(createProgressPercent, 8)}%` }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+                {createSteps.map((stepId, index) => (
                   <div
                     key={stepId}
-                    className={`rounded-2xl border px-4 py-3 text-left transition ${
-                      isActive
-                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))] shadow-[0_0_0_1px_rgba(255,159,67,0.22)]'
-                        : isComplete
-                          ? 'border-emerald-400/30 bg-emerald-500/10'
-                          : 'border-[var(--border-soft)] bg-[var(--surface-soft)]'
+                    className={`chip justify-center text-center ${
+                      index === normalizedCreateStepIndex ? 'chip-accent' : ''
                     }`}
                   >
-                    <div className="text-sm font-semibold text-white">{step.title}</div>
+                    {CREATE_WIZARD_STEP_META[stepId].title}
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
 
-            <div className="panel-soft flex flex-col gap-4 rounded-2xl px-4 py-4 sm:px-5">
+            <section className="panel space-y-6 p-6 sm:p-7">
               <div>
-                <div className="text-sm font-semibold text-white">{activeCreateStep.title}</div>
-                <p className="mt-1 text-sm muted">{activeCreateStep.description}</p>
+                <h3 className="text-2xl font-semibold sm:text-3xl">{activeCreateStep.title}</h3>
+                <p className="mt-2 text-sm muted">{activeCreateStep.description}</p>
               </div>
 
               {activeCreateStepErrors.length > 0 ? (
@@ -1280,16 +1284,19 @@ export default function ServersPage() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <button
                     type="button"
-                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                    className={`panel tile-hover rounded-2xl px-5 py-5 text-left transition ${
                       createMode === 'create'
-                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))]'
-                        : 'panel-soft'
+                        ? 'border-[var(--orange-soft)] shadow-[0_0_0_1px_rgba(255,194,122,0.28),0_18px_44px_rgba(116,84,198,0.28)]'
+                        : ''
                     }`}
                     onClick={() => {
                       setCreateMode('create');
                       setPendingImportServerId(null);
                     }}
                   >
+                    {createMode === 'create' ? (
+                      <span className="chip chip-accent mb-3">Selected</span>
+                    ) : null}
                     <div className="text-base font-semibold text-white">Create new managed server</div>
                     <p className="mt-2 text-sm muted">
                       Rustyfin generates the server files, installs the native service, and launches it when you click Start.
@@ -1297,13 +1304,16 @@ export default function ServersPage() {
                   </button>
                   <button
                     type="button"
-                    className={`rounded-2xl border px-5 py-5 text-left transition ${
+                    className={`panel tile-hover rounded-2xl px-5 py-5 text-left transition ${
                       createMode === 'import'
-                        ? 'border-[var(--orange-soft)] bg-[linear-gradient(90deg,rgba(255,159,67,0.16),rgba(255,96,161,0.16),rgba(168,85,247,0.16))]'
-                        : 'panel-soft'
+                        ? 'border-[var(--orange-soft)] shadow-[0_0_0_1px_rgba(255,194,122,0.28),0_18px_44px_rgba(116,84,198,0.28)]'
+                        : ''
                     }`}
                     onClick={() => setCreateMode('import')}
                   >
+                    {createMode === 'import' ? (
+                      <span className="chip chip-accent mb-3">Selected</span>
+                    ) : null}
                     <div className="text-base font-semibold text-white">Import existing server</div>
                     <p className="mt-2 text-sm muted">
                       Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
@@ -1642,7 +1652,7 @@ export default function ServersPage() {
                   )}
                 </div>
               </div>
-            </div>
+            </section>
           </div>
         )}
       </section>
