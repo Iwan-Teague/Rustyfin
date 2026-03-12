@@ -186,7 +186,9 @@ pub async fn stream_file_range(
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header("Content-Range", format!("bytes */{file_size}"))
                     .body(Body::empty())
-                    .unwrap());
+                    .map_err(|e| {
+                        ApiError::Internal(format!("failed to build range rejection response: {e}"))
+                    })?);
             }
         };
 
@@ -219,7 +221,9 @@ pub async fn stream_file_range(
             .header("Referrer-Policy", "no-referrer")
             .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(stream))
-            .unwrap())
+            .map_err(|e| {
+                ApiError::Internal(format!("failed to build partial media response: {e}"))
+            })?)
     } else {
         // Full file response (200)
         let file = tokio::fs::File::open(&file_path)
@@ -237,7 +241,7 @@ pub async fn stream_file_range(
             .header("Referrer-Policy", "no-referrer")
             .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(stream))
-            .unwrap())
+            .map_err(|e| ApiError::Internal(format!("failed to build media response: {e}")))?)
     }
 }
 

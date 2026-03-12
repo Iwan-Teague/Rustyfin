@@ -3124,7 +3124,7 @@ async fn download_playback_media(
             .header("Referrer-Policy", "no-referrer")
             .header("X-Content-Type-Options", "nosniff")
             .body(Body::from_stream(stream))
-            .unwrap());
+            .map_err(|e| ApiError::Internal(format!("failed to build download response: {e}")))?);
     }
 
     let media_info = probe_media_info_for_file(&state, &media_path).await?;
@@ -3132,7 +3132,7 @@ async fn download_playback_media(
         requested_target_height,
         media_info.video.as_ref().map(|v| v.height),
     )?
-    .expect("validated target height must be present");
+    .ok_or_else(|| ApiError::Internal("validated target height was unexpectedly missing".into()))?;
 
     let mut child = spawn_download_transcode_ffmpeg(&state, &media_path, target_height).await?;
     let stdout = child
@@ -3183,7 +3183,9 @@ async fn download_playback_media(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Content-Type-Options", "nosniff")
         .body(Body::from_stream(stream))
-        .unwrap())
+        .map_err(|e| {
+            ApiError::Internal(format!("failed to build transcode download response: {e}"))
+        })?)
 }
 
 async fn stop_playback_session(
@@ -3218,7 +3220,9 @@ async fn get_media_info(
     let media_path = std::path::Path::new(&file.path);
     let info = probe_media_info_for_file(&state, media_path).await?;
 
-    Ok(Json(serde_json::to_value(&info).unwrap()))
+    let payload = serde_json::to_value(&info)
+        .map_err(|e| ApiError::Internal(format!("failed to serialize media info: {e}")))?;
+    Ok(Json(payload))
 }
 
 // ---------------------------------------------------------------------------
