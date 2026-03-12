@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -71,6 +72,7 @@ struct SessionMetrics {
     created_total: AtomicU64,
     create_failures_total: AtomicU64,
     cleaned_total: AtomicU64,
+    create_failure_window: StdMutex<VecDeque<Instant>>,
 }
 
 struct SpawnFfmpegOptions<'a> {
@@ -128,6 +130,7 @@ impl SessionManager {
             self.metrics
                 .create_failures_total
                 .fetch_add(1, Ordering::Relaxed);
+            record_transcode_failure(&self.metrics);
             return Err(err.into());
         }
 
@@ -149,6 +152,7 @@ impl SessionManager {
                 self.metrics
                     .create_failures_total
                     .fetch_add(1, Ordering::Relaxed);
+                record_transcode_failure(&self.metrics);
                 let _ = tokio::fs::remove_dir_all(&output_dir).await;
                 return Err(err);
             }
@@ -337,6 +341,14 @@ impl SessionManager {
         self.metrics.cleaned_total.load(Ordering::Relaxed)
     }
 
+    pub fn create_failures_last_minute(&self) -> u64 {
+        transcode_failure_window_counts(&self.metrics).0
+    }
+
+    pub fn create_failures_last_five_minutes(&self) -> u64 {
+        transcode_failure_window_counts(&self.metrics).1
+    }
+
     pub async fn get_session_access(&self, session_id: &str) -> Option<SessionAccess> {
         self.sessions
             .lock()
@@ -394,6 +406,51 @@ async fn cleanup_removed_session(
 
     info!(session_id = %session_id, "{success_message}");
     metrics.cleaned_total.fetch_add(1, Ordering::Relaxed);
+}
+
+fn record_transcode_failure(metrics: &SessionMetrics) {
+    let now = Instant::now();
+    let mut timestamps = lock_or_recover(&metrics.create_failure_window);
+    timestamps.push_back(now);
+    while let Some(front) = timestamps.front() {
+        if now.duration_since(*front).as_secs() > 5 * 60 {
+            timestamps.pop_front();
+        } else {
+            break;
+        }
+    }
+}
+
+fn transcode_failure_window_counts(metrics: &SessionMetrics) -> (u64, u64) {
+    let now = Instant::now();
+    let mut timestamps = lock_or_recover(&metrics.create_failure_window);
+    while let Some(front) = timestamps.front() {
+        if now.duration_since(*front).as_secs() > 5 * 60 {
+            timestamps.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    let mut last_minute = 0;
+    let mut last_five_minutes = 0;
+    for timestamp in timestamps.iter() {
+        let elapsed = now.duration_since(*timestamp).as_secs();
+        if elapsed <= 5 * 60 {
+            last_five_minutes += 1;
+        }
+        if elapsed <= 60 {
+            last_minute += 1;
+        }
+    }
+    (last_minute, last_five_minutes)
+}
+
+fn lock_or_recover<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 /// Build and spawn ffmpeg for HLS output.

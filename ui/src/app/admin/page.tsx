@@ -164,6 +164,63 @@ interface HostDirectoryListResponse {
   directories: HostDirectoryListEntry[];
 }
 
+interface DiagnosticsCounter {
+  enqueued_total: number;
+  running_total: number;
+  active_running: number;
+  completed_total: number;
+  failed_total: number;
+  failures_last_minute: number;
+  failures_last_five_minutes: number;
+}
+
+interface DiagnosticsAgentCounter {
+  calls_total: number;
+  calls_succeeded_total: number;
+  calls_failed_total: number;
+  calls_in_flight: number;
+  failures_last_minute: number;
+  failures_last_five_minutes: number;
+}
+
+interface RuntimeDiagnosticsResponse {
+  runtime: {
+    uptime_seconds: number;
+    jobs: {
+      total: DiagnosticsCounter;
+      library_scan: DiagnosticsCounter;
+      tmdb_sync: DiagnosticsCounter;
+      server_operations: DiagnosticsCounter;
+      admin_audit: DiagnosticsCounter;
+      other: DiagnosticsCounter;
+    };
+    websockets: {
+      channels: {
+        active: number;
+        connections_total: number;
+      };
+      watch_party: {
+        active: number;
+        connections_total: number;
+      };
+    };
+    agents: {
+      servers: DiagnosticsAgentCounter;
+      tmdb: DiagnosticsAgentCounter;
+      transcription: DiagnosticsAgentCounter;
+      youtube: DiagnosticsAgentCounter;
+    };
+  };
+  transcoding: {
+    active_sessions: number;
+    created_total: number;
+    create_failures_total: number;
+    create_failures_last_minute: number;
+    create_failures_last_five_minutes: number;
+    cleaned_total: number;
+  };
+}
+
 type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'server_logs' | 'logs' | 'tmdb';
 type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
 type PendingDeleteKind = 'user' | 'library' | 'channel' | 'room';
@@ -241,6 +298,15 @@ function titleCase(value: string): string {
     .join(' ');
 }
 
+function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -268,6 +334,8 @@ export default function AdminPage() {
   const [selectedMinecraftServerLogs, setSelectedMinecraftServerLogs] = useState<ServerLogLine[]>([]);
   const [minecraftServerEventsLoading, setMinecraftServerEventsLoading] = useState(false);
   const [minecraftServerLogsLoading, setMinecraftServerLogsLoading] = useState(false);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnosticsResponse | null>(null);
+  const [runtimeDiagnosticsLoading, setRuntimeDiagnosticsLoading] = useState(false);
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
     null,
   );
@@ -411,6 +479,7 @@ export default function AdminPage() {
     activeJobParams.set('limit', '100');
 
     try {
+      setRuntimeDiagnosticsLoading(true);
       const [
         libs,
         logJobList,
@@ -421,6 +490,7 @@ export default function AdminPage() {
         channelList,
         roomList,
         minecraftServerList,
+        diagnostics,
       ] = await Promise.all([
         apiJson<Library[]>('/libraries'),
         apiJson<Job[]>(`/jobs?${logJobParams.toString()}`),
@@ -431,6 +501,7 @@ export default function AdminPage() {
         apiJson<ChannelRecord[]>('/channels'),
         apiJson<RoomRecord[]>('/watch-party/admin/rooms'),
         listMinecraftServers(),
+        apiJson<RuntimeDiagnosticsResponse>('/system/runtime-diagnostics'),
       ]);
 
       setLibraries(libs);
@@ -525,9 +596,12 @@ export default function AdminPage() {
         key_preview: tmdb.key_preview ?? null,
         source: tmdb.source ?? null,
       });
+      setRuntimeDiagnostics(diagnostics);
     } catch (err: unknown) {
       setMsgType('error');
       setMsg(clientErrorMessage(err, 'Failed to load admin data'));
+    } finally {
+      setRuntimeDiagnosticsLoading(false);
     }
   }, [logFilterTab]);
 
@@ -2494,8 +2568,101 @@ export default function AdminPage() {
       )}
 
       {activeTab === 'logs' && (
-        <section className="space-y-3">
-          <h2 className="text-xl font-semibold">Logs</h2>
+        <section className="space-y-4">
+          <div className="panel-soft rounded-2xl p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold">Runtime Diagnostics</h2>
+                <p className="text-sm muted">
+                  Lightweight live counters for long-running Rustyfin health, websocket usage, transcoding, jobs, and internal agent calls.
+                </p>
+              </div>
+              {runtimeDiagnosticsLoading ? <span className="chip text-[11px]">Refreshing</span> : null}
+            </div>
+            {runtimeDiagnostics ? (
+              <div className="mt-4 grid gap-3 xl:grid-cols-4">
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Runtime</div>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Uptime</span>
+                      <span>{formatUptime(runtimeDiagnostics.runtime.uptime_seconds)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Active jobs</span>
+                      <span>{runtimeDiagnostics.runtime.jobs.total.active_running}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Job failures</span>
+                      <span>{runtimeDiagnostics.runtime.jobs.total.failures_last_minute} / {runtimeDiagnostics.runtime.jobs.total.failures_last_five_minutes}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Transcoding</div>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Active sessions</span>
+                      <span>{runtimeDiagnostics.transcoding.active_sessions}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Created</span>
+                      <span>{runtimeDiagnostics.transcoding.created_total}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Create failures</span>
+                      <span>{runtimeDiagnostics.transcoding.create_failures_last_minute} / {runtimeDiagnostics.transcoding.create_failures_last_five_minutes}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">WebSockets</div>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Channels</span>
+                      <span>{runtimeDiagnostics.runtime.websockets.channels.active} active / {runtimeDiagnostics.runtime.websockets.channels.connections_total} total</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Rooms</span>
+                      <span>{runtimeDiagnostics.runtime.websockets.watch_party.active} active / {runtimeDiagnostics.runtime.websockets.watch_party.connections_total} total</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Agent Calls</div>
+                  <div className="mt-3 space-y-2">
+                    {[
+                      { label: 'Servers', agent: runtimeDiagnostics.runtime.agents.servers },
+                      { label: 'TMDB', agent: runtimeDiagnostics.runtime.agents.tmdb },
+                      {
+                        label: 'Transcription',
+                        agent: runtimeDiagnostics.runtime.agents.transcription,
+                      },
+                      { label: 'YouTube', agent: runtimeDiagnostics.runtime.agents.youtube },
+                    ].map(({ label, agent }) => (
+                      <div key={label} className="flex items-center justify-between gap-3">
+                        <span className="muted">{label}</span>
+                        <span>{agent.calls_in_flight} in flight · {agent.failures_last_minute}/{agent.failures_last_five_minutes} fail</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 px-4 py-3 text-sm muted">
+                Runtime diagnostics are not available yet.
+              </div>
+            )}
+            <div className="mt-3 text-xs muted">
+              Failure windows are shown as <span className="text-white">last 1 minute / last 5 minutes</span>.
+            </div>
+          </div>
+
+          <section className="space-y-3">
+            <h2 className="text-xl font-semibold">Logs</h2>
           <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-0">
             {LOG_FILTER_TABS.map((tab) => (
               <button
@@ -2560,6 +2727,7 @@ export default function AdminPage() {
               );
             })
           )}
+          </section>
         </section>
       )}
 

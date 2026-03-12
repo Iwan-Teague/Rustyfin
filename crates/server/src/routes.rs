@@ -4158,6 +4158,8 @@ struct TranscodeDiagnosticsResponse {
     active_sessions: usize,
     created_total: u64,
     create_failures_total: u64,
+    create_failures_last_minute: u64,
+    create_failures_last_five_minutes: u64,
     cleaned_total: u64,
 }
 
@@ -4176,6 +4178,8 @@ async fn get_runtime_diagnostics(
         active_sessions: state.transcoder.active_count().await,
         created_total: state.transcoder.created_total(),
         create_failures_total: state.transcoder.create_failures_total(),
+        create_failures_last_minute: state.transcoder.create_failures_last_minute(),
+        create_failures_last_five_minutes: state.transcoder.create_failures_last_five_minutes(),
         cleaned_total: state.transcoder.cleaned_total(),
     };
 
