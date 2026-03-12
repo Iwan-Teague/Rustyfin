@@ -1274,7 +1274,7 @@ export default function ServersPage() {
               </div>
             </div>
 
-            <section className={`${activeCreateStepId === 'mode' ? 'panel-soft' : 'panel'} space-y-6 p-6 sm:p-7`}>
+            <section className="panel-soft space-y-6 p-6 sm:p-7">
               <div>
                 <h3 className="text-2xl font-semibold sm:text-3xl">{activeCreateStep.title}</h3>
                 <p className="mt-2 text-sm muted">{activeCreateStep.description}</p>
@@ -1526,7 +1526,7 @@ export default function ServersPage() {
               {activeCreateStepId === 'review' ? (
                 <div className="flex flex-col gap-4">
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="panel rounded-2xl p-4">
+                    <div className="panel-soft rounded-2xl p-4">
                       <div className="text-xs uppercase tracking-[0.24em] muted">Server</div>
                       <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex items-center justify-between gap-4">
@@ -1564,7 +1564,7 @@ export default function ServersPage() {
                       </dl>
                     </div>
 
-                    <div className="panel rounded-2xl p-4">
+                    <div className="panel-soft rounded-2xl p-4">
                       <div className="text-xs uppercase tracking-[0.24em] muted">Gameplay and resources</div>
                       <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex items-center justify-between gap-4">
