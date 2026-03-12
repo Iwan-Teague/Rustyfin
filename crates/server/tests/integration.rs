@@ -1,4 +1,4 @@
-use axum_test::TestServer;
+use axum_test::{TestServer, TestWebSocket};
 use rustfin_server::routes::build_router;
 use rustfin_server::state::AppState;
 use serde_json::{Value, json};
@@ -52,6 +52,7 @@ fn build_test_state(
         db: pool,
         jwt_secret: "test-secret-key".to_string(),
         http: reqwest::Client::builder().build().unwrap(),
+        runtime_metrics: rustfin_server::runtime_metrics::RuntimeMetrics::new(),
         tmdb_agent_url: "http://127.0.0.1:8100".to_string(),
         tmdb_agent_token: None,
         youtube_agent_url: "http://127.0.0.1:8101".to_string(),
@@ -403,10 +404,34 @@ async fn preferences_crud() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    assert_eq!(body, json!({}));
+    assert_eq!(body["version"], 1);
+    assert_eq!(body["audio"]["input_device_id"], Value::Null);
+    assert_eq!(body["activity"]["default_range"], "7d");
+    assert_eq!(body["privacy"]["personal_activity_enabled"], true);
 
     // PATCH prefs
-    let new_prefs = json!({ "show_missing_episodes": true, "theme": "dark" });
+    let new_prefs = json!({
+        "version": 1,
+        "audio": {
+            "input_device_id": "mic-1",
+            "output_device_id": "speaker-1"
+        },
+        "activity": {
+            "default_range": "30d"
+        },
+        "privacy": {
+            "personal_activity_enabled": false
+        },
+        "notifications": {
+            "desktop_enabled": true
+        },
+        "accessibility": {
+            "reduce_motion": true
+        },
+        "appearance": {
+            "density": "compact"
+        }
+    });
     let resp = server
         .patch("/api/v1/users/me/preferences")
         .add_header(
@@ -417,8 +442,9 @@ async fn preferences_crud() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    assert_eq!(body["show_missing_episodes"], true);
-    assert_eq!(body["theme"], "dark");
+    assert_eq!(body["audio"]["input_device_id"], "mic-1");
+    assert_eq!(body["activity"]["default_range"], "30d");
+    assert_eq!(body["privacy"]["personal_activity_enabled"], false);
 
     // GET updated prefs
     let resp = server
@@ -430,7 +456,235 @@ async fn preferences_crud() {
         .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
-    assert_eq!(body["show_missing_episodes"], true);
+    assert_eq!(body["audio"]["output_device_id"], "speaker-1");
+    assert_eq!(body["notifications"]["desktop_enabled"], true);
+    assert_eq!(body["accessibility"]["reduce_motion"], true);
+    assert_eq!(body["appearance"]["density"], "compact");
+}
+
+#[tokio::test]
+async fn profile_update_persists_time_zone() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let auth_header = format!("Bearer {token}");
+
+    let resp = server
+        .patch("/api/v1/users/me/profile")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "display_name": "Admin Person",
+            "time_zone": "Europe/Dublin"
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["username"], "Admin Person");
+    assert_eq!(body["time_zone"], "Europe/Dublin");
+
+    let resp = server
+        .get("/api/v1/users/me")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["username"], "Admin Person");
+    assert_eq!(body["time_zone"], "Europe/Dublin");
+}
+
+#[tokio::test]
+async fn password_change_requires_current_password_and_relogin() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let auth_header = format!("Bearer {token}");
+
+    let resp = server
+        .post("/api/v1/users/me/password")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "current_password": "wrong-password",
+            "new_password": "admin_secure_456",
+            "confirm_password": "admin_secure_456"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    let resp = server
+        .post("/api/v1/users/me/password")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "current_password": "admin_secure_123",
+            "new_password": "admin_secure_456",
+            "confirm_password": "admin_secure_456"
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["relogin_required"], true);
+
+    let resp = server
+        .post("/api/v1/auth/login")
+        .json(&json!({ "username": "admin", "password": "admin_secure_123" }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    let resp = server
+        .post("/api/v1/auth/login")
+        .json(&json!({ "username": "admin", "password": "admin_secure_456" }))
+        .await;
+    resp.assert_status_ok();
+}
+
+#[tokio::test]
+async fn browser_activity_summary_and_clear_history() {
+    let server = test_app().await;
+    let token = login(&server, "admin", "admin_secure_123").await;
+    let auth_header = format!("Bearer {token}");
+
+    let start_resp = server
+        .post("/api/v1/users/me/activity/browser")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "client_session_id": "browser-session-1",
+            "tab_id": "tab-1",
+            "section": "rooms",
+            "event": "start"
+        }))
+        .await;
+    start_resp.assert_status_ok();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stop_resp = server
+        .post("/api/v1/users/me/activity/browser")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "client_session_id": "browser-session-1",
+            "tab_id": "tab-1",
+            "section": "rooms",
+            "event": "stop"
+        }))
+        .await;
+    stop_resp.assert_status_ok();
+
+    let resp = server
+        .get("/api/v1/users/me/activity?range=7d")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["activity_enabled"], true);
+    assert_eq!(body["most_used_sections"][0]["key"], "rooms");
+    assert!(body["totals"]["total_time_ms"].as_i64().unwrap_or_default() >= 1000);
+
+    let resp = server
+        .delete("/api/v1/users/me/activity")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+
+    let resp = server
+        .get("/api/v1/users/me/activity?range=7d")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert!(body["most_used_sections"].as_array().unwrap().is_empty());
+
+    let resp = server
+        .patch("/api/v1/users/me/preferences")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "version": 1,
+            "audio": {
+                "input_device_id": null,
+                "output_device_id": null
+            },
+            "activity": {
+                "default_range": "7d"
+            },
+            "privacy": {
+                "personal_activity_enabled": false
+            },
+            "notifications": {
+                "desktop_enabled": false
+            },
+            "accessibility": {
+                "reduce_motion": false
+            },
+            "appearance": {}
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    let start_resp = server
+        .post("/api/v1/users/me/activity/browser")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "client_session_id": "browser-session-2",
+            "tab_id": "tab-1",
+            "section": "channels",
+            "event": "start"
+        }))
+        .await;
+    start_resp.assert_status_ok();
+    let stop_resp = server
+        .post("/api/v1/users/me/activity/browser")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .json(&json!({
+            "client_session_id": "browser-session-2",
+            "tab_id": "tab-1",
+            "section": "channels",
+            "event": "stop"
+        }))
+        .await;
+    stop_resp.assert_status_ok();
+
+    let resp = server
+        .get("/api/v1/users/me/activity?range=7d")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            auth_header.parse::<axum::http::HeaderValue>().unwrap(),
+        )
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["activity_enabled"], false);
+    assert!(body["most_used_sections"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -538,6 +792,22 @@ async fn create_watch_party_room(
     resp.assert_status(axum::http::StatusCode::CREATED);
     let body: Value = resp.json();
     body["room_id"].as_str().unwrap().to_string()
+}
+
+async fn receive_ws_json_of_type(ws: &mut TestWebSocket, expected_type: &str) -> Value {
+    for _ in 0..12 {
+        let message: Value = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ws.receive_json::<Value>(),
+        )
+        .await
+        .expect("websocket should produce a message");
+        if message["type"].as_str() == Some(expected_type) {
+            return message;
+        }
+    }
+
+    panic!("websocket did not receive expected message type: {expected_type}");
 }
 
 #[tokio::test]
@@ -2141,6 +2411,399 @@ async fn watch_party_websocket_requires_auth_and_enforces_permissions() {
     outsider_ws.close().await;
 
     std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn watch_party_screen_room_can_be_created_and_reconfigured() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let screen_room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_mode": "screen",
+            "invites": []
+        }),
+    )
+    .await;
+
+    let resp = server
+        .get(&format!("/api/v1/watch-party/rooms/{screen_room_id}"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["room_mode"], "screen");
+
+    let (_library_id, item_id, tmp) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "Watch Reconfigure Screen",
+        "Reconfigure Screen Movie (2024).mp4",
+    )
+    .await;
+
+    let video_room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_mode": "video",
+            "item_id": item_id,
+            "invites": []
+        }),
+    )
+    .await;
+
+    let resp = server
+        .post(&format!(
+            "/api/v1/watch-party/rooms/{video_room_id}/reconfigure"
+        ))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "room_mode": "screen"
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["room_mode"], "screen");
+
+    let resp = server
+        .get(&format!("/api/v1/watch-party/rooms/{video_room_id}"))
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["room_mode"], "screen");
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn watch_party_screen_websocket_enforces_presenter_locking() {
+    let server = test_app_http().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let controller_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "screen_controller",
+        "screen_controller_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let viewer_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "screen_viewer",
+        "screen_viewer_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let outsider_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "screen_outsider",
+        "screen_outsider_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+
+    let room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_mode": "screen",
+            "invites": [
+                { "user_id": controller_id, "role": "controller" },
+                { "user_id": viewer_id, "role": "viewer" }
+            ]
+        }),
+    )
+    .await;
+
+    let controller_token = login(&server, "screen_controller", "screen_controller_pass_123").await;
+    let viewer_token = login(&server, "screen_viewer", "screen_viewer_pass_123").await;
+    let outsider_token = login(&server, "screen_outsider", "screen_outsider_pass_123").await;
+    let controller_hdr = auth_hdr(&controller_token);
+    let viewer_hdr = auth_hdr(&viewer_token);
+    assert_ne!(outsider_id, viewer_id);
+
+    server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(controller_hdr.0.clone(), controller_hdr.1.clone())
+        .json(&json!({}))
+        .await
+        .assert_status_ok();
+    server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(viewer_hdr.0.clone(), viewer_hdr.1.clone())
+        .json(&json!({}))
+        .await
+        .assert_status_ok();
+
+    let ws_host_header = axum::http::header::HOST;
+    let ws_host_value = "watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+    let ws_origin_header = axum::http::header::ORIGIN;
+    let ws_origin_value = "http://watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+
+    let mut host_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    host_ws
+        .send_json(&json!({ "type": "auth", "token": admin_token }))
+        .await;
+    let host_initial = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(host_initial["active"], false);
+
+    let mut controller_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    controller_ws
+        .send_json(&json!({ "type": "auth", "token": controller_token }))
+        .await;
+    let controller_initial = receive_ws_json_of_type(&mut controller_ws, "screen_state").await;
+    assert_eq!(controller_initial["active"], false);
+
+    let mut viewer_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    viewer_ws
+        .send_json(&json!({ "type": "auth", "token": viewer_token }))
+        .await;
+    let viewer_initial = receive_ws_json_of_type(&mut viewer_ws, "screen_state").await;
+    assert_eq!(viewer_initial["active"], false);
+
+    let mut outsider_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    outsider_ws
+        .send_json(&json!({ "type": "auth", "token": outsider_token }))
+        .await;
+    let outsider_error = receive_ws_json_of_type(&mut outsider_ws, "error").await;
+    assert!(
+        outsider_error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("room membership not found")
+    );
+
+    viewer_ws
+        .send_json(&json!({
+            "type": "screen_claim"
+        }))
+        .await;
+    let viewer_error = receive_ws_json_of_type(&mut viewer_ws, "error").await;
+    assert!(
+        viewer_error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("host or controller")
+    );
+
+    controller_ws
+        .send_json(&json!({
+            "type": "screen_claim"
+        }))
+        .await;
+    let host_claimed = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(host_claimed["active"], false);
+    assert_eq!(host_claimed["presenter_user_id"], controller_id);
+    assert_eq!(host_claimed["presenter_state"], "requesting_capture");
+    let controller_claimed = receive_ws_json_of_type(&mut controller_ws, "screen_state").await;
+    assert_eq!(controller_claimed["presenter_user_id"], controller_id);
+    let viewer_claimed = receive_ws_json_of_type(&mut viewer_ws, "screen_state").await;
+    assert_eq!(viewer_claimed["presenter_user_id"], controller_id);
+
+    host_ws
+        .send_json(&json!({
+            "type": "screen_claim"
+        }))
+        .await;
+    let host_lock_error = receive_ws_json_of_type(&mut host_ws, "error").await;
+    assert!(
+        host_lock_error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("locked by another presenter")
+    );
+
+    controller_ws
+        .send_json(&json!({
+            "type": "screen_start",
+            "surface_type": "window",
+            "audio_enabled": true,
+            "quality_profile": "auto"
+        }))
+        .await;
+    let host_live = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(host_live["active"], true);
+    let controller_live = receive_ws_json_of_type(&mut controller_ws, "screen_state").await;
+    assert_eq!(controller_live["active"], true);
+    let viewer_live = receive_ws_json_of_type(&mut viewer_ws, "screen_state").await;
+    assert_eq!(viewer_live["active"], true);
+    let session_id = viewer_live["session_id"].as_str().unwrap().to_string();
+
+    viewer_ws
+        .send_json(&json!({
+            "type": "screen_offer",
+            "to_user_id": controller_id,
+            "session_id": session_id,
+            "sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\n"
+        }))
+        .await;
+    let controller_offer = receive_ws_json_of_type(&mut controller_ws, "screen_offer").await;
+    assert_eq!(controller_offer["from_user_id"], viewer_id);
+
+    host_ws
+        .send_json(&json!({
+            "type": "screen_force_stop"
+        }))
+        .await;
+    let host_force_stop_error = receive_ws_json_of_type(&mut host_ws, "error").await;
+    assert!(
+        host_force_stop_error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("force-stop is disabled")
+    );
+
+    controller_ws
+        .send_json(&json!({
+            "type": "screen_stop"
+        }))
+        .await;
+    let host_stopped = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(host_stopped["active"], false);
+    let controller_stopped = receive_ws_json_of_type(&mut controller_ws, "screen_state").await;
+    assert_eq!(controller_stopped["active"], false);
+    let viewer_stopped = receive_ws_json_of_type(&mut viewer_ws, "screen_state").await;
+    assert_eq!(viewer_stopped["active"], false);
+
+    host_ws.close().await;
+    controller_ws.close().await;
+    viewer_ws.close().await;
+    outsider_ws.close().await;
+}
+
+#[tokio::test]
+async fn watch_party_screen_session_resets_when_presenter_disconnects() {
+    let server = test_app_http().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let controller_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "screen_disconnect_controller",
+        "screen_disconnect_controller_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+
+    let room_id = create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_mode": "screen",
+            "invites": [
+                { "user_id": controller_id, "role": "controller" }
+            ]
+        }),
+    )
+    .await;
+
+    let controller_token = login(
+        &server,
+        "screen_disconnect_controller",
+        "screen_disconnect_controller_pass_123",
+    )
+    .await;
+    let controller_hdr = auth_hdr(&controller_token);
+    server
+        .post(&format!("/api/v1/watch-party/rooms/{room_id}/join"))
+        .add_header(controller_hdr.0.clone(), controller_hdr.1.clone())
+        .json(&json!({}))
+        .await
+        .assert_status_ok();
+
+    let ws_host_header = axum::http::header::HOST;
+    let ws_host_value = "watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+    let ws_origin_header = axum::http::header::ORIGIN;
+    let ws_origin_value = "http://watchparty.test"
+        .parse::<axum::http::HeaderValue>()
+        .unwrap();
+
+    let mut host_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    host_ws
+        .send_json(&json!({ "type": "auth", "token": admin_token }))
+        .await;
+    let _ = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+
+    let mut controller_ws = server
+        .get_websocket(&format!("/api/v1/watch-party/rooms/{room_id}/ws"))
+        .add_header(ws_host_header.clone(), ws_host_value.clone())
+        .add_header(ws_origin_header.clone(), ws_origin_value.clone())
+        .await
+        .into_websocket()
+        .await;
+    controller_ws
+        .send_json(&json!({ "type": "auth", "token": controller_token }))
+        .await;
+    let _ = receive_ws_json_of_type(&mut controller_ws, "screen_state").await;
+
+    controller_ws
+        .send_json(&json!({
+            "type": "screen_start",
+            "surface_type": "monitor",
+            "audio_enabled": false,
+            "quality_profile": "motion"
+        }))
+        .await;
+    let live_state = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(live_state["active"], true);
+
+    controller_ws.close().await;
+
+    let reset_state = receive_ws_json_of_type(&mut host_ws, "screen_state").await;
+    assert_eq!(reset_state["active"], false);
+    assert!(reset_state["presenter_user_id"].is_null());
+
+    host_ws.close().await;
 }
 
 // ---------------------------------------------------------------------------

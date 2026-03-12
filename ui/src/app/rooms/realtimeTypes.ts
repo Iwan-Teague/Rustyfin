@@ -3,6 +3,10 @@ import type {
   WsCreateStateMessage,
   WsOnlineAudioStatusMessage,
   WsPlayStateMessage,
+  WsScreenAnswerMessage,
+  WsScreenIceMessage,
+  WsScreenOfferMessage,
+  WsScreenStateMessage,
   WsRoomReconfiguredMessage,
   WsWebStateMessage,
   WsYouTubeStateMessage,
@@ -50,6 +54,10 @@ export type WsMessage =
   | WsAudioStateMessage
   | WsOnlineAudioStatusMessage
   | WsWebStateMessage
+  | WsScreenStateMessage
+  | WsScreenOfferMessage
+  | WsScreenAnswerMessage
+  | WsScreenIceMessage
   | WsYouTubeStateMessage
   | WsCreateStateMessage
   | WsPlayStateMessage
@@ -59,7 +67,7 @@ export type WsMessage =
   | WsPongMessage
   | WsRoomEndedMessage;
 
-export type RoomMode = 'video' | 'audio' | 'youtube' | 'web' | 'create' | 'play';
+export type RoomMode = 'video' | 'audio' | 'youtube' | 'web' | 'screen' | 'create' | 'play';
 
 export type PlaybackDescriptor = {
   item_id: string;

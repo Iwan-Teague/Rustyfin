@@ -169,7 +169,9 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <span className="chip h-10 shrink-0 px-4 text-sm">{me.username}</span>
+                  <Link href="/account" className="chip h-10 shrink-0 px-4 text-sm">
+                    {me.username}
+                  </Link>
                   {desktopRightNavLinks.map((link) => (
                     <span key={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
                       {link.label}
@@ -294,7 +296,9 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <span className="chip h-10 shrink-0 px-4 text-sm">{me.username}</span>
+                  <Link href="/account" className="chip h-10 shrink-0 px-4 text-sm">
+                    {me.username}
+                  </Link>
                   {desktopRightNavLinks.map((link) => (
                     <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
                       {link.label}
@@ -413,7 +417,9 @@ export default function NavBar() {
                 </button>
               </div>
             ) : !loading && me ? (
-              <span className="chip">{me.username}</span>
+              <Link href="/account" className="chip">
+                {me.username}
+              </Link>
             ) : (
               <span className="w-10 shrink-0" aria-hidden="true" />
             )}
@@ -437,7 +443,14 @@ export default function NavBar() {
             {loading ? (
               <span className="px-3 py-2 text-sm muted">&hellip;</span>
             ) : me ? (
-              <div className="flex items-center justify-end gap-2 px-1">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <Link
+                  href="/account"
+                  className="chip px-3 py-2 text-sm"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  {me.username}
+                </Link>
                 <button
                   type="button"
                   onClick={() => setConfirmLogoutOpen(true)}

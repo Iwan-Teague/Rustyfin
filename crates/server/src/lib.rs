@@ -3,6 +3,7 @@
     clippy::ptr_arg,
     clippy::should_implement_trait
 )]
+pub mod account_prefs;
 pub mod artwork;
 pub mod audit_log;
 pub mod auth;
@@ -19,5 +20,6 @@ pub mod state;
 pub mod streaming;
 pub mod tmdb_sync;
 pub mod transcription_agent;
+pub mod user_activity;
 pub mod user_pipeline;
 pub mod watch_party;

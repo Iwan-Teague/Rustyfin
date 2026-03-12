@@ -671,6 +671,7 @@ export default function PlayerPage() {
           item_id: id,
           progress_ms: progressMs,
           played: video.ended,
+          playback_session_id: sessionIdRef.current,
         }),
         keepalive,
       }).catch(() => {});

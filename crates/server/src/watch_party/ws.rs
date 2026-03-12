@@ -15,6 +15,7 @@ use crate::auth::{issue_room_track_stream_token, validate_token};
 use crate::error::AppError;
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
+use crate::user_activity;
 
 use super::manager::{
     AudioAction, BattleshipResetOutcome, ChessResetOutcome, ConnectFourResetOutcome, CreateState,
@@ -365,6 +366,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
                     let _ = send_error(&mut socket, "websocket idle timeout").await;
                     break;
                 }
+                let _ = user_activity::track_room_heartbeat(&state, &context.user_id, &context.room_id).await;
                 if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
@@ -372,6 +374,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
             outbound = subscription.recv() => {
                 match outbound {
                     Ok(message) => {
+                        if !should_deliver_message_to_user(&message, &context.user_id) {
+                            continue;
+                        }
                         let is_terminal = matches!(
                             message,
                             ServerMessage::RoomEnded | ServerMessage::RoomReconfigured { .. }
@@ -452,11 +457,32 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         let mut connected = runtime.connected_user_ids.write().await;
         connected.remove(&context.user_id);
     }
+    let disconnected_screen_state = runtime.snapshot_screen_state().await;
+    let presenter_disconnected = disconnected_screen_state.as_ref().is_some_and(|screen| {
+        screen.presenter_user_id.as_deref() == Some(context.user_id.as_str())
+    });
+    let screen_viewer_removed = runtime
+        .unregister_screen_viewer(&context.user_id)
+        .await
+        .unwrap_or(false);
+    if presenter_disconnected {
+        if disconnected_screen_state
+            .as_ref()
+            .is_some_and(|screen| screen.active)
+        {
+            let _ = runtime.stop_screen_share().await;
+        } else {
+            let _ = runtime.release_screen_share_claim(&context.user_id).await;
+        }
+    }
     runtime.invalidate_presence_members_cache().await;
     let _ = runtime.tx.send(ServerMessage::Presence {
         user_id: context.user_id.clone(),
         connected: false,
     });
+    if presenter_disconnected || screen_viewer_removed {
+        let _ = broadcast_current_state(&state, &runtime, &context.room_id).await;
+    }
 
     let _ = rustfin_db::repo::watch_party::touch_member_last_seen(
         &state.db,
@@ -464,6 +490,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
         &context.user_id,
     )
     .await;
+    let _ = user_activity::track_room_leave(&state, &context.user_id, &context.room_id).await;
 
     let connected_count = runtime.connected_user_ids.read().await.len();
     if connected_count == 0 {
@@ -897,6 +924,53 @@ fn normalize_canvas_stroke_id(raw: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn normalize_screen_surface_type(raw: &str) -> Result<String, AppError> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "browser" | "window" | "monitor" | "unknown" => Ok(normalized),
+        _ => Err(ApiError::BadRequest(
+            "surface_type must be one of: browser, window, monitor, unknown".into(),
+        )
+        .into()),
+    }
+}
+
+fn normalize_screen_quality_profile(raw: &str) -> Result<String, AppError> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "auto" | "text_clarity" | "motion" => Ok(normalized),
+        _ => Err(ApiError::BadRequest(
+            "quality_profile must be one of: auto, text_clarity, motion".into(),
+        )
+        .into()),
+    }
+}
+
+fn normalize_screen_signal_field(
+    raw: String,
+    field_name: &str,
+    max_len: usize,
+) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > max_len {
+        return Err(ApiError::BadRequest(format!("invalid {field_name}")).into());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn can_present_screen(role: &str) -> bool {
+    role == "host" || role == "controller"
+}
+
+fn should_deliver_message_to_user(message: &ServerMessage, user_id: &str) -> bool {
+    match message {
+        ServerMessage::ScreenOffer { to_user_id, .. }
+        | ServerMessage::ScreenAnswer { to_user_id, .. }
+        | ServerMessage::ScreenIce { to_user_id, .. } => to_user_id == user_id,
+        _ => true,
+    }
+}
+
 async fn list_active_member_ids(
     state: &AppState,
     room_id: &str,
@@ -948,6 +1022,7 @@ async fn handle_client_message(
                 return Ok(());
             }
             if context.room_mode == "web"
+                || context.room_mode == "screen"
                 || context.room_mode == "create"
                 || context.room_mode == "play"
             {
@@ -1013,6 +1088,7 @@ async fn handle_client_message(
                 return Ok(());
             }
             if context.room_mode == "web"
+                || context.room_mode == "screen"
                 || context.room_mode == "create"
                 || context.room_mode == "play"
             {
@@ -1078,6 +1154,7 @@ async fn handle_client_message(
                 return Ok(());
             }
             if context.room_mode == "web"
+                || context.room_mode == "screen"
                 || context.room_mode == "create"
                 || context.room_mode == "play"
             {
@@ -1772,6 +1849,496 @@ async fn handle_client_message(
             );
 
             broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenClaim => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen sharing is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_present_screen(&role) {
+                send_error(socket, "screen sharing requires host or controller role").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if screen_state.presenter_user_id.as_deref() == Some(context.user_id.as_str()) {
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+            if screen_state.presenter_user_id.is_some() {
+                send_error(socket, "screen sharing is locked by another presenter").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime
+                .claim_screen_share(context.user_id.clone(), "auto".to_string())
+                .await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenStart {
+            surface_type,
+            audio_enabled,
+            quality_profile,
+        }
+        | ClientMessage::ScreenReplace {
+            surface_type,
+            audio_enabled,
+            quality_profile,
+        } => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen sharing is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+            if !can_present_screen(&role) {
+                send_error(socket, "screen sharing requires host or controller role").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let normalized_surface_type = normalize_screen_surface_type(&surface_type)?;
+            let normalized_quality_profile = normalize_screen_quality_profile(&quality_profile)?;
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if screen_state.presenter_user_id.is_some()
+                && screen_state.presenter_user_id.as_deref() != Some(context.user_id.as_str())
+            {
+                send_error(socket, "screen sharing is locked by another presenter").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime
+                .start_screen_share(
+                    context.user_id.clone(),
+                    normalized_surface_type,
+                    audio_enabled,
+                    normalized_quality_profile,
+                )
+                .await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenRelease => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen sharing is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if screen_state.presenter_user_id.as_deref() != Some(context.user_id.as_str()) {
+                send_error(
+                    socket,
+                    "only the locked presenter can release screen sharing",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+            if screen_state.active {
+                send_error(
+                    socket,
+                    "active screen sharing must be stopped by the presenter",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime.release_screen_share_claim(&context.user_id).await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenStop => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen sharing is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if !screen_state.active {
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let is_presenter =
+                screen_state.presenter_user_id.as_deref() == Some(context.user_id.as_str());
+            if !is_presenter {
+                send_error(socket, "screen sharing is locked by another presenter").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime.stop_screen_share().await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenForceStop => {
+            send_error(
+                socket,
+                "screen share force-stop is disabled while presenter locking is enabled",
+            )
+            .await?;
+            send_current_state_for_user(
+                socket,
+                state,
+                runtime,
+                &context.room_id,
+                Some(&context.user_id),
+            )
+            .await?;
+            Ok(())
+        }
+        ClientMessage::ScreenQuality { quality_profile } => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen quality is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let normalized_quality_profile = normalize_screen_quality_profile(&quality_profile)?;
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if screen_state.presenter_user_id.as_deref() != Some(context.user_id.as_str()) {
+                send_error(
+                    socket,
+                    "only the active presenter can change screen quality",
+                )
+                .await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime
+                .set_screen_quality_profile(normalized_quality_profile)
+                .await;
+            broadcast_current_state(state, runtime, &context.room_id).await?;
+            Ok(())
+        }
+        ClientMessage::ScreenOffer {
+            to_user_id,
+            session_id,
+            sdp,
+        } => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen signaling is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let normalized_to_user_id =
+                normalize_screen_signal_field(to_user_id, "to_user_id", 128)?;
+            let normalized_session_id =
+                normalize_screen_signal_field(session_id, "session_id", 128)?;
+            let normalized_sdp = normalize_screen_signal_field(sdp, "sdp", MAX_WS_TEXT_BYTES)?;
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if !screen_state.active
+                || screen_state.session_id.as_deref() != Some(normalized_session_id.as_str())
+            {
+                send_error(socket, "screen share session is not active").await?;
+                send_current_state_for_user(
+                    socket,
+                    state,
+                    runtime,
+                    &context.room_id,
+                    Some(&context.user_id),
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let presenter_user_id = screen_state
+                .presenter_user_id
+                .clone()
+                .ok_or_else(|| ApiError::BadRequest("screen presenter is unavailable".into()))?;
+            if normalized_to_user_id != presenter_user_id {
+                send_error(socket, "screen offers must target the active presenter").await?;
+                return Ok(());
+            }
+            if context.user_id == presenter_user_id {
+                send_error(socket, "the presenter cannot send a viewer offer").await?;
+                return Ok(());
+            }
+
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
+            if !active_member_ids.contains(&normalized_to_user_id) {
+                send_error(
+                    socket,
+                    "screen signaling target must be a current room member",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let viewer_added = runtime
+                .register_screen_viewer(&context.user_id)
+                .await
+                .unwrap_or(false);
+            let _ = runtime.tx.send(ServerMessage::ScreenOffer {
+                to_user_id: normalized_to_user_id,
+                from_user_id: context.user_id.clone(),
+                session_id: normalized_session_id,
+                sdp: normalized_sdp,
+            });
+            if viewer_added {
+                broadcast_current_state(state, runtime, &context.room_id).await?;
+            }
+            Ok(())
+        }
+        ClientMessage::ScreenAnswer {
+            to_user_id,
+            session_id,
+            sdp,
+        } => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen signaling is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let normalized_to_user_id =
+                normalize_screen_signal_field(to_user_id, "to_user_id", 128)?;
+            let normalized_session_id =
+                normalize_screen_signal_field(session_id, "session_id", 128)?;
+            let normalized_sdp = normalize_screen_signal_field(sdp, "sdp", MAX_WS_TEXT_BYTES)?;
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if !screen_state.active
+                || screen_state.session_id.as_deref() != Some(normalized_session_id.as_str())
+            {
+                send_error(socket, "screen share session is not active").await?;
+                return Ok(());
+            }
+            if screen_state.presenter_user_id.as_deref() != Some(context.user_id.as_str()) {
+                send_error(
+                    socket,
+                    "only the active presenter can answer screen signaling",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
+            if !active_member_ids.contains(&normalized_to_user_id) {
+                send_error(
+                    socket,
+                    "screen signaling target must be a current room member",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let _ = runtime.tx.send(ServerMessage::ScreenAnswer {
+                to_user_id: normalized_to_user_id,
+                from_user_id: context.user_id.clone(),
+                session_id: normalized_session_id,
+                sdp: normalized_sdp,
+            });
+            Ok(())
+        }
+        ClientMessage::ScreenIce {
+            to_user_id,
+            session_id,
+            candidate,
+        } => {
+            if context.room_mode != "screen" {
+                send_error(socket, "screen signaling is only valid in screen rooms").await?;
+                return Ok(());
+            }
+
+            let (room_status, _policy, _role) =
+                refresh_membership_and_policy(state, &context.room_id, &context.user_id).await?;
+            if room_status != "lobby" {
+                send_error(socket, "room is not active").await?;
+                return Ok(());
+            }
+
+            let normalized_to_user_id =
+                normalize_screen_signal_field(to_user_id, "to_user_id", 128)?;
+            let normalized_session_id =
+                normalize_screen_signal_field(session_id, "session_id", 128)?;
+            let normalized_candidate =
+                normalize_screen_signal_field(candidate, "candidate", MAX_WS_TEXT_BYTES)?;
+            let screen_state = runtime
+                .snapshot_screen_state()
+                .await
+                .ok_or_else(|| ApiError::BadRequest("screen state is unavailable".into()))?;
+            if !screen_state.active
+                || screen_state.session_id.as_deref() != Some(normalized_session_id.as_str())
+            {
+                send_error(socket, "screen share session is not active").await?;
+                return Ok(());
+            }
+            let presenter_user_id = screen_state
+                .presenter_user_id
+                .clone()
+                .ok_or_else(|| ApiError::BadRequest("screen presenter is unavailable".into()))?;
+            let active_member_ids = list_active_member_ids(state, &context.room_id).await?;
+            if !active_member_ids.contains(&normalized_to_user_id) {
+                send_error(
+                    socket,
+                    "screen signaling target must be a current room member",
+                )
+                .await?;
+                return Ok(());
+            }
+
+            if context.user_id != presenter_user_id && normalized_to_user_id != presenter_user_id {
+                send_error(
+                    socket,
+                    "viewer ICE candidates must target the active presenter",
+                )
+                .await?;
+                return Ok(());
+            }
+            if context.user_id == presenter_user_id && normalized_to_user_id == presenter_user_id {
+                send_error(socket, "presenter ICE candidates must target a viewer").await?;
+                return Ok(());
+            }
+
+            let _ = runtime.tx.send(ServerMessage::ScreenIce {
+                to_user_id: normalized_to_user_id,
+                from_user_id: context.user_id.clone(),
+                session_id: normalized_session_id,
+                candidate: normalized_candidate,
+            });
             Ok(())
         }
         ClientMessage::CreateSetTool { tool } => {
@@ -3232,6 +3799,9 @@ async fn build_state_message(
     if runtime.room_mode == "web" {
         return build_web_state_message(state, runtime, room_id).await;
     }
+    if runtime.room_mode == "screen" {
+        return build_screen_state_message(state, runtime, room_id).await;
+    }
     if runtime.room_mode == "create" {
         return build_create_state_message(state, runtime, room_id).await;
     }
@@ -3281,6 +3851,47 @@ async fn build_web_state_message(
         url,
         updated_ts_ms,
         server_ts_ms: now_ms,
+        members: member_summaries,
+    })
+}
+
+async fn build_screen_state_message(
+    state: &AppState,
+    runtime: &RoomRuntime,
+    room_id: &str,
+) -> Result<ServerMessage, AppError> {
+    let screen_state = runtime
+        .snapshot_screen_state()
+        .await
+        .ok_or_else(|| ApiError::Internal("screen state not initialized".into()))?;
+    let connected = runtime.connected_user_ids.read().await.clone();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let member_summaries = build_presence_members(state, runtime, room_id, &connected).await?;
+    let presenter_username =
+        screen_state
+            .presenter_user_id
+            .as_ref()
+            .and_then(|presenter_user_id| {
+                member_summaries
+                    .iter()
+                    .find(|member| member.user_id == *presenter_user_id)
+                    .map(|member| member.username.clone())
+            });
+
+    Ok(ServerMessage::ScreenState {
+        room_id: room_id.to_string(),
+        active: screen_state.active,
+        session_id: screen_state.session_id,
+        presenter_user_id: screen_state.presenter_user_id,
+        presenter_username,
+        surface_type: screen_state.surface_type,
+        audio_enabled: screen_state.audio_enabled,
+        quality_profile: screen_state.quality_profile,
+        presenter_state: screen_state.presenter_state,
+        started_ts_ms: screen_state.started_ts_ms,
+        updated_ts_ms: screen_state.updated_ts_ms,
+        server_ts_ms: now_ms,
+        viewer_count: screen_state.viewer_user_ids.len(),
         members: member_summaries,
     })
 }

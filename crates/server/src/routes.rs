@@ -19,6 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use tracing::warn;
 
+use crate::account_prefs::UserPreferences;
 use crate::auth::{
     AdminUser, AuthUser, issue_stream_token, issue_token, validate_stream_token, validate_token,
 };
@@ -26,6 +27,7 @@ use crate::error::AppError;
 use crate::host_directories::{HostDirectoryListResponse, build_host_directory_listing};
 use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
+use crate::user_activity::{self, ActivityRange, BrowserActivityEventRequest};
 use crate::user_pipeline;
 
 const DEFAULT_STREAM_TOKEN_TTL_SECONDS: i64 = 6 * 60 * 60;
@@ -40,6 +42,8 @@ const LOGIN_BUCKET_IDLE_TTL_SECONDS: u64 = 30 * 60;
 const CONTINUE_WATCHING_MIN_PROGRESS_MS: i64 = 30_000;
 const CONTINUE_WATCHING_PERCENT_NUMERATOR: i64 = 5;
 const CONTINUE_WATCHING_PERCENT_DENOMINATOR: i64 = 100;
+const PASSWORD_CHANGE_ATTEMPTS: u64 = 8;
+const PASSWORD_CHANGE_WINDOW_SECONDS: u64 = 15 * 60;
 
 #[derive(Debug, Clone)]
 struct LoginAttemptBucket {
@@ -270,12 +274,18 @@ fn api_router() -> Router<AppState> {
             "/users/me/profile",
             get(get_my_profile).patch(update_my_profile),
         )
+        .route("/users/me/password", post(change_my_password))
         .route(
             "/users/me/avatar",
             post(upload_my_avatar).delete(delete_my_avatar),
         )
         .route("/users/avatar/{id}", get(download_user_avatar))
         .route("/users/me/preferences", get(get_prefs).patch(update_prefs))
+        .route(
+            "/users/me/activity",
+            get(get_my_activity_summary).delete(delete_my_activity),
+        )
+        .route("/users/me/activity/browser", post(post_browser_activity))
         // Libraries
         .route("/libraries", post(create_library).get(list_libraries))
         .route(
@@ -456,6 +466,8 @@ struct UserMeResponse {
     username: String,
     login_username: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     avatar_url: Option<String>,
     role: String,
 }
@@ -466,6 +478,9 @@ struct MyProfileResponse {
     username: String,
     login_username: String,
     role: String,
+    created_ts: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    time_zone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     avatar_url: Option<String>,
 }
@@ -473,6 +488,26 @@ struct MyProfileResponse {
 #[derive(Deserialize)]
 struct UpdateMyProfileRequest {
     display_name: String,
+    #[serde(default)]
+    time_zone: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChangeMyPasswordRequest {
+    current_password: String,
+    new_password: String,
+    confirm_password: String,
+}
+
+#[derive(Serialize)]
+struct ChangeMyPasswordResponse {
+    ok: bool,
+    relogin_required: bool,
+}
+
+#[derive(Default, Deserialize)]
+struct ActivitySummaryQuery {
+    range: Option<String>,
 }
 
 fn avatar_url_for_user(user_id: &str, avatar_path: Option<&str>) -> Option<String> {
@@ -528,8 +563,38 @@ fn profile_to_response(row: &rustfin_db::repo::users::UserRow) -> MyProfileRespo
         username: row.display_name.clone(),
         login_username: row.username.clone(),
         role: row.role.clone(),
+        created_ts: row.created_ts,
+        time_zone: row.time_zone.clone(),
         avatar_url: avatar_url_for_user(&row.id, row.avatar_path.as_deref()),
     }
+}
+
+fn normalize_time_zone(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    trimmed
+        .parse::<chrono_tz::Tz>()
+        .map(|_| Some(trimmed.to_string()))
+        .map_err(|_| ApiError::BadRequest("time_zone must be a valid IANA time zone".into()).into())
+}
+
+fn validate_password_only(password: &str) -> Result<(), AppError> {
+    if let Some(fields) = user_pipeline::validate_username_password("valid_user", password) {
+        if let Some(message) = fields
+            .get("password")
+            .and_then(|value| value.as_array())
+            .and_then(|values| values.first())
+            .and_then(|value| value.as_str())
+        {
+            return Err(ApiError::BadRequest(message.to_string()).into());
+        }
+    }
+    Ok(())
 }
 
 async fn users_me(
@@ -544,6 +609,7 @@ async fn users_me(
         id: user.id.clone(),
         username: user.display_name,
         login_username: user.username,
+        time_zone: user.time_zone,
         avatar_url: avatar_url_for_user(&user.id, user.avatar_path.as_deref()),
         role: user.role,
     }))
@@ -568,14 +634,71 @@ async fn update_my_profile(
     let display_name = normalize_display_name(&body.display_name).ok_or_else(|| {
         ApiError::BadRequest("display_name must be between 2 and 40 characters".into())
     })?;
-    rustfin_db::repo::users::update_display_name(&state.db, &auth.user_id, &display_name)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let time_zone = normalize_time_zone(body.time_zone.as_deref())?;
+    rustfin_db::repo::users::update_profile(
+        &state.db,
+        &auth.user_id,
+        &display_name,
+        time_zone.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
         .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
     Ok(Json(profile_to_response(&user)))
+}
+
+fn password_change_limiter() -> &'static RateLimiter {
+    static LIMITER: std::sync::OnceLock<RateLimiter> = std::sync::OnceLock::new();
+    LIMITER
+        .get_or_init(|| RateLimiter::new(PASSWORD_CHANGE_ATTEMPTS, PASSWORD_CHANGE_WINDOW_SECONDS))
+}
+
+async fn change_my_password(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<ChangeMyPasswordRequest>,
+) -> Result<Json<ChangeMyPasswordResponse>, AppError> {
+    let key = format!("password-change:{}", auth.user_id);
+    password_change_limiter()
+        .check(&key)
+        .await
+        .map_err(|retry_after| ApiError::TooManyRequests {
+            retry_after_seconds: retry_after,
+        })?;
+
+    if body.new_password != body.confirm_password {
+        return Err(ApiError::BadRequest("new password and confirmation must match".into()).into());
+    }
+    if body.current_password == body.new_password {
+        return Err(
+            ApiError::BadRequest("new password must differ from current password".into()).into(),
+        );
+    }
+    validate_password_only(&body.new_password)?;
+
+    let user = rustfin_db::repo::users::find_by_id(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+
+    let valid =
+        rustfin_db::repo::users::verify_password(&body.current_password, &user.password_hash)
+            .map_err(|e| ApiError::Internal(format!("hash error: {e}")))?;
+    if !valid {
+        return Err(ApiError::Unauthorized("current password is incorrect".into()).into());
+    }
+
+    rustfin_db::repo::users::update_password(&state.db, &auth.user_id, &body.new_password)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(Json(ChangeMyPasswordResponse {
+        ok: true,
+        relogin_required: true,
+    }))
 }
 
 async fn upload_my_avatar(
@@ -993,31 +1116,53 @@ async fn delete_user_route(
 async fn get_prefs(
     auth: AuthUser,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let json_str = rustfin_db::repo::users::get_preferences(&state.db, &auth.user_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .unwrap_or_else(|| "{}".to_string());
-
-    let val: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| ApiError::Internal(format!("invalid prefs JSON: {e}")))?;
-
-    Ok(Json(val))
+) -> Result<Json<UserPreferences>, AppError> {
+    Ok(Json(
+        user_activity::load_preferences(&state, &auth.user_id).await?,
+    ))
 }
 
 async fn update_prefs(
     auth: AuthUser,
     State(state): State<AppState>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<UserPreferences>,
+) -> Result<Json<UserPreferences>, AppError> {
+    let prefs = body.normalized();
+    user_activity::save_preferences(&state, &auth.user_id, &prefs).await?;
+    Ok(Json(prefs))
+}
+
+async fn post_browser_activity(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Json(body): Json<BrowserActivityEventRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let json_str = serde_json::to_string(&body)
-        .map_err(|e| ApiError::Internal(format!("json serialize error: {e}")))?;
+    user_activity::handle_browser_event(&state, &auth.user_id, &body).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
 
-    rustfin_db::repo::users::update_preferences(&state.db, &auth.user_id, &json_str)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+async fn get_my_activity_summary(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Query(query): Query<ActivitySummaryQuery>,
+) -> Result<Json<user_activity::ActivitySummaryResponse>, AppError> {
+    let prefs = user_activity::load_preferences(&state, &auth.user_id).await?;
+    let range = query
+        .range
+        .as_deref()
+        .map(ActivityRange::from_raw)
+        .unwrap_or_else(|| ActivityRange::from_raw(&prefs.activity.default_range));
+    Ok(Json(
+        user_activity::summarize_user_activity(&state, &auth.user_id, range).await?,
+    ))
+}
 
-    Ok(Json(body))
+async fn delete_my_activity(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    user_activity::clear_user_history(&state, &auth.user_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -2531,6 +2676,8 @@ struct ProgressRequest {
     progress_ms: i64,
     #[serde(default)]
     played: bool,
+    #[serde(default)]
+    playback_session_id: Option<String>,
 }
 
 fn progress_threshold_ms(duration_ms: Option<i64>, prefer_larger: bool) -> i64 {
@@ -2606,6 +2753,21 @@ async fn update_progress(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if let Some(playback_session_id) = body
+        .playback_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        user_activity::record_media_progress(
+            &state,
+            &auth.user_id,
+            playback_session_id,
+            progress_ms,
+        )
+        .await?;
+    }
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -2798,6 +2960,10 @@ async fn create_playback_session(
 ) -> Result<Json<SessionResponse>, AppError> {
     let requested_target_height = normalize_transcode_height(body.target_height)?;
     let file = get_accessible_media_file(&auth, &state, &body.file_id).await?;
+    let item_id = rustfin_db::repo::items::get_item_id_by_file_id(&state.db, &body.file_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("item not found for media file".into()))?;
     let input_path = std::path::PathBuf::from(&file.path);
     let target_height = if requested_target_height.is_some() {
         let media_info = probe_media_info_for_file(&state, &input_path).await?;
@@ -2831,6 +2997,9 @@ async fn create_playback_session(
         &state.jwt_secret,
     )?;
     let hls_url = format!("/stream/hls/{session_id}/master.m3u8?st={stream_token}");
+
+    user_activity::start_media_watch(&state, &auth.user_id, &session_id, &item_id, &body.file_id)
+        .await?;
 
     Ok(Json(SessionResponse {
         session_id,
@@ -3190,7 +3359,7 @@ async fn download_playback_media(
 }
 
 async fn stop_playback_session(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(sid): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -3204,6 +3373,8 @@ async fn stop_playback_session(
             }
             other => ApiError::Internal(format!("transcode error: {other}")),
         })?;
+
+    user_activity::stop_media_watch(&state, &auth.user_id, &sid).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

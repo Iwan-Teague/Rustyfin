@@ -101,6 +101,37 @@ impl Default for CreateState {
 }
 
 #[derive(Debug, Clone)]
+pub struct ScreenShareState {
+    pub active: bool,
+    pub session_id: Option<String>,
+    pub presenter_user_id: Option<String>,
+    pub surface_type: Option<String>,
+    pub audio_enabled: bool,
+    pub quality_profile: String,
+    pub presenter_state: String,
+    pub started_ts_ms: Option<i64>,
+    pub updated_ts_ms: i64,
+    pub viewer_user_ids: HashSet<String>,
+}
+
+impl Default for ScreenShareState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            session_id: None,
+            presenter_user_id: None,
+            surface_type: None,
+            audio_enabled: false,
+            quality_profile: "auto".to_string(),
+            presenter_state: "idle".to_string(),
+            started_ts_ms: None,
+            updated_ts_ms: chrono::Utc::now().timestamp_millis(),
+            viewer_user_ids: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ChessLastMove {
     pub from: String,
     pub to: String,
@@ -310,6 +341,7 @@ pub struct RoomRuntime {
     pub youtube_search_results: RwLock<Vec<YouTubeSearchEntry>>,
     pub web_url: RwLock<String>,
     pub web_updated_ts_ms: RwLock<i64>,
+    pub screen_state: Option<RwLock<ScreenShareState>>,
     pub create_state: Option<RwLock<CreateState>>,
     pub play_state: Option<RwLock<PlayState>>,
     presence_members_cache: RwLock<Option<PresenceMembersCache>>,
@@ -347,6 +379,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            screen_state: None,
             create_state: None,
             play_state: None,
             presence_members_cache: RwLock::new(None),
@@ -381,6 +414,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            screen_state: None,
             create_state: None,
             play_state: None,
             presence_members_cache: RwLock::new(None),
@@ -406,6 +440,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(chrono::Utc::now().timestamp_millis()),
+            screen_state: None,
             create_state: None,
             play_state: None,
             presence_members_cache: RwLock::new(None),
@@ -432,6 +467,34 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(initial_url),
             web_updated_ts_ms: RwLock::new(now_ms),
+            screen_state: None,
+            create_state: None,
+            play_state: None,
+            presence_members_cache: RwLock::new(None),
+            connected_user_ids: RwLock::new(HashSet::new()),
+            tx,
+            last_activity_ts_ms: RwLock::new(now_ms),
+        }
+    }
+
+    pub fn new_screen(room_id: String) -> Self {
+        let (tx, _) = broadcast::channel(256);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        Self {
+            room_id,
+            item_id: String::new(),
+            room_mode: "screen".to_string(),
+            audio_source: None,
+            audio_library_id: None,
+            state: RwLock::new(PlaybackState::default()),
+            audio_queue: None,
+            youtube_video_id: RwLock::new(None),
+            youtube_queue: RwLock::new(Vec::new()),
+            youtube_search_query: RwLock::new(String::new()),
+            youtube_search_results: RwLock::new(Vec::new()),
+            web_url: RwLock::new(String::new()),
+            web_updated_ts_ms: RwLock::new(now_ms),
+            screen_state: Some(RwLock::new(ScreenShareState::default())),
             create_state: None,
             play_state: None,
             presence_members_cache: RwLock::new(None),
@@ -458,6 +521,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(now_ms),
+            screen_state: None,
             create_state: Some(RwLock::new(initial_state)),
             play_state: None,
             presence_members_cache: RwLock::new(None),
@@ -484,6 +548,7 @@ impl RoomRuntime {
             youtube_search_results: RwLock::new(Vec::new()),
             web_url: RwLock::new(String::new()),
             web_updated_ts_ms: RwLock::new(now_ms),
+            screen_state: None,
             create_state: None,
             play_state: Some(RwLock::new(PlayState::default())),
             presence_members_cache: RwLock::new(None),
@@ -542,6 +607,151 @@ impl RoomRuntime {
         let url = self.web_url.read().await.clone();
         let updated_ts_ms = *self.web_updated_ts_ms.read().await;
         (url, updated_ts_ms)
+    }
+
+    pub async fn snapshot_screen_state(&self) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        Some(state.read().await.clone())
+    }
+
+    pub async fn claim_screen_share(
+        &self,
+        presenter_user_id: String,
+        quality_profile: String,
+    ) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.active = false;
+        guard.session_id = None;
+        guard.presenter_user_id = Some(presenter_user_id);
+        guard.surface_type = None;
+        guard.audio_enabled = false;
+        guard.quality_profile = quality_profile;
+        guard.presenter_state = "requesting_capture".to_string();
+        guard.started_ts_ms = None;
+        guard.updated_ts_ms = now_ms;
+        guard.viewer_user_ids.clear();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn start_screen_share(
+        &self,
+        presenter_user_id: String,
+        surface_type: String,
+        audio_enabled: bool,
+        quality_profile: String,
+    ) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.active = true;
+        guard.session_id = Some(uuid::Uuid::new_v4().to_string());
+        guard.presenter_user_id = Some(presenter_user_id);
+        guard.surface_type = Some(surface_type);
+        guard.audio_enabled = audio_enabled;
+        guard.quality_profile = quality_profile;
+        guard.presenter_state = "live".to_string();
+        guard.started_ts_ms = Some(now_ms);
+        guard.updated_ts_ms = now_ms;
+        guard.viewer_user_ids.clear();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn release_screen_share_claim(
+        &self,
+        presenter_user_id: &str,
+    ) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        if guard.presenter_user_id.as_deref() != Some(presenter_user_id) || guard.active {
+            return Some(guard.clone());
+        }
+        guard.active = false;
+        guard.session_id = None;
+        guard.presenter_user_id = None;
+        guard.surface_type = None;
+        guard.audio_enabled = false;
+        guard.presenter_state = "idle".to_string();
+        guard.started_ts_ms = None;
+        guard.updated_ts_ms = now_ms;
+        guard.viewer_user_ids.clear();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn stop_screen_share(&self) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.active = false;
+        guard.session_id = None;
+        guard.presenter_user_id = None;
+        guard.surface_type = None;
+        guard.audio_enabled = false;
+        guard.presenter_state = "ended".to_string();
+        guard.started_ts_ms = None;
+        guard.updated_ts_ms = now_ms;
+        guard.viewer_user_ids.clear();
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn set_screen_quality_profile(
+        &self,
+        quality_profile: String,
+    ) -> Option<ScreenShareState> {
+        let state = self.screen_state.as_ref()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut guard = state.write().await;
+        guard.quality_profile = quality_profile;
+        guard.updated_ts_ms = now_ms;
+        let snapshot = guard.clone();
+        drop(guard);
+        self.touch_activity().await;
+        Some(snapshot)
+    }
+
+    pub async fn register_screen_viewer(&self, user_id: &str) -> Option<bool> {
+        let state = self.screen_state.as_ref()?;
+        let mut guard = state.write().await;
+        if !guard.active {
+            return Some(false);
+        }
+        let changed = guard.viewer_user_ids.insert(user_id.to_string());
+        if changed {
+            guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        }
+        drop(guard);
+        if changed {
+            self.touch_activity().await;
+        }
+        Some(changed)
+    }
+
+    pub async fn unregister_screen_viewer(&self, user_id: &str) -> Option<bool> {
+        let state = self.screen_state.as_ref()?;
+        let mut guard = state.write().await;
+        let changed = guard.viewer_user_ids.remove(user_id);
+        if changed {
+            guard.updated_ts_ms = chrono::Utc::now().timestamp_millis();
+        }
+        drop(guard);
+        if changed {
+            self.touch_activity().await;
+        }
+        Some(changed)
     }
 
     pub async fn snapshot_create_state(&self) -> Option<CreateState> {
@@ -3410,6 +3620,8 @@ impl WatchPartyManager {
                         room_id.to_string(),
                         web_url.unwrap_or_else(|| "https://www.mozilla.org/".to_string()),
                     )
+                } else if room_mode == "screen" {
+                    RoomRuntime::new_screen(room_id.to_string())
                 } else if room_mode == "create" {
                     RoomRuntime::new_create(room_id.to_string(), create_state.unwrap_or_default())
                 } else if room_mode == "play" {

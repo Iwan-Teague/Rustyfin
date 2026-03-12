@@ -11,6 +11,7 @@ pub struct UserRow {
     pub id: String,
     pub username: String,
     pub display_name: String,
+    pub time_zone: Option<String>,
     pub avatar_path: Option<String>,
     pub avatar_content_type: Option<String>,
     pub password_hash: String,
@@ -24,6 +25,7 @@ type UserTuple = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
     String,
     String,
     i64,
@@ -34,6 +36,7 @@ fn map_user_row(
         id,
         username,
         display_name,
+        time_zone,
         avatar_path,
         avatar_content_type,
         password_hash,
@@ -45,6 +48,7 @@ fn map_user_row(
         id,
         username,
         display_name,
+        time_zone,
         avatar_path,
         avatar_content_type,
         password_hash,
@@ -54,7 +58,7 @@ fn map_user_row(
 }
 
 const USER_SELECT_COLUMNS: &str = "id, username, COALESCE(NULLIF(display_name, ''), username) \
-                                   AS display_name, avatar_path, avatar_content_type, \
+                                   AS display_name, time_zone, avatar_path, avatar_content_type, \
                                    password_hash, role, created_ts";
 
 /// Create a new user. Returns the user ID.
@@ -176,6 +180,22 @@ pub async fn update_display_name(
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("UPDATE \"user\" SET display_name = $1 WHERE id = $2")
         .bind(display_name)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Update a user's profile fields.
+pub async fn update_profile(
+    pool: &DbPool,
+    user_id: &str,
+    display_name: &str,
+    time_zone: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE \"user\" SET display_name = $1, time_zone = $2 WHERE id = $3")
+        .bind(display_name)
+        .bind(time_zone)
         .bind(user_id)
         .execute(pool)
         .await?;
@@ -310,6 +330,21 @@ pub async fn update_preferences(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Update a user's password hash.
+pub async fn update_password(
+    pool: &DbPool,
+    user_id: &str,
+    password: &str,
+) -> Result<bool, crate::DbError> {
+    let hash = hash_password(password)?;
+    let result = sqlx::query("UPDATE \"user\" SET password_hash = $1 WHERE id = $2")
+        .bind(hash)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Verify a password against a stored hash.

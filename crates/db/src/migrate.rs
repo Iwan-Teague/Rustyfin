@@ -142,6 +142,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "035_continue_watching_indexes",
         include_str!("../migrations_pg/035_continue_watching_indexes.sql"),
     ),
+    (
+        "036_user_account_activity",
+        include_str!("../migrations_pg/036_user_account_activity.sql"),
+    ),
 ];
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
@@ -198,4 +202,46 @@ pub async fn run(pool: &DbPool, backend: DatabaseBackend) -> Result<(), sqlx::Er
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::POSTGRES_MIGRATIONS;
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn migration_registry_covers_all_sql_files() {
+        let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations_pg");
+        let registered = POSTGRES_MIGRATIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<BTreeSet<_>>();
+
+        let mut discovered = BTreeSet::new();
+        for entry in fs::read_dir(&migrations_dir).expect("read migrations directory") {
+            let entry = entry.expect("read migration dir entry");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("sql") {
+                continue;
+            }
+
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .expect("sql migration file stem");
+            discovered.insert(stem.to_owned());
+        }
+
+        let missing = discovered
+            .into_iter()
+            .filter(|name| !registered.contains(name.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing.is_empty(),
+            "migration files missing from POSTGRES_MIGRATIONS: {missing:?}"
+        );
+    }
 }

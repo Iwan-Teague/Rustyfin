@@ -1,4 +1,11 @@
-export type WatchPartyRoomMode = 'video' | 'audio' | 'youtube' | 'web' | 'create' | string;
+export type WatchPartyRoomMode =
+  | 'video'
+  | 'audio'
+  | 'youtube'
+  | 'web'
+  | 'screen'
+  | 'create'
+  | string;
 
 export function isAdminRole(role: string): boolean {
   return role === 'host' || role === 'controller' || role === 'admin';

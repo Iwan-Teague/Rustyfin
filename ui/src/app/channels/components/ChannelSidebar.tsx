@@ -5,7 +5,6 @@ import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
-import { useListReflowAnimation } from '@/lib/listReflowAnimation';
 import ConfirmModal from '@/app/components/ConfirmModal';
 
 const DELETE_AFTER_CONFIRM_DELAY_MS = 500;
@@ -297,10 +296,6 @@ export default function ChannelSidebar({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [hasActiveVoice]);
-
-  useListReflowAnimation(channelListRef, channels.map((channel) => channel.id), {
-    itemSelector: '[data-list-item-id]',
-  });
 
   useEffect(() => {
     if (!pendingRenameChannel) return;
