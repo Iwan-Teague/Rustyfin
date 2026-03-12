@@ -2687,7 +2687,10 @@ export default function AdminPage() {
                         label: 'Transcription',
                         agent: runtimeDiagnostics.runtime.agents.transcription,
                       },
-                      { label: 'YouTube', agent: runtimeDiagnostics.runtime.agents.youtube },
+                      {
+                        label: 'YouTube Music',
+                        agent: runtimeDiagnostics.runtime.agents.youtube,
+                      },
                     ].map(({ label, agent }) => (
                       <div key={label} className="flex items-center justify-between gap-3">
                         <span className="muted">{label}</span>
