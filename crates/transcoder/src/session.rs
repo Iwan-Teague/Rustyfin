@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use tokio::process::Child;
@@ -62,6 +63,14 @@ pub struct SessionManager {
     config: TranscoderConfig,
     sessions: Arc<Mutex<HashMap<String, TranscodeSession>>>,
     semaphore: Arc<Semaphore>,
+    metrics: Arc<SessionMetrics>,
+}
+
+#[derive(Default)]
+struct SessionMetrics {
+    created_total: AtomicU64,
+    create_failures_total: AtomicU64,
+    cleaned_total: AtomicU64,
 }
 
 struct SpawnFfmpegOptions<'a> {
@@ -83,6 +92,7 @@ impl SessionManager {
             config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             semaphore,
+            metrics: Arc::new(SessionMetrics::default()),
         }
     }
 
@@ -114,9 +124,14 @@ impl SessionManager {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let output_dir = self.config.transcode_dir.join(&session_id);
-        tokio::fs::create_dir_all(&output_dir).await?;
+        if let Err(err) = tokio::fs::create_dir_all(&output_dir).await {
+            self.metrics
+                .create_failures_total
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(err.into());
+        }
 
-        let child = spawn_ffmpeg(SpawnFfmpegOptions {
+        let child = match spawn_ffmpeg(SpawnFfmpegOptions {
             ffmpeg_path: &self.config.ffmpeg_path,
             input: &input_path,
             output_dir: &output_dir,
@@ -127,7 +142,17 @@ impl SessionManager {
             hw_accel: self.config.hw_accel.as_ref(),
             hw_device_path: self.config.hw_device_path.as_deref(),
         })
-        .await?;
+        .await
+        {
+            Ok(child) => child,
+            Err(err) => {
+                self.metrics
+                    .create_failures_total
+                    .fetch_add(1, Ordering::Relaxed);
+                let _ = tokio::fs::remove_dir_all(&output_dir).await;
+                return Err(err);
+            }
+        };
 
         let session = TranscodeSession {
             id: session_id.clone(),
@@ -145,6 +170,7 @@ impl SessionManager {
             .lock()
             .await
             .insert(session_id.clone(), session);
+        self.metrics.created_total.fetch_add(1, Ordering::Relaxed);
 
         info!(session_id = %session_id, "HLS transcode session created");
         Ok(session_id)
@@ -169,6 +195,7 @@ impl SessionManager {
             cleanup_removed_session(
                 id,
                 session,
+                Arc::clone(&self.metrics),
                 "replaced existing HLS session for same user/file",
             )
             .await;
@@ -207,7 +234,13 @@ impl SessionManager {
         drop(sessions);
 
         for (id, session) in removed_sessions {
-            cleanup_removed_session(id, session, "reaped finished HLS session").await;
+            cleanup_removed_session(
+                id,
+                session,
+                Arc::clone(&self.metrics),
+                "reaped finished HLS session",
+            )
+            .await;
         }
     }
 
@@ -243,6 +276,7 @@ impl SessionManager {
             cleanup_removed_session(
                 session_id.to_string(),
                 session,
+                Arc::clone(&self.metrics),
                 "HLS session stopped and cleaned up",
             )
             .await;
@@ -271,7 +305,13 @@ impl SessionManager {
         };
 
         for (id, session) in idle_sessions {
-            cleanup_removed_session(id, session, "cleaned up idle HLS session").await;
+            cleanup_removed_session(
+                id,
+                session,
+                Arc::clone(&self.metrics),
+                "cleaned up idle HLS session",
+            )
+            .await;
         }
     }
 
@@ -283,6 +323,18 @@ impl SessionManager {
     /// List active session IDs.
     pub async fn list_sessions(&self) -> Vec<String> {
         self.sessions.lock().await.keys().cloned().collect()
+    }
+
+    pub fn created_total(&self) -> u64 {
+        self.metrics.created_total.load(Ordering::Relaxed)
+    }
+
+    pub fn create_failures_total(&self) -> u64 {
+        self.metrics.create_failures_total.load(Ordering::Relaxed)
+    }
+
+    pub fn cleaned_total(&self) -> u64 {
+        self.metrics.cleaned_total.load(Ordering::Relaxed)
     }
 
     pub async fn get_session_access(&self, session_id: &str) -> Option<SessionAccess> {
@@ -316,6 +368,7 @@ impl SessionManager {
 async fn cleanup_removed_session(
     session_id: String,
     mut session: TranscodeSession,
+    metrics: Arc<SessionMetrics>,
     success_message: &'static str,
 ) {
     if let Some(mut child) = session.child.take() {
@@ -340,6 +393,7 @@ async fn cleanup_removed_session(
     }
 
     info!(session_id = %session_id, "{success_message}");
+    metrics.cleaned_total.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Build and spawn ffmpeg for HLS output.

@@ -2,6 +2,7 @@ use rustfin_core::error::ApiError;
 
 use crate::error::AppError;
 use crate::job_status::update_job_status_with_retry;
+use crate::runtime_metrics::JobFamily;
 use crate::state::AppState;
 
 pub async fn enqueue_library_scan(
@@ -25,6 +26,9 @@ pub async fn enqueue_library_scan(
     let job = rustfin_db::repo::jobs::create_job(&state.db, "library_scan", Some(&payload_json))
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::LibraryScan);
 
     // Spawn scan in background.
     let job_id = job.id.clone();
@@ -34,6 +38,9 @@ pub async fn enqueue_library_scan(
     let events_tx = state.events.clone();
     let state = state.clone();
     tokio::spawn(async move {
+        state
+            .runtime_metrics
+            .record_job_running(JobFamily::LibraryScan);
         if let Err(e) = update_job_status_with_retry(&pool, &job_id, "running", 0.0, None).await {
             tracing::error!(job_id = %job_id, error = %e, "failed to set job status to running");
         }
@@ -73,6 +80,9 @@ pub async fn enqueue_library_scan(
                     skipped = result.skipped,
                     "scan completed"
                 );
+                state
+                    .runtime_metrics
+                    .record_job_completed(JobFamily::LibraryScan);
                 if let Err(e) =
                     update_job_status_with_retry(&pool, &job_id, "completed", 1.0, None).await
                 {
@@ -95,6 +105,9 @@ pub async fn enqueue_library_scan(
             }
             Err(e) => {
                 tracing::error!(job_id = %job_id, error = %e, "scan failed");
+                state
+                    .runtime_metrics
+                    .record_job_failed(JobFamily::LibraryScan);
                 if let Err(update_err) = update_job_status_with_retry(
                     &pool,
                     &job_id,

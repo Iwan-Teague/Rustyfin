@@ -15,6 +15,7 @@ use super::runtime::{
 };
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
+use crate::runtime_metrics::JobFamily;
 use crate::state::AppState;
 
 const ALLOWED_SERVER_DISTRIBUTIONS: &[&str] = &["vanilla", "paper"];
@@ -720,6 +721,35 @@ async fn record_server_event(
     .await;
 }
 
+fn record_server_job_enqueued(state: &AppState) {
+    state
+        .runtime_metrics
+        .record_job_enqueued(JobFamily::ServerOperation);
+}
+
+async fn update_server_job_status(
+    state: &AppState,
+    job_id: &str,
+    status: &str,
+    progress: f64,
+    error: Option<&str>,
+) {
+    match status {
+        "running" => state
+            .runtime_metrics
+            .record_job_running(JobFamily::ServerOperation),
+        "completed" => state
+            .runtime_metrics
+            .record_job_completed(JobFamily::ServerOperation),
+        "failed" => state
+            .runtime_metrics
+            .record_job_failed(JobFamily::ServerOperation),
+        _ => {}
+    }
+    let _ =
+        rustfin_db::repo::jobs::update_job_status(&state.db, job_id, status, progress, error).await;
+}
+
 async fn run_server_lifecycle_job(
     state: AppState,
     instance_id: String,
@@ -728,8 +758,7 @@ async fn run_server_lifecycle_job(
     action: ServerLifecycleAction,
     actor_user_id: String,
 ) {
-    let _ =
-        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.2, None).await;
+    update_server_job_status(&state, &job_id, "running", 0.2, None).await;
     record_server_event(
         &state,
         &instance_id,
@@ -775,14 +804,7 @@ async fn run_server_lifecycle_job(
                 &message,
             )
             .await;
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "completed",
-                1.0,
-                None,
-            )
-            .await;
+            update_server_job_status(&state, &job_id, "completed", 1.0, None).await;
         }
         Err(error) => {
             if let Ok(Some(current)) =
@@ -802,14 +824,7 @@ async fn run_server_lifecycle_job(
                 &format!("{} failed: {}", action.as_str(), error),
             )
             .await;
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&error),
-            )
-            .await;
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&error)).await;
         }
     }
 }
@@ -841,8 +856,7 @@ async fn run_managed_provision_job(
     job_id: String,
     actor_user_id: String,
 ) {
-    let _ =
-        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.1, None).await;
+    update_server_job_status(&state, &job_id, "running", 0.1, None).await;
     record_server_event(
         &state,
         &instance_id,
@@ -862,8 +876,8 @@ async fn run_managed_provision_job(
     {
         Ok(Some(server)) => server,
         Ok(None) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
+            update_server_job_status(
+                &state,
                 &job_id,
                 "failed",
                 1.0,
@@ -873,14 +887,8 @@ async fn run_managed_provision_job(
             return;
         }
         Err(error) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&format!("db error: {error}")),
-            )
-            .await;
+            let message = format!("db error: {error}");
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             return;
         }
     };
@@ -915,14 +923,7 @@ async fn run_managed_provision_job(
                     }),
                 )
                 .await;
-                let _ = rustfin_db::repo::jobs::update_job_status(
-                    &state.db,
-                    &job_id,
-                    "completed",
-                    1.0,
-                    None,
-                )
-                .await;
+                update_server_job_status(&state, &job_id, "completed", 1.0, None).await;
             }
             Err(error) => {
                 let message =
@@ -937,14 +938,7 @@ async fn run_managed_provision_job(
                     &message,
                 )
                 .await;
-                let _ = rustfin_db::repo::jobs::update_job_status(
-                    &state.db,
-                    &job_id,
-                    "failed",
-                    1.0,
-                    Some(&message),
-                )
-                .await;
+                update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             }
         },
         Err(error) => {
@@ -972,14 +966,7 @@ async fn run_managed_provision_job(
                 &format!("Managed provisioning failed: {error}"),
             )
             .await;
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&error),
-            )
-            .await;
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&error)).await;
         }
     }
 }
@@ -990,8 +977,7 @@ async fn run_managed_provision_then_start_job(
     job_id: String,
     actor_user_id: String,
 ) {
-    let _ =
-        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.05, None).await;
+    update_server_job_status(&state, &job_id, "running", 0.05, None).await;
     record_server_event(
         &state,
         &instance_id,
@@ -1011,8 +997,8 @@ async fn run_managed_provision_then_start_job(
     {
         Ok(Some(server)) => server,
         Ok(None) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
+            update_server_job_status(
+                &state,
                 &job_id,
                 "failed",
                 1.0,
@@ -1022,14 +1008,8 @@ async fn run_managed_provision_then_start_job(
             return;
         }
         Err(error) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&format!("db error: {error}")),
-            )
-            .await;
+            let message = format!("db error: {error}");
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             return;
         }
     };
@@ -1096,14 +1076,7 @@ async fn run_managed_provision_then_start_job(
                     &message,
                 )
                 .await;
-                let _ = rustfin_db::repo::jobs::update_job_status(
-                    &state.db,
-                    &job_id,
-                    "failed",
-                    1.0,
-                    Some(&message),
-                )
-                .await;
+                update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             }
         },
         Err(error) => {
@@ -1131,14 +1104,7 @@ async fn run_managed_provision_then_start_job(
                 &format!("Managed provisioning failed before launch: {error}"),
             )
             .await;
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&error),
-            )
-            .await;
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&error)).await;
         }
     }
 }
@@ -1150,8 +1116,7 @@ async fn run_import_job(
     actor_user_id: String,
     source_path: String,
 ) {
-    let _ =
-        rustfin_db::repo::jobs::update_job_status(&state.db, &job_id, "running", 0.1, None).await;
+    update_server_job_status(&state, &job_id, "running", 0.1, None).await;
     record_server_event(
         &state,
         &instance_id,
@@ -1171,8 +1136,8 @@ async fn run_import_job(
     {
         Ok(Some(server)) => server,
         Ok(None) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
+            update_server_job_status(
+                &state,
                 &job_id,
                 "failed",
                 1.0,
@@ -1182,14 +1147,8 @@ async fn run_import_job(
             return;
         }
         Err(error) => {
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&format!("db error: {error}")),
-            )
-            .await;
+            let message = format!("db error: {error}");
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             return;
         }
     };
@@ -1229,14 +1188,7 @@ async fn run_import_job(
                     }),
                 )
                 .await;
-                let _ = rustfin_db::repo::jobs::update_job_status(
-                    &state.db,
-                    &job_id,
-                    "completed",
-                    1.0,
-                    None,
-                )
-                .await;
+                update_server_job_status(&state, &job_id, "completed", 1.0, None).await;
             }
             Err(error) => {
                 let message = format!("import succeeded but state persistence failed: {error:?}");
@@ -1250,14 +1202,7 @@ async fn run_import_job(
                     &message,
                 )
                 .await;
-                let _ = rustfin_db::repo::jobs::update_job_status(
-                    &state.db,
-                    &job_id,
-                    "failed",
-                    1.0,
-                    Some(&message),
-                )
-                .await;
+                update_server_job_status(&state, &job_id, "failed", 1.0, Some(&message)).await;
             }
         },
         Err(error) => {
@@ -1285,14 +1230,7 @@ async fn run_import_job(
                 &format!("Minecraft import failed: {error}"),
             )
             .await;
-            let _ = rustfin_db::repo::jobs::update_job_status(
-                &state.db,
-                &job_id,
-                "failed",
-                1.0,
-                Some(&error),
-            )
-            .await;
+            update_server_job_status(&state, &job_id, "failed", 1.0, Some(&error)).await;
         }
     }
 }
@@ -1654,6 +1592,7 @@ pub async fn request_minecraft_server_action(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    record_server_job_enqueued(&state);
 
     let transitional = RuntimeProjection {
         install_mode: None,
@@ -1777,6 +1716,7 @@ pub async fn provision_minecraft_server(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    record_server_job_enqueued(&state);
 
     let transitional = RuntimeProjection {
         install_mode: None,
@@ -1870,6 +1810,7 @@ pub async fn import_minecraft_server(
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    record_server_job_enqueued(&state);
 
     let transitional = RuntimeProjection {
         install_mode: None,

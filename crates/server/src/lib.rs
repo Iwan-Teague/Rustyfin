@@ -12,6 +12,7 @@ pub mod host_directories;
 pub mod job_status;
 pub mod library_scan;
 pub mod routes;
+pub mod runtime_metrics;
 pub mod servers;
 pub mod setup;
 pub mod state;

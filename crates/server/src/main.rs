@@ -403,6 +403,7 @@ async fn main() -> anyhow::Result<()> {
         db: pool,
         jwt_secret,
         http: outbound_http,
+        runtime_metrics: rustfin_server::runtime_metrics::RuntimeMetrics::new(),
         tmdb_agent_url,
         tmdb_agent_token,
         youtube_agent_url,

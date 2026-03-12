@@ -262,6 +262,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, room_id: String) 
     };
 
     info!(room_id = %room_id, user_id = %context.user_id, "watch party ws authenticated");
+    let _ws_metrics_guard = state.runtime_metrics.track_watch_party_ws_connection();
 
     // Load audio queue from DB for audio rooms to pass to get_or_create_runtime
     let audio_track_ids = if context.room_mode == "audio" {

@@ -1,6 +1,7 @@
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 
+use crate::runtime_metrics::AgentKind;
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +98,9 @@ async fn post_json<TReq: Serialize, TRes: for<'de> Deserialize<'de>>(
     {
         request = request.header("x-agent-token", token);
     }
+    let agent_call = state
+        .runtime_metrics
+        .start_agent_call(AgentKind::Transcription);
     let response = request
         .send()
         .await
@@ -106,10 +110,12 @@ async fn post_json<TReq: Serialize, TRes: for<'de> Deserialize<'de>>(
         let body = response.bytes().await.unwrap_or_default();
         return Err(map_agent_error(error_prefix, status, &body));
     }
-    response
+    let parsed = response
         .json::<TRes>()
         .await
-        .map_err(|e| ApiError::Internal(format!("{error_prefix}: invalid response body: {e}")))
+        .map_err(|e| ApiError::Internal(format!("{error_prefix}: invalid response body: {e}")))?;
+    agent_call.mark_success();
+    Ok(parsed)
 }
 
 pub async fn start_session(state: &AppState, session_id: &str) -> Result<(), ApiError> {
