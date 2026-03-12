@@ -827,7 +827,8 @@ export default function ServersPage() {
   const activeCreateStepId = createSteps[normalizedCreateStepIndex] ?? createSteps[0];
   const activeCreateStep = CREATE_WIZARD_STEP_META[activeCreateStepId];
   const activeCreateStepErrors = createStepErrors(form, activeCreateStepId, createMode, importSourcePath);
-  const canAdvanceCreateStep = activeCreateStepErrors.length === 0;
+  const canAdvanceCreateStep =
+    activeCreateStepId === 'mode' ? createMode !== null : activeCreateStepErrors.length === 0;
   const createProgressPercent = ((normalizedCreateStepIndex + 1) / createSteps.length) * 100;
 
   function goToNextCreateStep() {
@@ -1284,7 +1285,7 @@ export default function ServersPage() {
                 <p className="mt-2 text-sm muted">{activeCreateStep.description}</p>
               </div>
 
-              {activeCreateStepErrors.length > 0 ? (
+              {activeCreateStepErrors.length > 0 && activeCreateStepId !== 'mode' ? (
                 <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
                   <ul className="list-disc space-y-1 pl-5">
                     {activeCreateStepErrors.map((entry) => (
