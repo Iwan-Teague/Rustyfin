@@ -97,6 +97,7 @@ Primary native services:
 - `rustfin-ui`
 - `rustfin-edge` (Caddy)
 - `rustfin-servers-agent`
+- `rustyfin-post-healthcheck.service`
 
 Database runtime configuration:
 
@@ -128,3 +129,14 @@ Run before finalizing substantial changes:
 - Reuse existing repo patterns before adding new abstractions
 - Keep changes scoped and readable; avoid unrelated refactors
 - When architecture, runtime behavior, or developer conventions change, update `/Users/iwanteague/Desktop/Rustyfin/README.md` and `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md` in the same change
+
+## Documentation Authority
+
+Current documentation authority, in order:
+
+- `/Users/iwanteague/Desktop/Rustyfin/README.md`
+- `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/README.md`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
+
+Older reports, plans, and trackers under `/Users/iwanteague/Desktop/Rustyfin/docs/` may remain useful context, but they are not the source of truth for current runtime behavior unless they are explicitly marked as current.

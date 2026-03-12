@@ -59,12 +59,14 @@ That installs:
 
 - `rustyfin-native.service`
 - `rustfin-servers-agent.service`
+- `rustyfin-post-healthcheck.service`
 
 Use `systemctl` normally after installation:
 
 ```bash
 sudo systemctl status rustyfin-native.service
 sudo systemctl status rustfin-servers-agent.service
+sudo systemctl status rustyfin-post-healthcheck.service
 ```
 
 ## Day-2 Operations
@@ -100,6 +102,12 @@ Deploy/update on a Debian host:
 ```
 
 Use `deploy-native.sh` for updates instead of a raw `systemctl restart`, because deploy rebuilds artifacts before restart.
+
+Operational expectation:
+
+- `rustyfin-native.service` keeps the Rustyfin child process set supervised under `systemd`
+- `rustyfin-post-healthcheck.service` verifies the stack after boot/deploy and performs one restart attempt if the host comes up half-ready
+- a healthy boot should leave backend, UI, websocket paths, and native agents ready without manual intervention
 
 Post-update quality gate:
 
@@ -228,6 +236,13 @@ Runtime components:
 - main Rustyfin backend for auth/orchestration
 - `rustfin-servers-agent` for privileged host operations
 - `systemd` for actual Minecraft unit supervision
+
+Current UI behavior:
+
+- the `Servers` page is a guided create/import wizard
+- managed Minecraft servers auto-provision on `Start`
+- only admins can create, import, and delete server records
+- users can still refresh, start, stop, and restart visible server instances
 
 Key variables:
 

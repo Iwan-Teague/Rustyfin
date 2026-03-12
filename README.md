@@ -16,7 +16,7 @@ The supported runtime target is native Debian 12. The repository no longer ships
 - PostgreSQL database
 - Next.js UI
 - Caddy HTTPS edge
-- FFmpeg/ffprobe for media probing, direct play support, and transcoding
+- FFmpeg/ffprobe for media probing, HLS transcoding, original-file delivery, and stream analysis
 
 ## Product Areas
 
@@ -25,14 +25,18 @@ The supported runtime target is native Debian 12. The repository no longer ships
   - TMDB metadata enrichment and artwork sync
   - Library-level permissions
 - Playback
-  - Direct Play over HTTP range
-  - HLS transcode sessions
+  - HLS transcode sessions for the embedded video players
+  - Resume state and Continue Watching
+  - HTTP range/original-file delivery for raw media access and downloads
   - Playback progress tracking
 - Rooms
   - Watch Together
   - Listen Together
   - Create Together
   - Play Together
+    - Chess
+    - Connect Four
+    - Battleship
 - Channels
   - Text channels with attachments
   - Voice channels with WebRTC audio
@@ -42,6 +46,9 @@ The supported runtime target is native Debian 12. The repository no longer ships
 - Servers
   - Native game server management
   - Current implementation targets Minecraft on Debian 12 through `systemd`
+  - Guided create/import wizard in the UI
+  - Managed servers auto-provision when started
+  - Only admins can create, import, and delete server records
 - Admin
   - Users, libraries, channels, rooms, logs, TMDB configuration
 
@@ -124,6 +131,7 @@ Compatibility aliases:
 Detailed native operations guide:
 
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/README.md`
 
 ## Native Runtime Notes
 
@@ -153,6 +161,7 @@ Rustyfin does not manage router port forwarding. Remote access should be handled
 - First run goes through `/setup`
 - The setup wizard creates the first admin account
 - Setup then closes and normal login becomes the entry path
+- Protected UI routes redirect unauthenticated users to `/login`
 
 ## Media and Playback Notes
 

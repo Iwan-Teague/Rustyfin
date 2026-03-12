@@ -16,6 +16,8 @@ Read these first:
   - native Debian install, start, deploy, ports, logs, and service model
 - `/Users/iwanteague/Desktop/Rustyfin/docs/setup-wizard/Rustyfin_Setup_Wizard_Package/Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md`
   - current setup wizard contract/spec
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/documentation-audit-2026-03-12.md`
+  - latest documentation drift audit and remediation summary
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-minecraft-implementation-plan-2026-03-08.md`
   - current Minecraft `Servers` implementation plan
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-minecraft-rust-native-design-2026-03-08.md`
@@ -47,6 +49,11 @@ These locations are historical by default:
 - older tracker documents that describe superseded architecture constraints
 
 Historical docs are kept for context, not as the source of truth for current runtime behavior.
+
+The following files are especially likely to contain historical implementation notes rather than current runtime truth:
+
+- `/Users/iwanteague/Desktop/Rustyfin/docs/project/RUSTFIN_AI_PROJECT_TRACKER.md`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/setup-wizard/Rustyfin_Setup_Wizard_Package/Rustyfin_Setup_Wizard_Implementation_Progress.md`
 
 ## Documentation Rules
 
