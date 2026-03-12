@@ -13,6 +13,7 @@ pub mod settings;
 pub mod setup_session;
 pub mod user_activity;
 pub mod users;
+pub mod vault;
 pub mod watch_party;
 
 pub(crate) fn dollar_placeholders(start: usize, count: usize) -> String {

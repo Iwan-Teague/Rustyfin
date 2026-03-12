@@ -182,6 +182,7 @@ ensure_playwright_browser
 psql "${BASE_DB_URL}" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA ${SMOKE_SCHEMA};" >/dev/null
 
 PICKER="$(absolute_fixture_path)"
+"${REPO_ROOT}/tests/check_media_fixtures.sh"
 SMOKE_DB_URL="$(build_smoke_db_url "${BASE_DB_URL}" "${SMOKE_SCHEMA}")"
 SERVER_BIN="$(find_native_server_bin)"
 export RUSTYFIN_TEST_LIBRARY_PATH="${PICKER}/movies"

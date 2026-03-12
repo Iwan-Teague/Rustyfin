@@ -3,6 +3,9 @@ use rustfin_server::routes::build_router;
 use rustfin_server::state::AppState;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static POSTGRES_TEST_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn localhost_header() -> (axum::http::HeaderName, axum::http::HeaderValue) {
     (
@@ -21,6 +24,15 @@ fn test_database_target() -> String {
         })
 }
 
+fn build_schema_db_url(base_url: &str, schema_name: &str) -> String {
+    let options_param = format!("options=-c%20search_path%3D{schema_name}");
+    if base_url.contains('?') {
+        format!("{base_url}&{options_param}")
+    } else {
+        format!("{base_url}?{options_param}")
+    }
+}
+
 async fn create_test_pool() -> rustfin_db::DbPool {
     let target = test_database_target();
     let backend = rustfin_db::detect_backend(&target);
@@ -34,7 +46,20 @@ Set RUSTFIN_TEST_DB_ALLOW_ANY=1 to bypass."
         );
     }
 
-    let pool = rustfin_db::connect(&target).await.unwrap();
+    let isolated_target = if backend == rustfin_db::DatabaseBackend::Postgres {
+        let admin_pool = rustfin_db::connect(&target).await.unwrap();
+        let schema_index = POSTGRES_TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let schema_name = format!("rustfin_it_{}_{}", std::process::id(), schema_index);
+        sqlx::query(&format!("CREATE SCHEMA {schema_name}"))
+            .execute(&admin_pool)
+            .await
+            .unwrap();
+        build_schema_db_url(&target, &schema_name)
+    } else {
+        target.clone()
+    };
+
+    let pool = rustfin_db::connect(&isolated_target).await.unwrap();
     rustfin_db::migrate::run(&pool, backend).await.unwrap();
     pool
 }
@@ -181,6 +206,136 @@ async fn login(server: &TestServer, username: &str, password: &str) -> String {
     resp.assert_status_ok();
     let body: Value = resp.json();
     body["token"].as_str().unwrap().to_string()
+}
+
+async fn create_user_as_admin(
+    server: &TestServer,
+    admin_token: &str,
+    username: &str,
+    password: &str,
+) -> String {
+    let resp = server
+        .post("/api/v1/users")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {admin_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .json(&json!({
+            "username": username,
+            "password": password,
+            "role": "user",
+            "library_ids": [],
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    body["id"].as_str().unwrap().to_string()
+}
+
+async fn create_vault_session(server: &TestServer, auth_token: &str, device_name: &str) -> Value {
+    let resp = server
+        .post("/api/v1/vault/device-sessions/pair")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {auth_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .json(&json!({
+            "client_kind": "web_vault",
+            "device_name": device_name,
+            "device_platform": "integration-test",
+        }))
+        .await;
+    resp.assert_status_ok();
+    resp.json::<Value>()
+}
+
+async fn bootstrap_vault_for_user(server: &TestServer, auth_token: &str) {
+    let resp = server
+        .post("/api/v1/vault/bootstrap")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {auth_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .json(&json!({
+            "wrapped_key": {
+                "key_version": 1,
+                "kdf_algorithm": "argon2id",
+                "kdf_memory_kib": 65536,
+                "kdf_iterations": 3,
+                "kdf_parallelism": 4,
+                "kdf_salt_hex": "00112233445566778899aabbccddeeff",
+                "hkdf_algorithm": "hkdf-sha-256",
+                "wrap_algorithm": "aes-256-gcm",
+                "wrap_nonce_hex": "00112233445566778899aabb",
+                "wrapped_vault_key_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                "created_ts": 0
+            }
+        }))
+        .await;
+    resp.assert_status_ok();
+}
+
+async fn auth_and_vault_headers(
+    auth_token: &str,
+    vault_access_token: &str,
+) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    vec![
+        (
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {auth_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        ),
+        (
+            axum::http::HeaderName::from_static("x-rustfin-vault-access"),
+            vault_access_token
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        ),
+    ]
+}
+
+async fn create_vault_item(
+    server: &TestServer,
+    auth_token: &str,
+    vault_access_token: &str,
+    item_id: &str,
+    match_hash_hex: &str,
+) {
+    let headers = auth_and_vault_headers(auth_token, vault_access_token).await;
+    let mut request = server.post("/api/v1/vault/items");
+    for (name, value) in headers {
+        request = request.add_header(name, value);
+    }
+    let resp = request
+        .json(&json!({
+            "id": item_id,
+            "item_type": "login",
+            "key_version": 1,
+            "summary_version": 1,
+            "summary_nonce_hex": "00112233445566778899aabb",
+            "summary_ciphertext_hex": "00112233445566778899aabbccddeeff",
+            "payload_version": 1,
+            "payload_nonce_hex": "00112233445566778899aabb",
+            "payload_ciphertext_hex": "00112233445566778899aabbccddeeff0011223344556677",
+            "favorite": false,
+            "revision": 1,
+            "uri_indexes": [
+                {
+                    "match_hash_hex": match_hash_hex,
+                    "match_type": "base_domain",
+                    "rank": 2
+                }
+            ]
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::CREATED);
 }
 
 fn create_fake_ffmpeg_script() -> PathBuf {
@@ -3321,4 +3476,145 @@ async fn setup_force_takeover() {
     resp.assert_status_ok();
     let body: Value = resp.json();
     assert_eq!(body["claimed_by"], "Browser2");
+}
+
+#[tokio::test]
+async fn vault_item_endpoints_enforce_user_ownership() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    create_user_as_admin(&server, &admin_token, "vault_user_b", "vault_pass_b_123").await;
+    let user_b_token = login(&server, "vault_user_b", "vault_pass_b_123").await;
+
+    bootstrap_vault_for_user(&server, &admin_token).await;
+    bootstrap_vault_for_user(&server, &user_b_token).await;
+
+    let admin_session = create_vault_session(&server, &admin_token, "Admin Web Vault").await;
+    let user_b_session = create_vault_session(&server, &user_b_token, "User B Web Vault").await;
+    let admin_access = admin_session["session"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let user_b_access = user_b_session["session"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    create_vault_item(
+        &server,
+        &admin_token,
+        &admin_access,
+        "vault-item-admin-1",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .await;
+
+    let mut get_request = server.get("/api/v1/vault/items/vault-item-admin-1");
+    for (name, value) in auth_and_vault_headers(&user_b_token, &user_b_access).await {
+        get_request = get_request.add_header(name, value);
+    }
+    let get_resp = get_request.await;
+    get_resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+
+    let mut put_request = server.put("/api/v1/vault/items/vault-item-admin-1");
+    for (name, value) in auth_and_vault_headers(&user_b_token, &user_b_access).await {
+        put_request = put_request.add_header(name, value);
+    }
+    let put_resp = put_request
+        .json(&json!({
+            "id": "vault-item-admin-1",
+            "item_type": "login",
+            "key_version": 1,
+            "summary_version": 1,
+            "summary_nonce_hex": "00112233445566778899aabb",
+            "summary_ciphertext_hex": "00112233445566778899aabbccddeeff",
+            "payload_version": 1,
+            "payload_nonce_hex": "00112233445566778899aabb",
+            "payload_ciphertext_hex": "00112233445566778899aabbccddeeff0011223344556677",
+            "favorite": false,
+            "revision": 2,
+            "uri_indexes": []
+        }))
+        .await;
+    put_resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn vault_lookup_and_sync_are_user_scoped() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    create_user_as_admin(&server, &admin_token, "vault_user_c", "vault_pass_c_123").await;
+    let user_c_token = login(&server, "vault_user_c", "vault_pass_c_123").await;
+
+    bootstrap_vault_for_user(&server, &admin_token).await;
+    bootstrap_vault_for_user(&server, &user_c_token).await;
+
+    let admin_session = create_vault_session(&server, &admin_token, "Admin Web Vault").await;
+    let user_c_session = create_vault_session(&server, &user_c_token, "User C Web Vault").await;
+    let admin_access = admin_session["session"]["access_token"].as_str().unwrap();
+    let user_c_access = user_c_session["session"]["access_token"].as_str().unwrap();
+
+    create_vault_item(
+        &server,
+        &admin_token,
+        admin_access,
+        "vault-item-admin-lookup",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+    .await;
+
+    let mut lookup_request = server.post("/api/v1/vault/lookup");
+    for (name, value) in auth_and_vault_headers(&user_c_token, user_c_access).await {
+        lookup_request = lookup_request.add_header(name, value);
+    }
+    let lookup_resp = lookup_request
+        .json(&json!({
+            "match_hashes_hex": [
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ]
+        }))
+        .await;
+    lookup_resp.assert_status_ok();
+    let lookup_body: Value = lookup_resp.json();
+    assert_eq!(lookup_body["items"].as_array().unwrap().len(), 0);
+
+    let mut sync_request = server.get("/api/v1/vault/sync?cursor=0");
+    for (name, value) in auth_and_vault_headers(&user_c_token, user_c_access).await {
+        sync_request = sync_request.add_header(name, value);
+    }
+    let sync_resp = sync_request.await;
+    sync_resp.assert_status_ok();
+    let sync_body: Value = sync_resp.json();
+    assert_eq!(sync_body["items"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn vault_refresh_token_replay_revokes_the_session_family() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    bootstrap_vault_for_user(&server, &admin_token).await;
+    let session = create_vault_session(&server, &admin_token, "Replay Test Vault").await;
+    let first_refresh = session["session"]["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rotate_resp = server
+        .post("/api/v1/vault/device-sessions/refresh")
+        .json(&json!({ "refresh_token": first_refresh }))
+        .await;
+    rotate_resp.assert_status_ok();
+    let rotated_body: Value = rotate_resp.json();
+    let second_refresh = rotated_body["refresh_token"].as_str().unwrap().to_string();
+
+    let replay_resp = server
+        .post("/api/v1/vault/device-sessions/refresh")
+        .json(&json!({ "refresh_token": first_refresh }))
+        .await;
+    replay_resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    let post_replay_resp = server
+        .post("/api/v1/vault/device-sessions/refresh")
+        .json(&json!({ "refresh_token": second_refresh }))
+        .await;
+    post_replay_resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }

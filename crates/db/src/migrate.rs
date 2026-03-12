@@ -146,7 +146,14 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "036_user_account_activity",
         include_str!("../migrations_pg/036_user_account_activity.sql"),
     ),
+    ("037_vault", include_str!("../migrations_pg/037_vault.sql")),
+    (
+        "038_vault_refresh_tokens",
+        include_str!("../migrations_pg/038_vault_refresh_tokens.sql"),
+    ),
 ];
+
+const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;
 
 /// Run forward-only migrations. Tracks applied migrations in a `_migrations` table.
 pub async fn run(pool: &DbPool, backend: DatabaseBackend) -> Result<(), sqlx::Error> {
@@ -154,54 +161,71 @@ pub async fn run(pool: &DbPool, backend: DatabaseBackend) -> Result<(), sqlx::Er
 
     info!(backend = backend.as_str(), "running database migrations");
 
-    // Create migrations tracking table.
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS _migrations (
-            name TEXT PRIMARY KEY,
-            applied_ts INTEGER NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    for (name, sql) in migrations {
-        let applied: Option<(String,)> =
-            sqlx::query_as("SELECT name FROM _migrations WHERE name = $1")
-                .bind(name)
-                .fetch_optional(pool)
-                .await?;
-
-        if applied.is_some() {
-            continue;
-        }
-
-        info!(
-            backend = backend.as_str(),
-            migration = name,
-            "applying migration"
-        );
-        // Execute migration as a raw SQL script so PostgreSQL procedural blocks
-        // (e.g. DO $$...$$) and semicolons inside function bodies are handled
-        // correctly by the database parser.
-        let mut conn = pool.acquire().await?;
-        sqlx::raw_sql(sql).execute(&mut *conn).await?;
-        drop(conn);
-
-        let now = chrono::Utc::now().timestamp();
-        sqlx::query("INSERT INTO _migrations (name, applied_ts) VALUES ($1, $2)")
-            .bind(name)
-            .bind(now)
-            .execute(pool)
+    let mut conn = pool.acquire().await?;
+    if backend == DatabaseBackend::Postgres {
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(POSTGRES_MIGRATION_LOCK_ID)
+            .execute(&mut *conn)
             .await?;
-
-        info!(
-            backend = backend.as_str(),
-            migration = name,
-            "migration applied"
-        );
     }
 
-    Ok(())
+    let result = async {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS _migrations (
+                name TEXT PRIMARY KEY,
+                applied_ts INTEGER NOT NULL
+            )",
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        for (name, sql) in migrations {
+            let applied: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM _migrations WHERE name = $1")
+                    .bind(name)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+
+            if applied.is_some() {
+                continue;
+            }
+
+            info!(
+                backend = backend.as_str(),
+                migration = name,
+                "applying migration"
+            );
+            // Execute migration as a raw SQL script so PostgreSQL procedural blocks
+            // (e.g. DO $$...$$) and semicolons inside function bodies are handled
+            // correctly by the database parser.
+            sqlx::raw_sql(sql).execute(&mut *conn).await?;
+
+            let now = chrono::Utc::now().timestamp();
+            sqlx::query("INSERT INTO _migrations (name, applied_ts) VALUES ($1, $2)")
+                .bind(name)
+                .bind(now)
+                .execute(&mut *conn)
+                .await?;
+
+            info!(
+                backend = backend.as_str(),
+                migration = name,
+                "migration applied"
+            );
+        }
+
+        Ok(())
+    }
+    .await;
+
+    if backend == DatabaseBackend::Postgres {
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(POSTGRES_MIGRATION_LOCK_ID)
+            .execute(&mut *conn)
+            .await;
+    }
+
+    result
 }
 
 #[cfg(test)]

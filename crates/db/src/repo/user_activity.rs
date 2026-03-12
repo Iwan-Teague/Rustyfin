@@ -613,10 +613,9 @@ pub async fn list_activity_rows_for_range(
     user_id: &str,
     from_ts: Option<i64>,
 ) -> Result<Vec<ActivityListRow>, sqlx::Error> {
-    let mut sql = format!(
-        "SELECT activity_kind, section_key, subject_type, subject_id, started_ts, last_heartbeat_ts, ended_ts, accumulated_ms \
+    let mut sql = "SELECT activity_kind, section_key, subject_type, subject_id, started_ts, last_heartbeat_ts, ended_ts, accumulated_ms \
          FROM user_activity_session WHERE user_id = $1"
-    );
+        .to_string();
     if from_ts.is_some() {
         sql.push_str(" AND COALESCE(ended_ts, last_heartbeat_ts, started_ts) >= $2");
     }
@@ -689,6 +688,7 @@ pub async fn aggregate_browser_sections(
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn aggregate_named_subjects(
     pool: &DbPool,
     user_id: &str,

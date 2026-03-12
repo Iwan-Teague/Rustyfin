@@ -11,6 +11,8 @@ log_info "Run dir: ${RUN_DIR}"
 PICKER="$(absolute_fixture_path)"
 DB="${RUSTFIN_TEST_DATABASE_URL:-postgresql://rustfin:rustfin.0.0.1:5432/rustfin_test}"
 
+"${REPO_ROOT}/tests/check_media_fixtures.sh"
+
 start_server "${RUN_DIR}" "${DB}" "${PICKER}"
 start_ui "${RUN_DIR}"
 
