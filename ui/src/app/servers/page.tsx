@@ -270,18 +270,18 @@ function serverToSettingsForm(server: MinecraftServer): ServerSettingsFormState 
 function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'draft') {
     return {
-      label: 'Draft',
-      dotClass: 'bg-slate-300 shadow-[0_0_14px_rgba(226,232,240,0.22)]',
-      textClass: 'text-slate-200',
+      label: 'Offline',
+      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      textClass: 'text-rose-200',
       animated: false,
     };
   }
 
   if (server.observed_state === 'unprovisioned') {
     return {
-      label: 'Needs Provisioning',
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
-      textClass: 'text-amber-200',
+      label: 'Offline',
+      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      textClass: 'text-rose-200',
       animated: false,
     };
   }
@@ -349,14 +349,6 @@ function getServerIndicator(server: MinecraftServer) {
 }
 
 function getServerProgressMessage(server: MinecraftServer) {
-  if (server.observed_state === 'draft') {
-    return 'Created. Click Start to provision the server files and launch the Minecraft service.';
-  }
-
-  if (server.observed_state === 'unprovisioned') {
-    return 'Ready to provision. Click Start to create the native service and first-time server files.';
-  }
-
   if (
     (server.health_state === 'error' || server.observed_state === 'failed' || server.observed_state === 'error') &&
     server.last_error_summary
