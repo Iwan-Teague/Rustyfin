@@ -3295,7 +3295,9 @@ pub async fn stream_online_audio_track(
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header("Content-Range", format!("bytes */{file_size}"))
                     .body(axum::body::Body::empty())
-                    .unwrap());
+                    .map_err(|e| {
+                        ApiError::Internal(format!("failed to build range rejection response: {e}"))
+                    })?);
             }
         };
 
@@ -3324,7 +3326,9 @@ pub async fn stream_online_audio_track(
             .header("Referrer-Policy", "no-referrer")
             .header("X-Content-Type-Options", "nosniff")
             .body(axum::body::Body::from_stream(stream))
-            .unwrap());
+            .map_err(|e| {
+                ApiError::Internal(format!("failed to build partial audio response: {e}"))
+            })?);
     }
 
     let file = tokio::fs::File::open(&file_path)
@@ -3341,5 +3345,5 @@ pub async fn stream_online_audio_track(
         .header("Referrer-Policy", "no-referrer")
         .header("X-Content-Type-Options", "nosniff")
         .body(axum::body::Body::from_stream(stream))
-        .unwrap())
+        .map_err(|e| ApiError::Internal(format!("failed to build audio response: {e}")))?)
 }
