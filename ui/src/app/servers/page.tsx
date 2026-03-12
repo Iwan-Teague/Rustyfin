@@ -277,6 +277,7 @@ function getServerIndicator(server: MinecraftServer) {
       label: 'Draft',
       dotClass: 'bg-slate-300 shadow-[0_0_14px_rgba(226,232,240,0.22)]',
       textClass: 'text-slate-200',
+      animated: false,
     };
   }
 
@@ -285,22 +286,25 @@ function getServerIndicator(server: MinecraftServer) {
       label: 'Needs Provisioning',
       dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
       textClass: 'text-amber-200',
+      animated: false,
     };
   }
 
   if (server.observed_state === 'provisioning' || server.observed_state === 'importing') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
       textClass: 'text-amber-200',
+      animated: true,
     };
   }
 
   if (server.observed_state === 'running' && server.health_state === 'pending') {
     return {
       label: 'Booting',
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
       textClass: 'text-amber-200',
+      animated: true,
     };
   }
 
@@ -309,22 +313,25 @@ function getServerIndicator(server: MinecraftServer) {
       label: 'Online',
       dotClass: 'bg-emerald-400 shadow-[0_0_14px_rgba(74,222,128,0.45)]',
       textClass: 'text-emerald-200',
+      animated: false,
     };
   }
 
   if (server.observed_state === 'starting' || server.observed_state === 'restarting') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
       textClass: 'text-amber-200',
+      animated: true,
     };
   }
 
   if (server.observed_state === 'stopping') {
     return {
       label: 'Stopping',
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.4)]',
+      dotClass: 'border-2 border-white/20 border-t-amber-300 border-r-amber-400',
       textClass: 'text-amber-200',
+      animated: true,
     };
   }
 
@@ -333,6 +340,7 @@ function getServerIndicator(server: MinecraftServer) {
       label: 'Error',
       dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
       textClass: 'text-rose-200',
+      animated: false,
     };
   }
 
@@ -340,6 +348,7 @@ function getServerIndicator(server: MinecraftServer) {
     label: 'Offline',
     dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
     textClass: 'text-rose-200',
+    animated: false,
   };
 }
 
@@ -350,26 +359,6 @@ function getServerProgressMessage(server: MinecraftServer) {
 
   if (server.observed_state === 'unprovisioned') {
     return 'Ready to provision. Click Start to create the native service and first-time server files.';
-  }
-
-  if (server.observed_state === 'provisioning') {
-    return 'Provisioning server files and native service. First boot can take a minute or two.';
-  }
-
-  if (server.observed_state === 'importing') {
-    return 'Importing the existing server into Rustyfin management now.';
-  }
-
-  if (server.observed_state === 'starting') {
-    return 'Launching the Minecraft service now.';
-  }
-
-  if (server.observed_state === 'restarting') {
-    return 'Restarting the Minecraft service now.';
-  }
-
-  if (server.observed_state === 'running' && server.health_state === 'pending') {
-    return 'The process is up. Waiting for Minecraft to finish booting and accept player connections.';
   }
 
   if (
@@ -965,7 +954,15 @@ export default function ServersPage() {
                           <span
                             className={`inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium ${indicator.textClass}`}
                           >
-                            <span className={`h-2.5 w-2.5 rounded-full ${indicator.dotClass}`} />
+                            <span
+                              className={`inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full ${
+                                indicator.animated ? `animate-spin ${indicator.dotClass}` : indicator.dotClass
+                              }`}
+                            >
+                              {indicator.animated ? (
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-300/90" />
+                              ) : null}
+                            </span>
                             {indicator.label}
                           </span>
                           <span className="chip">Port {server.listen_port}</span>
@@ -1049,11 +1046,11 @@ export default function ServersPage() {
                       </div>
                     </div>
 
-                    <div className="w-full space-y-2">
-                      {server.description ? (
-                        <div className="w-full text-sm muted">{server.description}</div>
-                      ) : null}
-                      <div className="min-h-[3.5rem] w-full">
+                    {(server.description || progressMessage) ? (
+                      <div className="w-full space-y-2">
+                        {server.description ? (
+                          <div className="w-full text-sm muted">{server.description}</div>
+                        ) : null}
                         {progressMessage ? (
                           <div
                             className={`w-full text-sm leading-6 ${
@@ -1068,7 +1065,7 @@ export default function ServersPage() {
                           </div>
                         ) : null}
                       </div>
-                    </div>
+                    ) : null}
 
                     {expanded ? (
                       <div className="grid gap-4 xl:grid-cols-[minmax(18rem,0.9fr)_minmax(24rem,1.35fr)]">
