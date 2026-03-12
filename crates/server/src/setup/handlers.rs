@@ -719,8 +719,15 @@ pub async fn create_libraries(
     for (i, lib) in body.libraries.iter().enumerate() {
         if let Some(fields) = validation::validate_library_spec(&lib.name, &lib.kind, &lib.paths) {
             let mut wrapped = serde_json::Map::new();
-            for (k, v) in fields.as_object().unwrap() {
-                wrapped.insert(format!("libraries[{i}].{k}"), v.clone());
+            if let Some(field_map) = fields.as_object() {
+                for (k, v) in field_map {
+                    wrapped.insert(format!("libraries[{i}].{k}"), v.clone());
+                }
+            } else {
+                wrapped.insert(
+                    format!("libraries[{i}]"),
+                    json!(["invalid library configuration"]),
+                );
             }
             return AppError::from(ApiError::validation(serde_json::Value::Object(wrapped)))
                 .into_response();
