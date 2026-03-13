@@ -74,6 +74,70 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+#[cfg(feature = "rustyvault")]
+async fn detect_rustyvault_runtime_state(
+    pool: &rustfin_db::DbPool,
+) -> rustfin_server::state::RustyVaultRuntimeState {
+    if !parse_env_bool("RUSTFIN_RUSTYVAULT_ENABLED", true) {
+        warn!("RustyVault disabled via RUSTFIN_RUSTYVAULT_ENABLED");
+        return rustfin_server::state::RustyVaultRuntimeState::unavailable(
+            "RustyVault is disabled on this host.",
+        );
+    }
+
+    const REQUIRED_TABLES: &[&str] = &[
+        "rustyvault_account",
+        "rustyvault_preference",
+        "rustyvault_wrapped_key",
+        "rustyvault_item",
+        "rustyvault_device_session",
+        "rustyvault_device_session_refresh_token",
+    ];
+
+    let mut missing_tables = Vec::new();
+    for table in REQUIRED_TABLES {
+        let regclass = format!("public.{table}");
+        match sqlx::query_scalar::<_, Option<String>>("SELECT to_regclass($1)::text")
+            .bind(&regclass)
+            .fetch_one(pool)
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => missing_tables.push(*table),
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "RustyVault availability probe failed; marking service unavailable"
+                );
+                return rustfin_server::state::RustyVaultRuntimeState::unavailable(
+                    "RustyVault is unavailable on this host. Run database migrations to enable it.",
+                );
+            }
+        }
+    }
+
+    if !missing_tables.is_empty() {
+        warn!(
+            missing_tables = ?missing_tables,
+            "RustyVault schema is incomplete; marking service unavailable"
+        );
+        return rustfin_server::state::RustyVaultRuntimeState::unavailable(
+            "RustyVault is unavailable on this host. Run database migrations to enable it.",
+        );
+    }
+
+    rustfin_server::state::RustyVaultRuntimeState::available()
+}
+
+#[cfg(not(feature = "rustyvault"))]
+async fn detect_rustyvault_runtime_state(
+    _pool: &rustfin_db::DbPool,
+) -> rustfin_server::state::RustyVaultRuntimeState {
+    rustfin_server::state::RustyVaultRuntimeState::unavailable(
+        "RustyVault is disabled in this build.",
+    )
+}
+
 fn probe_binary(path: &Path, name: &str) {
     match std::process::Command::new(path).arg("-version").output() {
         Ok(out) if out.status.success() => {
@@ -407,8 +471,17 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    let rustyvault = detect_rustyvault_runtime_state(&pool).await;
+    if !rustyvault.available {
+        warn!(
+            reason = %rustyvault.public_reason(),
+            "RustyVault runtime marked unavailable; Vault routes will return service unavailable"
+        );
+    }
+
     let app_state = rustfin_server::state::AppState {
         db: pool,
+        rustyvault,
         jwt_secret,
         http: outbound_http,
         runtime_metrics: rustfin_server::runtime_metrics::RuntimeMetrics::new(),

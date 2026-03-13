@@ -35,6 +35,7 @@ pub enum ServerEvent {
 #[derive(Clone)]
 pub struct AppState {
     pub db: DbPool,
+    pub rustyvault: RustyVaultRuntimeState,
     pub jwt_secret: String,
     pub http: reqwest::Client,
     pub runtime_metrics: Arc<crate::runtime_metrics::RuntimeMetrics>,
@@ -56,4 +57,32 @@ pub struct AppState {
     pub events: tokio::sync::broadcast::Sender<ServerEvent>,
     pub watch_party: Arc<crate::watch_party::manager::WatchPartyManager>,
     pub channel_manager: Arc<crate::channels::manager::ChannelManager>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RustyVaultRuntimeState {
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+impl RustyVaultRuntimeState {
+    pub fn available() -> Self {
+        Self {
+            available: true,
+            reason: None,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            reason: Some(reason.into()),
+        }
+    }
+
+    pub fn public_reason(&self) -> &str {
+        self.reason
+            .as_deref()
+            .unwrap_or("RustyVault is unavailable on this host.")
+    }
 }

@@ -9,7 +9,6 @@ pub struct UserPreferences {
     pub audio: AudioPreferences,
     pub activity: ActivityPreferences,
     pub privacy: PrivacyPreferences,
-    pub vault: VaultPreferences,
     pub notifications: NotificationPreferences,
     pub accessibility: AccessibilityPreferences,
     pub appearance: AppearancePreferences,
@@ -22,7 +21,6 @@ impl Default for UserPreferences {
             audio: AudioPreferences::default(),
             activity: ActivityPreferences::default(),
             privacy: PrivacyPreferences::default(),
-            vault: VaultPreferences::default(),
             notifications: NotificationPreferences::default(),
             accessibility: AccessibilityPreferences::default(),
             appearance: AppearancePreferences::default(),
@@ -41,8 +39,6 @@ impl UserPreferences {
         self.audio.input_device_id = normalize_optional_id(self.audio.input_device_id);
         self.audio.output_device_id = normalize_optional_id(self.audio.output_device_id);
         self.activity.default_range = normalize_activity_range(&self.activity.default_range);
-        self.vault.default_match_mode = normalize_vault_match_mode(&self.vault.default_match_mode);
-        self.vault.excluded_domains = normalize_domains(self.vault.excluded_domains);
         self
     }
 }
@@ -84,36 +80,6 @@ impl Default for PrivacyPreferences {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct VaultPreferences {
-    pub auto_lock_minutes: u32,
-    pub clipboard_clear_seconds: u32,
-    pub inline_save_prompt_enabled: bool,
-    pub inline_autofill_enabled: bool,
-    pub default_match_mode: String,
-    pub warn_on_http: bool,
-    pub warn_on_untrusted_iframe: bool,
-    pub excluded_domains: Vec<String>,
-    pub allow_manual_http_fill: bool,
-}
-
-impl Default for VaultPreferences {
-    fn default() -> Self {
-        Self {
-            auto_lock_minutes: 15,
-            clipboard_clear_seconds: 30,
-            inline_save_prompt_enabled: true,
-            inline_autofill_enabled: true,
-            default_match_mode: "base_domain".to_string(),
-            warn_on_http: true,
-            warn_on_untrusted_iframe: true,
-            excluded_domains: Vec::new(),
-            allow_manual_http_fill: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct NotificationPreferences {
@@ -146,24 +112,6 @@ fn normalize_activity_range(raw: &str) -> String {
     }
 }
 
-fn normalize_vault_match_mode(raw: &str) -> String {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "exact" | "host" | "base_domain" | "never" => raw.trim().to_ascii_lowercase(),
-        _ => "base_domain".to_string(),
-    }
-}
-
-fn normalize_domains(values: Vec<String>) -> Vec<String> {
-    let mut normalized = values
-        .into_iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    normalized.sort();
-    normalized.dedup();
-    normalized
-}
-
 #[cfg(test)]
 mod tests {
     use super::UserPreferences;
@@ -171,7 +119,7 @@ mod tests {
     #[test]
     fn normalizes_legacy_preference_payloads() {
         let prefs = UserPreferences::from_json_str(
-            r#"{"audio":{"input_device_id":"  mic-1 "},"activity":{"default_range":"year"},"privacy":{"personal_activity_enabled":false}}"#,
+            r#"{"audio":{"input_device_id":"  mic-1 "},"activity":{"default_range":"year"},"privacy":{"personal_activity_enabled":false},"vault":{"auto_lock_minutes":45}}"#,
         )
         .unwrap();
         assert_eq!(prefs.version, 1);

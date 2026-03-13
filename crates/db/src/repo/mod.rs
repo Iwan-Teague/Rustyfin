@@ -8,12 +8,12 @@ pub mod jobs;
 pub mod libraries;
 pub mod media_files;
 pub mod playstate;
+pub mod rustyvault;
 pub mod servers;
 pub mod settings;
 pub mod setup_session;
 pub mod user_activity;
 pub mod users;
-pub mod vault;
 pub mod watch_party;
 
 pub(crate) fn dollar_placeholders(start: usize, count: usize) -> String {

@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/db",
     "crates/metadata",
+    "crates/rustyvault",
     "crates/scanner",
     "crates/servers-agent",
     "crates/servers-host",

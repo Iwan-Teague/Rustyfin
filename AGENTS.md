@@ -7,13 +7,32 @@ This file defines repo-specific operating rules for coding agents and contributo
 Rustyfin is a native-Debian-first local media platform with:
 
 - Rust backend (`crates/server`, Axum + PostgreSQL)
+- Rust product crate (`crates/rustyvault`) for RustyVault-owned logic, shared types, and packaging
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`, `crates/servers-agent`)
 - Next.js frontend (`ui`)
-- Browser extension MVP (`extensions/rustfin-vault-webext`)
-  - downloadable from the web vault via `/api/v1/vault/extension/package`
+- Product-scoped frontend feature module (`ui/src/features/rustyvault`) for the Vault surface
+- Browser extension MVP (`extensions/rustyvault-webext`)
+  - downloadable from the host Downloads page via `/api/v1/downloads/artifacts/rustyvault-webext/package`
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`, `crates/servers-host`)
 - A `Servers` product area for native game-server management, currently focused on Minecraft on Debian 12 through `systemd`
 - A `Vault` product area for client-side encrypted password storage, web management, and browser-extension pairing/autofill
+  - implementation ownership is being moved behind RustyVault host adapters so Rustyfin keeps only the host-facing mount points
+  - shared Rust types now live in `crates/rustyvault/src/types.rs`
+  - canonical RustyVault preference normalization now lives on `rustyvault::types::RustyVaultPreferences`
+  - canonical UI ownership is `ui/src/features/rustyvault`; do not reintroduce generic `ui/src/lib/vault*` shims or `ui/src/lib/vaultGenerator.ts`
+  - canonical persistence ownership is `crates/db/src/repo/rustyvault.rs`, including dedicated RustyVault preferences storage through `crates/db/migrations_pg/040_rustyvault_preferences.sql`
+  - RustyVault session/auth internals use `x-rustyvault-*` headers, the `rustyvault_session` JWT audience, and host-scoped validation in `crates/server/src/rustyvault_host/auth.rs`
+  - canonical RustyVault settings I/O is the host `/api/v1/vault/preferences` adapter backed by RustyVault-owned persistence; do not route RustyVault UI settings through generic account-profile API helpers or `/users/me/preferences`
+  - retained RustyVault reads and management views should prefer `RustyVaultSessionUser` over plain `AuthUser`; keep routes like `/api/v1/vault/config`, `/api/v1/vault/preferences`, `/api/v1/vault/device-sessions`, and `/api/v1/vault/audit` session-bound unless there is a strong documented reason not to
+  - keep bootstrap, protected-action challenge, and revoke-other-session flows session-bound too unless there is a strong documented bootstrap/recovery reason not to
+  - when a RustyVault route accepts both Rustyfin auth and a RustyVault session, explicitly reject cross-user token mixing instead of assuming the headers belong to the same user
+  - backend removability path exists through the `rustyvault` Cargo feature, and runtime graceful-disable exists through `RUSTFIN_RUSTYVAULT_ENABLED=0`
+  - host-facing RustyVault routes should map to live web UI or extension consumers; do not reintroduce removed convenience endpoints such as `/api/v1/vault/sync` or `/api/v1/vault/protected-actions/complete` without a concrete product consumer
+  - `crates/server/src/account_prefs.rs` is host-only account state now; do not reintroduce RustyVault settings into that shared model
+  - when RustyVault is unavailable, the Vault surface should return `503` or render an unavailable state; the rest of Rustyfin should continue operating normally
+- A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
+  - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
+  - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages
 
 ## Core Rules
 
@@ -117,6 +136,7 @@ Run before finalizing substantial changes:
 - Rust checks: `cargo check`
 - Rust tests when relevant: `cargo test`
 - UI build: `npm --prefix ui run build`
+- Focused RustyVault removability validation when touching that boundary: `./scripts/ci/rustyvault_removability_gates.sh`
 
 ## Security and Operational Notes
 

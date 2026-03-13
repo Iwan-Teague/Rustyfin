@@ -26,17 +26,6 @@ export type UserPreferences = {
   privacy: {
     personal_activity_enabled: boolean;
   };
-  vault: {
-    auto_lock_minutes: number;
-    clipboard_clear_seconds: number;
-    inline_save_prompt_enabled: boolean;
-    inline_autofill_enabled: boolean;
-    default_match_mode: 'exact' | 'host' | 'base_domain' | 'never';
-    warn_on_http: boolean;
-    warn_on_untrusted_iframe: boolean;
-    excluded_domains: string[];
-    allow_manual_http_fill: boolean;
-  };
   notifications: {
     desktop_enabled: boolean;
   };
@@ -110,17 +99,6 @@ export function defaultUserPreferences(): UserPreferences {
     privacy: {
       personal_activity_enabled: true,
     },
-    vault: {
-      auto_lock_minutes: 15,
-      clipboard_clear_seconds: 30,
-      inline_save_prompt_enabled: true,
-      inline_autofill_enabled: true,
-      default_match_mode: 'base_domain',
-      warn_on_http: true,
-      warn_on_untrusted_iframe: true,
-      excluded_domains: [],
-      allow_manual_http_fill: false,
-    },
     notifications: {
       desktop_enabled: false,
     },
@@ -157,46 +135,6 @@ function normalizePreferences(raw: Partial<UserPreferences> | null | undefined):
         typeof raw?.privacy?.personal_activity_enabled === 'boolean'
           ? raw.privacy.personal_activity_enabled
           : defaults.privacy.personal_activity_enabled,
-    },
-    vault: {
-      auto_lock_minutes:
-        typeof raw?.vault?.auto_lock_minutes === 'number'
-          ? raw.vault.auto_lock_minutes
-          : defaults.vault.auto_lock_minutes,
-      clipboard_clear_seconds:
-        typeof raw?.vault?.clipboard_clear_seconds === 'number'
-          ? raw.vault.clipboard_clear_seconds
-          : defaults.vault.clipboard_clear_seconds,
-      inline_save_prompt_enabled:
-        typeof raw?.vault?.inline_save_prompt_enabled === 'boolean'
-          ? raw.vault.inline_save_prompt_enabled
-          : defaults.vault.inline_save_prompt_enabled,
-      inline_autofill_enabled:
-        typeof raw?.vault?.inline_autofill_enabled === 'boolean'
-          ? raw.vault.inline_autofill_enabled
-          : defaults.vault.inline_autofill_enabled,
-      default_match_mode:
-        raw?.vault?.default_match_mode === 'exact' ||
-        raw?.vault?.default_match_mode === 'host' ||
-        raw?.vault?.default_match_mode === 'never'
-          ? raw.vault.default_match_mode
-          : defaults.vault.default_match_mode,
-      warn_on_http:
-        typeof raw?.vault?.warn_on_http === 'boolean'
-          ? raw.vault.warn_on_http
-          : defaults.vault.warn_on_http,
-      warn_on_untrusted_iframe:
-        typeof raw?.vault?.warn_on_untrusted_iframe === 'boolean'
-          ? raw.vault.warn_on_untrusted_iframe
-          : defaults.vault.warn_on_untrusted_iframe,
-      excluded_domains:
-        Array.isArray(raw?.vault?.excluded_domains)
-          ? raw.vault.excluded_domains.filter((value): value is string => typeof value === 'string')
-          : defaults.vault.excluded_domains,
-      allow_manual_http_fill:
-        typeof raw?.vault?.allow_manual_http_fill === 'boolean'
-          ? raw.vault.allow_manual_http_fill
-          : defaults.vault.allow_manual_http_fill,
     },
     notifications: {
       desktop_enabled:

@@ -1,0 +1,15 @@
+[package]
+name = "rustyvault"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustfin-core = { path = "../core" }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+zip = { workspace = true }

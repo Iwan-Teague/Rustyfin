@@ -42,14 +42,16 @@ export default function NavBar() {
   const navLinks = [
     { href: '/channels', label: 'Channels' },
     { href: '/rooms', label: 'Rooms' },
+    { href: '/network', label: 'Network' },
     { href: '/servers', label: 'Servers' },
     { href: '/calendar', label: 'Calendar' },
     { href: '/libraries', label: 'Libraries' },
     { href: '/vault', label: 'Vault' },
+    { href: '/downloads', label: 'Downloads' },
     ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
   ];
   const desktopLeftNavLinks = navLinks.filter((link) =>
-    ['/channels', '/rooms', '/servers', '/calendar', '/libraries', '/vault'].includes(link.href),
+    ['/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(link.href),
   );
   const desktopRightNavLinks = navLinks.filter((link) =>
     ['/admin'].includes(link.href),

@@ -29,16 +29,6 @@ pub struct StreamClaims {
     pub exp: usize,
 }
 
-/// Short-lived token used for vault device-session access.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VaultSessionClaims {
-    pub sub: String, // user ID
-    pub sid: String, // vault device session ID
-    pub kind: String,
-    pub aud: String, // "vault_session"
-    pub exp: usize,
-}
-
 /// Issue a JWT token for a user.
 pub fn issue_token(
     user_id: &str,
@@ -157,51 +147,6 @@ pub fn validate_stream_token(token: &str, secret: &str) -> Result<StreamClaims, 
     Ok(data.claims)
 }
 
-pub fn issue_vault_session_access_token(
-    user_id: &str,
-    session_id: &str,
-    client_kind: &str,
-    ttl_seconds: i64,
-    secret: &str,
-) -> Result<String, AppError> {
-    let exp = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::seconds(ttl_seconds))
-        .ok_or_else(|| ApiError::Internal("time overflow".into()))?
-        .timestamp() as usize;
-
-    let claims = VaultSessionClaims {
-        sub: user_id.to_string(),
-        sid: session_id.to_string(),
-        kind: client_kind.to_string(),
-        aud: "vault_session".to_string(),
-        exp,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .map_err(|e| ApiError::Internal(format!("vault session token encoding failed: {e}")).into())
-}
-
-pub fn validate_vault_session_access_token(
-    token: &str,
-    secret: &str,
-) -> Result<VaultSessionClaims, ApiError> {
-    let mut validation = Validation::default();
-    validation.set_audience(&["vault_session"]);
-
-    let data = decode::<VaultSessionClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|e| ApiError::Unauthorized(format!("invalid vault session token: {e}")))?;
-
-    Ok(data.claims)
-}
-
 /// Authenticated user extractor — pulls Bearer token from Authorization header.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -258,58 +203,6 @@ impl FromRequestParts<AppState> for AdminUser {
         Ok(AdminUser {
             user_id: user.user_id,
             username: user.username,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct VaultSessionUser {
-    pub user_id: String,
-    pub session_id: String,
-    pub client_kind: String,
-    pub device_name: String,
-}
-
-impl FromRequestParts<AppState> for VaultSessionUser {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let token = parts
-            .headers
-            .get("x-rustfin-vault-access")
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| {
-                ApiError::Unauthorized("missing x-rustfin-vault-access header".into())
-            })?;
-
-        let claims = validate_vault_session_access_token(token, &state.jwt_secret)?;
-        let session =
-            rustfin_db::repo::vault::get_device_session(&state.db, &claims.sub, &claims.sid)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-
-        let session = session
-            .ok_or_else(|| ApiError::Unauthorized("vault device session not found".into()))?;
-        if session.revoked_ts.is_some() {
-            return Err(ApiError::Unauthorized("vault device session revoked".into()).into());
-        }
-
-        let now_ts = chrono::Utc::now().timestamp();
-        if session.expires_ts <= now_ts {
-            return Err(ApiError::Unauthorized("vault device session expired".into()).into());
-        }
-        if session.client_kind != claims.kind {
-            return Err(ApiError::Unauthorized("vault device session kind mismatch".into()).into());
-        }
-
-        Ok(VaultSessionUser {
-            user_id: claims.sub,
-            session_id: claims.sid,
-            client_kind: claims.kind,
-            device_name: session.device_name,
         })
     }
 }

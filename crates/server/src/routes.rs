@@ -2,7 +2,13 @@ use axum::body::{Body, Bytes};
 use axum::extract::{ConnectInfo, FromRequestParts, Multipart, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+#[cfg(feature = "rustyvault")]
+use axum::middleware::from_fn_with_state;
+#[cfg(not(feature = "rustyvault"))]
+use axum::response::IntoResponse;
 use axum::response::Response;
+#[cfg(not(feature = "rustyvault"))]
+use axum::routing::any;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
@@ -44,6 +50,31 @@ const CONTINUE_WATCHING_PERCENT_NUMERATOR: i64 = 5;
 const CONTINUE_WATCHING_PERCENT_DENOMINATOR: i64 = 100;
 const PASSWORD_CHANGE_ATTEMPTS: u64 = 8;
 const PASSWORD_CHANGE_WINDOW_SECONDS: u64 = 15 * 60;
+
+#[cfg(feature = "rustyvault")]
+fn mounted_rustyvault_router(state: AppState) -> Router<AppState> {
+    crate::rustyvault_host::router::rustyvault_router().layer(from_fn_with_state(
+        state,
+        crate::rustyvault_host::middleware::rustyvault_availability_middleware,
+    ))
+}
+
+#[cfg(not(feature = "rustyvault"))]
+fn mounted_rustyvault_router(_state: AppState) -> Router<AppState> {
+    async fn rustyvault_unavailable() -> impl IntoResponse {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": {
+                    "code": "service_unavailable",
+                    "message": "RustyVault is disabled on this host."
+                }
+            })),
+        )
+    }
+
+    Router::new().fallback(any(rustyvault_unavailable))
+}
 
 #[derive(Debug, Clone)]
 struct LoginAttemptBucket {
@@ -241,7 +272,7 @@ fn resolve_stream_request_identity(
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .nest("/api/v1", api_router())
+        .nest("/api/v1", api_router(state.clone()))
         .nest("/stream", stream_router())
         .with_state(state)
 }
@@ -254,7 +285,7 @@ fn stream_router() -> Router<AppState> {
         .route("/subtitles/{sub_path}", get(serve_subtitle))
 }
 
-fn api_router() -> Router<AppState> {
+fn api_router(state: AppState) -> Router<AppState> {
     Router::new()
         // Public system info (unauthenticated)
         .route(
@@ -286,6 +317,14 @@ fn api_router() -> Router<AppState> {
             get(get_my_activity_summary).delete(delete_my_activity),
         )
         .route("/users/me/activity/browser", post(post_browser_activity))
+        .route(
+            "/downloads/catalog",
+            get(crate::downloads::get_download_catalog),
+        )
+        .route(
+            "/downloads/artifacts/{artifact_id}/package",
+            get(crate::downloads::download_artifact_package),
+        )
         // Libraries
         .route("/libraries", post(create_library).get(list_libraries))
         .route(
@@ -329,7 +368,7 @@ fn api_router() -> Router<AppState> {
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
-        .nest("/vault", crate::vault::router::vault_router())
+        .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
         .nest(
             "/watch-party",
@@ -4650,16 +4689,60 @@ async fn sse_events(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS,
+        LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS, Router,
         enforce_login_rate_limit, extract_login_client_identity, login_attempt_key,
-        reset_login_rate_limit,
+        mounted_rustyvault_router, reset_login_rate_limit,
     };
     use axum::extract::ConnectInfo;
-    use axum::http::{HeaderMap, HeaderValue, header};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+    use axum::routing::get;
+    use axum_test::TestServer;
     use rustfin_core::error::ApiError;
+    use sqlx::postgres::PgPoolOptions;
     use std::net::SocketAddr;
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::LazyLock;
     use std::time::{Duration, Instant};
+
+    fn build_test_state(
+        rustyvault: crate::state::RustyVaultRuntimeState,
+    ) -> crate::state::AppState {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgresql://postgres:postgres@localhost/rustfin")
+            .expect("lazy postgres pool");
+        let tc_config = rustfin_transcoder::TranscoderConfig::default();
+        let ffmpeg_path = tc_config.ffmpeg_path.clone();
+        let ffprobe_path = tc_config.ffprobe_path.clone();
+        let transcoder = Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+
+        crate::state::AppState {
+            db,
+            rustyvault,
+            jwt_secret: "test-secret-key".to_string(),
+            http: reqwest::Client::builder().build().expect("reqwest client"),
+            runtime_metrics: crate::runtime_metrics::RuntimeMetrics::new(),
+            tmdb_agent_url: "http://127.0.0.1:8100".to_string(),
+            tmdb_agent_token: None,
+            youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+            youtube_agent_token: None,
+            transcription_agent_url: "http://127.0.0.1:8102".to_string(),
+            transcription_agent_token: None,
+            servers_agent_url: None,
+            servers_agent_token: None,
+            transcoder,
+            ffmpeg_path,
+            ffprobe_path,
+            transcoder_hw_accel: None,
+            transcoder_hw_accel_required: false,
+            cache_dir: PathBuf::from("/tmp/rustfin-rustyvault-test-cache"),
+            watch_party_audio_dir: PathBuf::from("/tmp/rustfin-rustyvault-test-audio"),
+            events: events_tx,
+            watch_party: Arc::new(crate::watch_party::manager::WatchPartyManager::new()),
+            channel_manager: Arc::new(crate::channels::manager::ChannelManager::new()),
+        }
+    }
 
     static LOGIN_LIMIT_TEST_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
         LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -4769,5 +4852,31 @@ mod tests {
 
         reset_login_rate_limit(&key).await;
         assert!(!LOGIN_ATTEMPT_BUCKETS.lock().await.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn rustyvault_unavailable_isolated_from_non_vault_routes() {
+        let reason = "RustyVault is unavailable on this host.";
+        let state = build_test_state(crate::state::RustyVaultRuntimeState::unavailable(reason));
+        let app = Router::new()
+            .route("/ok", get(|| async { StatusCode::OK }))
+            .nest("/api/v1/vault", mounted_rustyvault_router(state.clone()))
+            .with_state(state);
+        let server = TestServer::new(app).expect("test server");
+
+        let ok = server.get("/ok").await;
+        ok.assert_status_ok();
+
+        let vault = server.get("/api/v1/vault/config").await;
+        vault.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            vault
+                .maybe_header(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok().map(str::to_string)),
+            Some("no-store, max-age=0, must-revalidate".to_string())
+        );
+        let body: serde_json::Value = vault.json();
+        assert_eq!(body["error"]["code"], "service_unavailable");
+        assert_eq!(body["error"]["message"], reason);
     }
 }

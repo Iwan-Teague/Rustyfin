@@ -3141,6 +3141,7 @@ dependencies = [
  "rustfin-scanner",
  "rustfin-servers-host",
  "rustfin-transcoder",
+ "rustyvault",
  "serde",
  "serde_json",
  "sha2",
@@ -3337,6 +3338,20 @@ dependencies = [
  "tokio",
  "url",
  "urlencoding",
+]
+
+[[package]]
+name = "rustyvault"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "rand 0.8.5",
+ "rustfin-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zip",
 ]
 
 [[package]]
