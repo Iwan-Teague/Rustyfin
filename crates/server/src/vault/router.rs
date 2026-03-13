@@ -12,6 +12,11 @@ use crate::vault::middleware::{
 pub fn vault_router() -> Router<AppState> {
     Router::new()
         .route("/config", get(handlers::get_config))
+        .route("/extension", get(handlers::get_extension_info))
+        .route(
+            "/extension/package",
+            get(handlers::download_extension_package),
+        )
         .route("/bootstrap", post(handlers::bootstrap_vault))
         .route("/rekey", post(handlers::rekey_vault))
         .route(
