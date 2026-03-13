@@ -21,11 +21,29 @@ The supported runtime target is native Debian 12. The repository no longer ships
 ## Product Areas
 
 - Vault
-  - Client-side encrypted password vault
-  - Rust vault API and PostgreSQL ciphertext storage
-  - Web `/vault` management UI
-  - Vault page download flow for the browser extension package
+  - Client-side encrypted password vault hosted inside Rustyfin
+  - Backed by the dedicated `crates/rustyvault` product crate and `ui/src/features/rustyvault`
+  - Shared RustyVault types now live in `crates/rustyvault/src/types.rs`
+  - RustyVault preference normalization is now owned by the canonical `rustyvault::types::RustyVaultPreferences` model
+  - Canonical UI imports are feature-scoped under `ui/src/features/rustyvault`; generic `ui/src/lib/vault*` shims and the old `ui/src/lib/vaultGenerator.ts` path have been removed
+  - Canonical persistence now lives in `crates/db/src/repo/rustyvault.rs`, and PostgreSQL schema ownership now includes dedicated RustyVault preferences storage via `crates/db/migrations_pg/040_rustyvault_preferences.sql`
+  - RustyVault session/auth internals now use `x-rustyvault-*` headers, the `rustyvault_session` JWT audience, and host-scoped validation in `crates/server/src/rustyvault_host/auth.rs`
+  - RustyVault settings now flow through the dedicated `/api/v1/vault/preferences` host adapter backed by `rustyvault_preference`, not the generic account-preferences JSON blob
+  - RustyVault state reads and management views now default to the RustyVault session boundary; routes like `/api/v1/vault/config`, `/api/v1/vault/preferences`, `/api/v1/vault/device-sessions`, and `/api/v1/vault/audit` no longer rely on plain Rustyfin auth alone
+  - Vault bootstrap, protected-action challenge, and revoke-other-device-session flows are now session-bound as well, and mixed Rustyfin-auth plus RustyVault-session routes reject cross-user token mixing explicitly
+  - Runtime availability is graceful: if RustyVault is disabled or its schema is unavailable, `/vault` returns `503` and the rest of Rustyfin stays functional
+  - Host-facing RustyVault routes are being audited down to live web UI and extension operations; dead convenience routes like `/api/v1/vault/sync` and `/api/v1/vault/protected-actions/complete` have been removed
+  - Web `/vault` management UI remains the host-facing page
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
+  - The generic `/users/me/preferences` host API no longer carries Vault settings
+  - Backend can be compiled without RustyVault via `cargo check -p rustfin-server --no-default-features`
+  - Runtime availability can also be forced off with `RUSTFIN_RUSTYVAULT_ENABLED=0`, and the UI host fallback can be forced with `NEXT_PUBLIC_RUSTYVAULT_ENABLED=0`
+- Downloads
+  - Web `/downloads` release surface for official Rustyfin packages
+  - Backed by a host-owned downloads catalog and artifact pipeline at `/api/v1/downloads/catalog`
+  - Current implementation exposes the RustyVault browser extension package through `/api/v1/downloads/artifacts/rustyvault-webext/package`
+  - The Downloads host route is the authoritative public package-delivery surface for first-party artifacts
+  - Future first-party applications and companion downloads can land here without moving existing links
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
   - TMDB metadata enrichment and artwork sync
@@ -78,6 +96,7 @@ Native Rustyfin on Debian 12 runs these services directly on the host:
 - `/Users/iwanteague/Desktop/Rustyfin/crates/db` - PostgreSQL migrations and repositories
 - `/Users/iwanteague/Desktop/Rustyfin/crates/scanner` - library scanning and parsing
 - `/Users/iwanteague/Desktop/Rustyfin/crates/metadata` - metadata merge/provider logic
+- `/Users/iwanteague/Desktop/Rustyfin/crates/rustyvault` - RustyVault product logic, shared types, and extension packaging, mounted into Rustyfin through host adapters
 - `/Users/iwanteague/Desktop/Rustyfin/crates/transcoder` - ffmpeg/ffprobe orchestration
 - `/Users/iwanteague/Desktop/Rustyfin/crates/server` - main API server
 - `/Users/iwanteague/Desktop/Rustyfin/crates/calendar` - calendar service
@@ -87,7 +106,8 @@ Native Rustyfin on Debian 12 runs these services directly on the host:
 - `/Users/iwanteague/Desktop/Rustyfin/crates/servers-host` - native Minecraft host/runtime operations
 - `/Users/iwanteague/Desktop/Rustyfin/crates/servers-agent` - privileged Minecraft host agent
 - `/Users/iwanteague/Desktop/Rustyfin/ui` - Next.js frontend
-- `/Users/iwanteague/Desktop/Rustyfin/extensions/rustfin-vault-webext` - browser extension MVP for Rustyfin Vault
+- `/Users/iwanteague/Desktop/Rustyfin/ui/src/features/rustyvault` - RustyVault frontend feature module mounted by the host `/vault` route
+- `/Users/iwanteague/Desktop/Rustyfin/extensions/rustyvault-webext` - browser extension MVP for RustyVault
 - `/Users/iwanteague/Desktop/Rustyfin/scripts` - native install/start/stop/deploy/systemd scripts
 - `/Users/iwanteague/Desktop/Rustyfin/tests` - tests and E2E harnesses
 - `/Users/iwanteague/Desktop/Rustyfin/docs` - reports, plans, references, setup docs
@@ -271,6 +291,14 @@ It now also includes:
 
 - an isolated browser smoke pass for setup/login, channels, rooms, servers, and playback
 - a live unauthenticated-access gate for representative protected API routes
+
+Focused RustyVault removability gate:
+
+```bash
+./scripts/ci/rustyvault_removability_gates.sh
+```
+
+This verifies the host can degrade the Vault surface cleanly while unrelated routes still respond, the backend still compiles without the `rustyvault` feature, and the host UI still builds with `NEXT_PUBLIC_RUSTYVAULT_ENABLED=0`.
 
 Run the browser smoke independently if needed:
 

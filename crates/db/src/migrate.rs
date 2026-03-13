@@ -151,6 +151,14 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "038_vault_refresh_tokens",
         include_str!("../migrations_pg/038_vault_refresh_tokens.sql"),
     ),
+    (
+        "039_rustyvault_schema_rename",
+        include_str!("../migrations_pg/039_rustyvault_schema_rename.sql"),
+    ),
+    (
+        "040_rustyvault_preferences",
+        include_str!("../migrations_pg/040_rustyvault_preferences.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;

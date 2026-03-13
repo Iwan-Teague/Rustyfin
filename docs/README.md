@@ -24,6 +24,10 @@ Read these first:
   - adopted Rust-native Debian design rationale for `Servers`
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/password-vault-design-2026-03-12.md`
   - current Rustyfin Vault security and implementation design
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/rustyvault-migration-blueprint-2026-03-13.md`
+  - current migration blueprint and extraction plan for evolving Rustyfin Vault into RustyVault
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/rustyfin-current-state-design-baseline-2026-03-13.md`
+  - current verified architecture, runtime, WBS, and planning baseline for the overall Rustyfin project
 
 ## Directory Map
 

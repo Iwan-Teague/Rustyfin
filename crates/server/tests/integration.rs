@@ -75,6 +75,7 @@ fn build_test_state(
 ) -> AppState {
     AppState {
         db: pool,
+        rustyvault: rustfin_server::state::RustyVaultRuntimeState::available(),
         jwt_secret: "test-secret-key".to_string(),
         http: reqwest::Client::builder().build().unwrap(),
         runtime_metrics: rustfin_server::runtime_metrics::RuntimeMetrics::new(),
@@ -244,7 +245,7 @@ async fn create_vault_session(server: &TestServer, auth_token: &str, device_name
                 .unwrap(),
         )
         .json(&json!({
-            "client_kind": "web_vault",
+            "client_kind": "rustyvault_web",
             "device_name": device_name,
             "device_platform": "integration-test",
         }))
@@ -253,15 +254,16 @@ async fn create_vault_session(server: &TestServer, auth_token: &str, device_name
     resp.json::<Value>()
 }
 
-async fn bootstrap_vault_for_user(server: &TestServer, auth_token: &str) {
-    let resp = server
-        .post("/api/v1/vault/bootstrap")
-        .add_header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {auth_token}")
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-        )
+async fn bootstrap_vault_for_user_with_access(
+    server: &TestServer,
+    auth_token: &str,
+    vault_access_token: &str,
+) {
+    let mut request = server.post("/api/v1/vault/bootstrap");
+    for (name, value) in auth_and_vault_headers(auth_token, vault_access_token).await {
+        request = request.add_header(name, value);
+    }
+    let resp = request
         .json(&json!({
             "wrapped_key": {
                 "key_version": 1,
@@ -281,6 +283,12 @@ async fn bootstrap_vault_for_user(server: &TestServer, auth_token: &str) {
     resp.assert_status_ok();
 }
 
+async fn bootstrap_vault_for_user(server: &TestServer, auth_token: &str) {
+    let session = create_vault_session(server, auth_token, "Bootstrap Vault").await;
+    let access_token = session["session"]["access_token"].as_str().unwrap();
+    bootstrap_vault_for_user_with_access(server, auth_token, access_token).await;
+}
+
 async fn auth_and_vault_headers(
     auth_token: &str,
     vault_access_token: &str,
@@ -293,7 +301,7 @@ async fn auth_and_vault_headers(
                 .unwrap(),
         ),
         (
-            axum::http::HeaderName::from_static("x-rustfin-vault-access"),
+            axum::http::HeaderName::from_static("x-rustyvault-access"),
             vault_access_token
                 .parse::<axum::http::HeaderValue>()
                 .unwrap(),
@@ -3482,32 +3490,29 @@ async fn setup_force_takeover() {
 async fn vault_bootstrap_persists_and_returns_enabled_config() {
     let server = test_app().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let session = create_vault_session(&server, &admin_token, "Config Test Vault").await;
+    let access_token = session["session"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let initial = server
-        .get("/api/v1/vault/config")
-        .add_header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {admin_token}")
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-        )
-        .await;
+    let mut initial = server.get("/api/v1/vault/config");
+    for (name, value) in auth_and_vault_headers(&admin_token, &access_token).await {
+        initial = initial.add_header(name, value);
+    }
+    let initial = initial.await;
     initial.assert_status_ok();
     let initial_body: Value = initial.json();
     assert_eq!(initial_body["enabled"], false);
     assert!(initial_body["active_wrapped_key"].is_null());
 
-    bootstrap_vault_for_user(&server, &admin_token).await;
+    bootstrap_vault_for_user_with_access(&server, &admin_token, &access_token).await;
 
-    let persisted = server
-        .get("/api/v1/vault/config")
-        .add_header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {admin_token}")
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-        )
-        .await;
+    let mut persisted = server.get("/api/v1/vault/config");
+    for (name, value) in auth_and_vault_headers(&admin_token, &access_token).await {
+        persisted = persisted.add_header(name, value);
+    }
+    let persisted = persisted.await;
     persisted.assert_status_ok();
     let persisted_body: Value = persisted.json();
     assert_eq!(persisted_body["enabled"], true);
@@ -3517,6 +3522,66 @@ async fn vault_bootstrap_persists_and_returns_enabled_config() {
         persisted_body["active_wrapped_key"]["key_version"],
         serde_json::Value::from(1)
     );
+}
+
+#[tokio::test]
+async fn vault_bootstrap_requires_rustyvault_session() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+
+    let resp = server
+        .post("/api/v1/vault/bootstrap")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {admin_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .json(&json!({
+            "wrapped_key": {
+                "key_version": 1,
+                "kdf_algorithm": "argon2id",
+                "kdf_memory_kib": 65536,
+                "kdf_iterations": 3,
+                "kdf_parallelism": 4,
+                "kdf_salt_hex": "00112233445566778899aabbccddeeff",
+                "hkdf_algorithm": "hkdf-sha-256",
+                "wrap_algorithm": "aes-256-gcm",
+                "wrap_nonce_hex": "00112233445566778899aabb",
+                "wrapped_vault_key_hex": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                "created_ts": 0
+            }
+        }))
+        .await;
+
+    resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn vault_protected_action_challenge_rejects_mismatched_auth_and_session() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    create_user_as_admin(&server, &admin_token, "vault_user_d", "vault_pass_d_123").await;
+    let user_d_token = login(&server, "vault_user_d", "vault_pass_d_123").await;
+
+    let user_d_session = create_vault_session(&server, &user_d_token, "User D Guard Session").await;
+    let user_d_access = user_d_session["session"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut request = server.post("/api/v1/vault/protected-actions/challenge");
+    for (name, value) in auth_and_vault_headers(&admin_token, &user_d_access).await {
+        request = request.add_header(name, value);
+    }
+    let resp = request
+        .json(&json!({
+            "action_kind": "approve_device",
+            "current_password": "admin_secure_123"
+        }))
+        .await;
+
+    resp.assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -3580,7 +3645,7 @@ async fn vault_item_endpoints_enforce_user_ownership() {
 }
 
 #[tokio::test]
-async fn vault_lookup_and_sync_are_user_scoped() {
+async fn vault_lookup_is_user_scoped() {
     let server = test_app().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;
     create_user_as_admin(&server, &admin_token, "vault_user_c", "vault_pass_c_123").await;
@@ -3617,15 +3682,6 @@ async fn vault_lookup_and_sync_are_user_scoped() {
     lookup_resp.assert_status_ok();
     let lookup_body: Value = lookup_resp.json();
     assert_eq!(lookup_body["items"].as_array().unwrap().len(), 0);
-
-    let mut sync_request = server.get("/api/v1/vault/sync?cursor=0");
-    for (name, value) in auth_and_vault_headers(&user_c_token, user_c_access).await {
-        sync_request = sync_request.add_header(name, value);
-    }
-    let sync_resp = sync_request.await;
-    sync_resp.assert_status_ok();
-    let sync_body: Value = sync_resp.json();
-    assert_eq!(sync_body["items"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -3708,7 +3764,7 @@ async fn vault_lookup_requests_are_rate_limited_per_session() {
         .unwrap()
         .to_string();
 
-    for _ in 0..rustfin_server::vault::middleware::VAULT_LOOKUP_RATE_LIMIT_REQUESTS {
+    for _ in 0..rustfin_server::rustyvault_host::middleware::VAULT_LOOKUP_RATE_LIMIT_REQUESTS {
         let mut lookup_request = server.post("/api/v1/vault/lookup");
         for (name, value) in auth_and_vault_headers(&admin_token, &access_token).await {
             lookup_request = lookup_request.add_header(name, value);

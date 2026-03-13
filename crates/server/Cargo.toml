@@ -3,6 +3,10 @@ name = "rustfin-server"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["rustyvault"]
+rustyvault = ["dep:rustyvault"]
+
 [[bin]]
 name = "rustfin-server"
 path = "src/main.rs"
@@ -11,6 +15,7 @@ path = "src/main.rs"
 rustfin-core = { path = "../core" }
 rustfin-db = { path = "../db" }
 rustfin-metadata = { path = "../metadata" }
+rustyvault = { path = "../rustyvault", optional = true }
 rustfin-scanner = { path = "../scanner" }
 rustfin-servers-host = { path = "../servers-host" }
 rustfin-transcoder = { path = "../transcoder" }
