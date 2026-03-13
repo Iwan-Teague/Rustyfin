@@ -227,6 +227,7 @@ export default function VaultPage() {
   const [generatorOptions, setGeneratorOptions] = useState<PasswordGeneratorOptions>(presetOptions('balanced'));
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
+  const [currentVaultPassword, setCurrentVaultPassword] = useState('');
   const [newMasterPassword, setNewMasterPassword] = useState('');
   const [newMasterPasswordConfirm, setNewMasterPasswordConfirm] = useState('');
   const [extensionPairing, setExtensionPairing] = useState<VaultPairingCodeResponse | null>(null);
@@ -316,22 +317,33 @@ export default function VaultPage() {
 
   async function bootstrapFreshVault() {
     if (!me) return;
+    if (cryptoSupported !== true) {
+      throw new Error('This browser is not ready for vault cryptography yet');
+    }
     if (!masterPassword || masterPassword !== confirmMasterPassword) {
       throw new Error('Enter and confirm the same new vault master password');
     }
     const unlockedContext = await bootstrapVaultKeys(masterPassword, me.id);
-    const nextConfig = await bootstrapVault({ wrapped_key: unlockedContext.wrapped_key });
-    setConfig(nextConfig);
+    await bootstrapVault({ wrapped_key: unlockedContext.wrapped_key });
+    const persistedConfig = await getVaultConfig();
+    if (!persistedConfig.enabled || !persistedConfig.active_wrapped_key) {
+      throw new Error('Vault creation did not persist on the server');
+    }
+    setConfig(persistedConfig);
     setUnlocked(unlockedContext);
     setRows([]);
     setSelectedItem(null);
     setEditor(defaultEditorState());
+    setConfirmMasterPassword('');
     setMessage('Vault created and unlocked on this device.');
   }
 
   async function unlockExistingVault() {
     if (!me || !config?.active_wrapped_key) {
       throw new Error('Vault is not ready to unlock');
+    }
+    if (cryptoSupported !== true) {
+      throw new Error('This browser is not ready for vault cryptography yet');
     }
     const unlockedContext = await import('@/lib/vaultCrypto').then(({ unlockVault }) =>
       unlockVault(masterPassword, me.id, config.active_wrapped_key!),
@@ -541,9 +553,15 @@ export default function VaultPage() {
     if (!securityPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
+    if (!currentVaultPassword) {
+      throw new Error('Enter the current vault master password first');
+    }
     if (!newMasterPassword || newMasterPassword !== newMasterPasswordConfirm) {
       throw new Error('Enter and confirm the new vault master password');
     }
+    await import('@/lib/vaultCrypto').then(({ unlockVault }) =>
+      unlockVault(currentVaultPassword, me.id, config.active_wrapped_key!),
+    );
 
     const allEncryptedItems = await Promise.all(
       rows.map((row) => withVaultAccess((accessToken) => getVaultItem(accessToken, row.encrypted.id))),
@@ -592,6 +610,7 @@ export default function VaultPage() {
         : current,
     );
     setMasterPassword(newMasterPassword);
+    setCurrentVaultPassword('');
     setNewMasterPassword('');
     setNewMasterPasswordConfirm('');
     await loadItems(nextUnlocked);
@@ -810,7 +829,7 @@ export default function VaultPage() {
               <button
                 type="button"
                 className="btn-primary px-5 py-3 text-sm"
-                disabled={saving || cryptoSupported === false}
+                disabled={saving || cryptoSupported !== true}
                 onClick={() =>
                   runAction(
                     config?.enabled ? 'Vault unlocked.' : 'Vault created.',
@@ -1393,7 +1412,17 @@ export default function VaultPage() {
 
             <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-black/10 p-4">
               <p className="font-medium">Change vault master password</p>
+              <p className="text-sm muted">
+                Re-enter the current vault master password here. The Rustyfin account password above is still required for the protected action challenge.
+              </p>
               <div className="grid grid-cols-1 gap-3">
+                <input
+                  type="password"
+                  value={currentVaultPassword}
+                  onChange={(event) => setCurrentVaultPassword(event.target.value)}
+                  className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                  placeholder="Current vault master password"
+                />
                 <input
                   type="password"
                   value={newMasterPassword}
