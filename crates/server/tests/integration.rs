@@ -3479,6 +3479,47 @@ async fn setup_force_takeover() {
 }
 
 #[tokio::test]
+async fn vault_bootstrap_persists_and_returns_enabled_config() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+
+    let initial = server
+        .get("/api/v1/vault/config")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {admin_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .await;
+    initial.assert_status_ok();
+    let initial_body: Value = initial.json();
+    assert_eq!(initial_body["enabled"], false);
+    assert!(initial_body["active_wrapped_key"].is_null());
+
+    bootstrap_vault_for_user(&server, &admin_token).await;
+
+    let persisted = server
+        .get("/api/v1/vault/config")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {admin_token}")
+                .parse::<axum::http::HeaderValue>()
+                .unwrap(),
+        )
+        .await;
+    persisted.assert_status_ok();
+    let persisted_body: Value = persisted.json();
+    assert_eq!(persisted_body["enabled"], true);
+    assert_eq!(persisted_body["schema_version"], 1);
+    assert_eq!(persisted_body["item_count"], 0);
+    assert_eq!(
+        persisted_body["active_wrapped_key"]["key_version"],
+        serde_json::Value::from(1)
+    );
+}
+
+#[tokio::test]
 async fn vault_item_endpoints_enforce_user_ownership() {
     let server = test_app().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;
