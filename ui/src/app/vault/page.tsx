@@ -26,9 +26,11 @@ import {
   createVaultDeviceSession,
   createVaultItem,
   deleteVaultItem,
+  downloadVaultExtensionPackage,
   destroyVault,
   exportVault,
   getVaultConfig,
+  getVaultExtensionInfo,
   getVaultItem,
   importBitwardenCiphertexts,
   listVaultAuditEvents,
@@ -43,6 +45,7 @@ import {
   type VaultAuditEventResponse,
   type VaultConfigResponse,
   type VaultDeviceSessionResponse,
+  type VaultExtensionInfoResponse,
   type VaultPairingCodeResponse,
   type VaultUriMatchMode,
 } from '@/lib/vaultApi';
@@ -188,6 +191,15 @@ function downloadJson(filename: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 async function writeClipboardWithTimeout(value: string, clearAfterSeconds: number) {
   await navigator.clipboard.writeText(value);
   if (clearAfterSeconds <= 0) {
@@ -211,6 +223,7 @@ export default function VaultPage() {
 
   const [cryptoSupported, setCryptoSupported] = useState<boolean | null>(null);
   const [config, setConfig] = useState<VaultConfigResponse | null>(null);
+  const [extensionInfo, setExtensionInfo] = useState<VaultExtensionInfoResponse | null>(null);
   const [prefs, setPrefs] = useState<UserPreferences>(defaultUserPreferences());
   const [vaultSession, setVaultSession] = useState<StoredVaultSession | null>(readVaultSession());
   const [unlocked, setUnlocked] = useState<VaultUnlockedContext | null>(null);
@@ -279,13 +292,15 @@ export default function VaultPage() {
   }
 
   async function reloadVaultChrome() {
-    const [nextConfig, nextPrefs, nextDevices, nextAudit] = await Promise.all([
+    const [nextConfig, nextPrefs, nextDevices, nextAudit, nextExtensionInfo] = await Promise.all([
       getVaultConfig(),
       getMyPreferences(),
       listVaultDeviceSessions(vaultSession?.access_token ?? undefined).catch(() => []),
       listVaultAuditEvents().then((response) => response.events).catch(() => []),
+      getVaultExtensionInfo().catch(() => null),
     ]);
     setConfig(nextConfig);
+    setExtensionInfo(nextExtensionInfo);
     setPrefs(nextPrefs);
     setExcludedDomainsInput(nextPrefs.vault.excluded_domains.join('\n'));
     setDeviceSessions(nextDevices);
@@ -544,6 +559,12 @@ export default function VaultPage() {
     });
     setExtensionPairing(response);
     await reloadVaultChrome();
+  }
+
+  async function handleExtensionPackageDownload() {
+    const fallbackFilename = extensionInfo?.package_filename || 'rustyfin-vault-webext.zip';
+    const { blob, filename } = await downloadVaultExtensionPackage(fallbackFilename);
+    downloadBlob(filename, blob);
   }
 
   async function rekeyMasterPassword() {
@@ -1202,6 +1223,41 @@ export default function VaultPage() {
                 Dedicated vault sessions are separate from the main Rustyfin login and can be revoked per device.
               </p>
             </div>
+            <div className="panel-soft space-y-4 px-4 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-medium">Browser extension</p>
+                  <p className="text-sm muted">
+                    Download the current vault extension package here, extract it locally, then pair it from this page.
+                  </p>
+                </div>
+                {extensionInfo && <span className="chip">v{extensionInfo.version}</span>}
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  className="btn-primary px-5 py-3 text-sm"
+                  onClick={() =>
+                    runAction('Vault extension package downloaded.', handleExtensionPackageDownload)
+                  }
+                >
+                  Download extension package
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary px-5 py-3 text-sm"
+                  disabled={!vaultSession}
+                  onClick={() => runAction('Extension pairing code issued.', pairExtension)}
+                >
+                  Pair browser extension
+                </button>
+              </div>
+              <div className="space-y-1 text-sm muted">
+                <p>1. Download the zip package and extract it on your machine.</p>
+                <p>2. In Chrome or Edge developer extensions, choose Load unpacked and select the extracted folder.</p>
+                <p>3. Open the extension popup, set your Rustyfin server URL, then use the pairing code below.</p>
+              </div>
+            </div>
             <div className="space-y-3">
               {deviceSessions.length === 0 ? (
                 <div className="panel-soft px-4 py-3 text-sm muted">No paired vault devices yet.</div>
@@ -1240,14 +1296,6 @@ export default function VaultPage() {
                 ))
               )}
             </div>
-            <button
-              type="button"
-              className="btn-primary px-5 py-3 text-sm"
-              disabled={!vaultSession}
-              onClick={() => runAction('Extension pairing code issued.', pairExtension)}
-            >
-              Pair browser extension
-            </button>
             {extensionPairing && (
               <div className="panel-soft space-y-2 px-4 py-4">
                 <p className="text-sm font-semibold">Pairing code</p>

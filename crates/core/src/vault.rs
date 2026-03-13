@@ -86,6 +86,15 @@ pub struct VaultConfigResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultExtensionInfoResponse {
+    pub name: String,
+    pub version: String,
+    pub package_filename: String,
+    pub download_path: String,
+    pub install_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EncryptedVaultItemSummary {
     pub id: String,
     pub item_type: String,

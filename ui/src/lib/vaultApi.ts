@@ -37,6 +37,14 @@ export type VaultConfigResponse = {
   item_count: number;
 };
 
+export type VaultExtensionInfoResponse = {
+  name: string;
+  version: string;
+  package_filename: string;
+  download_path: string;
+  install_mode: string;
+};
+
 export type EncryptedVaultItemSummary = {
   id: string;
   item_type: string;
@@ -182,6 +190,41 @@ async function vaultJson<T>(path: string, options: VaultJsonOptions = {}): Promi
 
 export async function getVaultConfig(): Promise<VaultConfigResponse> {
   return vaultJson<VaultConfigResponse>('/vault/config');
+}
+
+export async function getVaultExtensionInfo(): Promise<VaultExtensionInfoResponse> {
+  return vaultJson<VaultExtensionInfoResponse>('/vault/extension');
+}
+
+function parseDownloadFilename(contentDisposition: string | null, fallback: string): string {
+  if (!contentDisposition) {
+    return fallback;
+  }
+  const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch {
+      return encodedMatch[1];
+    }
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^\";]+)"?/i);
+  return plainMatch?.[1] || fallback;
+}
+
+export async function downloadVaultExtensionPackage(
+  fallbackFilename = 'rustyfin-vault-webext.zip',
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await apiFetch('/vault/extension/package');
+  if (!response.ok) {
+    const body = await parseResponseBody(response);
+    throw new Error(extractErrorMessage(body, `Vault API error: ${response.status}`));
+  }
+  const blob = await response.blob();
+  return {
+    blob,
+    filename: parseDownloadFilename(response.headers.get('content-disposition'), fallbackFilename),
+  };
 }
 
 export async function bootstrapVault(payload: {

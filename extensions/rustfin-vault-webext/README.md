@@ -23,11 +23,20 @@ Current limitations:
 - page-load autofill is intentionally not implemented in the MVP
 - broad host permissions are required because detection runs on arbitrary sites
 
-To load it:
+To load it from Rustyfin:
+
+1. open Rustyfin `/vault`
+2. download the extension package from the vault page
+3. extract the zip locally
+4. open your browser extension developer mode page
+5. choose `Load unpacked`
+6. select the extracted `rustyfin-vault-webext-*` folder
+7. open the extension popup and set the Rustyfin server URL
+8. create a pairing code from Rustyfin `/vault`
+9. pair the extension, then unlock with the vault master password
+
+To load it directly from the repository during development:
 
 1. open your browser extension developer mode page
 2. choose `Load unpacked`
 3. select `/Users/iwanteague/Desktop/Rustyfin/extensions/rustfin-vault-webext`
-4. open the extension popup and set the Rustyfin server URL
-5. create a pairing code from Rustyfin `/vault`
-6. pair the extension, then unlock with the vault master password

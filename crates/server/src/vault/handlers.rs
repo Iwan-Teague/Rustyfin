@@ -1,23 +1,26 @@
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::Response;
 use axum::{Json, response::IntoResponse};
 use rustfin_core::error::ApiError;
 use rustfin_core::vault::{
     ConsumeVaultPairingCodeRequest, CreateVaultDeviceSessionRequest,
     CreateVaultDeviceSessionResponse, EncryptedVaultItem, UpsertVaultItemRequest,
     VaultAuditListResponse, VaultConfigResponse, VaultDestroyRequest, VaultDestroyResponse,
-    VaultExportRequest, VaultExportResponse, VaultImportBitwardenRequest,
-    VaultImportBitwardenResponse, VaultItemListResponse, VaultLookupRequest, VaultLookupResponse,
-    VaultProtectedActionChallengeRequest, VaultProtectedActionChallengeResponse,
-    VaultProtectedActionCompleteRequest, VaultProtectedActionCompleteResponse,
-    VaultRevokeOtherSessionsRequest, VaultRevokeOtherSessionsResponse, VaultSessionRefreshRequest,
-    VaultSyncResponse, VaultWrappedKeyMetadata,
+    VaultExportRequest, VaultExportResponse, VaultExtensionInfoResponse,
+    VaultImportBitwardenRequest, VaultImportBitwardenResponse, VaultItemListResponse,
+    VaultLookupRequest, VaultLookupResponse, VaultProtectedActionChallengeRequest,
+    VaultProtectedActionChallengeResponse, VaultProtectedActionCompleteRequest,
+    VaultProtectedActionCompleteResponse, VaultRevokeOtherSessionsRequest,
+    VaultRevokeOtherSessionsResponse, VaultSessionRefreshRequest, VaultSyncResponse,
+    VaultWrappedKeyMetadata,
 };
 
 use crate::auth::{AuthUser, VaultSessionUser};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::vault::{audit, device_sessions, service};
+use crate::vault::{audit, device_sessions, extension_package, service};
 
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct VaultItemListQuery {
@@ -36,6 +39,11 @@ fn no_store_json<T: serde::Serialize>(value: T) -> impl IntoResponse {
 
 fn no_store_empty(status: StatusCode) -> impl IntoResponse {
     (status, [(header::CACHE_CONTROL, "no-store")])
+}
+
+fn attachment_disposition(filename: &str) -> String {
+    let sanitized = filename.replace('"', "");
+    format!("attachment; filename=\"{sanitized}\"")
 }
 
 fn touch_session_best_effort(state: &AppState, vault_session: &VaultSessionUser) {
@@ -102,6 +110,33 @@ pub async fn get_config(
     let response: VaultConfigResponse =
         service::build_vault_config_response(wrapped_key, item_count);
     Ok(no_store_json(response))
+}
+
+pub async fn get_extension_info(auth: AuthUser) -> Result<impl IntoResponse, AppError> {
+    let _ = auth;
+    let info: VaultExtensionInfoResponse = extension_package::extension_info()?;
+    Ok(no_store_json(info))
+}
+
+pub async fn download_extension_package(auth: AuthUser) -> Result<Response, AppError> {
+    let _ = auth;
+    let info = extension_package::extension_info()?;
+    let body = extension_package::extension_package_bytes()?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            attachment_disposition(&info.package_filename),
+        )
+        .body(Body::from(body.to_vec()))
+        .map_err(|error| {
+            ApiError::Internal(format!(
+                "failed to build extension package response: {error}"
+            ))
+            .into()
+        })
 }
 
 pub async fn bootstrap_vault(

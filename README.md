@@ -24,6 +24,7 @@ The supported runtime target is native Debian 12. The repository no longer ships
   - Client-side encrypted password vault
   - Rust vault API and PostgreSQL ciphertext storage
   - Web `/vault` management UI
+  - Vault page download flow for the browser extension package
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
