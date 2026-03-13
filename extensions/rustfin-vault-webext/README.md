@@ -12,6 +12,9 @@ Current behavior:
 - shows manual-fill matches in the popup
 - captures login submissions and asks the user to confirm save
 - keeps page-load autofill disabled by default
+- suppresses save prompts and autofill suggestions on excluded domains
+- blocks manual fill on HTTP pages by default unless the user opts into it
+- blocks cross-origin iframe fill targets
 
 Current limitations:
 

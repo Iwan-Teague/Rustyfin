@@ -528,7 +528,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [me, authLoading]);
+  }, [me?.id, authLoading]);
 
   // ── Clean disconnect when user actually leaves the site ───────────────────────
 

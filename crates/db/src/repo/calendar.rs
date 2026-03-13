@@ -54,13 +54,13 @@ fn map_row(
         String,
         String,
         String,
-        Option<i32>,
+        Option<i64>,
         String,
         Option<String>,
         i64,
         i64,
     ),
-) -> CalendarEventRow {
+) -> Result<CalendarEventRow, sqlx::Error> {
     let (
         id,
         scope,
@@ -78,7 +78,18 @@ fn map_row(
         updated_ts,
     ) = row;
 
-    CalendarEventRow {
+    let birthday_year = birthday_year
+        .map(|year| {
+            i32::try_from(year).map_err(|_| {
+                sqlx::Error::Decode(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("calendar birthday_year {year} is out of i32 range"),
+                )))
+            })
+        })
+        .transpose()?;
+
+    Ok(CalendarEventRow {
         id,
         scope,
         owner_user_id,
@@ -93,7 +104,7 @@ fn map_row(
         created_by_username,
         created_ts,
         updated_ts,
-    }
+    })
 }
 
 pub async fn create_event(
@@ -140,7 +151,7 @@ pub async fn get_event(
         String,
         String,
         String,
-        Option<i32>,
+        Option<i64>,
         String,
         Option<String>,
         i64,
@@ -158,7 +169,7 @@ pub async fn get_event(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(map_row))
+    row.map(map_row).transpose()
 }
 
 pub async fn update_event(
@@ -214,7 +225,7 @@ pub async fn list_visible_events(
         String,
         String,
         String,
-        Option<i32>,
+        Option<i64>,
         String,
         Option<String>,
         i64,
@@ -244,7 +255,7 @@ pub async fn list_visible_events(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(map_row).collect())
+    rows.into_iter().map(map_row).collect()
 }
 
 pub async fn list_personal_events(
@@ -262,7 +273,7 @@ pub async fn list_personal_events(
         String,
         String,
         String,
-        Option<i32>,
+        Option<i64>,
         String,
         Option<String>,
         i64,
@@ -286,5 +297,56 @@ pub async fn list_personal_events(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(map_row).collect())
+    rows.into_iter().map(map_row).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_row;
+
+    #[test]
+    fn map_row_accepts_bigint_birthday_year() {
+        let row = map_row((
+            "event-1".to_string(),
+            "personal".to_string(),
+            Some("user-1".to_string()),
+            Some("alpha".to_string()),
+            "Birthday".to_string(),
+            None,
+            "2026-03-12".to_string(),
+            "birthday".to_string(),
+            "yearly".to_string(),
+            Some(1990_i64),
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect("bigint birthday year should decode");
+
+        assert_eq!(row.birthday_year, Some(1990));
+    }
+
+    #[test]
+    fn map_row_rejects_out_of_range_birthday_year() {
+        let err = map_row((
+            "event-1".to_string(),
+            "personal".to_string(),
+            Some("user-1".to_string()),
+            Some("alpha".to_string()),
+            "Birthday".to_string(),
+            None,
+            "2026-03-12".to_string(),
+            "birthday".to_string(),
+            "yearly".to_string(),
+            Some(i64::from(i32::MAX) + 1),
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect_err("out-of-range birthday year should fail");
+
+        assert!(matches!(err, sqlx::Error::Decode(_)));
+    }
 }

@@ -3618,3 +3618,97 @@ async fn vault_refresh_token_replay_revokes_the_session_family() {
         .await;
     post_replay_resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn vault_responses_include_security_headers_on_unauthorized_requests() {
+    let server = test_app().await;
+
+    let resp = server.get("/api/v1/vault/config").await;
+
+    assert_eq!(resp.status_code(), axum::http::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.maybe_header(axum::http::header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "no-store, max-age=0, must-revalidate"
+    );
+    assert_eq!(
+        resp.maybe_header(axum::http::header::PRAGMA)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "no-cache"
+    );
+    assert_eq!(
+        resp.maybe_header(axum::http::header::REFERRER_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "no-referrer"
+    );
+    assert_eq!(
+        resp.maybe_header(axum::http::header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "nosniff"
+    );
+}
+
+#[tokio::test]
+async fn vault_lookup_requests_are_rate_limited_per_session() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    bootstrap_vault_for_user(&server, &admin_token).await;
+    let session = create_vault_session(&server, &admin_token, "Lookup Rate Limit Vault").await;
+    let access_token = session["session"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for _ in 0..rustfin_server::vault::middleware::VAULT_LOOKUP_RATE_LIMIT_REQUESTS {
+        let mut lookup_request = server.post("/api/v1/vault/lookup");
+        for (name, value) in auth_and_vault_headers(&admin_token, &access_token).await {
+            lookup_request = lookup_request.add_header(name, value);
+        }
+        let lookup_resp = lookup_request
+            .json(&json!({
+                "match_hashes_hex": [
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                ]
+            }))
+            .await;
+        lookup_resp.assert_status_ok();
+    }
+
+    let mut limited_request = server.post("/api/v1/vault/lookup");
+    for (name, value) in auth_and_vault_headers(&admin_token, &access_token).await {
+        limited_request = limited_request.add_header(name, value);
+    }
+    let limited_resp = limited_request
+        .json(&json!({
+            "match_hashes_hex": [
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ]
+        }))
+        .await;
+
+    limited_resp.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    let retry_after_seconds = limited_resp
+        .maybe_header(axum::http::header::RETRY_AFTER)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!((1..=60).contains(&retry_after_seconds));
+    assert_eq!(
+        limited_resp
+            .maybe_header(axum::http::header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "no-store, max-age=0, must-revalidate"
+    );
+}

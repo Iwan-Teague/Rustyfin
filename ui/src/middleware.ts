@@ -59,8 +59,43 @@ async function getSetupCompleted(request: NextRequest): Promise<boolean | null> 
   }
 }
 
+function isVaultRoute(pathname: string): boolean {
+  return pathname === '/vault' || pathname.startsWith('/vault/');
+}
+
+function applyVaultHeaders(response: NextResponse): NextResponse {
+  const scriptSrc = process.env.NODE_ENV === 'development'
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : "script-src 'self' 'unsafe-inline'";
+  const csp = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    scriptSrc,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "frame-src 'none'",
+    "form-action 'self'",
+  ].join('; ');
+
+  response.headers.set('Cache-Control', 'no-store, max-age=0, must-revalidate');
+  response.headers.set('Pragma', 'no-cache');
+  response.headers.set('Expires', '0');
+  response.headers.set('Referrer-Policy', 'no-referrer');
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()');
+  response.headers.set('Content-Security-Policy', csp);
+  return response;
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const vaultRoute = isVaultRoute(pathname);
   if (pathname === '/health') {
     return NextResponse.next();
   }
@@ -70,22 +105,27 @@ export async function middleware(request: NextRequest) {
 
   const setupCompleted = await getSetupCompleted(request);
   if (setupCompleted === null) {
-    return NextResponse.next();
+    const response = NextResponse.next();
+    return vaultRoute ? applyVaultHeaders(response) : response;
   }
 
   if (!setupCompleted && !isSetupRoute) {
-    return NextResponse.redirect(new URL('/setup', request.url));
+    const response = NextResponse.redirect(new URL('/setup', request.url));
+    return vaultRoute ? applyVaultHeaders(response) : response;
   }
 
   if (setupCompleted && isSetupRoute) {
-    return NextResponse.redirect(new URL('/', request.url));
+    const response = NextResponse.redirect(new URL('/', request.url));
+    return vaultRoute ? applyVaultHeaders(response) : response;
   }
 
   if (setupCompleted && !isSetupRoute && !isLoginRoute && !authToken) {
-    return NextResponse.redirect(new URL('/login', request.url));
+    const response = NextResponse.redirect(new URL('/login', request.url));
+    return vaultRoute ? applyVaultHeaders(response) : response;
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  return vaultRoute ? applyVaultHeaders(response) : response;
 }
 
 export const config = {
