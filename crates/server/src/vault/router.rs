@@ -1,8 +1,13 @@
+use axum::Extension;
 use axum::Router;
+use axum::middleware::from_fn;
 use axum::routing::{delete, get, post};
 
 use crate::state::AppState;
 use crate::vault::handlers;
+use crate::vault::middleware::{
+    VaultRateLimiters, vault_rate_limit_middleware, vault_response_headers_middleware,
+};
 
 pub fn vault_router() -> Router<AppState> {
     Router::new()
@@ -54,4 +59,7 @@ pub fn vault_router() -> Router<AppState> {
         .route("/export", post(handlers::export_vault))
         .route("/import/bitwarden", post(handlers::import_bitwarden))
         .route("/", delete(handlers::destroy_vault))
+        .layer(from_fn(vault_rate_limit_middleware))
+        .layer(Extension(VaultRateLimiters::new()))
+        .layer(from_fn(vault_response_headers_middleware))
 }

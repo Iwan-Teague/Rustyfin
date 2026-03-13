@@ -13,6 +13,7 @@ async function load() {
   $('match-mode').value = response.settings.defaultMatchMode;
   $('excluded-domains').value = (response.settings.excludedDomains || []).join('\n');
   $('warn-http').checked = Boolean(response.settings.warnOnHttp);
+  $('allow-http-fill').checked = Boolean(response.settings.allowManualHttpFill);
   $('warn-iframe').checked = Boolean(response.settings.warnOnUntrustedIframe);
   $('page-load-autofill').checked = Boolean(response.settings.pageLoadAutofill);
   $('status').textContent = 'Settings loaded.';
@@ -30,6 +31,7 @@ $('save-options').addEventListener('click', async () => {
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),
       warnOnHttp: $('warn-http').checked,
+      allowManualHttpFill: $('allow-http-fill').checked,
       warnOnUntrustedIframe: $('warn-iframe').checked,
       pageLoadAutofill: $('page-load-autofill').checked,
     },

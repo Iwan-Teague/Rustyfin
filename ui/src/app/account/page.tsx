@@ -119,28 +119,22 @@ export default function AccountPage() {
     const totals = account.activitySummary.totals;
     return [
       {
-        key: 'site',
-        label: 'Time on Rustyfin',
-        value: Math.max(0, totals.total_time_ms),
-        color: '#f97316',
-      },
-      {
         key: 'rooms',
         label: 'Rooms',
         value: Math.max(0, totals.rooms_time_ms),
-        color: '#38bdf8',
+        color: 'var(--accent-orange)',
       },
       {
         key: 'voice',
         label: 'Voice',
         value: Math.max(0, totals.voice_time_ms),
-        color: '#34d399',
+        color: 'var(--accent-pink)',
       },
       {
         key: 'media',
         label: 'Media',
         value: Math.max(0, totals.media_watch_time_ms),
-        color: '#a78bfa',
+        color: 'var(--accent-purple)',
       },
     ];
   }, [account.activitySummary.totals]);
@@ -685,21 +679,12 @@ export default function AccountPage() {
               <div className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] gap-6 items-center">
                 <div className="flex justify-center">
                   <div
-                    className="relative h-44 w-44 rounded-full border border-[var(--border)]"
+                    className="h-48 w-48 rounded-full border border-[var(--border)] shadow-[0_18px_42px_rgba(0,0,0,0.28)]"
                     style={{ background: activityPie.background }}
                     aria-label="Activity pie chart"
-                  >
-                    <div className="absolute inset-[22%] rounded-full border border-[var(--border)] bg-black/70 backdrop-blur-sm flex items-center justify-center text-center px-3">
-                      <div>
-                        <p className="text-[11px] muted uppercase tracking-[0.18em]">Measured</p>
-                        <p className="mt-1 text-sm font-semibold">
-                          {activityPie.total > 0 ? formatDuration(activityPie.total) : 'No data'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+                  />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3">
                   {activityPie.percentages.map((slice) => (
                     <div
                       key={slice.key}

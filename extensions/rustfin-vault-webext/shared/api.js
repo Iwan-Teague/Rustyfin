@@ -5,6 +5,7 @@ export const DEFAULT_SETTINGS = {
   defaultMatchMode: 'base_domain',
   warnOnHttp: true,
   warnOnUntrustedIframe: true,
+  allowManualHttpFill: false,
   pageLoadAutofill: false,
 };
 

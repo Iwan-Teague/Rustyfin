@@ -1,3 +1,5 @@
+import { describePolicyReason } from './shared/policy.js';
+
 function $(id) {
   return document.getElementById(id);
 }
@@ -8,6 +10,40 @@ function callBackground(message) {
 
 function setVisible(id, visible) {
   $(id).classList.toggle('hidden', !visible);
+}
+
+function renderPolicy(response) {
+  const pagePolicy = response.pagePolicy || null;
+  const chipsRoot = $('page-policy-chips');
+  const messageRoot = $('page-policy-message');
+  chipsRoot.innerHTML = '';
+
+  const chips = pagePolicy?.chips || [];
+  for (const label of chips) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = label;
+    chipsRoot.appendChild(chip);
+  }
+
+  const message =
+    describePolicyReason(pagePolicy?.manualFillBlockedReason) ||
+    describePolicyReason(pagePolicy?.savePromptBlockedReason);
+  messageRoot.textContent = message;
+  setVisible('page-policy-panel', Boolean(chips.length || message));
+}
+
+function fillButtonLabel(pagePolicy) {
+  switch (pagePolicy?.manualFillBlockedReason) {
+    case 'excluded_domain':
+      return 'Excluded domain';
+    case 'http_blocked':
+      return 'HTTP blocked';
+    case 'untrusted_iframe':
+      return 'Iframe blocked';
+    default:
+      return 'Fill on page';
+  }
 }
 
 async function render() {
@@ -21,7 +57,7 @@ async function render() {
   setVisible('pairing-panel', !response.paired);
   setVisible('unlock-panel', response.paired);
   setVisible('matches-panel', response.unlocked);
-  setVisible('pending-panel', Boolean(response.pendingSave));
+  setVisible('pending-panel', Boolean(response.pendingSave) && response.pagePolicy?.canSavePrompt !== false);
 
   $('status').textContent = response.unlocked
     ? `Unlocked for ${response.currentTab?.url || 'current tab'}`
@@ -29,8 +65,16 @@ async function render() {
       ? 'Paired but locked'
       : 'Not paired';
 
+  const policyStatus =
+    describePolicyReason(response.pagePolicy?.manualFillBlockedReason) ||
+    describePolicyReason(response.pagePolicy?.savePromptBlockedReason);
+  if (policyStatus && response.unlocked) {
+    $('status').textContent = policyStatus;
+  }
+
   const matchesRoot = $('matches');
   matchesRoot.innerHTML = '';
+  renderPolicy(response);
   for (const match of response.matches || []) {
     const wrapper = document.createElement('div');
     wrapper.className = 'match';
@@ -41,7 +85,12 @@ async function render() {
     `;
     const fill = document.createElement('button');
     fill.className = 'btn btn-primary';
-    fill.textContent = 'Fill on page';
+    fill.textContent = fillButtonLabel(response.pagePolicy);
+    fill.disabled = response.pagePolicy?.canManualFill === false;
+    fill.title =
+      response.pagePolicy?.canManualFill === false
+        ? describePolicyReason(response.pagePolicy?.manualFillBlockedReason)
+        : 'Fill the selected credentials on the current page';
     fill.addEventListener('click', async () => {
       const result = await callBackground({
         type: 'fill-item',

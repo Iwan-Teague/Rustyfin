@@ -170,6 +170,10 @@ pub async fn ws_handler(
     Ok(ws
         .max_frame_size(MAX_WS_FRAME_BYTES)
         .max_message_size(MAX_WS_FRAME_BYTES)
+        // Some browser/proxy combinations on the Debian runtime emit unmasked
+        // control frames after a successful upgrade. Accept them so voice
+        // channels don't churn on otherwise healthy connections.
+        .accept_unmasked_frames(true)
         .on_upgrade(move |socket| handle_socket(socket, state)))
 }
 

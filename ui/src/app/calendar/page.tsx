@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth';
 import {
   createCalendarEvent,
@@ -20,6 +20,7 @@ import { playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
 
 type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30' | 'events_30';
+type CalendarSidePanelMode = 'closed' | 'editor' | 'day';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -53,6 +54,11 @@ function formatYmd(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function parseYmd(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return withNoon(new Date(year, (month || 1) - 1, day || 1));
 }
 
 function enumerateDays(from: Date, to: Date): Date[] {
@@ -157,7 +163,10 @@ export default function CalendarPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
-  const [eventPanelOpen, setEventPanelOpen] = useState(false);
+  const [sidePanelMode, setSidePanelMode] = useState<CalendarSidePanelMode>('closed');
+  const [selectedDayYmd, setSelectedDayYmd] = useState<string | null>(null);
+  const [monthViewCondensed, setMonthViewCondensed] = useState(false);
+  const monthGridRef = useRef<HTMLDivElement | null>(null);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -201,6 +210,21 @@ export default function CalendarPage() {
     }
     return byDate;
   }, [events]);
+  const selectedDayDate = useMemo(
+    () => (selectedDayYmd ? parseYmd(selectedDayYmd) : null),
+    [selectedDayYmd],
+  );
+  const selectedDayEvents = useMemo(
+    () => (selectedDayYmd ? eventsByDate.get(selectedDayYmd) ?? [] : []),
+    [eventsByDate, selectedDayYmd],
+  );
+  const panelOpen = sidePanelMode !== 'closed';
+  const eventPanelButtonLabel =
+    sidePanelMode === 'editor'
+      ? 'Hide Event Panel ▴'
+      : sidePanelMode === 'day'
+        ? 'Open Event Panel ▸'
+        : 'Show Event Panel ▾';
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -234,6 +258,43 @@ export default function CalendarPage() {
       setAnchorDate(withNoon(new Date()));
     }
   }, [view]);
+
+  useEffect(() => {
+    if (view !== 'month') {
+      setMonthViewCondensed(false);
+      if (sidePanelMode === 'day') {
+        setSidePanelMode('closed');
+        setSelectedDayYmd(null);
+      }
+      return;
+    }
+
+    const node = monthGridRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const updateDensity = () => {
+      const rowHeight = node.getBoundingClientRect().height / 6;
+      setMonthViewCondensed(rowHeight < 118);
+    };
+
+    updateDensity();
+    const observer = new ResizeObserver(updateDensity);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [loading, view, sidePanelMode]);
+
+  useEffect(() => {
+    if (view !== 'month' || sidePanelMode !== 'day' || !selectedDayYmd) {
+      return;
+    }
+    const selectedDayStillVisible = days.some((day) => formatYmd(day) === selectedDayYmd);
+    if (!selectedDayStillVisible) {
+      setSidePanelMode('closed');
+      setSelectedDayYmd(null);
+    }
+  }, [days, selectedDayYmd, sidePanelMode, view]);
 
   const resetForm = useCallback(() => {
     setEditingEventId(null);
@@ -313,7 +374,7 @@ export default function CalendarPage() {
 
   const onEdit = (event: CalendarEvent) => {
     if (!event.can_edit) return;
-    setEventPanelOpen(true);
+    setSidePanelMode('editor');
     setEditingEventId(event.id);
     setTitle(event.title);
     setDescription(event.description ?? '');
@@ -324,6 +385,22 @@ export default function CalendarPage() {
     setBirthdayYear(event.birthday_year ? String(event.birthday_year) : '');
     setOwnerUserId(event.owner_user_id ?? me?.id ?? '');
   };
+
+  const openCreatePanelForDate = useCallback(
+    (dateYmd?: string) => {
+      resetForm();
+      if (dateYmd) {
+        setEventDate(dateYmd);
+      }
+      setSidePanelMode('editor');
+    },
+    [resetForm],
+  );
+
+  const openDayPanel = useCallback((dateYmd: string) => {
+    setSelectedDayYmd(dateYmd);
+    setSidePanelMode('day');
+  }, []);
 
   return (
     <div className="space-y-6 animate-rise">
@@ -336,16 +413,18 @@ export default function CalendarPage() {
           <button
             type="button"
             className="btn-secondary px-3 py-1.5 text-sm"
-            onClick={() => setEventPanelOpen((prev) => !prev)}
+            onClick={() =>
+              setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
+            }
           >
-            {eventPanelOpen ? 'Hide Event Panel ▴' : 'Show Event Panel ▾'}
+            {eventPanelButtonLabel}
           </button>
         </div>
       </header>
 
       <div
         className={`grid grid-cols-1 gap-4 min-h-[40rem] lg:h-[calc(100dvh-11.5rem)] ${
-          eventPanelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
+          panelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
         }`}
       >
         <section className="panel rounded-2xl p-4 sm:p-5 space-y-4 flex flex-col lg:h-full lg:min-h-0">
@@ -650,12 +729,19 @@ export default function CalendarPage() {
                     </div>
                   ))}
                 </div>
-                <div className={`grid grid-cols-7 gap-2 flex-1 min-h-0 ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}>
+                <div
+                  ref={monthGridRef}
+                  className={`grid grid-cols-7 gap-2 flex-1 min-h-0 ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}
+                >
                   {days.map((day) => {
                     const key = formatYmd(day);
                     const dayEvents = eventsByDate.get(key) ?? [];
                     const outsideMonth = view === 'month' && day.getMonth() !== anchorDate.getMonth();
                     const isToday = sameCalendarDay(day, today);
+                    const condensedCountLabel =
+                      dayEvents.length === 0
+                        ? 'No events'
+                        : `${dayEvents.length} event${dayEvents.length === 1 ? '' : 's'}`;
                     return (
                       <div
                         key={key}
@@ -665,7 +751,20 @@ export default function CalendarPage() {
                             : outsideMonth
                               ? 'border-[var(--border)]/60 opacity-70'
                               : 'border-[var(--border)] bg-white/5'
-                        }`}
+                        } ${monthViewCondensed ? 'cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]' : ''}`}
+                        onClick={monthViewCondensed ? () => openDayPanel(key) : undefined}
+                        role={monthViewCondensed ? 'button' : undefined}
+                        tabIndex={monthViewCondensed ? 0 : undefined}
+                        onKeyDown={
+                          monthViewCondensed
+                            ? (event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  openDayPanel(key);
+                                }
+                              }
+                            : undefined
+                        }
                       >
                         <div className="sm:hidden">
                           <p className="text-xs font-semibold leading-tight">{dayCellDay(day)}</p>
@@ -676,50 +775,56 @@ export default function CalendarPage() {
                           <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
                           <span className="text-[11px] muted">{dayEvents.length}</span>
                         </div>
-                        <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
-                          {dayEvents.map((event) => (
-                            <div
-                              key={event.occurrence_id}
-                              data-calendar-event-id={event.id}
-                              className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
-                            >
-                              <p className="font-semibold leading-tight">{event.title}</p>
-                              {event.display_description && (
-                                <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
-                              )}
-                              {event.owner_username && event.scope === 'personal' && (
-                                <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
-                              )}
-                              {(event.can_edit || event.can_delete) && (
-                                <div className="mt-1 flex gap-1">
-                                  {event.can_edit && (
-                                    <button
-                                      type="button"
-                                      className="btn-ghost px-1.5 py-0.5 text-[10px]"
-                                      onClick={() => onEdit(event)}
-                                    >
-                                      Edit
-                                    </button>
-                                  )}
-                                  {event.can_delete && (
-                                    <button
-                                      type="button"
-                                      className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
-                                      onClick={(e) =>
-                                        void onDelete(
-                                          event.id,
-                                          (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
-                                        )
-                                      }
-                                    >
-                                      Delete
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                        {monthViewCondensed ? (
+                          <div className="mt-auto rounded-lg border border-[var(--border)] bg-black/10 px-2 py-1.5 text-[11px]">
+                            <p className="font-medium leading-tight">{condensedCountLabel}</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
+                            {dayEvents.map((event) => (
+                              <div
+                                key={event.occurrence_id}
+                                data-calendar-event-id={event.id}
+                                className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
+                              >
+                                <p className="font-semibold leading-tight">{event.title}</p>
+                                {event.display_description && (
+                                  <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
+                                )}
+                                {event.owner_username && event.scope === 'personal' && (
+                                  <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
+                                )}
+                                {(event.can_edit || event.can_delete) && (
+                                  <div className="mt-1 flex gap-1">
+                                    {event.can_edit && (
+                                      <button
+                                        type="button"
+                                        className="btn-ghost px-1.5 py-0.5 text-[10px]"
+                                        onClick={() => onEdit(event)}
+                                      >
+                                        Edit
+                                      </button>
+                                    )}
+                                    {event.can_delete && (
+                                      <button
+                                        type="button"
+                                        className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
+                                        onClick={(e) =>
+                                          void onDelete(
+                                            event.id,
+                                            (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                          )
+                                        }
+                                      >
+                                        Delete
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -729,152 +834,257 @@ export default function CalendarPage() {
           </div>
         </section>
 
-        {eventPanelOpen && (
-        <aside className="panel rounded-2xl p-4 sm:p-5 space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">{editingEventId ? 'Edit Event' : 'Create Event'}</h2>
-            {editingEventId && (
-              <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={resetForm}>
-                Cancel edit
-              </button>
-            )}
-          </div>
+        {panelOpen && (
+          <aside className="panel rounded-2xl p-4 sm:p-5 space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto">
+            {sidePanelMode === 'day' ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-lg font-semibold">
+                      {selectedDayDate
+                        ? selectedDayDate.toLocaleDateString(undefined, {
+                            weekday: 'long',
+                            month: 'long',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })
+                        : 'Day Overview'}
+                    </h2>
+                    <p className="text-sm muted">
+                      {selectedDayEvents.length === 0
+                        ? 'No events planned for this day.'
+                        : `${selectedDayEvents.length} planned event${selectedDayEvents.length === 1 ? '' : 's'}.`}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ghost px-2 py-1 text-xs"
+                    onClick={() => setSidePanelMode('closed')}
+                  >
+                    Close
+                  </button>
+                </div>
 
-          <div className="space-y-3">
-            <input
-              className="input px-3 py-2 text-sm"
-              placeholder="Event title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              maxLength={140}
-            />
-
-            <input
-              type="date"
-              className="input px-3 py-2 text-sm"
-              value={eventDate}
-              onChange={(e) => setEventDate(e.target.value)}
-            />
-
-            <textarea
-              className="input min-h-24 resize-y px-3 py-2 text-sm"
-              placeholder="Description (optional)"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              maxLength={500}
-            />
-
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <label className="space-y-1">
-                <p className="text-xs uppercase tracking-[0.14em] muted">Type</p>
-                <select
-                  className="select px-3 py-2 text-sm"
-                  value={eventType}
-                  onChange={(e) => setEventType(e.target.value as 'event' | 'birthday')}
+                <button
+                  type="button"
+                  className="btn-primary w-full px-4 py-2.5 text-sm"
+                  onClick={() => openCreatePanelForDate(selectedDayYmd ?? undefined)}
                 >
-                  <option value="event">Event</option>
-                  <option value="birthday">Birthday</option>
-                </select>
-              </label>
+                  Create Event For This Day
+                </button>
 
-              {eventType === 'event' ? (
-                <label className="space-y-1">
-                  <p className="text-xs uppercase tracking-[0.14em] muted">Repeat</p>
-                  <select
-                    className="select px-3 py-2 text-sm"
-                    value={recurrence}
-                    onChange={(e) => setRecurrence(e.target.value as CalendarRecurrence)}
-                  >
-                    <option value="none">One-time</option>
-                    <option value="yearly">Yearly</option>
-                  </select>
-                </label>
-              ) : (
-                <label className="space-y-1">
-                  <p className="text-xs uppercase tracking-[0.14em] muted">Birth Year</p>
+                <div className="space-y-2">
+                  {selectedDayEvents.length === 0 ? (
+                    <div className="panel-soft rounded-xl px-4 py-4 text-sm muted">
+                      This day is clear.
+                    </div>
+                  ) : (
+                    selectedDayEvents.map((event) => (
+                      <div
+                        key={event.occurrence_id}
+                        data-calendar-event-id={event.id}
+                        className={`rounded-xl border px-3 py-3 text-sm ${eventBadgeClass(event)}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <p className="font-semibold">{event.title}</p>
+                            {event.display_description && (
+                              <p className="muted">{event.display_description}</p>
+                            )}
+                            {event.owner_username && event.scope === 'personal' && (
+                              <p className="muted">Owner: {event.owner_username}</p>
+                            )}
+                            <p className="text-xs muted">
+                              {event.event_type === 'birthday'
+                                ? 'Birthday'
+                                : event.scope === 'global'
+                                  ? 'Global event'
+                                  : 'Personal event'}
+                            </p>
+                          </div>
+                        </div>
+                        {(event.can_edit || event.can_delete) && (
+                          <div className="mt-3 flex gap-2">
+                            {event.can_edit && (
+                              <button
+                                type="button"
+                                className="btn-ghost px-3 py-1 text-xs"
+                                onClick={() => onEdit(event)}
+                              >
+                                Edit
+                              </button>
+                            )}
+                            {event.can_delete && (
+                              <button
+                                type="button"
+                                className="btn-ghost px-3 py-1 text-xs text-red-300"
+                                onClick={(e) =>
+                                  void onDelete(
+                                    event.id,
+                                    (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
+                                  )
+                                }
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">
+                    {editingEventId ? 'Edit Event' : 'Create Event'}
+                  </h2>
+                  {editingEventId && (
+                    <button type="button" className="btn-ghost px-2 py-1 text-xs" onClick={resetForm}>
+                      Cancel edit
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-3">
                   <input
-                    type="number"
                     className="input px-3 py-2 text-sm"
-                    placeholder="1994"
-                    value={birthdayYear}
-                    onChange={(e) => setBirthdayYear(e.target.value)}
-                    min={1900}
-                    max={new Date().getFullYear()}
+                    placeholder="Event title"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    maxLength={140}
                   />
-                </label>
-              )}
-            </div>
 
-            {isAdmin && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <label className="space-y-1">
-                  <p className="text-xs uppercase tracking-[0.14em] muted">Scope</p>
-                  <select
-                    className="select px-3 py-2 text-sm"
-                    value={scope}
-                    onChange={(e) => setScope(e.target.value as CalendarEventScope)}
+                  <input
+                    type="date"
+                    className="input px-3 py-2 text-sm"
+                    value={eventDate}
+                    onChange={(e) => setEventDate(e.target.value)}
+                  />
+
+                  <textarea
+                    className="input min-h-24 resize-y px-3 py-2 text-sm"
+                    placeholder="Description (optional)"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    maxLength={500}
+                  />
+
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <label className="space-y-1">
+                      <p className="text-xs uppercase tracking-[0.14em] muted">Type</p>
+                      <select
+                        className="select px-3 py-2 text-sm"
+                        value={eventType}
+                        onChange={(e) => setEventType(e.target.value as 'event' | 'birthday')}
+                      >
+                        <option value="event">Event</option>
+                        <option value="birthday">Birthday</option>
+                      </select>
+                    </label>
+
+                    {eventType === 'event' ? (
+                      <label className="space-y-1">
+                        <p className="text-xs uppercase tracking-[0.14em] muted">Repeat</p>
+                        <select
+                          className="select px-3 py-2 text-sm"
+                          value={recurrence}
+                          onChange={(e) => setRecurrence(e.target.value as CalendarRecurrence)}
+                        >
+                          <option value="none">One-time</option>
+                          <option value="yearly">Yearly</option>
+                        </select>
+                      </label>
+                    ) : (
+                      <label className="space-y-1">
+                        <p className="text-xs uppercase tracking-[0.14em] muted">Birth Year</p>
+                        <input
+                          type="number"
+                          className="input px-3 py-2 text-sm"
+                          placeholder="1994"
+                          value={birthdayYear}
+                          onChange={(e) => setBirthdayYear(e.target.value)}
+                          min={1900}
+                          max={new Date().getFullYear()}
+                        />
+                      </label>
+                    )}
+                  </div>
+
+                  {isAdmin && (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <p className="text-xs uppercase tracking-[0.14em] muted">Scope</p>
+                        <select
+                          className="select px-3 py-2 text-sm"
+                          value={scope}
+                          onChange={(e) => setScope(e.target.value as CalendarEventScope)}
+                        >
+                          <option value="personal">Personal</option>
+                          <option value="global">Global (everyone)</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1">
+                        <p className="text-xs uppercase tracking-[0.14em] muted">Owner</p>
+                        <select
+                          className="select px-3 py-2 text-sm"
+                          value={ownerUserId}
+                          disabled={scope === 'global'}
+                          onChange={(e) => setOwnerUserId(e.target.value)}
+                        >
+                          {users.map((user) => (
+                            <option key={user.id} value={user.id}>
+                              {user.username}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    className="btn-primary w-full px-4 py-2.5 text-sm disabled:opacity-60"
+                    disabled={
+                      saving ||
+                      !title.trim() ||
+                      !eventDate ||
+                      (eventType === 'birthday' && !birthdayYear.trim())
+                    }
+                    onClick={() => void onSave()}
                   >
-                    <option value="personal">Personal</option>
-                    <option value="global">Global (everyone)</option>
-                  </select>
-                </label>
-                <label className="space-y-1">
-                  <p className="text-xs uppercase tracking-[0.14em] muted">Owner</p>
-                  <select
-                    className="select px-3 py-2 text-sm"
-                    value={ownerUserId}
-                    disabled={scope === 'global'}
-                    onChange={(e) => setOwnerUserId(e.target.value)}
-                  >
-                    {users.map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.username}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+                    {saving ? 'Saving…' : editingEventId ? 'Save Changes' : 'Create Event'}
+                  </button>
+                </div>
+
+                {isAdmin && (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-semibold">Personal Events (Admin View)</h3>
+                    <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+                      {adminPersonalEvents.length === 0 ? (
+                        <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">No personal events in this range.</div>
+                      ) : (
+                        adminPersonalEvents.map((event) => (
+                          <div key={event.occurrence_id} className="panel-soft rounded-xl px-3 py-2 text-xs">
+                            <p className="font-semibold">{event.title}</p>
+                            <p className="muted">{event.event_date} · {event.owner_username ?? 'Unknown owner'}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
-            <button
-              type="button"
-              className="btn-primary w-full px-4 py-2.5 text-sm disabled:opacity-60"
-              disabled={
-                saving ||
-                !title.trim() ||
-                !eventDate ||
-                (eventType === 'birthday' && !birthdayYear.trim())
-              }
-              onClick={() => void onSave()}
-            >
-              {saving ? 'Saving…' : editingEventId ? 'Save Changes' : 'Create Event'}
-            </button>
-          </div>
-
-          {isAdmin && (
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold">Personal Events (Admin View)</h3>
-              <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
-                {adminPersonalEvents.length === 0 ? (
-                  <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">No personal events in this range.</div>
-                ) : (
-                  adminPersonalEvents.map((event) => (
-                    <div key={event.occurrence_id} className="panel-soft rounded-xl px-3 py-2 text-xs">
-                      <p className="font-semibold">{event.title}</p>
-                      <p className="muted">{event.event_date} · {event.owner_username ?? 'Unknown owner'}</p>
-                    </div>
-                  ))
-                )}
+            {error && (
+              <div className="rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                {error}
               </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-              {error}
-            </div>
-          )}
-        </aside>
+            )}
+          </aside>
         )}
       </div>
     </div>
