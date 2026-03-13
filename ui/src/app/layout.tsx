@@ -22,7 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-screen text-[var(--text-main)]">
         <Providers>
           <PrimaryButtonEffects />
-          <div className="mx-auto max-w-[90rem] px-4 pb-24 pt-5 sm:px-6 lg:px-10">
+          <div className="w-full px-4 pb-24 pt-5 sm:px-6 lg:px-10">
             <NavBar />
             <main className="mx-auto max-w-7xl px-0 py-4 sm:py-8 lg:py-10">{children}</main>
           </div>
