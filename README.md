@@ -44,6 +44,10 @@ The supported runtime target is native Debian 12. The repository no longer ships
   - Current implementation exposes the RustyVault browser extension package through `/api/v1/downloads/artifacts/rustyvault-webext/package`
   - The Downloads host route is the authoritative public package-delivery surface for first-party artifacts
   - Future first-party applications and companion downloads can land here without moving existing links
+- AI
+  - Web `/ai` assistant surface backed by the native Rust `crates/ai-agent` integration
+  - Native host builds now fall back to a CPU-safe AI backend by default instead of assuming CUDA is present
+  - Use `RUSTFIN_AI_GPU_BACKEND=auto|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
   - TMDB metadata enrichment and artwork sync
@@ -223,6 +227,7 @@ Playback and transcoding:
 - `RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL`
 - `RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS`
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS`
+- `RUSTFIN_AI_GPU_BACKEND` - native AI inference backend selection for host builds (`auto|cpu|cuda|rocm|vulkan`)
 
 TMDB:
 

@@ -1,12 +1,12 @@
 use std::convert::Infallible;
-use std::pin::Pin;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use futures::{Stream, StreamExt, stream};
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::warn;
@@ -29,8 +29,6 @@ impl Default for EngineState {
     }
 }
 
-type SseStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
-
 pub fn ai_router() -> Router<AppState> {
     Router::new()
         .route("/models", get(list_models))
@@ -41,12 +39,14 @@ pub fn ai_router() -> Router<AppState> {
         .route("/chat", post(chat))
 }
 
-fn sse_error(message: impl Into<String>) -> Sse<SseStream> {
+fn sse_error(message: impl Into<String>) -> Response {
     let event = Event::default()
         .event("error")
         .data(json!({ "message": message.into() }).to_string());
     let stream = stream::once(async move { Ok::<Event, Infallible>(event) });
-    Sse::new(Box::pin(stream)).keep_alive(KeepAlive::default())
+    Sse::new(Box::pin(stream))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 // ---------- GET /api/v1/ai/models -------------------------------------------
@@ -82,7 +82,7 @@ async fn pull_model(
     _user: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<PullRequest>,
-) -> Sse<SseStream> {
+) -> Response {
     let target = req
         .model
         .or(req.url)
@@ -119,7 +119,9 @@ async fn pull_model(
         Ok::<Event, Infallible>(event)
     });
 
-    Sse::new(Box::pin(sse)).keep_alive(KeepAlive::default())
+    Sse::new(Box::pin(sse))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 // ---------- DELETE /api/v1/ai/models/:name ----------------------------------
@@ -285,7 +287,7 @@ async fn chat(
     _user: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
-) -> Sse<SseStream> {
+) -> Response {
     let system_prompt =
         "You are the Rustyfin assistant — a helpful AI built into a personal home media server. \
          Be concise and genuinely helpful. Respond in plain text unless code or markdown lists \
@@ -369,5 +371,7 @@ async fn chat(
         Ok::<Event, Infallible>(event)
     });
 
-    Sse::new(Box::pin(sse_stream)).keep_alive(KeepAlive::default())
+    Sse::new(Box::pin(sse_stream))
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }

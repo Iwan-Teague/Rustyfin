@@ -37,6 +37,7 @@ Environment:
   RUSTFIN_DATABASE_URL                  PostgreSQL URL (default: postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin)
   RUSTFIN_MEDIA_PATH                    Host media root (default: $HOME)
   RUSTFIN_ENABLE_SERVERS_AGENT          Start rustfin-servers-agent (default: 1)
+  RUSTFIN_AI_GPU_BACKEND                AI inference backend: auto|cpu|cuda|rocm|vulkan (default: auto)
   RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES
                                         Cargo features for transcription agent (default: gpu-opencl)
 EOF
@@ -88,6 +89,7 @@ fi
 
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 RUSTFIN_ENABLE_SERVERS_AGENT="${RUSTFIN_ENABLE_SERVERS_AGENT:-1}"
+RUSTFIN_AI_GPU_BACKEND="${RUSTFIN_AI_GPU_BACKEND:-auto}"
 RUSTFIN_TRANSCRIPTION_GPU_MODE="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-opencl}"
 RUSTFIN_TRANSCRIPTION_REQUIRE_GPU="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:-1}"
 RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-gpu-opencl}"
@@ -112,6 +114,36 @@ mkdir -p "$PID_DIR" "$LOG_DIR" "$CACHE_DIR" "$CONFIG_DIR" "$TRANSCODE_DIR"
 
 RUNTIME_ENV_FILE="$REPO_ROOT/.rustyfin.runtime.env"
 BUILD_STATE_FILE="$SAFE_TMP_DIR/native-ui-deps.hash"
+
+resolve_ai_gpu_backend() {
+  local requested="${1:-auto}"
+  case "$requested" in
+    auto)
+      if command -v nvcc >/dev/null 2>&1 || [[ -d /usr/local/cuda || -d /opt/cuda ]]; then
+        printf '%s\n' "cuda"
+        return 0
+      fi
+      if command -v hipcc >/dev/null 2>&1 || command -v rocminfo >/dev/null 2>&1 || [[ -d /opt/rocm ]]; then
+        printf '%s\n' "rocm"
+        return 0
+      fi
+      if command -v vulkaninfo >/dev/null 2>&1; then
+        printf '%s\n' "vulkan"
+        return 0
+      fi
+      printf '%s\n' "cpu"
+      ;;
+    cpu|none|off|disabled)
+      printf '%s\n' "cpu"
+      ;;
+    cuda|rocm|vulkan)
+      printf '%s\n' "$requested"
+      ;;
+    *)
+      die "Unsupported RUSTFIN_AI_GPU_BACKEND value: $requested"
+      ;;
+  esac
+}
 
 if command -v shasum >/dev/null 2>&1; then
   hash_file() {
@@ -634,6 +666,25 @@ if [[ "$BUILD_ONLY" != "true" ]]; then
   assert_not_running
 fi
 
+resolved_ai_gpu_backend="$(resolve_ai_gpu_backend "$RUSTFIN_AI_GPU_BACKEND")"
+RUSTFIN_SERVER_CARGO_FEATURES=""
+case "$resolved_ai_gpu_backend" in
+  cpu)
+    ;;
+  cuda)
+    RUSTFIN_SERVER_CARGO_FEATURES="ai-cuda"
+    ;;
+  rocm)
+    RUSTFIN_SERVER_CARGO_FEATURES="ai-rocm"
+    ;;
+  vulkan)
+    RUSTFIN_SERVER_CARGO_FEATURES="ai-vulkan"
+    ;;
+  *)
+    die "Unsupported resolved AI backend: $resolved_ai_gpu_backend"
+    ;;
+esac
+
 info "Using TMPDIR: $TMPDIR"
 info "Native runtime dir: $RUNTIME_ROOT"
 info "Using media path: $RUSTFIN_MEDIA_PATH"
@@ -655,6 +706,10 @@ info "Database target: $db_target_log"
 info "Rust build profile: $RUSTFIN_RUST_BUILD_PROFILE"
 info "Rust target: $RUSTFIN_NATIVE_TARGET"
 info "Native binary output dir: $NATIVE_BIN_DIR_ABS"
+info "AI inference backend: $resolved_ai_gpu_backend"
+if [[ -n "$RUSTFIN_SERVER_CARGO_FEATURES" ]]; then
+  info "Server cargo features: $RUSTFIN_SERVER_CARGO_FEATURES"
+fi
 info "Transcription GPU mode: $RUSTFIN_TRANSCRIPTION_GPU_MODE"
 info "Transcription GPU required: $RUSTFIN_TRANSCRIPTION_REQUIRE_GPU"
 info "Transcription agent cargo features: $RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES"
@@ -664,6 +719,7 @@ fi
 
 if [[ "$BUILD" == "true" ]]; then
   export RUSTFIN_NATIVE_GNU_COMPAT_BUILD=0
+  export RUSTFIN_SERVER_CARGO_FEATURES
   "$REPO_ROOT/scripts/build_linux_binaries.sh" \
     --profile "$RUSTFIN_RUST_BUILD_PROFILE" \
     --target "$RUSTFIN_NATIVE_TARGET" \
