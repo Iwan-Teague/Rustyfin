@@ -1,5 +1,6 @@
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use axum::http::{HeaderMap, header};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,43 @@ pub struct AuthUser {
     pub role: String,
 }
 
+const AUTH_COOKIE_NAME: &str = "rustfin_token";
+
+fn extract_token_from_headers(headers: &HeaderMap) -> Option<String> {
+    if let Some(auth_header) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .or_else(|| auth_header.strip_prefix("bearer "))?;
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let cookie_header = headers.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
+    for cookie in cookie_header.split(';') {
+        let mut parts = cookie.trim().splitn(2, '=');
+        let name = parts.next().unwrap_or_default().trim();
+        let value = parts.next().unwrap_or_default().trim();
+        if name != AUTH_COOKIE_NAME || value.is_empty() {
+            continue;
+        }
+
+        let unquoted = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        if !unquoted.is_empty() {
+            return Some(unquoted.to_string());
+        }
+    }
+
+    None
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
 
@@ -162,17 +200,10 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| ApiError::Unauthorized("missing authorization header".into()))?;
+        let token = extract_token_from_headers(&parts.headers)
+            .ok_or_else(|| ApiError::Unauthorized("missing authorization token".into()))?;
 
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| ApiError::Unauthorized("invalid authorization scheme".into()))?;
-
-        let claims = validate_token(token, &state.jwt_secret)?;
+        let claims = validate_token(&token, &state.jwt_secret)?;
 
         Ok(AuthUser {
             user_id: claims.sub,
@@ -204,5 +235,51 @@ impl FromRequestParts<AppState> for AdminUser {
             user_id: user.user_id,
             username: user.username,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_token_from_headers;
+    use axum::http::{HeaderMap, HeaderValue, header};
+
+    #[test]
+    fn extracts_bearer_token_from_authorization_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer header-token"),
+        );
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("rustfin_token=cookie-token"),
+        );
+
+        let token = extract_token_from_headers(&headers);
+
+        assert_eq!(token.as_deref(), Some("header-token"));
+    }
+
+    #[test]
+    fn extracts_token_from_cookie_when_authorization_is_missing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("foo=bar; rustfin_token=cookie-token ; baz=qux"),
+        );
+
+        let token = extract_token_from_headers(&headers);
+
+        assert_eq!(token.as_deref(), Some("cookie-token"));
+    }
+
+    #[test]
+    fn returns_none_when_no_supported_auth_token_is_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_static("foo=bar; baz=qux"));
+
+        let token = extract_token_from_headers(&headers);
+
+        assert!(token.is_none());
     }
 }

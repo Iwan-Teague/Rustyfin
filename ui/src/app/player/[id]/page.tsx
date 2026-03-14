@@ -48,6 +48,13 @@ type PlayState = {
   favorite: boolean;
 };
 
+type ItemSummary = {
+  id: string;
+  title: string;
+  kind: string;
+  parent_id?: string | null;
+};
+
 function shouldResumeFromCurrentSource(video: HTMLVideoElement, fileId: string): boolean {
   const src = `${video.currentSrc || video.src || ''}`.toLowerCase();
   if (!src) return false;
@@ -333,6 +340,8 @@ export default function PlayerPage() {
   const [descriptor, setDescriptor] = useState<PlaybackDescriptor | null>(null);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [playState, setPlayState] = useState<PlayState | null>(null);
+  const [item, setItem] = useState<ItemSummary | null>(null);
+  const [seriesTitle, setSeriesTitle] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loadingDescriptor, setLoadingDescriptor] = useState(true);
   const [loadingPlayState, setLoadingPlayState] = useState(true);
@@ -342,7 +351,7 @@ export default function PlayerPage() {
   const [hlsSessionStartOffsetSecs, setHlsSessionStartOffsetSecs] = useState(0);
   const [hlsAvailableWindowDurationSecs, setHlsAvailableWindowDurationSecs] = useState(0);
   const autoStartedRef = useRef(false);
-  const requestedPlaybackRef = useRef(true);
+  const requestedPlaybackRef = useRef(false);
 
   const canStartPlayback = Boolean(descriptor?.file_id);
   const sourceVideoHeight = mediaInfo?.video?.height && mediaInfo.video.height > 0 ? mediaInfo.video.height : null;
@@ -716,16 +725,60 @@ export default function PlayerPage() {
   useEffect(() => {
     let cancelled = false;
     autoStartedRef.current = false;
-    requestedPlaybackRef.current = true;
+    requestedPlaybackRef.current = false;
     setLoadingDescriptor(true);
     setLoadingPlayState(true);
     setDescriptor(null);
     setMediaInfo(null);
     setPlayState(null);
+    setItem(null);
+    setSeriesTitle(null);
     sessionIdRef.current = null;
     setError('');
     setHlsSessionStartOffsetSecs(0);
     setHlsAvailableWindowDurationSecs(0);
+
+    apiJson<ItemSummary>(`/items/${id}`)
+      .then(async (data) => {
+        if (cancelled) return;
+        setItem(data);
+
+        if (data.kind !== 'episode' || !data.parent_id) {
+          setSeriesTitle(null);
+          return;
+        }
+
+        try {
+          const parent = await apiJson<ItemSummary>(`/items/${data.parent_id}`);
+          if (cancelled) return;
+
+          if (parent.kind === 'series') {
+            setSeriesTitle(parent.title || null);
+            return;
+          }
+
+          if (parent.kind === 'season' && parent.parent_id) {
+            const grandParent = await apiJson<ItemSummary>(`/items/${parent.parent_id}`).catch(
+              () => null,
+            );
+            if (cancelled) return;
+            if (grandParent?.kind === 'series' && grandParent.title) {
+              setSeriesTitle(grandParent.title);
+              return;
+            }
+          }
+
+          setSeriesTitle(null);
+        } catch {
+          if (!cancelled) setSeriesTitle(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setItem(null);
+          setSeriesTitle(null);
+        }
+      });
 
     apiJson<PlaybackDescriptor>(`/items/${id}/playback`)
       .then((data) => {
@@ -779,11 +832,11 @@ export default function PlayerPage() {
         rawResumeSeconds !== undefined
           ? resolveResumeStartTimeSeconds(rawResumeSeconds, knownDurationSeconds)
           : undefined;
-      requestedPlaybackRef.current = resumeSeconds === undefined;
+      requestedPlaybackRef.current = false;
       void startHls(
         resumeSeconds !== undefined
           ? { seekTimeOverrideSecs: resumeSeconds, autoPlayOnReady: false }
-          : undefined,
+          : { autoPlayOnReady: false },
       );
     }
   }, [
@@ -874,12 +927,14 @@ export default function PlayerPage() {
     descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
     mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
   );
+  const playerTitle = item?.title?.trim() || 'Player';
+  const showTitle = seriesTitle?.trim() || null;
 
   return (
     <div className="space-y-5 animate-rise">
       <header className="space-y-2">
-        <h1 className="text-3xl font-semibold">Player</h1>
-        <p className="text-sm muted">Item ID: {id}</p>
+        <h1 className="text-3xl font-semibold">{playerTitle}</h1>
+        {showTitle && <p className="text-sm muted">{showTitle}</p>}
       </header>
 
       {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}

@@ -28,7 +28,6 @@ type UseRoomRealtimeArgs = {
   setError: (message: string) => void;
   setInfo: (message: string) => void;
   refreshRoom: () => Promise<void>;
-  loadRoom: () => Promise<void>;
   setJoinedRole: (role: string | null) => void;
   onRoomReconfigured: (payload: WsRoomReconfiguredMessage) => void;
   onRoomEnded: () => void;
@@ -67,7 +66,6 @@ export function useRoomRealtime({
   setError,
   setInfo,
   refreshRoom,
-  loadRoom,
   setJoinedRole,
   onRoomReconfigured,
   onRoomEnded,
@@ -264,7 +262,7 @@ export function useRoomRealtime({
             );
             onRoomReconfigured(payload);
             resetRealtimeState();
-            void loadRoom();
+            void refreshRoom();
             setWsEpoch((prev) => prev + 1);
             return;
           }
@@ -449,7 +447,6 @@ export function useRoomRealtime({
     setError,
     setInfo,
     refreshRoom,
-    loadRoom,
     setJoinedRole,
     onRoomReconfigured,
     onRoomEnded,

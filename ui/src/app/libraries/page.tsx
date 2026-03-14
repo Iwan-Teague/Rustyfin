@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { apiJson } from '@/lib/api';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 
 interface Library {
   id: string;
@@ -48,11 +50,14 @@ export default function LibrariesPage() {
   const [loading, setLoading] = useState(true);
   const [featuredItems, setFeaturedItems] = useState<Item[]>([]);
   const [continueWatching, setContinueWatching] = useState<ContinueWatchingItem[]>([]);
+  const [dismissingContinueItemIds, setDismissingContinueItemIds] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
+      setError(null);
       try {
         const [libs, continueItems] = await Promise.all([
           apiJson<Library[]>('/libraries'),
@@ -72,13 +77,39 @@ export default function LibrariesPage() {
         );
         if (cancelled) return;
         setFeaturedItems(itemArrays.flat().slice(0, 24));
-      } catch {
-        if (!cancelled) setLoading(false);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setError(clientErrorMessage(err, 'Failed to load libraries view'));
+          setLoading(false);
+        }
       }
     })();
 
     return () => { cancelled = true; };
   }, []);
+
+  async function handleDismissContinueItem(itemId: string) {
+    if (dismissingContinueItemIds.includes(itemId)) return;
+    setDismissingContinueItemIds((prev) => [...prev, itemId]);
+    setError(null);
+    try {
+      await apiJson<{ ok: boolean }>('/playback/progress', {
+        method: 'POST',
+        body: JSON.stringify({
+          item_id: itemId,
+          progress_ms: 0,
+          played: false,
+        }),
+      });
+      const target = findDataDeleteTarget('data-libraries-continue-id', itemId);
+      await playTelegramDeleteAnimation(target);
+      setContinueWatching((prev) => prev.filter((item) => item.id !== itemId));
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to remove from Continue Watching'));
+    } finally {
+      setDismissingContinueItemIds((prev) => prev.filter((id) => id !== itemId));
+    }
+  }
 
   const recommendedItems = useMemo(() => {
     const preferred = featuredItems.filter(
@@ -103,6 +134,8 @@ export default function LibrariesPage() {
           Explore all configured media directories and jump into items instantly.
         </p>
       </header>
+
+      {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
 
       {libraries.length === 0 ? (
         <div className="panel px-6 py-8">
@@ -150,51 +183,67 @@ export default function LibrariesPage() {
               const progressLabel = totalMs
                 ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
                 : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
+              const dismissing = dismissingContinueItemIds.includes(item.id);
 
               return (
-                <Link key={`continue-${item.id}`} href={`/player/${item.id}`} className="tile tile-hover block overflow-hidden">
-                  <div className="flex min-h-[9rem] gap-4 p-4">
-                    <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
-                      {item.poster_url ? (
-                        <Image
-                          src={item.poster_url}
-                          alt={item.title}
-                          width={192}
-                          height={288}
-                          unoptimized
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
-                          {item.kind.toUpperCase()}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col justify-between">
-                      <div className="space-y-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-base font-semibold">{item.title}</p>
-                            <p className="text-xs uppercase tracking-[0.24em] text-white/60">
-                              {item.kind === 'episode' ? 'Episode' : 'Movie'}
-                              {item.year ? ` · ${item.year}` : ''}
-                            </p>
+                <div
+                  key={`continue-${item.id}`}
+                  className="relative"
+                  data-libraries-continue-id={item.id}
+                >
+                  <button
+                    type="button"
+                    className="btn-ghost absolute right-3 top-3 z-20 h-7 w-7 rounded-full border border-white/20 bg-black/60 p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    onClick={() => void handleDismissContinueItem(item.id)}
+                    disabled={dismissing}
+                    aria-label={`Remove ${item.title} from Continue Watching`}
+                    title="Remove from Continue Watching"
+                  >
+                    {dismissing ? '…' : '×'}
+                  </button>
+                  <Link href={`/player/${item.id}`} className="tile tile-hover block overflow-hidden">
+                    <div className="flex min-h-[9rem] gap-4 p-4">
+                      <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
+                        {item.poster_url ? (
+                          <Image
+                            src={item.poster_url}
+                            alt={item.title}
+                            width={192}
+                            height={288}
+                            unoptimized
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
+                            {item.kind.toUpperCase()}
                           </div>
-                          <span className="chip">Resume</span>
-                        </div>
+                        )}
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col justify-between">
                         <div className="space-y-2">
-                          <div className="rf-progress-track">
-                            <div
-                              className="rf-progress-fill"
-                              style={{ width: `${progressPct || 0}%` }}
-                            />
+                          <div className="flex items-start gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-base font-semibold">{item.title}</p>
+                              <p className="text-xs uppercase tracking-[0.24em] text-white/60">
+                                {item.kind === 'episode' ? 'Episode' : 'Movie'}
+                                {item.year ? ` · ${item.year}` : ''}
+                              </p>
+                            </div>
                           </div>
-                          <p className="text-xs muted">{progressLabel}</p>
+                          <div className="space-y-2">
+                            <div className="rf-progress-track">
+                              <div
+                                className="rf-progress-fill"
+                                style={{ width: `${progressPct || 0}%` }}
+                              />
+                            </div>
+                            <p className="text-xs muted">{progressLabel}</p>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </Link>
+                  </Link>
+                </div>
               );
             })}
           </div>

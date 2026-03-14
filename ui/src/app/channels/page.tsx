@@ -20,11 +20,11 @@ export default function ChannelsPage() {
     voicePresence,
     voiceActiveSince,
     voiceSpeaking,
+    connectedVoiceChannelId,
     preferredInputDeviceId,
     preferredOutputDeviceId,
     newMessages,
     lastWsEvent,
-    voiceSession,
     joinVoice,
     setPreferredAudioDevices,
   } = useChannels();
@@ -41,12 +41,15 @@ export default function ChannelsPage() {
     if (channelId && channels.some((c) => c.id === channelId)) {
       preselectedApplied.current = true;
       setActiveChannelId(channelId);
-    } else if (voiceSession && channels.some((c) => c.id === voiceSession.channelId)) {
+    } else if (
+      connectedVoiceChannelId &&
+      channels.some((c) => c.id === connectedVoiceChannelId)
+    ) {
       // If no URL param, default to active voice channel if user is connected
       preselectedApplied.current = true;
-      setActiveChannelId(voiceSession.channelId);
+      setActiveChannelId(connectedVoiceChannelId);
     }
-  }, [channels, activeChannelId, voiceSession]);
+  }, [channels, activeChannelId, connectedVoiceChannelId]);
 
   // Modal state
   const [createModal, setCreateModal] = useState<{ kind: 'text' | 'voice' } | null>(null);
@@ -110,7 +113,7 @@ export default function ChannelsPage() {
           voiceActiveSince={voiceActiveSince}
           voiceSpeaking={voiceSpeaking}
           activeChannelId={activeChannelId}
-          connectedVoiceChannelId={voiceSession?.channelId ?? null}
+          connectedVoiceChannelId={connectedVoiceChannelId}
           isAdmin={me.role === 'admin'}
           onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
           onQuickJoinVoice={(id, name) => {

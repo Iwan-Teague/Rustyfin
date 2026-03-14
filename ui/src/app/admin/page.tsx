@@ -834,9 +834,9 @@ export default function AdminPage() {
       .sort((a, b) => a.library_name.localeCompare(b.library_name));
   }, [tmdbJobs, libraries]);
 
-  function setOk(message: string) {
-    setMsgType('ok');
-    setMsg(message);
+  function setOk(_message: string) {
+    // Admin success toasts are intentionally suppressed in this view.
+    setMsg('');
   }
 
   function setErr(message: string) {

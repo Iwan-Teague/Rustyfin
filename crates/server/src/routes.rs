@@ -50,6 +50,9 @@ const CONTINUE_WATCHING_PERCENT_NUMERATOR: i64 = 5;
 const CONTINUE_WATCHING_PERCENT_DENOMINATOR: i64 = 100;
 const PASSWORD_CHANGE_ATTEMPTS: u64 = 8;
 const PASSWORD_CHANGE_WINDOW_SECONDS: u64 = 15 * 60;
+const DOWNLOAD_TRANSCODE_STARTUP_POLL_MS: u64 = 100;
+const DOWNLOAD_TRANSCODE_STARTUP_TIMEOUT_MS: u64 = 2500;
+const DOWNLOAD_TRANSCODE_STDERR_TAIL_LINES: usize = 8;
 
 #[cfg(feature = "rustyvault")]
 fn mounted_rustyvault_router(state: AppState) -> Router<AppState> {
@@ -2506,7 +2509,12 @@ fn item_image_url(item_id: &str, img_type: &str, include_images: bool) -> Option
     }
 }
 
+fn supports_generated_item_images(kind: &str) -> bool {
+    matches!(kind, "movie" | "series" | "season" | "episode")
+}
+
 fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool) -> ItemResponse {
+    let include_generated = supports_generated_item_images(&item.kind);
     ItemResponse {
         id: item.id.clone(),
         library_id: item.library_id,
@@ -2516,12 +2524,12 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool
         sort_title: item.sort_title,
         year: item.year,
         overview: item.overview,
-        poster_url: if item.poster_url.is_some() {
+        poster_url: if item.poster_url.is_some() || include_generated {
             item_image_url(&item.id, "poster", include_images)
         } else {
             None
         },
-        backdrop_url: if item.backdrop_url.is_some() {
+        backdrop_url: if item.backdrop_url.is_some() || include_generated {
             item_image_url(&item.id, "backdrop", include_images)
         } else {
             None
@@ -2531,7 +2539,7 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool
         } else {
             None
         },
-        thumb_url: if item.thumb_url.is_some() {
+        thumb_url: if item.thumb_url.is_some() || include_generated {
             item_image_url(&item.id, "thumb", include_images)
         } else {
             None
@@ -2677,6 +2685,210 @@ async fn resolve_and_persist_media_duration_ms(
     duration_ms
 }
 
+fn parse_first_u32(value: &str) -> Option<u32> {
+    value
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|segment| !segment.is_empty())
+        .and_then(|segment| segment.parse::<u32>().ok())
+}
+
+fn season_sort_title(season: u32) -> String {
+    format!("rf-season-{season:05}")
+}
+
+fn episode_sort_title(season: u32, episode: u32) -> String {
+    format!("rf-season-{season:05}-episode-{episode:05}")
+}
+
+fn parse_episode_order_from_sort_title(sort_title: &str) -> Option<(u32, u32)> {
+    let lower = sort_title.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("rf-season-")?;
+    let (season, episode) = rest.split_once("-episode-")?;
+    Some((season.parse().ok()?, episode.parse().ok()?))
+}
+
+fn parse_season_order_from_sort_title(sort_title: &str) -> Option<u32> {
+    if let Some((season, _)) = parse_episode_order_from_sort_title(sort_title) {
+        return Some(season);
+    }
+    let lower = sort_title.trim().to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("rf-season-") {
+        return rest.parse::<u32>().ok();
+    }
+    None
+}
+
+fn parse_season_order_from_title(title: &str) -> Option<u32> {
+    let lower = title.trim().to_ascii_lowercase();
+    if lower == "specials" {
+        return Some(0);
+    }
+    if let Some(rest) = lower.strip_prefix("season") {
+        return parse_first_u32(rest);
+    }
+    if let Some(rest) = lower.strip_prefix('s') {
+        return parse_first_u32(rest);
+    }
+    None
+}
+
+fn parse_episode_order_from_title(title: &str) -> Option<(u32, u32)> {
+    let lower = title.trim().to_ascii_lowercase();
+    lower
+        .strip_prefix("episode")
+        .and_then(parse_first_u32)
+        .map(|episode| (0, episode))
+}
+
+fn parse_episode_order_from_media_path(path: &str) -> Option<(u32, u32)> {
+    let file_name = StdPath::new(path).file_name()?.to_str()?;
+    match rustfin_scanner::parser::parse_filename(file_name) {
+        rustfin_scanner::parser::ParsedMedia::Episode(info) => Some((info.season, info.episode)),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChildWatchOrderMode {
+    Season,
+    Episode,
+    Default,
+}
+
+fn resolve_child_watch_order_mode(
+    parent_kind: &str,
+    children: &[rustfin_db::repo::items::ItemRow],
+) -> ChildWatchOrderMode {
+    let has_season_children = children.iter().any(|child| child.kind == "season");
+    let has_episode_children = children.iter().any(|child| child.kind == "episode");
+
+    match parent_kind {
+        "series" if has_season_children => ChildWatchOrderMode::Season,
+        "series" if has_episode_children => ChildWatchOrderMode::Episode,
+        "season" if has_episode_children => ChildWatchOrderMode::Episode,
+        _ => ChildWatchOrderMode::Default,
+    }
+}
+
+async fn reorder_children_for_watch_order(
+    state: &AppState,
+    parent_kind: &str,
+    children: &mut Vec<rustfin_db::repo::items::ItemRow>,
+) -> Result<(), sqlx::Error> {
+    match resolve_child_watch_order_mode(parent_kind, children) {
+        ChildWatchOrderMode::Season => {
+            let mut season_keys: HashMap<String, u32> = HashMap::new();
+            for child in children.iter_mut().filter(|child| child.kind == "season") {
+                let season_order = child
+                    .sort_title
+                    .as_deref()
+                    .and_then(parse_season_order_from_sort_title)
+                    .or_else(|| parse_season_order_from_title(&child.title));
+                if let Some(season_order) = season_order {
+                    season_keys.insert(child.id.clone(), season_order);
+                    if child.sort_title.is_none() {
+                        let sort_title = season_sort_title(season_order);
+                        rustfin_db::repo::items::update_item_sort_title(
+                            &state.db,
+                            &child.id,
+                            Some(&sort_title),
+                        )
+                        .await?;
+                        child.sort_title = Some(sort_title);
+                    }
+                }
+            }
+
+            children.sort_by_cached_key(|child| {
+                (
+                    if child.kind == "season" {
+                        season_keys.get(&child.id).copied().unwrap_or(u32::MAX)
+                    } else {
+                        u32::MAX
+                    },
+                    child
+                        .sort_title
+                        .as_deref()
+                        .unwrap_or(&child.title)
+                        .to_ascii_lowercase(),
+                    child.title.to_ascii_lowercase(),
+                )
+            });
+            Ok(())
+        }
+        ChildWatchOrderMode::Episode => {
+            let mut episode_keys: HashMap<String, (u32, u32)> = HashMap::new();
+            let mut unresolved_episode_ids: Vec<String> = Vec::new();
+
+            for child in children.iter().filter(|child| child.kind == "episode") {
+                let episode_key = child
+                    .sort_title
+                    .as_deref()
+                    .and_then(parse_episode_order_from_sort_title)
+                    .or_else(|| parse_episode_order_from_title(&child.title));
+                if let Some(episode_key) = episode_key {
+                    episode_keys.insert(child.id.clone(), episode_key);
+                } else {
+                    unresolved_episode_ids.push(child.id.clone());
+                }
+            }
+
+            if !unresolved_episode_ids.is_empty() {
+                let media_paths = rustfin_db::repo::items::get_item_media_paths(
+                    &state.db,
+                    &unresolved_episode_ids,
+                )
+                .await?;
+
+                for child in children.iter_mut().filter(|child| child.kind == "episode") {
+                    if episode_keys.contains_key(&child.id) {
+                        continue;
+                    }
+                    let Some(path) = media_paths.get(&child.id) else {
+                        continue;
+                    };
+                    let Some(episode_key) = parse_episode_order_from_media_path(path) else {
+                        continue;
+                    };
+
+                    episode_keys.insert(child.id.clone(), episode_key);
+                    if child.sort_title.is_none() {
+                        let sort_title = episode_sort_title(episode_key.0, episode_key.1);
+                        rustfin_db::repo::items::update_item_sort_title(
+                            &state.db,
+                            &child.id,
+                            Some(&sort_title),
+                        )
+                        .await?;
+                        child.sort_title = Some(sort_title);
+                    }
+                }
+            }
+
+            children.sort_by_cached_key(|child| {
+                (
+                    if child.kind == "episode" {
+                        episode_keys
+                            .get(&child.id)
+                            .copied()
+                            .unwrap_or((u32::MAX, u32::MAX))
+                    } else {
+                        (u32::MAX, u32::MAX)
+                    },
+                    child
+                        .sort_title
+                        .as_deref()
+                        .unwrap_or(&child.title)
+                        .to_ascii_lowercase(),
+                    child.title.to_ascii_lowercase(),
+                )
+            });
+            Ok(())
+        }
+        ChildWatchOrderMode::Default => Ok(()),
+    }
+}
+
 async fn get_item_children(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -2688,7 +2900,10 @@ async fn get_item_children(
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
     ensure_library_access(&auth, &state, &parent.library_id).await?;
 
-    let children = rustfin_db::repo::items::get_children(&state.db, &id)
+    let mut children = rustfin_db::repo::items::get_children(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    reorder_children_for_watch_order(&state, &parent.kind, &mut children)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let show_images =
@@ -2928,13 +3143,15 @@ async fn list_continue_watching(
             None
         };
 
+        let include_generated_poster = supports_generated_item_images(&row.kind);
+
         response_rows.push(ContinueWatchingResponse {
             id: row.item_id.clone(),
             library_id: row.library_id.clone(),
             kind: row.kind,
             title: row.title,
             year: row.year,
-            poster_url: if row.poster_url.is_some()
+            poster_url: if (row.poster_url.is_some() || include_generated_poster)
                 && show_images_by_library
                     .get(&row.library_id)
                     .copied()
@@ -3235,6 +3452,71 @@ async fn spawn_download_transcode_ffmpeg(
     input_path: &StdPath,
     target_height: u32,
 ) -> Result<tokio::process::Child, AppError> {
+    let active_hw_accel = state.transcoder.hw_accel().cloned();
+    let initial_args = build_download_transcode_ffmpeg_args(
+        input_path,
+        target_height,
+        active_hw_accel.as_ref(),
+        state.transcoder.hw_device_path(),
+    );
+    let mut child = spawn_download_transcode_ffmpeg_process(state, &initial_args)?;
+
+    if let Some(status) = wait_for_download_transcode_start(&mut child).await? {
+        let startup_tail =
+            read_child_stderr_tail(&mut child, DOWNLOAD_TRANSCODE_STDERR_TAIL_LINES).await;
+        if let Some(hw) = active_hw_accel.as_ref() {
+            warn!(
+                input_path = %input_path.display(),
+                ?hw,
+                ?status,
+                ffmpeg_stderr = startup_tail.as_deref().unwrap_or(""),
+                "download transcode ffmpeg exited during startup; retrying with software fallback"
+            );
+
+            let fallback_args =
+                build_download_transcode_ffmpeg_args(input_path, target_height, None, None);
+            let mut fallback_child =
+                spawn_download_transcode_ffmpeg_process(state, &fallback_args)?;
+            if let Some(fallback_status) =
+                wait_for_download_transcode_start(&mut fallback_child).await?
+            {
+                let fallback_tail = read_child_stderr_tail(
+                    &mut fallback_child,
+                    DOWNLOAD_TRANSCODE_STDERR_TAIL_LINES,
+                )
+                .await;
+                return Err(ApiError::Internal(build_download_startup_error(
+                    fallback_status,
+                    fallback_tail.as_deref(),
+                    true,
+                ))
+                .into());
+            }
+
+            warn!(
+                input_path = %input_path.display(),
+                "download transcode switched to software fallback"
+            );
+            return Ok(fallback_child);
+        }
+
+        return Err(ApiError::Internal(build_download_startup_error(
+            status,
+            startup_tail.as_deref(),
+            false,
+        ))
+        .into());
+    }
+
+    Ok(child)
+}
+
+fn build_download_transcode_ffmpeg_args(
+    input_path: &StdPath,
+    target_height: u32,
+    active_hw_accel: Option<&rustfin_transcoder::HwAccel>,
+    hw_device_path: Option<&StdPath>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
@@ -3250,16 +3532,14 @@ async fn spawn_download_transcode_ffmpeg(
         "-dn".into(),
     ];
 
-    let active_hw_accel = state.transcoder.hw_accel();
     if let Some(hw) = active_hw_accel {
         match hw {
             rustfin_transcoder::HwAccel::Nvenc => {
-                args.splice(0..0, ["-hwaccel".into(), "cuda".into()]);
+                // Decode in software for broader codec/profile compatibility while
+                // still using NVENC for accelerated H.264 encode.
             }
             rustfin_transcoder::HwAccel::Vaapi => {
-                let device = state
-                    .transcoder
-                    .hw_device_path()
+                let device = hw_device_path
                     .unwrap_or_else(|| StdPath::new("/dev/dri/renderD128"))
                     .to_string_lossy()
                     .into_owned();
@@ -3267,7 +3547,7 @@ async fn spawn_download_transcode_ffmpeg(
             }
             rustfin_transcoder::HwAccel::Qsv => {
                 args.splice(0..0, ["-hwaccel".into(), "qsv".into()]);
-                if let Some(device) = state.transcoder.hw_device_path() {
+                if let Some(device) = hw_device_path {
                     args.splice(
                         2..2,
                         ["-qsv_device".into(), device.to_string_lossy().into_owned()],
@@ -3302,6 +3582,10 @@ async fn spawn_download_transcode_ffmpeg(
     if matches!(active_hw_accel, Some(rustfin_transcoder::HwAccel::Vaapi)) {
         args.extend(["-profile:v".into(), "high".into()]);
     }
+    if matches!(active_hw_accel, Some(rustfin_transcoder::HwAccel::Nvenc)) {
+        // Keep NVENC output in 8-bit H.264 for Main10 and other high-bit-depth inputs.
+        args.extend(["-pix_fmt".into(), "yuv420p".into()]);
+    }
     if active_hw_accel.is_none() {
         args.extend([
             "-preset".into(),
@@ -3329,8 +3613,15 @@ async fn spawn_download_transcode_ffmpeg(
         "pipe:1".into(),
     ]);
 
+    args
+}
+
+fn spawn_download_transcode_ffmpeg_process(
+    state: &AppState,
+    args: &[String],
+) -> Result<tokio::process::Child, AppError> {
     tokio::process::Command::new(state.transcoder.ffmpeg_path())
-        .args(&args)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -3346,6 +3637,62 @@ async fn spawn_download_transcode_ffmpeg(
             }
         })
         .map_err(AppError::from)
+}
+
+async fn wait_for_download_transcode_start(
+    child: &mut tokio::process::Child,
+) -> Result<Option<std::process::ExitStatus>, AppError> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(ApiError::Internal(format!(
+                    "failed to poll media transcode process startup: {error}"
+                ))
+                .into());
+            }
+        }
+
+        if started.elapsed() >= Duration::from_millis(DOWNLOAD_TRANSCODE_STARTUP_TIMEOUT_MS) {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(DOWNLOAD_TRANSCODE_STARTUP_POLL_MS)).await;
+    }
+}
+
+async fn read_child_stderr_tail(
+    child: &mut tokio::process::Child,
+    max_lines: usize,
+) -> Option<String> {
+    let mut stderr = child.stderr.take()?;
+    let mut bytes = Vec::new();
+    if stderr.read_to_end(&mut bytes).await.is_err() {
+        return None;
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    let tail = last_non_empty_lines(&content, max_lines);
+    if tail.is_empty() { None } else { Some(tail) }
+}
+
+fn build_download_startup_error(
+    status: std::process::ExitStatus,
+    stderr_tail: Option<&str>,
+    was_fallback: bool,
+) -> String {
+    let phase = if was_fallback {
+        "software fallback"
+    } else {
+        "initial"
+    };
+    let mut message =
+        format!("media transcode process exited during {phase} startup with status {status}");
+    if let Some(tail) = stderr_tail.filter(|value| !value.is_empty()) {
+        message.push_str("; ffmpeg stderr: ");
+        message.push_str(tail);
+    }
+    message
 }
 
 async fn download_playback_media(
@@ -3767,6 +4114,147 @@ struct ImageQuery {
     format: Option<String>,
 }
 
+fn normalize_image_ext(ext: &str) -> Option<&'static str> {
+    match ext
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" | "jpe" | "jfif" | "tbn" => Some("jpg"),
+        "png" => Some("png"),
+        "webp" => Some("webp"),
+        "avif" => Some("avif"),
+        "bmp" => Some("bmp"),
+        _ => None,
+    }
+}
+
+fn infer_image_ext_from_source(source: &str) -> Option<&'static str> {
+    let without_query = source
+        .split('#')
+        .next()
+        .unwrap_or(source)
+        .split('?')
+        .next()
+        .unwrap_or(source);
+    let file_component = without_query.rsplit('/').next().unwrap_or(without_query);
+    let ext = StdPath::new(file_component).extension()?.to_str()?;
+    normalize_image_ext(ext)
+}
+
+fn resolve_image_ext(format: Option<&str>, source: Option<&str>) -> &'static str {
+    format
+        .and_then(normalize_image_ext)
+        .or_else(|| source.and_then(infer_image_ext_from_source))
+        .unwrap_or("jpg")
+}
+
+fn content_type_for_image_ext(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        _ => "image/jpeg",
+    }
+}
+
+fn cached_image_source_token(source: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+async fn generate_fallback_item_image(
+    state: &AppState,
+    item_id: &str,
+    img_type: &str,
+    output_path: &StdPath,
+) -> Result<bool, AppError> {
+    if img_type == "logo" {
+        return Ok(false);
+    }
+
+    let media_path = rustfin_db::repo::items::get_item_media_path(&state.db, item_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        .or(
+            rustfin_db::repo::items::get_first_descendant_media_path(&state.db, item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?,
+        );
+
+    let Some(media_path) = media_path else {
+        return Ok(false);
+    };
+
+    let media_file = StdPath::new(&media_path);
+    if !media_file.exists() || !media_file.is_file() {
+        return Ok(false);
+    }
+
+    let seek_secs =
+        match rustfin_transcoder::ffprobe::probe(state.transcoder.ffprobe_path(), media_file).await
+        {
+            Ok(info) if info.duration_secs.is_finite() && info.duration_secs > 0.0 => {
+                (info.duration_secs * 0.15).clamp(5.0, 120.0)
+            }
+            _ => 30.0,
+        };
+
+    if let Some(parent) = output_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ApiError::Internal(format!("cache dir error: {e}")))?;
+    }
+
+    let mut command = tokio::process::Command::new(state.transcoder.ffmpeg_path());
+    command
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{seek_secs:.3}"))
+        .arg("-i")
+        .arg(&media_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg(output_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
+    let output = match command.output().await {
+        Ok(output) => output,
+        Err(err) => {
+            warn!(
+                item_id = %item_id,
+                image_type = %img_type,
+                error = %err,
+                "fallback artwork generation could not start"
+            );
+            return Ok(false);
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            item_id = %item_id,
+            image_type = %img_type,
+            stderr = %stderr,
+            "fallback artwork generation failed"
+        );
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
 async fn get_item_image(
     auth: AuthUser,
     State(state): State<AppState>,
@@ -3800,15 +4288,31 @@ async fn get_item_image(
     }
 
     // Get the image URL from DB
-    let image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
+    let mut image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
         .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-        .ok_or_else(|| ApiError::NotFound(format!("no {img_type} image for item")))?;
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if image_url.is_none() && supports_generated_item_images(&item.kind) {
+        image_url = crate::artwork::resolve_fallback_item_image_path(
+            &state.db,
+            &item.id,
+            &item.kind,
+            Some(item.title.as_str()),
+            item.year,
+            &img_type,
+        )
+        .await;
+    }
 
-    // Build cache key from item_id + type + resize params
+    // Build cache key from item_id + source + type + resize params so source changes
+    // (e.g. generated frame -> Jellyfin artwork) naturally bust stale image cache.
+    let source_cache_key = image_url
+        .as_deref()
+        .map(cached_image_source_token)
+        .unwrap_or_else(|| "generated".to_string());
     let cache_key = format!(
-        "{}_{}_{}_{}",
+        "{}_{}_{}_{}_{}",
         item_id,
+        source_cache_key,
         img_type,
         query.w.unwrap_or(0),
         query.h.unwrap_or(0)
@@ -3818,13 +4322,7 @@ async fn get_item_image(
         .await
         .map_err(|e| ApiError::Internal(format!("cache dir error: {e}")))?;
 
-    let ext = if let Some(ref fmt) = query.format {
-        fmt.clone()
-    } else if image_url.contains(".png") {
-        "png".to_string()
-    } else {
-        "jpg".to_string()
-    };
+    let ext = resolve_image_ext(query.format.as_deref(), image_url.as_deref());
     let cache_path = images_dir.join(format!("{cache_key}.{ext}"));
 
     // Check cache
@@ -3832,41 +4330,47 @@ async fn get_item_image(
         .await
         .map_err(|e| ApiError::Internal(format!("cache existence error: {e}")))?
     {
-        // Download the image
-        if image_url.starts_with("http://") || image_url.starts_with("https://") {
-            let resp = state
-                .http
-                .get(&image_url)
-                .send()
-                .await
-                .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
+        if let Some(image_url) = image_url.as_deref() {
+            if image_url.starts_with("http://") || image_url.starts_with("https://") {
+                let resp = state
+                    .http
+                    .get(image_url)
+                    .send()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
 
-            if !resp.status().is_success() {
-                return Err(ApiError::Internal(format!(
-                    "image download failed: {}",
-                    resp.status()
-                ))
-                .into());
+                if !resp.status().is_success() {
+                    return Err(ApiError::Internal(format!(
+                        "image download failed: {}",
+                        resp.status()
+                    ))
+                    .into());
+                }
+
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
+
+                tokio::fs::write(&cache_path, &bytes)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("cache write error: {e}")))?;
+            } else if tokio::fs::try_exists(StdPath::new(image_url))
+                .await
+                .map_err(|e| ApiError::Internal(format!("image source existence error: {e}")))?
+            {
+                tokio::fs::copy(image_url, &cache_path)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("copy error: {e}")))?;
+            } else {
+                return Err(ApiError::NotFound("image source not available".into()).into());
             }
-
-            let bytes = resp
-                .bytes()
-                .await
-                .map_err(|e| ApiError::Internal(format!("download error: {e}")))?;
-
-            tokio::fs::write(&cache_path, &bytes)
-                .await
-                .map_err(|e| ApiError::Internal(format!("cache write error: {e}")))?;
-        } else if tokio::fs::try_exists(std::path::Path::new(&image_url))
-            .await
-            .map_err(|e| ApiError::Internal(format!("image source existence error: {e}")))?
-        {
-            // Local file — copy to cache
-            tokio::fs::copy(&image_url, &cache_path)
-                .await
-                .map_err(|e| ApiError::Internal(format!("copy error: {e}")))?;
         } else {
-            return Err(ApiError::NotFound("image source not available".into()).into());
+            let generated =
+                generate_fallback_item_image(&state, &item_id, &img_type, &cache_path).await?;
+            if !generated {
+                return Err(ApiError::NotFound(format!("no {img_type} image for item")).into());
+            }
         }
     }
 
@@ -3889,11 +4393,7 @@ async fn get_item_image(
             .as_secs()
     );
 
-    let content_type = match ext.as_str() {
-        "png" => "image/png",
-        "webp" => "image/webp",
-        _ => "image/jpeg",
-    };
+    let content_type = content_type_for_image_ext(ext);
 
     Ok((
         StatusCode::OK,
@@ -4732,9 +5232,13 @@ async fn sse_events(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS, Router,
-        enforce_login_rate_limit, extract_login_client_identity, login_attempt_key,
-        mounted_rustyvault_router, normalize_session_start_time_secs, reset_login_rate_limit,
+        ChildWatchOrderMode, LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS,
+        Router, cached_image_source_token, enforce_login_rate_limit, extract_login_client_identity,
+        infer_image_ext_from_source, login_attempt_key, mounted_rustyvault_router,
+        normalize_session_start_time_secs, parse_episode_order_from_media_path,
+        parse_episode_order_from_sort_title, parse_season_order_from_sort_title,
+        parse_season_order_from_title, reset_login_rate_limit, resolve_child_watch_order_mode,
+        resolve_image_ext, supports_generated_item_images,
     };
     use axum::extract::ConnectInfo;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -4954,5 +5458,103 @@ mod tests {
         let body: serde_json::Value = vault.json();
         assert_eq!(body["error"]["code"], "service_unavailable");
         assert_eq!(body["error"]["message"], reason);
+    }
+
+    #[test]
+    fn season_order_parsing_handles_specials_and_standard_titles() {
+        assert_eq!(parse_season_order_from_title("Specials"), Some(0));
+        assert_eq!(parse_season_order_from_title("Season 12"), Some(12));
+        assert_eq!(parse_season_order_from_title("S03"), Some(3));
+    }
+
+    #[test]
+    fn internal_sort_title_parsers_extract_season_and_episode() {
+        assert_eq!(
+            parse_season_order_from_sort_title("rf-season-00008"),
+            Some(8)
+        );
+        assert_eq!(
+            parse_episode_order_from_sort_title("rf-season-00002-episode-00015"),
+            Some((2, 15))
+        );
+    }
+
+    #[test]
+    fn media_path_episode_parser_reads_watch_order_tokens() {
+        assert_eq!(
+            parse_episode_order_from_media_path("/media/Show/Season 01/Show.S01E09.Title.mkv"),
+            Some((1, 9))
+        );
+    }
+
+    #[test]
+    fn child_watch_order_mode_prefers_season_order_for_series_with_seasons() {
+        let season_child = rustfin_db::repo::items::ItemRow {
+            id: "season-1".into(),
+            library_id: "lib".into(),
+            kind: "season".into(),
+            parent_id: Some("series-1".into()),
+            title: "Season 1".into(),
+            sort_title: None,
+            year: None,
+            overview: None,
+            poster_url: None,
+            backdrop_url: None,
+            logo_url: None,
+            thumb_url: None,
+            created_ts: 0,
+            updated_ts: 0,
+            duration_ms: None,
+        };
+        let mode = resolve_child_watch_order_mode("series", &[season_child]);
+        assert_eq!(mode, ChildWatchOrderMode::Season);
+    }
+
+    #[test]
+    fn infer_image_ext_from_source_handles_case_and_query_strings() {
+        assert_eq!(
+            infer_image_ext_from_source("https://cdn.example.com/path/Poster.WEBP?x=1"),
+            Some("webp")
+        );
+        assert_eq!(
+            infer_image_ext_from_source("/mnt/media/Movie/folder.PNG"),
+            Some("png")
+        );
+        assert_eq!(
+            infer_image_ext_from_source("/mnt/media/Movie/folder.tbn"),
+            Some("jpg")
+        );
+    }
+
+    #[test]
+    fn resolve_image_ext_prefers_explicit_query_format() {
+        assert_eq!(
+            resolve_image_ext(Some("png"), Some("https://cdn.example.com/poster.webp")),
+            "png"
+        );
+        assert_eq!(resolve_image_ext(None, Some("/tmp/poster.avif")), "avif");
+        assert_eq!(resolve_image_ext(None, None), "jpg");
+    }
+
+    #[test]
+    fn cached_image_source_token_is_stable_and_source_specific() {
+        let source_a = "/mnt/truenas_media/Movies/Example/poster.jpg";
+        let source_b = "/mnt/truenas_media/Movies/Example2/poster.jpg";
+        assert_eq!(
+            cached_image_source_token(source_a),
+            cached_image_source_token(source_a)
+        );
+        assert_ne!(
+            cached_image_source_token(source_a),
+            cached_image_source_token(source_b)
+        );
+    }
+
+    #[test]
+    fn generated_artwork_support_is_limited_to_video_hierarchy() {
+        assert!(supports_generated_item_images("movie"));
+        assert!(supports_generated_item_images("series"));
+        assert!(supports_generated_item_images("episode"));
+        assert!(!supports_generated_item_images("album"));
     }
 }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::process::Child;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
@@ -87,6 +87,15 @@ struct SpawnFfmpegOptions<'a> {
     hw_device_path: Option<&'a Path>,
 }
 
+const FFMPEG_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const FFMPEG_STARTUP_TIMEOUT: Duration = Duration::from_secs(3);
+const FFMPEG_LOG_TAIL_LINES: usize = 8;
+
+enum FfmpegStartupStatus {
+    Running,
+    Exited(std::process::ExitStatus),
+}
+
 impl SessionManager {
     pub fn new(config: TranscoderConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
@@ -134,18 +143,16 @@ impl SessionManager {
             return Err(err.into());
         }
 
-        let child = match spawn_ffmpeg(SpawnFfmpegOptions {
-            ffmpeg_path: &self.config.ffmpeg_path,
-            input: &input_path,
-            output_dir: &output_dir,
-            segment_secs: self.config.segment_secs,
-            start_time: start_time_secs,
-            target_height,
-            video_codec_override,
-            hw_accel: self.config.hw_accel.as_ref(),
-            hw_device_path: self.config.hw_device_path.as_deref(),
-        })
-        .await
+        let child = match self
+            .spawn_session_ffmpeg_with_fallback(
+                &session_id,
+                &input_path,
+                &output_dir,
+                start_time_secs,
+                target_height,
+                video_codec_override,
+            )
+            .await
         {
             Ok(child) => child,
             Err(err) => {
@@ -178,6 +185,77 @@ impl SessionManager {
 
         info!(session_id = %session_id, "HLS transcode session created");
         Ok(session_id)
+    }
+
+    async fn spawn_session_ffmpeg_with_fallback(
+        &self,
+        session_id: &str,
+        input_path: &Path,
+        output_dir: &Path,
+        start_time_secs: Option<f64>,
+        target_height: Option<u32>,
+        video_codec_override: Option<&str>,
+    ) -> Result<Child, TranscodeError> {
+        let configured_hw = self.config.hw_accel.as_ref();
+        let mut child = spawn_ffmpeg(SpawnFfmpegOptions {
+            ffmpeg_path: &self.config.ffmpeg_path,
+            input: input_path,
+            output_dir,
+            segment_secs: self.config.segment_secs,
+            start_time: start_time_secs,
+            target_height,
+            video_codec_override,
+            hw_accel: configured_hw,
+            hw_device_path: self.config.hw_device_path.as_deref(),
+        })
+        .await?;
+
+        match wait_for_ffmpeg_startup(&mut child, &output_dir.join("master.m3u8")).await? {
+            FfmpegStartupStatus::Running => return Ok(child),
+            FfmpegStartupStatus::Exited(status) => {
+                let startup_tail = read_ffmpeg_log_tail(output_dir, FFMPEG_LOG_TAIL_LINES);
+                if let Some(hw) = configured_hw {
+                    warn!(
+                        session_id = %session_id,
+                        ?hw,
+                        ?status,
+                        ffmpeg_log_tail = startup_tail.as_deref().unwrap_or(""),
+                        "HLS ffmpeg exited during startup; retrying with software fallback"
+                    );
+                } else {
+                    return Err(build_startup_error(status, startup_tail.as_deref(), false));
+                }
+            }
+        }
+
+        reset_output_dir(output_dir).await?;
+        let mut fallback_child = spawn_ffmpeg(SpawnFfmpegOptions {
+            ffmpeg_path: &self.config.ffmpeg_path,
+            input: input_path,
+            output_dir,
+            segment_secs: self.config.segment_secs,
+            start_time: start_time_secs,
+            target_height,
+            // Fallback should prioritize compatibility over preserving optional overrides.
+            video_codec_override: None,
+            hw_accel: None,
+            hw_device_path: None,
+        })
+        .await?;
+
+        match wait_for_ffmpeg_startup(&mut fallback_child, &output_dir.join("master.m3u8")).await? {
+            FfmpegStartupStatus::Running => {
+                info!(
+                    session_id = %session_id,
+                    "HLS software fallback started after hardware startup failure"
+                );
+                Ok(fallback_child)
+            }
+            FfmpegStartupStatus::Exited(status) => {
+                let fallback_tail = read_ffmpeg_log_tail(output_dir, FFMPEG_LOG_TAIL_LINES);
+                Err(build_startup_error(status, fallback_tail.as_deref(), true))
+            }
+        }
     }
 
     async fn stop_sessions_for_owner_file(&self, owner_user_id: &str, file_id: &str) {
@@ -408,6 +486,77 @@ async fn cleanup_removed_session(
     metrics.cleaned_total.fetch_add(1, Ordering::Relaxed);
 }
 
+fn build_startup_error(
+    status: std::process::ExitStatus,
+    ffmpeg_log_tail: Option<&str>,
+    was_fallback: bool,
+) -> TranscodeError {
+    let phase = if was_fallback {
+        "software fallback"
+    } else {
+        "initial"
+    };
+    let mut message = format!("ffmpeg exited during {phase} startup with status {status}");
+    if let Some(tail) = ffmpeg_log_tail.filter(|value| !value.is_empty()) {
+        message.push_str("; ffmpeg log: ");
+        message.push_str(tail);
+    }
+    TranscodeError::FfmpegFailed(message)
+}
+
+async fn wait_for_ffmpeg_startup(
+    child: &mut Child,
+    master_playlist_path: &Path,
+) -> Result<FfmpegStartupStatus, TranscodeError> {
+    let started = Instant::now();
+    loop {
+        if master_playlist_path.exists() {
+            return Ok(FfmpegStartupStatus::Running);
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(FfmpegStartupStatus::Exited(status)),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(TranscodeError::FfmpegFailed(format!(
+                    "failed to poll ffmpeg startup: {error}"
+                )));
+            }
+        }
+
+        if started.elapsed() >= FFMPEG_STARTUP_TIMEOUT {
+            return Ok(FfmpegStartupStatus::Running);
+        }
+        tokio::time::sleep(FFMPEG_STARTUP_POLL_INTERVAL).await;
+    }
+}
+
+async fn reset_output_dir(output_dir: &Path) -> Result<(), TranscodeError> {
+    if tokio::fs::try_exists(output_dir).await? {
+        tokio::fs::remove_dir_all(output_dir).await?;
+    }
+    tokio::fs::create_dir_all(output_dir).await?;
+    Ok(())
+}
+
+fn read_ffmpeg_log_tail(output_dir: &Path, max_lines: usize) -> Option<String> {
+    let content = std::fs::read_to_string(output_dir.join("ffmpeg.log")).ok()?;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+    if lines.len() > max_lines {
+        lines = lines.split_off(lines.len() - max_lines);
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join(" | "))
+    }
+}
+
 fn record_transcode_failure(metrics: &SessionMetrics) {
     let now = Instant::now();
     let mut timestamps = lock_or_recover(&metrics.create_failure_window);
@@ -462,7 +611,8 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
     if let Some(hw) = active_hw_accel {
         match hw {
             HwAccel::Nvenc => {
-                args.extend(["-hwaccel".into(), "cuda".into()]);
+                // Decode in software for broader codec/profile compatibility, while
+                // still using NVENC for accelerated H.264 encode.
             }
             HwAccel::Vaapi => {
                 let device = options
@@ -517,9 +667,10 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
         Some(HwAccel::Qsv) => options
             .target_height
             .map(|height| format!("vpp_qsv=w=-2:h={height}")),
-        _ => options
-            .target_height
-            .map(|height| format!("scale=-2:min(ih\\,{height})")),
+        _ => Some(match options.target_height {
+            Some(height) => format!("scale=-2:min(ih\\,{height})"),
+            None => "scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string(),
+        }),
     };
     if let Some(filter) = vf {
         args.extend(["-vf".into(), filter]);
@@ -542,6 +693,11 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
     args.extend(["-c:v".into(), vcodec]);
     if matches!(active_hw_accel, Some(HwAccel::Vaapi)) {
         args.extend(["-profile:v".into(), "high".into()]);
+    }
+    if matches!(active_hw_accel, Some(HwAccel::Nvenc)) {
+        // H.264 NVENC cannot emit 10-bit output. Force 8-bit pixel format so
+        // Main10 HEVC sources transcode successfully instead of failing at init.
+        args.extend(["-pix_fmt".into(), "yuv420p".into()]);
     }
 
     // Video encoding params for software encode

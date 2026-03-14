@@ -33,6 +33,11 @@ type Props = {
   layout?: 'split' | 'stacked';
   noShadow?: boolean;
   surfaceClassName?: string;
+  applyActionLabel?: string;
+  applyActionPendingLabel?: string;
+  applyActionDisabled?: boolean;
+  applyActionLoading?: boolean;
+  onApplyAction?: () => void;
   onLibraryChange: (libraryId: string) => void;
   onSelectItem: (item: MediaItemNode | null) => void;
 };
@@ -45,6 +50,11 @@ export default function MediaPicker({
   layout = 'split',
   noShadow = false,
   surfaceClassName = 'panel',
+  applyActionLabel = 'Apply Media',
+  applyActionPendingLabel = 'Applying…',
+  applyActionDisabled = false,
+  applyActionLoading = false,
+  onApplyAction,
   onLibraryChange,
   onSelectItem,
 }: Props) {
@@ -149,32 +159,38 @@ export default function MediaPicker({
               </option>
             ))}
           </select>
-
-          {selectedItem && (
-            <div className="notice-ok rounded-xl px-3 py-2 text-xs">
-              Selected: <strong>{selectedItem.title}</strong>
-            </div>
-          )}
         </div>
 
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (breadcrumbs.length === 0) return;
-                setBreadcrumbs((prev) => prev.slice(0, -1));
-              }}
-              disabled={breadcrumbs.length === 0}
-              className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
-            >
-              Back
-            </button>
-            <span className="text-xs muted">
-              {breadcrumbs.length === 0
-                ? 'Top level'
-                : breadcrumbs.map((crumb) => crumb.title).join(' / ')}
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (breadcrumbs.length === 0) return;
+                  setBreadcrumbs((prev) => prev.slice(0, -1));
+                }}
+                disabled={breadcrumbs.length === 0}
+                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
+              >
+                Back
+              </button>
+              <span className="text-xs muted">
+                {breadcrumbs.length === 0
+                  ? 'Top level'
+                  : breadcrumbs.map((crumb) => crumb.title).join(' / ')}
+              </span>
+            </div>
+            {onApplyAction && (
+              <button
+                type="button"
+                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                onClick={onApplyAction}
+                disabled={applyActionLoading || applyActionDisabled}
+              >
+                {applyActionLoading ? applyActionPendingLabel : applyActionLabel}
+              </button>
+            )}
           </div>
 
           <div className="relative">
@@ -213,47 +229,49 @@ export default function MediaPicker({
           ) : filteredItems.length === 0 ? (
             <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No media found at this level.</div>
           ) : (
-            <ul className="space-y-2">
-              {filteredItems.map((item) => {
-                const selected = selectedItem?.id === item.id;
-                return (
-                  <li
-                    key={item.id}
-                    className={`tile rounded-xl px-3 py-2 ${selected ? 'border-[var(--orange-soft)]' : ''}`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">{item.title}</p>
-                        <p className="text-xs muted">
-                          {item.kind}
-                          {item.year ? ` • ${item.year}` : ''}
-                        </p>
+            <div className="max-h-[26rem] overflow-y-auto pr-1">
+              <ul className="space-y-2">
+                {filteredItems.map((item) => {
+                  const selected = selectedItem?.id === item.id;
+                  return (
+                    <li
+                      key={item.id}
+                      className={`tile rounded-xl px-3 py-2 ${selected ? 'border-[var(--orange-soft)]' : ''}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{item.title}</p>
+                          <p className="text-xs muted">
+                            {item.kind}
+                            {item.year ? ` • ${item.year}` : ''}
+                          </p>
+                        </div>
+
+                        {canDrillDown(item) && (
+                          <button
+                            type="button"
+                            onClick={() => setBreadcrumbs((prev) => [...prev, { id: item.id, title: item.title }])}
+                            className="btn-secondary px-3 py-1.5 text-xs"
+                          >
+                            Open
+                          </button>
+                        )}
+
+                        {isPlayable(item) && (
+                          <button
+                            type="button"
+                            onClick={() => onSelectItem(item)}
+                            className={`px-3 py-1.5 text-xs ${selected ? 'btn-primary' : 'btn-secondary'}`}
+                          >
+                            {selected ? 'Selected' : 'Select'}
+                          </button>
+                        )}
                       </div>
-
-                      {canDrillDown(item) && (
-                        <button
-                          type="button"
-                          onClick={() => setBreadcrumbs((prev) => [...prev, { id: item.id, title: item.title }])}
-                          className="btn-secondary px-3 py-1.5 text-xs"
-                        >
-                          Open
-                        </button>
-                      )}
-
-                      {isPlayable(item) && (
-                        <button
-                          type="button"
-                          onClick={() => onSelectItem(item)}
-                          className={`px-3 py-1.5 text-xs ${selected ? 'btn-primary' : 'btn-secondary'}`}
-                        >
-                          {selected ? 'Selected' : 'Select'}
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
         </div>
       </div>
