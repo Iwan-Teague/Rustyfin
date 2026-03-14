@@ -41,6 +41,7 @@ export default function NavBar() {
 
   const navLinks = useMemo(
     () => [
+      { href: '/', label: 'Home' },
       { href: '/channels', label: 'Channels' },
       { href: '/rooms', label: 'Rooms' },
       { href: '/network', label: 'Network' },
@@ -56,7 +57,9 @@ export default function NavBar() {
   const desktopLeftNavLinks = useMemo(
     () =>
       navLinks.filter((link) =>
-        ['/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(link.href),
+        ['/', '/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(
+          link.href,
+        ),
       ),
     [navLinks],
   );
@@ -68,11 +71,13 @@ export default function NavBar() {
   const muted = voiceSession?.muted ?? false;
   const deafened = voiceSession?.deafened ?? false;
   const baseVoiceActionClass =
-    'inline-flex items-center justify-center rounded-full border transition';
+    'inline-flex items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
   const isActivePath = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   const navLinkClass = (href: string, base: string) =>
     `${base} ${
-      isActivePath(href) ? 'border-[var(--border-strong)] bg-white/5 text-[var(--text-main)]' : ''
+      isActivePath(href)
+        ? 'border-[var(--border-strong)] bg-white/10 text-[var(--text-main)] shadow-[0_0_0_1px_rgba(255,255,255,0.06)]'
+        : ''
     }`;
 
   useEffect(() => {
@@ -157,7 +162,7 @@ export default function NavBar() {
           <div className="flex items-center justify-between gap-4">
             <div ref={desktopLeftMeasureRef} className="flex items-center justify-start gap-2">
               {desktopLeftNavLinks.map((link) => (
-                <span key={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                <span key={link.href} className="btn-ghost h-11 shrink-0 px-3 text-sm">
                   {link.label}
                 </span>
               ))}
@@ -185,18 +190,18 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <Link href="/account" className="chip h-10 shrink-0 px-4 text-sm">
+                  <Link href="/account" className="chip h-11 shrink-0 px-4 text-sm">
                     {me.username}
                   </Link>
                   {desktopRightNavLinks.map((link) => (
-                    <span key={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                    <span key={link.href} className="btn-ghost h-11 shrink-0 px-3 text-sm">
                       {link.label}
                     </span>
                   ))}
-                  <span className="btn-secondary h-10 shrink-0 px-4 py-2 text-sm">Logout</span>
+                  <span className="btn-secondary h-11 shrink-0 px-4 text-sm">Logout</span>
                 </>
               ) : (
-                <span className="btn-secondary h-10 shrink-0 px-4 py-2 text-sm">Login</span>
+                <span className="btn-secondary h-11 shrink-0 px-4 text-sm">Login</span>
               )}
             </div>
           </div>
@@ -221,7 +226,7 @@ export default function NavBar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className={navLinkClass(link.href, 'btn-ghost shrink-0 px-3 py-2 text-sm')}
+                  className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
                   aria-current={isActivePath(link.href) ? 'page' : undefined}
                 >
                   {link.label}
@@ -247,7 +252,7 @@ export default function NavBar() {
                     type="button"
                     onClick={toggleMute}
                     disabled={!hasLocalStream}
-                    className={`${baseVoiceActionClass} h-7 w-7 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    className={`${baseVoiceActionClass} h-9 w-9 ${
                       muted
                         ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
                         : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
@@ -282,7 +287,7 @@ export default function NavBar() {
                   <button
                     type="button"
                     onClick={toggleDeafen}
-                    className={`${baseVoiceActionClass} h-7 w-7 ${
+                    className={`${baseVoiceActionClass} h-9 w-9 ${
                       deafened
                         ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
                         : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
@@ -303,7 +308,7 @@ export default function NavBar() {
                   <button
                     type="button"
                     onClick={() => setConfirmLeaveVoiceOpen(true)}
-                    className={`${baseVoiceActionClass} h-7 w-7 border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
+                    className={`${baseVoiceActionClass} h-9 w-9 border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
                     aria-label="Disconnect from voice"
                     title="Disconnect from voice"
                   >
@@ -317,32 +322,32 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <Link href="/account" className="chip h-10 shrink-0 px-4 text-sm">
+                  <Link href="/account" className="chip h-11 shrink-0 px-4 text-sm">
                     {me.username}
                   </Link>
                   {desktopRightNavLinks.map((link) => (
                     <Link
                       key={link.href}
                       href={link.href}
-                      className={navLinkClass(link.href, 'btn-ghost shrink-0 px-3 py-2 text-sm')}
+                      className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
                       aria-current={isActivePath(link.href) ? 'page' : undefined}
                     >
                       {link.label}
                     </Link>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() => setConfirmLogoutOpen(true)}
-                    className="btn-secondary h-10 shrink-0 px-4 text-sm"
-                  >
-                    Logout
-                  </button>
-                </>
-              ) : (
-                <Link href="/login" className="btn-secondary h-10 shrink-0 px-4 text-sm">
-                  Login
-                </Link>
-              )}
+                    <button
+                      type="button"
+                      onClick={() => setConfirmLogoutOpen(true)}
+                      className="btn-secondary h-11 shrink-0 px-4 text-sm"
+                    >
+                      Logout
+                    </button>
+                  </>
+                ) : (
+                  <Link href="/login" className="btn-secondary h-11 shrink-0 px-4 text-sm">
+                    Login
+                  </Link>
+                )}
             </div>
           </div>
         </div>
@@ -362,13 +367,15 @@ export default function NavBar() {
 
           <button
             type="button"
-            className="btn-ghost flex items-center px-3 py-2 text-xl leading-none"
+            className="btn-ghost h-11 w-11 p-0"
             onClick={() => setMenuOpen((prev) => !prev)}
             aria-label="Toggle menu"
             aria-expanded={menuOpen}
             aria-controls="mobile-nav-menu"
           >
-            ☰
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+            </svg>
           </button>
 
           <div className="flex items-center justify-end gap-2">
@@ -386,7 +393,7 @@ export default function NavBar() {
                   type="button"
                   onClick={toggleMute}
                   disabled={!hasLocalStream}
-                  className={`${baseVoiceActionClass} h-6 w-6 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  className={`${baseVoiceActionClass} h-9 w-9 ${
                     muted
                       ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
                       : 'border-[var(--border)] bg-black/45 text-white/85'
@@ -413,7 +420,7 @@ export default function NavBar() {
                 <button
                   type="button"
                   onClick={toggleDeafen}
-                  className={`${baseVoiceActionClass} h-6 w-6 ${
+                  className={`${baseVoiceActionClass} h-9 w-9 ${
                     deafened
                       ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
                       : 'border-[var(--border)] bg-black/45 text-white/85'
@@ -434,7 +441,7 @@ export default function NavBar() {
                 <button
                   type="button"
                   onClick={() => setConfirmLeaveVoiceOpen(true)}
-                  className={`${baseVoiceActionClass} h-6 w-6 border-[var(--border)] bg-black/55 text-white/90`}
+                  className={`${baseVoiceActionClass} h-9 w-9 border-[var(--border)] bg-black/55 text-white/90`}
                   aria-label="Disconnect from voice"
                   title="Disconnect from voice"
                 >
@@ -444,7 +451,7 @@ export default function NavBar() {
                 </button>
               </div>
             ) : !loading && me ? (
-              <Link href="/account" className="chip">
+              <Link href="/account" className="chip h-11 px-3">
                 {me.username}
               </Link>
             ) : (
@@ -482,7 +489,7 @@ export default function NavBar() {
                 <button
                   type="button"
                   onClick={() => setConfirmLogoutOpen(true)}
-                  className="btn-secondary px-4 py-2 text-sm"
+                  className="btn-secondary h-11 px-4 text-sm"
                 >
                   Logout
                 </button>
@@ -490,7 +497,7 @@ export default function NavBar() {
             ) : (
               <Link
                 href="/login"
-                className="btn-secondary block px-4 py-2.5 text-center text-sm"
+                className="btn-secondary block h-11 px-4 text-center text-sm leading-[2.75rem]"
                 onClick={() => setMenuOpen(false)}
               >
                 Login
