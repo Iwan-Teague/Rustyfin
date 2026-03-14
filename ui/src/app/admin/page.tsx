@@ -8,6 +8,11 @@ import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteA
 import { clientErrorMessage } from '@/lib/errors';
 import ConfirmModal from '@/app/components/ConfirmModal';
 import {
+  listRustyVaultAuditEvents,
+  type RustyVaultAuditEventResponse,
+} from '@/features/rustyvault/api';
+import { ensureRustyVaultWebSession } from '@/features/rustyvault/session';
+import {
   listMinecraftServerEvents,
   listMinecraftServerLogs,
   listMinecraftServers,
@@ -221,7 +226,15 @@ interface RuntimeDiagnosticsResponse {
   };
 }
 
-type AdminTab = 'users' | 'libraries' | 'channels' | 'rooms' | 'server_logs' | 'logs' | 'tmdb';
+type AdminTab =
+  | 'users'
+  | 'libraries'
+  | 'channels'
+  | 'rooms'
+  | 'server_logs'
+  | 'logs'
+  | 'vault_audit'
+  | 'tmdb';
 type LogFilterTab = 'all' | 'complete' | 'failed' | 'in_progress';
 type PendingDeleteKind = 'user' | 'library' | 'channel' | 'room';
 
@@ -243,6 +256,7 @@ const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'rooms', label: 'Rooms' },
   { key: 'server_logs', label: 'Server Logs' },
   { key: 'logs', label: 'Logs' },
+  { key: 'vault_audit', label: 'Vault Audit' },
   { key: 'tmdb', label: 'TMDB Metadata' },
 ];
 
@@ -366,6 +380,9 @@ export default function AdminPage() {
   const [minecraftServerLogsLoading, setMinecraftServerLogsLoading] = useState(false);
   const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnosticsResponse | null>(null);
   const [runtimeDiagnosticsLoading, setRuntimeDiagnosticsLoading] = useState(false);
+  const [vaultAuditEvents, setVaultAuditEvents] = useState<RustyVaultAuditEventResponse[]>([]);
+  const [vaultAuditLoading, setVaultAuditLoading] = useState(false);
+  const [vaultAuditError, setVaultAuditError] = useState('');
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
     null,
   );
@@ -635,11 +652,33 @@ export default function AdminPage() {
     }
   }, [logFilterTab]);
 
+  const loadVaultAudit = useCallback(async () => {
+    try {
+      setVaultAuditLoading(true);
+      setVaultAuditError('');
+      const session = await ensureRustyVaultWebSession();
+      const response = await listRustyVaultAuditEvents(session.access_token);
+      setVaultAuditEvents(response.events);
+    } catch (err: unknown) {
+      setVaultAuditEvents([]);
+      setVaultAuditError(clientErrorMessage(err, 'Failed to load Vault audit history'));
+    } finally {
+      setVaultAuditLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (me?.role === 'admin') {
       void loadData();
     }
   }, [me, loadData]);
+
+  useEffect(() => {
+    if (me?.role !== 'admin' || activeTab !== 'vault_audit') {
+      return;
+    }
+    void loadVaultAudit();
+  }, [activeTab, loadVaultAudit, me]);
 
   useEffect(() => {
     if (me?.role !== 'admin' || activeTab !== 'server_logs' || !selectedMinecraftServerId) {
@@ -2783,6 +2822,57 @@ export default function AdminPage() {
             })
           )}
           </section>
+        </section>
+      )}
+
+      {activeTab === 'vault_audit' && (
+        <section className="panel space-y-5 p-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Vault Audit</h2>
+              <p className="text-sm muted">
+                Read-only RustyVault audit history for the current admin account. This uses the same RustyVault web-session boundary as the Vault page.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadVaultAudit()}
+              className="btn-secondary px-4 py-2 text-sm"
+            >
+              Refresh audit
+            </button>
+          </div>
+
+          {vaultAuditError ? (
+            <div className="notice-error rounded-xl px-4 py-3 text-sm">{vaultAuditError}</div>
+          ) : null}
+
+          {vaultAuditLoading ? (
+            <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+              Loading Vault audit…
+            </div>
+          ) : vaultAuditEvents.length === 0 ? (
+            <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+              No vault audit events are available for this account yet.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {vaultAuditEvents.map((event) => (
+                <div key={event.id} className="tile space-y-3 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">{titleCase(event.event_kind)}</p>
+                      <p className="mt-1 text-xs muted">{formatTs(event.created_ts)}</p>
+                    </div>
+                    <span className="chip">{event.target_item_id || 'account scope'}</span>
+                  </div>
+                  <pre className="overflow-x-auto rounded-xl bg-black/20 px-3 py-3 text-xs muted">
+                    {JSON.stringify(event.event_json, null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
