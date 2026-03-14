@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import ConfirmModal from '@/app/components/ConfirmModal';
 import VideoPlayerSurface, { filterPlaybackQualityOptions } from '@/app/components/VideoPlayerSurface';
 import { useAuth } from '@/lib/auth';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, apiJson } from '@/lib/api';
 import {
   WatchPartyUser,
   WsRoomReconfiguredMessage,
@@ -40,6 +40,14 @@ type RoomPresenceSnapshot = {
   username: string;
   role: string;
   connected: boolean;
+};
+
+type RoomItemSummary = {
+  id: string;
+  title: string;
+  poster_url?: string | null;
+  thumb_url?: string | null;
+  backdrop_url?: string | null;
 };
 
 function formatPlaybackClock(ms: number): string {
@@ -121,6 +129,7 @@ export default function WatchPartyRoomPage() {
   const [leaving, setLeaving] = useState(false);
   const [ending, setEnding] = useState(false);
   const [pendingEndRoomConfirm, setPendingEndRoomConfirm] = useState(false);
+  const [roomItem, setRoomItem] = useState<RoomItemSummary | null>(null);
 
   // In-room invite state
   const [allUsers, setAllUsers] = useState<WatchPartyUser[]>([]);
@@ -292,6 +301,9 @@ export default function WatchPartyRoomPage() {
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
   const roomItemId = typeof room?.item_id === 'string' ? room.item_id : '';
+  const roomLoadingArtworkUrl =
+    roomItem?.thumb_url ?? roomItem?.poster_url ?? roomItem?.backdrop_url ?? null;
+  const roomLoadingArtworkAlt = roomItem?.title?.trim() || 'Room media artwork';
   const activeMembers = useMemo(
     () => {
       const fallbackMembers = Array.isArray(room?.members)
@@ -380,6 +392,33 @@ export default function WatchPartyRoomPage() {
     if (!me) return;
     listWatchPartyUsers().then(setAllUsers).catch(() => {});
   }, [me]);
+
+  useEffect(() => {
+    const normalizedRoomItemId = roomItemId.trim();
+    if (!normalizedRoomItemId) {
+      setRoomItem(null);
+      return;
+    }
+
+    let cancelled = false;
+    setRoomItem(null);
+
+    apiJson<RoomItemSummary>(`/items/${normalizedRoomItemId}`)
+      .then((item) => {
+        if (!cancelled) {
+          setRoomItem(item);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRoomItem(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomItemId]);
 
   useEffect(() => {
     if (!room || room.status === 'ended') return;
@@ -1028,6 +1067,9 @@ export default function WatchPartyRoomPage() {
               <>
                 <VideoPlayerSurface
                   videoRef={playback.videoRef}
+                  playbackKey={roomItemId}
+                  artworkUrl={roomLoadingArtworkUrl}
+                  artworkAlt={roomLoadingArtworkAlt}
                   canStartPlayback={Boolean(playback.descriptor)}
                   knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
                   bufferedWindowEndSecs={
@@ -1040,11 +1082,20 @@ export default function WatchPartyRoomPage() {
                   onQualityChange={(value) => {
                     const previousTargetHeight = playback.hlsTargetHeight;
                     const nextTargetHeight = value === 'auto' ? null : value;
+                    const video = playback.videoRef.current;
+                    const currentAbsoluteSeconds =
+                      video && Number.isFinite(video.currentTime) && video.currentTime >= 0
+                        ? playback.hlsSessionStartOffsetSecs + video.currentTime
+                        : undefined;
                     playback.setHlsTargetHeight(nextTargetHeight);
                     void (async () => {
                       const started = await playback.startHls({
                         silent: false,
                         targetHeightOverride: nextTargetHeight,
+                        seekTimeOverrideSecs:
+                          currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                            ? currentAbsoluteSeconds
+                            : undefined,
                       });
                       if (!started) {
                         playback.setHlsTargetHeight(previousTargetHeight ?? null);
@@ -1094,13 +1145,7 @@ export default function WatchPartyRoomPage() {
                   playbackDisabledReason={
                     !controlsEnabled ? 'Playback controls are host-only in this room.' : null
                   }
-                  statusText={
-                    playback.startingHls
-                      ? 'Preparing transcoded stream…'
-                      : !controlsEnabled
-                        ? 'Playback controls are host-only in this room.'
-                        : null
-                  }
+                  statusText={!controlsEnabled ? 'Playback controls are host-only in this room.' : null}
                   maxViewportHeightClassName="max-h-[70vh]"
                   videoElementProps={{
                     preload: 'auto',
