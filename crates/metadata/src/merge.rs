@@ -288,7 +288,7 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO library (id, name, kind, created_ts, updated_ts) \
-             VALUES ('lib1', 'Test', 'movies', 0, 0)",
+             VALUES ('lib2', 'Test', 'movies', 0, 0)",
         )
         .execute(&pool)
         .await
@@ -297,7 +297,7 @@ mod tests {
         let item_id = "test-item-2";
         sqlx::query(
             "INSERT INTO item (id, library_id, kind, title, sort_title, created_ts, updated_ts) \
-             VALUES ($1, 'lib1', 'movie', 'Test', 'test', 0, 0)",
+             VALUES ($1, 'lib2', 'movie', 'Test', 'test', 0, 0)",
         )
         .bind(item_id)
         .execute(&pool)
