@@ -87,6 +87,10 @@ fn build_test_state(
         transcription_agent_token: None,
         servers_agent_url: None,
         servers_agent_token: None,
+        model_dir: std::env::temp_dir().join("rustfin-ai-models-test"),
+        engine: std::sync::Arc::new(tokio::sync::Mutex::new(
+            rustfin_server::ai::EngineState::default(),
+        )),
         transcoder,
         ffmpeg_path,
         ffprobe_path,

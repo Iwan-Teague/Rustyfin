@@ -12,6 +12,7 @@ name = "rustfin-server"
 path = "src/main.rs"
 
 [dependencies]
+rustfin-ai-agent = { path = "../ai-agent" }
 rustfin-core = { path = "../core" }
 rustfin-db = { path = "../db" }
 rustfin-metadata = { path = "../metadata" }
