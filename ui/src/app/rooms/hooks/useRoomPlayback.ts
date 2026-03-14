@@ -326,7 +326,7 @@ export function useRoomPlayback({
       setStartingHls(true);
       if (!options.silent) {
         setError('');
-        setInfo('Preparing transcoded stream…');
+        setInfo('');
       }
 
       try {
