@@ -845,7 +845,7 @@ export default function ServersPage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <main className="mx-auto flex w-full max-w-7xl animate-rise flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       {error ? (
         <div className="panel-soft animate-rise border border-red-400/30 px-5 py-4 text-sm text-red-200">
           {error}

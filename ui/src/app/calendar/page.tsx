@@ -23,6 +23,7 @@ type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30'
 type CalendarSidePanelMode = 'closed' | 'editor' | 'day';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const YMD_PREFIX_RE = /^(\d{4}-\d{2}-\d{2})/;
 
 function withNoon(date: Date): Date {
   const next = new Date(date);
@@ -54,6 +55,19 @@ function formatYmd(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function coerceYmd(raw: string): string | null {
+  const trimmed = raw.trim();
+  const direct = YMD_PREFIX_RE.exec(trimmed);
+  if (direct) {
+    return direct[1];
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return formatYmd(withNoon(parsed));
 }
 
 function parseYmd(value: string): Date {
@@ -199,7 +213,7 @@ export default function CalendarPage() {
   const eventsByDate = useMemo(() => {
     const byDate = new Map<string, CalendarEvent[]>();
     for (const event of events) {
-      const key = event.event_date;
+      const key = coerceYmd(event.event_date) ?? coerceYmd(event.source_event_date) ?? event.event_date;
       const current = byDate.get(key) ?? [];
       current.push(event);
       byDate.set(key, current);
@@ -378,7 +392,11 @@ export default function CalendarPage() {
     setEditingEventId(event.id);
     setTitle(event.title);
     setDescription(event.description ?? '');
-    setEventDate(event.source_event_date ?? event.event_date);
+    setEventDate(
+      coerceYmd(event.source_event_date) ??
+        coerceYmd(event.event_date) ??
+        formatYmd(withNoon(new Date())),
+    );
     setScope(event.scope);
     setEventType(event.event_type);
     setRecurrence(event.recurrence);
@@ -755,8 +773,14 @@ export default function CalendarPage() {
                             : outsideMonth
                               ? 'border-[var(--border)]/60 opacity-70'
                               : 'border-[var(--border)] bg-white/5'
-                        } ${monthViewCondensed ? 'cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]' : ''}`}
-                        onClick={monthViewCondensed ? () => openDayPanel(key) : undefined}
+                        } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                        onClick={(event) => {
+                          const target = event.target as HTMLElement | null;
+                          if (target?.closest('button, a, input, select, textarea, [role="button"]')) {
+                            return;
+                          }
+                          openDayPanel(key);
+                        }}
                         role={monthViewCondensed ? 'button' : undefined}
                         tabIndex={monthViewCondensed ? 0 : undefined}
                         onKeyDown={
@@ -1073,7 +1097,10 @@ export default function CalendarPage() {
                         adminPersonalEvents.map((event) => (
                           <div key={event.occurrence_id} className="panel-soft rounded-xl px-3 py-2 text-xs">
                             <p className="font-semibold">{event.title}</p>
-                            <p className="muted">{event.event_date} · {event.owner_username ?? 'Unknown owner'}</p>
+                            <p className="muted">
+                              {coerceYmd(event.event_date) ?? event.event_date} ·{' '}
+                              {event.owner_username ?? 'Unknown owner'}
+                            </p>
                           </div>
                         ))
                       )}

@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { useAuth } from '@/lib/auth';
 import { apiJson } from '@/lib/api';
+import { listCalendarEvents, type CalendarEvent } from '@/lib/calendarApi';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
 import { getPublicSystemInfo } from '@/lib/setupApi';
 import { listPublicRooms, type PublicRoom } from '@/lib/watchPartyApi';
@@ -37,6 +39,25 @@ function formatRoomMembersLabel(memberCount: number): string {
   return memberCount === 1 ? '1 member' : `${memberCount} members`;
 }
 
+function withNoon(date: Date): Date {
+  const next = new Date(date);
+  next.setHours(12, 0, 0, 0);
+  return next;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = withNoon(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function formatYmd(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -45,7 +66,9 @@ export default function HomePage() {
   const [setupComplete, setSetupComplete] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
   const [continueWatching, setContinueWatching] = useState<ContinueWatchingItem[]>([]);
+  const [dismissingContinueItemIds, setDismissingContinueItemIds] = useState<string[]>([]);
   const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
+  const [upcomingCalendarEvents, setUpcomingCalendarEvents] = useState<CalendarEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -89,15 +112,22 @@ export default function HomePage() {
 
     (async () => {
       try {
-        const [continueItems, rooms] = await Promise.all([
+        const today = withNoon(new Date());
+        const fromYmd = formatYmd(today);
+        const toYmd = formatYmd(addDays(today, 6));
+        const [continueItems, rooms, calendarEvents] = await Promise.all([
           apiJson<ContinueWatchingItem[]>('/playback/continue').catch(
             () => [] as ContinueWatchingItem[],
           ),
           listPublicRooms().catch(() => [] as PublicRoom[]),
+          listCalendarEvents({ from: fromYmd, to: toYmd, scope: 'all' }).catch(
+            () => [] as CalendarEvent[],
+          ),
         ]);
         if (cancelled) return;
         setContinueWatching(continueItems);
         setPublicRooms(rooms);
+        setUpcomingCalendarEvents(calendarEvents);
       } catch (err: unknown) {
         if (!cancelled) {
           setError(clientErrorMessage(err, 'Failed to load home view'));
@@ -113,6 +143,60 @@ export default function HomePage() {
       cancelled = true;
     };
   }, [setupComplete, authLoading, me]);
+
+  async function handleDismissContinueItem(itemId: string) {
+    if (dismissingContinueItemIds.includes(itemId)) return;
+    setDismissingContinueItemIds((prev) => [...prev, itemId]);
+    setError(null);
+    try {
+      await apiJson<{ ok: boolean }>('/playback/progress', {
+        method: 'POST',
+        body: JSON.stringify({
+          item_id: itemId,
+          progress_ms: 0,
+          played: false,
+        }),
+      });
+      const target = findDataDeleteTarget('data-home-continue-id', itemId);
+      await playTelegramDeleteAnimation(target);
+      setContinueWatching((prev) => prev.filter((item) => item.id !== itemId));
+    } catch (err: unknown) {
+      setError(clientErrorMessage(err, 'Failed to remove from Continue Watching'));
+    } finally {
+      setDismissingContinueItemIds((prev) => prev.filter((id) => id !== itemId));
+    }
+  }
+
+  const nextSevenDayCalendar = useMemo(() => {
+    const eventsByDate = new Map<string, CalendarEvent[]>();
+    for (const event of upcomingCalendarEvents) {
+      const current = eventsByDate.get(event.event_date) ?? [];
+      current.push(event);
+      eventsByDate.set(event.event_date, current);
+    }
+    for (const [dateKey, rows] of eventsByDate.entries()) {
+      rows.sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: 'base' }));
+      eventsByDate.set(dateKey, rows);
+    }
+
+    const start = withNoon(new Date());
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(start, index);
+      const dateKey = formatYmd(date);
+      const events = eventsByDate.get(dateKey) ?? [];
+      return {
+        dateKey,
+        dateLabel: date.toLocaleDateString(undefined, {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+        }),
+        events,
+      };
+    });
+  }, [upcomingCalendarEvents]);
+
+  const hasUpcomingCalendarEvents = nextSevenDayCalendar.some((day) => day.events.length > 0);
 
   if (!setupChecked) {
     return (
@@ -153,15 +237,12 @@ export default function HomePage() {
           <div className="space-y-3">
             <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
             <p className="max-w-2xl text-sm muted sm:text-base">
-              Resume what you were watching and join active rooms with one click.
+              Resume what you were watching and keep tabs on active rooms.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link
-              href={publicRooms[0] ? `/rooms/${publicRooms[0].room_id}` : '/rooms'}
-              className="btn-primary px-4 py-2.5 text-sm"
-            >
-              Join an active room
+            <Link href="/calendar" className="btn-secondary px-4 py-2.5 text-sm">
+              Open calendar
             </Link>
             <Link href="/libraries" className="btn-secondary px-4 py-2.5 text-sm">
               Browse libraries
@@ -207,55 +288,70 @@ export default function HomePage() {
                 const progressLabel = totalMs
                   ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
                   : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
+                const dismissing = dismissingContinueItemIds.includes(item.id);
 
                 return (
-                  <Link
+                  <div
                     key={`home-continue-${item.id}`}
-                    href={`/player/${item.id}`}
-                    className="tile tile-hover block overflow-hidden"
+                    className="relative"
+                    data-home-continue-id={item.id}
                   >
-                    <div className="flex min-h-[9rem] gap-4 p-4">
-                      <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
-                        {item.poster_url ? (
-                          <Image
-                            src={item.poster_url}
-                            alt={item.title}
-                            width={192}
-                            height={288}
-                            unoptimized
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
-                            {item.kind.toUpperCase()}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex min-w-0 flex-1 flex-col justify-between">
-                        <div className="space-y-2">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-base font-semibold">{item.title}</p>
-                              <p className="text-xs uppercase tracking-[0.24em] text-white/60">
-                                {item.kind === 'episode' ? 'Episode' : 'Movie'}
-                                {item.year ? ` · ${item.year}` : ''}
-                              </p>
+                    <button
+                      type="button"
+                      className="btn-ghost absolute right-3 top-3 z-20 h-7 w-7 rounded-full border border-white/20 bg-black/60 p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                      onClick={() => void handleDismissContinueItem(item.id)}
+                      disabled={dismissing}
+                      aria-label={`Remove ${item.title} from Continue Watching`}
+                      title="Remove from Continue Watching"
+                    >
+                      {dismissing ? '…' : '×'}
+                    </button>
+                    <Link
+                      href={`/player/${item.id}`}
+                      className="tile tile-hover home-card-sheen block overflow-hidden"
+                    >
+                      <div className="flex min-h-[9rem] gap-4 p-4">
+                        <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
+                          {item.poster_url ? (
+                            <Image
+                              src={item.poster_url}
+                              alt={item.title}
+                              width={192}
+                              height={288}
+                              unoptimized
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
+                              {item.kind.toUpperCase()}
                             </div>
-                            <span className="chip">Resume</span>
-                          </div>
+                          )}
+                        </div>
+                        <div className="flex min-w-0 flex-1 flex-col justify-between">
                           <div className="space-y-2">
-                            <div className="rf-progress-track">
-                              <div
-                                className="rf-progress-fill"
-                                style={{ width: `${progressPct || 0}%` }}
-                              />
+                            <div className="flex items-start gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-base font-semibold">{item.title}</p>
+                                <p className="text-xs uppercase tracking-[0.24em] text-white/60">
+                                  {item.kind === 'episode' ? 'Episode' : 'Movie'}
+                                  {item.year ? ` · ${item.year}` : ''}
+                                </p>
+                              </div>
                             </div>
-                            <p className="text-xs muted">{progressLabel}</p>
+                            <div className="space-y-2">
+                              <div className="rf-progress-track">
+                                <div
+                                  className="rf-progress-fill"
+                                  style={{ width: `${progressPct || 0}%` }}
+                                />
+                              </div>
+                              <p className="text-xs muted">{progressLabel}</p>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </Link>
+                    </Link>
+                  </div>
                 );
               })}
             </div>
@@ -286,7 +382,7 @@ export default function HomePage() {
                 <Link
                   key={room.room_id}
                   href={`/rooms/${room.room_id}`}
-                  className="tile tile-hover flex flex-col gap-3 p-4"
+                  className="tile tile-hover home-card-sheen flex flex-col gap-3 p-4"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <p className="font-semibold truncate leading-snug">{room.title}</p>
@@ -302,8 +398,73 @@ export default function HomePage() {
               ))}
             </div>
           )}
+          <div className="panel-soft px-4 py-3 text-sm muted">
+            <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
+            <Link
+              href={publicRooms[0] ? `/rooms/${publicRooms[0].room_id}` : '/rooms'}
+              className="btn-secondary mt-3 px-3 py-1.5 text-xs"
+            >
+              Join an active room
+            </Link>
+          </div>
         </section>
       </div>
+
+      <section className="space-y-3">
+        <div className="flex items-end justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="text-xl font-semibold sm:text-2xl">Calendar: Next 7 Days</h2>
+            <p className="text-xs muted sm:text-sm">Read-only preview of upcoming events.</p>
+          </div>
+          <Link href="/calendar" className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]">
+            Full calendar
+          </Link>
+        </div>
+        {loadingData ? (
+          <div className="panel-soft px-4 py-3 text-sm muted" aria-live="polite">
+            Loading upcoming events...
+          </div>
+        ) : !hasUpcomingCalendarEvents ? (
+          <div className="panel-soft px-4 py-3 text-sm muted">
+            Nothing scheduled for the next 7 days.
+          </div>
+        ) : (
+          <div className="panel p-4 sm:p-5">
+            <ul className="space-y-2">
+              {nextSevenDayCalendar.map((day) => (
+                <li key={`home-calendar-${day.dateKey}`} className="panel-soft rounded-xl px-3 py-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold">{day.dateLabel}</p>
+                      <p className="text-xs muted">
+                        {day.events.length === 0
+                          ? 'No events'
+                          : `${day.events.length} event${day.events.length === 1 ? '' : 's'}`}
+                      </p>
+                    </div>
+                    {day.events.length > 0 ? (
+                      <div className="space-y-1 sm:max-w-[70%]">
+                        {day.events.slice(0, 3).map((event) => (
+                          <p
+                            key={`home-calendar-event-${day.dateKey}-${event.occurrence_id}`}
+                            className="text-right text-sm"
+                          >
+                            {event.title}
+                            {event.scope === 'global' ? ' · Global' : ''}
+                          </p>
+                        ))}
+                        {day.events.length > 3 ? (
+                          <p className="text-right text-xs muted">+{day.events.length - 3} more</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

@@ -47,6 +47,9 @@ export interface ChannelsContextValue {
   sendWs: (msg: object) => void;
   channels: ChannelInfo[];
   voicePresence: Record<string, UserInfo[]>;
+  connectedVoiceChannelId: string | null;
+  connectedVoiceChannelName: string | null;
+  hasLocalVoiceSession: boolean;
   voiceActiveSince: Record<string, number>;
   voiceSpeaking: Record<string, string[]>;
   voiceTranscriptions: Record<string, VoiceTranscriptionState>;
@@ -155,6 +158,18 @@ function saveAudioDevicePrefs(inputDeviceId: string | null, outputDeviceId: stri
   }
 }
 
+function findUserVoiceChannelId(
+  presence: Record<string, UserInfo[]>,
+  userId: string,
+): string | null {
+  for (const [channelId, members] of Object.entries(presence)) {
+    if (members.some((member) => member.user_id === userId)) {
+      return channelId;
+    }
+  }
+  return null;
+}
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function ChannelsProvider({ children }: { children: React.ReactNode }) {
@@ -175,6 +190,15 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
+  const hasLocalVoiceSession = voiceSession !== null;
+  const connectedVoiceChannelId =
+    voiceSession?.channelId ??
+    (me?.id ? findUserVoiceChannelId(voicePresence, me.id) : null);
+  const connectedVoiceChannelName =
+    voiceSession?.channelName ??
+    (connectedVoiceChannelId
+      ? channels.find((channel) => channel.id === connectedVoiceChannelId)?.name ?? null
+      : null);
 
   const wsRef = useRef<WebSocket | null>(null);
   // Holds mic stream + channel info while waiting for the server's voice_joined reply
@@ -327,6 +351,15 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
               }),
             );
           } else if (!pendingVoiceRef.current) {
+            const alreadyConnectedChannelId = findUserVoiceChannelId(
+              event.voice_presence ?? {},
+              currentUserId,
+            );
+            if (alreadyConnectedChannelId) {
+              clearPersistedVoiceSession();
+              return;
+            }
+
             const persisted = loadPersistedVoiceSession();
             if (!persisted) return;
 
@@ -562,6 +595,13 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       // New join intent supersedes any persisted session.
       clearPersistedVoiceSession();
 
+      const connectedChannelId = me?.id
+        ? findUserVoiceChannelId(voicePresenceRef.current, me.id)
+        : null;
+      if (!voiceSession && !pendingVoiceRef.current && connectedChannelId === channelId) {
+        return 'You are already connected to this voice channel in another tab.';
+      }
+
       // Leave any existing session first
       if (pendingVoiceRef.current || voiceSession) {
         const previousChannelId =
@@ -633,7 +673,14 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       }
       return micStatusMessage;
     },
-    [voiceSession, sendWs, preferredInputDeviceId, resolvePreferredInputDeviceId, wsReady],
+    [
+      me?.id,
+      voiceSession,
+      sendWs,
+      preferredInputDeviceId,
+      resolvePreferredInputDeviceId,
+      wsReady,
+    ],
   );
 
   const leaveVoice = useCallback(() => {
@@ -788,6 +835,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     sendWs,
     channels,
     voicePresence,
+    connectedVoiceChannelId,
+    connectedVoiceChannelName,
+    hasLocalVoiceSession,
     voiceActiveSince,
     voiceSpeaking,
     voiceTranscriptions,

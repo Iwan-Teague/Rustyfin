@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
+import { createPortal } from 'react-dom';
 import type { Me } from '@/lib/auth';
 import { useMyAccount } from '@/app/account/hooks/useMyAccount';
 
@@ -53,6 +54,31 @@ export default function ChannelUserSettings({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [supportsOutputDeviceSelection, setSupportsOutputDeviceSelection] = useState(true);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open]);
 
   const avatarPreviewUrl = useMemo(() => {
     if (avatarFile) {
@@ -207,160 +233,177 @@ export default function ChannelUserSettings({
         </button>
       </div>
 
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4">
-          <div className="panel w-full max-w-2xl rounded-2xl border border-[var(--border)] p-5 md:p-6 space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">User Settings</h2>
-              <div className="flex items-center gap-2">
-                <Link
-                  href="/account"
-                  className="btn-ghost px-3 py-2 text-sm"
-                  onClick={() => setOpen(false)}
-                >
-                  Open account page
-                </Link>
-                <button type="button" className="btn-ghost px-2 py-1 text-sm" onClick={() => setOpen(false)}>
-                  Close
-                </button>
-              </div>
-            </div>
+      {mounted && open
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]"
+              role="presentation"
+              onClick={() => setOpen(false)}
+            >
+              <div
+                className="panel w-full max-w-2xl rounded-2xl border border-[var(--border)] p-5 md:p-6 space-y-4"
+                role="dialog"
+                aria-modal="true"
+                aria-label="User settings"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold">User Settings</h2>
+                  <div className="flex items-center gap-2">
+                    <Link
+                      href="/account"
+                      className="btn-ghost px-3 py-2 text-sm"
+                      onClick={() => setOpen(false)}
+                    >
+                      Open account page
+                    </Link>
+                    <button
+                      type="button"
+                      className="btn-ghost px-2 py-1 text-sm"
+                      onClick={() => setOpen(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
 
-            {(account.loading || !account.profile) ? (
-              <p className="muted text-sm">Loading settings...</p>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
-                  <h3 className="text-sm font-semibold">Profile</h3>
-                  <div className="flex items-center gap-3">
-                    {avatarPreviewUrl ? (
-                      <Image
-                        src={avatarPreviewUrl}
-                        alt={displayName}
-                        width={64}
-                        height={64}
-                        unoptimized
-                        className="h-16 w-16 rounded-full border border-[var(--border)] bg-black/20 object-cover"
-                      />
-                    ) : (
-                      <div className="h-16 w-16 rounded-full bg-gradient-to-br from-[var(--orange)] to-[var(--purple-strong)] text-white text-xl font-semibold flex items-center justify-center">
-                        {displayName.slice(0, 2).toUpperCase()}
+                {(account.loading || !account.profile) ? (
+                  <p className="muted text-sm">Loading settings...</p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
+                      <h3 className="text-sm font-semibold">Profile</h3>
+                      <div className="flex items-center gap-3">
+                        {avatarPreviewUrl ? (
+                          <Image
+                            src={avatarPreviewUrl}
+                            alt={displayName}
+                            width={64}
+                            height={64}
+                            unoptimized
+                            className="h-16 w-16 rounded-full border border-[var(--border)] bg-black/20 object-cover"
+                          />
+                        ) : (
+                          <div className="h-16 w-16 rounded-full bg-gradient-to-br from-[var(--orange)] to-[var(--purple-strong)] text-white text-xl font-semibold flex items-center justify-center">
+                            {displayName.slice(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="flex-1 space-y-2">
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/gif"
+                            className="w-full rounded-lg border border-[var(--border)] bg-black/20 px-3 py-2 text-xs text-white/85 file:mr-3 file:rounded-md file:border file:border-[var(--border)] file:bg-black/35 file:px-3 file:py-1 file:text-xs file:font-medium file:text-white hover:file:bg-black/45"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] ?? null;
+                              setAvatarFile(file);
+                              if (file) setRemoveAvatar(false);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="btn-ghost px-2 py-1 text-xs"
+                            onClick={() => {
+                              setAvatarFile(null);
+                              setRemoveAvatar(true);
+                            }}
+                          >
+                            Remove avatar
+                          </button>
+                        </div>
                       </div>
-                    )}
-                    <div className="flex-1 space-y-2">
+                      <label className="text-xs muted">Display Name</label>
                       <input
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp,image/gif"
-                        className="w-full rounded-lg border border-[var(--border)] bg-black/20 px-3 py-2 text-xs text-white/85 file:mr-3 file:rounded-md file:border file:border-[var(--border)] file:bg-black/35 file:px-3 file:py-1 file:text-xs file:font-medium file:text-white hover:file:bg-black/45"
-                        onChange={(event) => {
-                          const file = event.target.files?.[0] ?? null;
-                          setAvatarFile(file);
-                          if (file) setRemoveAvatar(false);
-                        }}
+                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        maxLength={40}
                       />
+                      <label className="text-xs muted">Time Zone</label>
+                      <input
+                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        value={timeZone}
+                        onChange={(event) => setTimeZone(event.target.value)}
+                        placeholder="Europe/Dublin"
+                      />
+                    </section>
+
+                    <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
+                      <h3 className="text-sm font-semibold">Audio Devices</h3>
+                      <label className="text-xs muted">Input Device</label>
+                      <select
+                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        value={selectedInputDeviceId ?? ''}
+                        onChange={(event) => setSelectedInputDeviceId(event.target.value || null)}
+                      >
+                        <option value="">Default input</option>
+                        {inputDevices.map((device) => (
+                          <option key={device.id} value={device.id}>
+                            {device.label}
+                          </option>
+                        ))}
+                      </select>
+                      {isSyntheticDeviceId(selectedInputDeviceId) && (
+                        <p className="text-xs muted">
+                          Browser privacy mode is hiding microphone IDs.
+                        </p>
+                      )}
+
+                      <label className="text-xs muted">Output Device</label>
+                      <select
+                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        value={selectedOutputDeviceId ?? ''}
+                        onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
+                        disabled={!supportsOutputDeviceSelection}
+                      >
+                        <option value="">Default output</option>
+                        {outputDevices.map((device) => (
+                          <option key={device.id} value={device.id}>
+                            {device.label}
+                          </option>
+                        ))}
+                      </select>
+                      {!supportsOutputDeviceSelection && (
+                        <p className="text-xs muted">
+                          This browser does not support speaker selection in-app.
+                        </p>
+                      )}
+
                       <button
                         type="button"
-                        className="btn-ghost px-2 py-1 text-xs"
+                        className="btn-ghost px-3 py-2 text-xs"
                         onClick={() => {
-                          setAvatarFile(null);
-                          setRemoveAvatar(true);
+                          void loadDevices();
                         }}
                       >
-                        Remove avatar
+                        Refresh device list
                       </button>
-                    </div>
+                    </section>
                   </div>
-                  <label className="text-xs muted">Display Name</label>
-                  <input
-                    className="panel w-full rounded-lg px-3 py-2 text-sm"
-                    value={displayName}
-                    onChange={(event) => setDisplayName(event.target.value)}
-                    maxLength={40}
-                  />
-                  <label className="text-xs muted">Time Zone</label>
-                  <input
-                    className="panel w-full rounded-lg px-3 py-2 text-sm"
-                    value={timeZone}
-                    onChange={(event) => setTimeZone(event.target.value)}
-                    placeholder="Europe/Dublin"
-                  />
-                </section>
+                )}
 
-                <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
-                  <h3 className="text-sm font-semibold">Audio Devices</h3>
-                  <label className="text-xs muted">Input Device</label>
-                  <select
-                    className="panel w-full rounded-lg px-3 py-2 text-sm"
-                    value={selectedInputDeviceId ?? ''}
-                    onChange={(event) => setSelectedInputDeviceId(event.target.value || null)}
-                  >
-                    <option value="">Default input</option>
-                    {inputDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                  {isSyntheticDeviceId(selectedInputDeviceId) && (
-                    <p className="text-xs muted">
-                      Browser privacy mode is hiding microphone IDs.
-                    </p>
-                  )}
+                {(error || account.error) && <p className="text-sm text-red-300">{error ?? account.error}</p>}
+                {success && <p className="text-sm text-emerald-300">{success}</p>}
 
-                  <label className="text-xs muted">Output Device</label>
-                  <select
-                    className="panel w-full rounded-lg px-3 py-2 text-sm"
-                    value={selectedOutputDeviceId ?? ''}
-                    onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
-                    disabled={!supportsOutputDeviceSelection}
-                  >
-                    <option value="">Default output</option>
-                    {outputDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                  {!supportsOutputDeviceSelection && (
-                    <p className="text-xs muted">
-                      This browser does not support speaker selection in-app.
-                    </p>
-                  )}
-
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-ghost px-4 py-2 text-sm" onClick={() => setOpen(false)}>
+                    Cancel
+                  </button>
                   <button
                     type="button"
-                    className="btn-ghost px-3 py-2 text-xs"
+                    className="btn-primary px-4 py-2 text-sm"
+                    disabled={account.loading || saving}
                     onClick={() => {
-                      void loadDevices();
+                      void saveSettings();
                     }}
                   >
-                    Refresh device list
+                    {saving ? 'Saving...' : 'Save Settings'}
                   </button>
-                </section>
+                </div>
               </div>
-            )}
-
-            {(error || account.error) && <p className="text-sm text-red-300">{error ?? account.error}</p>}
-            {success && <p className="text-sm text-emerald-300">{success}</p>}
-
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-ghost px-4 py-2 text-sm" onClick={() => setOpen(false)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-primary px-4 py-2 text-sm"
-                disabled={account.loading || saving}
-                onClick={() => {
-                  void saveSettings();
-                }}
-              >
-                {saving ? 'Saving...' : 'Save Settings'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

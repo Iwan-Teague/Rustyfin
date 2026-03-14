@@ -35,6 +35,13 @@ import { useWatchRoomData } from '../hooks/useWatchRoomData';
 
 const INVITE_NAME_MAX_CHARS = 14;
 
+type RoomPresenceSnapshot = {
+  user_id: string;
+  username: string;
+  role: string;
+  connected: boolean;
+};
+
 function formatPlaybackClock(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -49,6 +56,27 @@ function formatPlaybackClock(ms: number): string {
 function truncateInviteName(name: string): string {
   if (name.length <= INVITE_NAME_MAX_CHARS) return name;
   return `${name.slice(0, INVITE_NAME_MAX_CHARS)}…`;
+}
+
+function normalizeRoomPresenceMember(
+  member: Partial<RoomPresenceSnapshot> | null | undefined,
+): RoomPresenceSnapshot {
+  const normalizedUserId =
+    typeof member?.user_id === 'string' && member.user_id.trim().length > 0
+      ? member.user_id
+      : 'unknown-user';
+  const normalizedUsername =
+    typeof member?.username === 'string' && member.username.trim().length > 0
+      ? member.username
+      : 'Unknown user';
+  const normalizedRole =
+    typeof member?.role === 'string' && member.role.trim().length > 0 ? member.role : 'viewer';
+  return {
+    user_id: normalizedUserId,
+    username: normalizedUsername,
+    role: normalizedRole,
+    connected: member?.connected === true,
+  };
 }
 
 function fallbackVideoDownloadName(itemId: string, targetHeight: number | null): string {
@@ -210,7 +238,6 @@ export default function WatchPartyRoomPage() {
     setError,
     setInfo,
     refreshRoom,
-    loadRoom,
     setJoinedRole,
     onRoomReconfigured: handleRealtimeRoomReconfigured,
     onRoomEnded: handleRealtimeRoomEnded,
@@ -264,32 +291,40 @@ export default function WatchPartyRoomPage() {
     const endTs = room.ended_ts ?? Math.floor(nowMs / 1000);
     return Math.max(0, endTs - room.created_ts);
   }, [room, nowMs]);
-  const roomDisplayName = room?.room_name?.trim() || '';
+  const roomItemId = typeof room?.item_id === 'string' ? room.item_id : '';
   const activeMembers = useMemo(
-    () =>
-      (
-        (realtime.roomState?.members ??
-          realtime.audioState?.members ??
-          realtime.webState?.members ??
-          realtime.screenState?.members ??
-          realtime.youtubeState?.members ??
-          realtime.createState?.members ??
-          realtime.playState?.members) ??
-        room?.members.map((member) => ({
+    () => {
+      const fallbackMembers = Array.isArray(room?.members)
+        ? room.members.map((member) => ({
           user_id: member.user_id,
           username: member.username,
           role: member.role,
           connected: member.status === 'joined',
-        })) ??
-        []
-      )
+        }))
+        : [];
+      const realtimeMembers =
+        realtime.roomState?.members ??
+        realtime.audioState?.members ??
+        realtime.webState?.members ??
+        realtime.screenState?.members ??
+        realtime.youtubeState?.members ??
+        realtime.createState?.members ??
+        realtime.playState?.members;
+      const membersSource = Array.isArray(realtimeMembers) ? realtimeMembers : fallbackMembers;
+      return membersSource
+        .map((member) =>
+          normalizeRoomPresenceMember(
+            member as Partial<RoomPresenceSnapshot> | null | undefined,
+          ),
+        )
         .slice()
         .sort((left, right) => {
           if (left.connected !== right.connected) {
             return left.connected ? -1 : 1;
           }
           return left.username.localeCompare(right.username, undefined, { sensitivity: 'base' });
-        }),
+        });
+    },
     [
       realtime.roomState?.members,
       realtime.audioState?.members,
@@ -391,7 +426,7 @@ export default function WatchPartyRoomPage() {
   const handleConfigureAudioLibrary = reconfigure.handleConfigureAudioLibrary;
 
   const handleDownloadCurrentVideo = useCallback(async () => {
-    if (!playback.descriptor?.file_id || !room?.item_id) return;
+    if (!playback.descriptor?.file_id || !roomItemId) return;
     setDownloadingVideo(true);
     setError('');
     try {
@@ -411,7 +446,7 @@ export default function WatchPartyRoomPage() {
       anchor.href = downloadUrl;
       anchor.download = extractDownloadFilename(
         res.headers.get('content-disposition'),
-        fallbackVideoDownloadName(room.item_id, playback.hlsTargetHeight),
+        fallbackVideoDownloadName(roomItemId, playback.hlsTargetHeight),
       );
       document.body.appendChild(anchor);
       anchor.click();
@@ -422,7 +457,7 @@ export default function WatchPartyRoomPage() {
     } finally {
       setDownloadingVideo(false);
     }
-  }, [playback.descriptor?.file_id, playback.hlsTargetHeight, room?.item_id]);
+  }, [playback.descriptor?.file_id, playback.hlsTargetHeight, roomItemId]);
 
   async function handleJoin() {
     setJoining(true);
@@ -514,7 +549,7 @@ export default function WatchPartyRoomPage() {
   }
 
   if (!room) {
-    const normalized = error.toLowerCase();
+    const normalized = (typeof error === 'string' ? error : '').toLowerCase();
     let hint = 'This room could not be opened for this account.';
     if (normalized.includes('invite-only')) {
       hint =
@@ -556,54 +591,43 @@ export default function WatchPartyRoomPage() {
 
   return (
     <div className="space-y-6 animate-rise">
-      <section className="panel p-3 sm:p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/10 px-3 py-2">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold">
-              {roomDisplayName || `Room ${room.room_id}`}
-            </p>
-            <p className="text-[11px] muted truncate">Room {room.room_id}</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="chip text-xs">Duration: {formatElapsedSeconds(roomDurationSeconds)}</span>
-            <button
-              type="button"
-              className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={() => reconfigure.setReconfigureModalOpen(true)}
-              disabled={!joinedRole}
-              title={!joinedRole ? 'Join the room to reconfigure' : undefined}
-            >
-              Reconfigure room
-            </button>
-            <button
-              type="button"
-              className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={() => void copyLink()}
-            >
-              Copy room link
-            </button>
-            <button
-              type="button"
-              className="btn-secondary px-3 py-1.5 text-xs"
-              onClick={() => void handleLeave()}
-              disabled={leaving}
-            >
-              {leaving ? 'Leaving…' : 'Leave room'}
-            </button>
-            {joinedRole === 'host' && (
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-xs"
-                onClick={() => setPendingEndRoomConfirm(true)}
-                disabled={ending}
-              >
-                {ending ? 'Ending…' : 'End room'}
-              </button>
-            )}
-          </div>
-        </div>
-      </section>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <span className="chip text-xs">Duration: {formatElapsedSeconds(roomDurationSeconds)}</span>
+        <button
+          type="button"
+          className="btn-secondary px-3 py-1.5 text-xs"
+          onClick={() => reconfigure.setReconfigureModalOpen(true)}
+          disabled={!joinedRole}
+          title={!joinedRole ? 'Join the room to reconfigure' : undefined}
+        >
+          Reconfigure room
+        </button>
+        <button
+          type="button"
+          className="btn-secondary px-3 py-1.5 text-xs"
+          onClick={() => void copyLink()}
+        >
+          Copy room link
+        </button>
+        <button
+          type="button"
+          className="btn-secondary px-3 py-1.5 text-xs"
+          onClick={() => void handleLeave()}
+          disabled={leaving}
+        >
+          {leaving ? 'Leaving…' : 'Leave room'}
+        </button>
+        {joinedRole === 'host' && (
+          <button
+            type="button"
+            className="btn-secondary px-3 py-1.5 text-xs"
+            onClick={() => setPendingEndRoomConfirm(true)}
+            disabled={ending}
+          >
+            {ending ? 'Ending…' : 'End room'}
+          </button>
+        )}
+      </div>
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
       {info && <div className="notice-ok rounded-xl px-4 py-2 text-sm">{info}</div>}
@@ -964,7 +988,7 @@ export default function WatchPartyRoomPage() {
               />
             )}
 
-            {!room.item_id || room.item_id.trim().length === 0 ? (
+            {!roomItemId || roomItemId.trim().length === 0 ? (
               joinedRole === 'host' ? (
                 <div className="space-y-3">
                   {reconfigure.reconfigureVideoLibraries.length === 0 ? (
@@ -984,17 +1008,14 @@ export default function WatchPartyRoomPage() {
                         layout="stacked"
                         surfaceClassName="panel-soft"
                         noShadow
+                        applyActionLabel="Apply Local Media"
+                        applyActionPendingLabel="Applying…"
+                        applyActionDisabled={!reconfigure.reconfigureVideoItem}
+                        applyActionLoading={reconfigure.reconfiguring}
+                        onApplyAction={() => void handleApplyLocalMedia()}
                         onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
                         onSelectItem={reconfigure.setReconfigureVideoItem}
                       />
-                      <button
-                        type="button"
-                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
-                        onClick={() => void handleApplyLocalMedia()}
-                        disabled={reconfigure.reconfiguring || !reconfigure.reconfigureVideoItem}
-                      >
-                        {reconfigure.reconfiguring ? 'Applying…' : 'Apply Local Media'}
-                      </button>
                     </>
                   )}
                 </div>

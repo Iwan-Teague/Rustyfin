@@ -598,6 +598,22 @@ async fn find_or_create_item(
     Ok((id, true))
 }
 
+fn season_sort_title(season: u32) -> String {
+    format!("rf-season-{season:05}")
+}
+
+fn episode_sort_title(season: u32, episode: u32) -> String {
+    format!("rf-season-{season:05}-episode-{episode:05}")
+}
+
+async fn sync_item_sort_title(
+    pool: &DbPool,
+    item_id: &str,
+    sort_title: &str,
+) -> Result<bool, sqlx::Error> {
+    rustfin_db::repo::items::update_item_sort_title(pool, item_id, Some(sort_title)).await
+}
+
 async fn remove_conflicting_file_mappings(
     pool: &DbPool,
     canonical_item_id: &str,
@@ -726,6 +742,8 @@ async fn create_episode_item(
         None,
     )
     .await?;
+    let season_sort = season_sort_title(info.season);
+    let season_sort_updated = sync_item_sort_title(pool, &season_id, &season_sort).await?;
 
     // Create episode
     let ep_title = info
@@ -741,12 +759,20 @@ async fn create_episode_item(
         None,
     )
     .await?;
+    let episode_sort = episode_sort_title(info.season, info.episode);
+    let episode_sort_updated = sync_item_sort_title(pool, &episode_id, &episode_sort).await?;
 
     let file_id = ensure_media_file(pool, file_path, entry, existing_file_id, false).await?;
     let removed_conflicts = remove_conflicting_file_mappings(pool, &episode_id, &file_id).await?;
     let mapping_created = link_file_to_item(pool, &episode_id, &file_id).await?;
 
-    Ok(series_created || season_created || episode_created || removed_conflicts || mapping_created)
+    Ok(series_created
+        || season_created
+        || episode_created
+        || season_sort_updated
+        || episode_sort_updated
+        || removed_conflicts
+        || mapping_created)
 }
 
 // ─── Music library scanner ───────────────────────────────────────────────────
@@ -930,5 +956,18 @@ mod tests {
                     .join("Album")
             )
         );
+    }
+
+    #[test]
+    fn season_sort_title_is_zero_padded_for_stable_order() {
+        assert_eq!(season_sort_title(0), "rf-season-00000");
+        assert_eq!(season_sort_title(1), "rf-season-00001");
+        assert_eq!(season_sort_title(12), "rf-season-00012");
+    }
+
+    #[test]
+    fn episode_sort_title_is_zero_padded_for_stable_order() {
+        assert_eq!(episode_sort_title(1, 2), "rf-season-00001-episode-00002");
+        assert_eq!(episode_sort_title(10, 100), "rf-season-00010-episode-00100");
     }
 }

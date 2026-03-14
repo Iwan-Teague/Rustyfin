@@ -28,6 +28,13 @@
   --page-pad-inline: clamp(1rem, 2.6vw, 2.75rem);
   --page-pad-top: clamp(0.8rem, 2vw, 1.4rem);
   --page-pad-bottom: clamp(5rem, 10vw, 7.25rem);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-quick: cubic-bezier(0.7, 0, 0.84, 0);
+  --motion-fast: 140ms;
+  --motion-base: 240ms;
+  --motion-slow: 420ms;
 }
 
 * {
@@ -77,7 +84,11 @@ h6 {
 }
 
 a {
-  transition: color 160ms ease, border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
+  transition:
+    color var(--motion-fast) var(--ease-out-quart),
+    border-color var(--motion-fast) var(--ease-out-quart),
+    transform var(--motion-fast) var(--ease-out-quart),
+    opacity var(--motion-fast) var(--ease-out-quart);
 }
 
 a:focus-visible,
@@ -98,6 +109,10 @@ textarea:focus-visible {
   box-shadow:
     0 16px 35px rgba(6, 9, 15, 0.38),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition:
+    border-color var(--motion-base) var(--ease-out-quart),
+    box-shadow var(--motion-base) var(--ease-out-quart);
+  animation: app-nav-settle 620ms var(--ease-out-expo) both;
 }
 
 .accent-logo {
@@ -215,13 +230,59 @@ textarea:focus-visible {
 }
 
 .tile-hover {
-  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  transition:
+    transform var(--motion-base) var(--ease-out-quint),
+    border-color var(--motion-base) var(--ease-out-quart),
+    box-shadow var(--motion-base) var(--ease-out-quart),
+    filter var(--motion-fast) var(--ease-out-quart);
+}
+
+.tile-hover::after {
+  content: "";
+  position: absolute;
+  inset: -110% 26% auto -140%;
+  height: 220%;
+  pointer-events: none;
+  opacity: 0;
+  transform: rotate(14deg) translate3d(0, 0, 0);
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 8%,
+    rgba(255, 255, 255, 0.18) 48%,
+    rgba(255, 255, 255, 0) 88%
+  );
+  z-index: 1;
 }
 
 .tile-hover:hover {
   border-color: var(--border-strong);
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.38);
-  transform: translateY(-3px);
+  box-shadow:
+    0 22px 48px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transform: translate3d(0, -4px, 0) scale(1.01);
+  filter: saturate(1.04);
+}
+
+.tile-hover:hover::after {
+  animation: tile-hover-sheen 780ms var(--ease-out-quart) forwards;
+}
+
+.home-card-sheen.tile-hover::after {
+  inset: -130% auto auto -180%;
+  width: 190%;
+  height: 260%;
+}
+
+.home-card-sheen.tile-hover:hover::after {
+  animation: home-card-sheen 900ms var(--ease-out-quart) forwards;
+}
+
+.tile-hover:active {
+  transform: translate3d(0, -1px, 0) scale(0.995);
+  transition-duration: 110ms;
 }
 
 .chip {
@@ -271,7 +332,13 @@ textarea:focus-visible {
   gap: 0.45rem;
   border-radius: 999px;
   font-weight: 600;
-  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease, border-color 160ms ease;
+  transition:
+    transform var(--motion-fast) var(--ease-out-quart),
+    box-shadow var(--motion-fast) var(--ease-out-quart),
+    filter var(--motion-fast) var(--ease-out-quart),
+    border-color var(--motion-fast) var(--ease-out-quart),
+    color var(--motion-fast) var(--ease-out-quart),
+    background-color var(--motion-fast) var(--ease-out-quart);
   cursor: pointer;
 }
 
@@ -385,8 +452,14 @@ textarea:focus-visible {
 }
 
 .btn-secondary:hover {
-  transform: translateY(-1px);
+  transform: translate3d(0, -1px, 0);
   border-color: var(--border-strong);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+}
+
+.btn-secondary:active {
+  transform: scale(0.98);
+  transition-duration: 110ms;
 }
 
 .btn-ghost {
@@ -398,6 +471,12 @@ textarea:focus-visible {
 .btn-ghost:hover {
   color: var(--text-main);
   border-color: var(--border);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.btn-ghost:active {
+  transform: scale(0.98);
+  transition-duration: 110ms;
 }
 
 .input,
@@ -643,11 +722,151 @@ input[type="checkbox"]:disabled {
 
 .tg-delete-target.tg-delete-out {
   pointer-events: none;
-  animation: tg-delete-fade-out 540ms ease forwards;
+  animation: tg-delete-fade-out 540ms var(--ease-out-quart) forwards;
 }
 
 .animate-rise {
-  animation: rise-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --rf-rise-distance: 10px;
+  --rf-rise-item-duration: 520ms;
+  animation: rise-shell 520ms var(--ease-out-expo) both;
+}
+
+.animate-rise > :not(style):not(script) {
+  opacity: 0;
+  transform: translate3d(0, var(--rf-rise-distance), 0);
+  animation: rise-item var(--rf-rise-item-duration) var(--ease-out-expo) forwards;
+}
+
+.animate-rise > :not(style):not(script):nth-child(1) {
+  animation-delay: 70ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(2) {
+  animation-delay: 130ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(3) {
+  animation-delay: 190ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(4) {
+  animation-delay: 250ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(5) {
+  animation-delay: 300ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(6) {
+  animation-delay: 340ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(7) {
+  animation-delay: 370ms;
+}
+
+.animate-rise > :not(style):not(script):nth-child(8) {
+  animation-delay: 400ms;
+}
+
+.app-nav .rf-nav-link {
+  position: relative;
+  overflow: hidden;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app-nav .rf-nav-link:hover,
+.app-nav .rf-nav-link:focus-visible,
+.app-nav .rf-nav-link[aria-current="page"] {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-main);
+}
+
+.app-nav .rf-nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0.65rem;
+  right: 0.65rem;
+  bottom: 0.32rem;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--orange) 0%,
+    var(--danger) 56%,
+    var(--purple-strong) 100%
+  );
+  opacity: 0;
+  transform: scaleX(0.5);
+  transition:
+    opacity var(--motion-base) var(--ease-out-quart),
+    transform var(--motion-base) var(--ease-out-quart);
+}
+
+.app-nav .rf-nav-link:hover::after,
+.app-nav .rf-nav-link[aria-current="page"]::after {
+  opacity: 0.95;
+  transform: scaleX(1);
+}
+
+.rf-room-mode-btn {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.rf-room-mode-btn[data-active="true"] {
+  transform: translate3d(0, -1px, 0);
+}
+
+.rf-room-mode-feedback {
+  min-height: 1rem;
+}
+
+.rf-room-mode-enter-a,
+.rf-room-mode-enter-b {
+  animation: room-mode-panel-in 320ms var(--ease-out-quint) both;
+}
+
+.rf-room-mode-panel-late {
+  animation-delay: 50ms;
+}
+
+.rf-room-mode-panel-later {
+  animation-delay: 90ms;
+}
+
+.rf-room-create-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+}
+
+.rf-room-create-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.34);
+  border-top-color: rgba(255, 255, 255, 0.92);
+  animation: room-create-spin 620ms linear infinite;
+}
+
+.rf-mobile-nav-menu-enter {
+  transform-origin: top center;
+  animation: mobile-menu-in 320ms var(--ease-out-quint) both;
+}
+
+.rf-overlay-enter {
+  animation: overlay-fade-in 220ms var(--ease-out-quart) both;
+}
+
+.rf-modal-enter {
+  animation: modal-raise-in 320ms var(--ease-out-expo) both;
 }
 
 @keyframes btn-click-pop {
@@ -692,15 +911,121 @@ input[type="checkbox"]:disabled {
   }
 }
 
-@keyframes rise-in {
+@keyframes app-nav-settle {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translate3d(0, -12px, 0);
   }
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes tile-hover-sheen {
+  0% {
+    opacity: 0;
+    transform: rotate(14deg) translate3d(0, 0, 0);
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(14deg) translate3d(165%, 0, 0);
+  }
+}
+
+@keyframes home-card-sheen {
+  0% {
+    opacity: 0;
+    transform: rotate(14deg) translate3d(0, 0, 0);
+  }
+  10% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(14deg) translate3d(245%, 0, 0);
+  }
+}
+
+@keyframes rise-shell {
+  from {
+    opacity: 0;
+    transform: translate3d(0, calc(var(--rf-rise-distance) + 2px), 0) scale(0.997);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes rise-item {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--rf-rise-distance), 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes mobile-menu-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes overlay-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-raise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes room-mode-panel-in {
+  from {
+    opacity: 0.58;
+    transform: translate3d(0, 8px, 0) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes room-create-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 

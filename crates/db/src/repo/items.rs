@@ -78,11 +78,11 @@ pub async fn get_children(pool: &DbPool, parent_id: &str) -> Result<Vec<ItemRow>
           WHERE efm2.episode_item_id = i.id LIMIT 1) AS duration_ms \
          FROM item i \
          WHERE i.parent_id = $1 \
-           AND ( \
-                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
-                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
-           ) \
-         ORDER BY i.title",
+            AND ( \
+                 EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                 OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+            ) \
+         ORDER BY COALESCE(NULLIF(i.sort_title, ''), i.title), i.title",
     )
     .bind(parent_id)
     .fetch_all(pool)
@@ -116,13 +116,13 @@ pub async fn get_library_items(
         "SELECT i.id, i.library_id, i.kind, i.parent_id, i.title, i.sort_title, i.year, i.overview, \
          poster_url, backdrop_url, logo_url, thumb_url, \
          created_ts, updated_ts FROM item i \
-         WHERE i.library_id = $1 \
-           AND i.parent_id IS NULL \
-           AND ( \
-                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
-                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
-           ) \
-         ORDER BY i.title",
+          WHERE i.library_id = $1 \
+            AND i.parent_id IS NULL \
+            AND ( \
+                 EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                 OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+            ) \
+          ORDER BY COALESCE(NULLIF(i.sort_title, ''), i.title), i.title",
     )
     .bind(library_id)
     .fetch_all(pool)
@@ -169,6 +169,48 @@ pub async fn get_item_media_path(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(path,)| path))
+}
+
+pub async fn get_item_media_paths(
+    pool: &DbPool,
+    item_ids: &[String],
+) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+    if item_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT ON (ef.episode_item_id) ef.episode_item_id, mf.path \
+         FROM episode_file_map ef \
+         JOIN media_file mf ON mf.id = ef.file_id \
+         WHERE ef.episode_item_id = ANY($1) \
+         ORDER BY ef.episode_item_id, ef.created_ts DESC",
+    )
+    .bind(item_ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().collect())
+}
+
+pub async fn update_item_sort_title(
+    pool: &DbPool,
+    item_id: &str,
+    sort_title: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result = sqlx::query(
+        "UPDATE item \
+         SET sort_title = $1, updated_ts = $2 \
+         WHERE id = $3 AND sort_title IS DISTINCT FROM $1",
+    )
+    .bind(sort_title)
+    .bind(now)
+    .bind(item_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn get_first_descendant_media_path(

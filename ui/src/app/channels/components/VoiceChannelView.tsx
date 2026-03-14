@@ -230,6 +230,8 @@ export default function VoiceChannelView({
 }: Props) {
   const {
     voiceSession,
+    connectedVoiceChannelId,
+    hasLocalVoiceSession,
     voiceSpeaking,
     voiceTranscriptions,
     remoteVolumes,
@@ -251,10 +253,12 @@ export default function VoiceChannelView({
 
   const members = voicePresence[channel.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
-  const isConnected = voiceSession?.channelId === channel.id;
+  const isConnectedHere = voiceSession?.channelId === channel.id;
+  const isConnectedElsewhere = connectedVoiceChannelId === channel.id && !isConnectedHere;
+  const isConnected = isConnectedHere || isConnectedElsewhere;
   const transcriptionState = voiceTranscriptions[channel.id] ?? null;
-  const muted = isConnected ? (voiceSession?.muted ?? false) : false;
-  const deafened = isConnected ? (voiceSession?.deafened ?? false) : false;
+  const muted = isConnectedHere ? (voiceSession?.muted ?? false) : false;
+  const deafened = isConnectedHere ? (voiceSession?.deafened ?? false) : false;
   const downloadableTranscriptSessions = useMemo(
     () =>
       transcriptSessions.filter(
@@ -265,6 +269,10 @@ export default function VoiceChannelView({
 
   async function handleConnect() {
     setError(null);
+    if (isConnectedElsewhere) {
+      setError('You are already connected to this channel in another tab.');
+      return;
+    }
     const err = await joinVoice(channel.id, channel.name);
     if (err) setError(err);
   }
@@ -459,7 +467,7 @@ export default function VoiceChannelView({
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {error && <p className="text-xs text-red-400 max-w-[12rem] truncate">{error}</p>}
 
-          {isConnected && (
+          {isConnectedHere && (
             <>
               {!voiceSession?.localStream && (
                 <span className="text-xs muted px-2">Listening</span>
@@ -500,15 +508,25 @@ export default function VoiceChannelView({
               )}
             </>
           )}
+          {isConnectedElsewhere && (
+            <span className="text-xs muted px-2">Connected in another tab</span>
+          )}
           <button
-            onClick={isConnected ? handleDisconnect : () => void handleConnect()}
+            onClick={isConnectedHere ? handleDisconnect : () => void handleConnect()}
+            disabled={isConnectedElsewhere}
             className={`px-4 py-1.5 text-sm min-w-[9.5rem] justify-center ${
-              isConnected
+              isConnectedHere
                 ? 'btn-secondary text-red-400'
-                : 'btn-primary'
+                : isConnectedElsewhere
+                  ? 'btn-secondary muted disabled:opacity-60'
+                  : 'btn-primary'
             }`}
           >
-            {isConnected ? 'Disconnect' : 'Connect'}
+            {isConnectedHere
+              ? 'Disconnect'
+              : isConnectedElsewhere
+                ? 'Connected in another tab'
+                : 'Connect'}
           </button>
         </div>
       </div>
@@ -548,7 +566,7 @@ export default function VoiceChannelView({
                     sliderMaxPercent={isSelf ? 100 : 200}
                     muted={muted}
                     deafened={deafened}
-                    showSelfControls={isSelf && isConnected}
+                    showSelfControls={isSelf && isConnectedHere && hasLocalVoiceSession}
                     canToggleMute={Boolean(voiceSession?.localStream)}
                     onToggleMute={toggleMute}
                     onToggleDeafen={toggleDeafen}
