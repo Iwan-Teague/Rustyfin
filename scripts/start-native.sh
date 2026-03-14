@@ -708,6 +708,18 @@ if [[ "$BUILD" == "true" ]]; then
 else
   [[ -x "$NATIVE_BIN_DIR_ABS/rustfin-server" ]] || die "Native binaries are missing. Run without --no-build first."
   [[ -f "$REPO_ROOT/ui/.next/standalone/server.js" ]] || die "Native UI standalone build is missing. Run without --no-build first."
+
+  # Guard against a stale/incomplete standalone tree when reusing existing UI artifacts.
+  # Without these static chunks, Next will serve HTML but hydration/scripts fail at runtime.
+  if [[ ! -d "$REPO_ROOT/ui/.next/standalone/.next/static" ]]; then
+    if [[ -d "$REPO_ROOT/ui/.next/static" ]]; then
+      warn "UI standalone static assets are missing. Restoring from ui/.next/static."
+      mkdir -p "$REPO_ROOT/ui/.next/standalone/.next/static"
+      cp -R "$REPO_ROOT/ui/.next/static/." "$REPO_ROOT/ui/.next/standalone/.next/static/"
+    else
+      die "UI standalone static assets are missing. Run without --no-build first."
+    fi
+  fi
 fi
 
 if [[ "$BUILD_ONLY" == "true" ]]; then
