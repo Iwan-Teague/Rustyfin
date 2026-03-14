@@ -85,6 +85,7 @@ Rustyfin is a native-Debian-first local media platform with:
 Runtime behavior:
 
 - `start.sh` is a compatibility wrapper around `start-native.sh`
+  - legacy Docker-era flags passed to `start.sh` are ignored for backward compatibility before delegating to native startup
 - `stop.sh` is a compatibility wrapper around `stop-native.sh`
 - `start-native.sh` is the supported production and development runtime path:
   - builds Rust services directly on the Debian host

@@ -259,6 +259,39 @@ async function ensurePausedPreviewFrame(video: HTMLVideoElement): Promise<boolea
   return video.readyState >= 2;
 }
 
+function normalizeSessionStartTimeSeconds(
+  requestedSeconds: number | undefined,
+  knownDurationSeconds: number,
+): number | undefined {
+  if (requestedSeconds === undefined || !Number.isFinite(requestedSeconds)) {
+    return undefined;
+  }
+
+  const sanitized = Math.max(0, requestedSeconds);
+  if (!Number.isFinite(knownDurationSeconds) || knownDurationSeconds <= 0) {
+    return sanitized;
+  }
+
+  const safeMax = Math.max(0, knownDurationSeconds - 0.5);
+  return Math.min(sanitized, safeMax);
+}
+
+function resolveResumeStartTimeSeconds(
+  requestedSeconds: number,
+  knownDurationSeconds: number,
+): number | undefined {
+  if (!Number.isFinite(knownDurationSeconds) || knownDurationSeconds <= 0) {
+    return undefined;
+  }
+
+  const normalized = normalizeSessionStartTimeSeconds(requestedSeconds, knownDurationSeconds);
+  if (normalized === undefined) return undefined;
+  if (normalized >= Math.max(0, knownDurationSeconds - 1)) {
+    return undefined;
+  }
+  return normalized;
+}
+
 type StartHlsOptions = {
   targetHeightOverride?: number | null;
   seekTimeOverrideSecs?: number;
@@ -376,7 +409,7 @@ export default function PlayerPage() {
         options.seekTimeOverrideSecs >= 0
           ? options.seekTimeOverrideSecs
           : undefined;
-      const startTimeSecs =
+      const requestedStartTimeSecs =
         explicitSeekTime !== undefined
           ? explicitSeekTime
           : finiteDuration &&
@@ -384,6 +417,10 @@ export default function PlayerPage() {
               currentTime < (video.duration as number) - 0.5
             ? currentTime
             : undefined;
+      const startTimeSecs = normalizeSessionStartTimeSeconds(
+        requestedStartTimeSecs,
+        knownDurationSeconds,
+      );
 
       setStartingHls(true);
       setError('');
@@ -728,9 +765,19 @@ export default function PlayerPage() {
   useEffect(() => {
     if (!loadingDescriptor && !loadingPlayState && canStartPlayback && !autoStartedRef.current) {
       autoStartedRef.current = true;
-      const resumeSeconds =
+      const knownDurationSeconds =
+        descriptor?.duration_ms && descriptor.duration_ms > 0
+          ? descriptor.duration_ms / 1000
+          : mediaInfo?.duration_secs && mediaInfo.duration_secs > 0
+            ? mediaInfo.duration_secs
+            : 0;
+      const rawResumeSeconds =
         playState && !playState.played && playState.progress_ms > 0
           ? playState.progress_ms / 1000
+          : undefined;
+      const resumeSeconds =
+        rawResumeSeconds !== undefined
+          ? resolveResumeStartTimeSeconds(rawResumeSeconds, knownDurationSeconds)
           : undefined;
       requestedPlaybackRef.current = resumeSeconds === undefined;
       void startHls(
@@ -739,7 +786,15 @@ export default function PlayerPage() {
           : undefined,
       );
     }
-  }, [loadingDescriptor, loadingPlayState, canStartPlayback, playState, startHls]);
+  }, [
+    canStartPlayback,
+    descriptor?.duration_ms,
+    loadingDescriptor,
+    loadingPlayState,
+    mediaInfo?.duration_secs,
+    playState,
+    startHls,
+  ]);
 
   useEffect(() => {
     return () => {

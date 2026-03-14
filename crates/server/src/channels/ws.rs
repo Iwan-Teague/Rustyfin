@@ -224,6 +224,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     let user_id = claims.sub.clone();
     let role = claims.role.clone();
+    let connection_id = uuid::Uuid::new_v4().to_string();
     let profile = match rustfin_db::repo::users::find_by_id(&state.db, &user_id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
@@ -247,7 +248,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let (personal_tx, mut personal_rx) = mpsc::channel(PERSONAL_EVENT_BUFFER);
     state
         .channel_manager
-        .register_user(&user_id, personal_tx)
+        .register_user(&user_id, &connection_id, personal_tx)
         .await;
 
     // ── Subscribe to broadcast ────────────────────────────────────────────────
@@ -256,7 +257,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     // ── Send Hello ────────────────────────────────────────────────────────────
     let hello = build_hello(&state).await;
     if send_event(&mut socket, &hello).await.is_err() {
-        state.channel_manager.unregister_user(&user_id).await;
+        state
+            .channel_manager
+            .unregister_user(&user_id, &connection_id)
+            .await;
         let _ = socket.close().await;
         return;
     }
@@ -327,6 +331,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 if dispatch(
                     &state,
                     &user_id,
+                    &connection_id,
                     &username,
                     &avatar_url,
                     &role,
@@ -343,9 +348,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────────
-    state.channel_manager.unregister_user(&user_id).await;
+    state
+        .channel_manager
+        .unregister_user(&user_id, &connection_id)
+        .await;
 
-    let left_channels = state.channel_manager.leave_all_voice(&user_id).await;
+    let left_channels = state
+        .channel_manager
+        .leave_all_voice(&user_id, &connection_id)
+        .await;
     let (runtime_username, runtime_avatar_url) =
         resolve_runtime_profile(&state, &user_id, &username, &avatar_url).await;
     for left in left_channels {
@@ -368,6 +379,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 async fn dispatch(
     state: &AppState,
     user_id: &str,
+    connection_id: &str,
     username: &str,
     avatar_url: &Option<String>,
     role: &str,
@@ -420,6 +432,7 @@ async fn dispatch(
                 .join_voice(
                     &channel_id,
                     user_id,
+                    connection_id,
                     &runtime_username,
                     runtime_avatar_url.as_deref(),
                 )
@@ -441,8 +454,9 @@ async fn dispatch(
             // Tell the joiner who's already here
             state
                 .channel_manager
-                .send_to_user(
+                .send_to_user_connection(
                     user_id,
+                    connection_id,
                     ChannelEvent::VoiceJoined {
                         channel_id,
                         existing_members: join_result.existing_members,
@@ -458,7 +472,7 @@ async fn dispatch(
                 resolve_runtime_profile(state, user_id, username, avatar_url).await;
             let active_since_ts = state
                 .channel_manager
-                .leave_voice(&channel_id, user_id)
+                .leave_voice(&channel_id, user_id, connection_id)
                 .await;
             let _ = user_activity::track_voice_leave(state, user_id, &channel_id).await;
 
@@ -493,10 +507,21 @@ async fn dispatch(
                 .await;
                 return Ok(());
             }
+
+            let Some(target_connection_id) = state
+                .channel_manager
+                .voice_connection_for_user(&channel_id, &to_user_id)
+                .await
+            else {
+                let _ = send_error(socket, "target user has no active voice connection").await;
+                return Ok(());
+            };
+
             state
                 .channel_manager
-                .send_to_user(
+                .send_to_user_connection(
                     &to_user_id,
+                    &target_connection_id,
                     ChannelEvent::RtcOffer {
                         from_user_id: user_id.to_string(),
                         channel_id,
@@ -524,10 +549,21 @@ async fn dispatch(
                 .await;
                 return Ok(());
             }
+
+            let Some(target_connection_id) = state
+                .channel_manager
+                .voice_connection_for_user(&channel_id, &to_user_id)
+                .await
+            else {
+                let _ = send_error(socket, "target user has no active voice connection").await;
+                return Ok(());
+            };
+
             state
                 .channel_manager
-                .send_to_user(
+                .send_to_user_connection(
                     &to_user_id,
+                    &target_connection_id,
                     ChannelEvent::RtcAnswer {
                         from_user_id: user_id.to_string(),
                         channel_id,
@@ -555,10 +591,21 @@ async fn dispatch(
                 .await;
                 return Ok(());
             }
+
+            let Some(target_connection_id) = state
+                .channel_manager
+                .voice_connection_for_user(&channel_id, &to_user_id)
+                .await
+            else {
+                let _ = send_error(socket, "target user has no active voice connection").await;
+                return Ok(());
+            };
+
             state
                 .channel_manager
-                .send_to_user(
+                .send_to_user_connection(
                     &to_user_id,
+                    &target_connection_id,
                     ChannelEvent::RtcIce {
                         from_user_id: user_id.to_string(),
                         channel_id,

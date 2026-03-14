@@ -151,7 +151,6 @@ export default function HomePage() {
       <header className="panel p-6 sm:p-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-3">
-            <p className="chip chip-accent w-fit">Social continuation</p>
             <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
             <p className="max-w-2xl text-sm muted sm:text-base">
               Resume what you were watching and join active rooms with one click.

@@ -6,11 +6,13 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 
 use super::protocol::{ChannelEvent, UserInfo};
 
-type VoiceMember = (String, String, Option<String>);
+// (user_id, connection_id, username, avatar_url)
+type VoiceMember = (String, String, String, Option<String>);
 
 pub struct ChannelManager {
     broadcast: broadcast::Sender<Arc<ChannelEvent>>,
-    user_senders: RwLock<HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>,
+    // user_id -> (connection_id -> sender)
+    user_senders: RwLock<HashMap<String, HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>>,
     /// channel_id → Vec<(user_id, username, avatar_url)> in join order
     voice: RwLock<HashMap<String, Vec<VoiceMember>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
@@ -42,14 +44,27 @@ impl ChannelManager {
         self.broadcast.subscribe()
     }
 
-    pub async fn register_user(&self, user_id: &str, tx: mpsc::Sender<Arc<ChannelEvent>>) {
+    pub async fn register_user(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+        tx: mpsc::Sender<Arc<ChannelEvent>>,
+    ) {
         let mut senders = self.user_senders.write().await;
-        senders.insert(user_id.to_string(), tx);
+        senders
+            .entry(user_id.to_string())
+            .or_default()
+            .insert(connection_id.to_string(), tx);
     }
 
-    pub async fn unregister_user(&self, user_id: &str) {
+    pub async fn unregister_user(&self, user_id: &str, connection_id: &str) {
         let mut senders = self.user_senders.write().await;
-        senders.remove(user_id);
+        if let Some(connections) = senders.get_mut(user_id) {
+            connections.remove(connection_id);
+            if connections.is_empty() {
+                senders.remove(user_id);
+            }
+        }
     }
 
     pub fn broadcast(&self, event: ChannelEvent) {
@@ -57,9 +72,41 @@ impl ChannelManager {
     }
 
     pub async fn send_to_user(&self, user_id: &str, event: ChannelEvent) -> bool {
+        let connection_ids: Vec<String> = {
+            let senders = self.user_senders.read().await;
+            senders
+                .get(user_id)
+                .map(|connections| connections.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        if connection_ids.is_empty() {
+            return false;
+        }
+
+        let mut sent = false;
+        for connection_id in connection_ids {
+            if self
+                .send_to_user_connection(user_id, &connection_id, event.clone())
+                .await
+            {
+                sent = true;
+            }
+        }
+        sent
+    }
+
+    pub async fn send_to_user_connection(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+        event: ChannelEvent,
+    ) -> bool {
         let sender = {
             let senders = self.user_senders.read().await;
-            senders.get(user_id).cloned()
+            senders
+                .get(user_id)
+                .and_then(|connections| connections.get(connection_id))
+                .cloned()
         };
         let Some(sender) = sender else {
             return false;
@@ -69,7 +116,12 @@ impl ChannelManager {
             Ok(()) => true,
             Err(TrySendError::Full(_)) | Err(TrySendError::Closed(_)) => {
                 let mut senders = self.user_senders.write().await;
-                senders.remove(user_id);
+                if let Some(connections) = senders.get_mut(user_id) {
+                    connections.remove(connection_id);
+                    if connections.is_empty() {
+                        senders.remove(user_id);
+                    }
+                }
                 false
             }
         }
@@ -80,6 +132,7 @@ impl ChannelManager {
         &self,
         channel_id: &str,
         user_id: &str,
+        connection_id: &str,
         username: &str,
         avatar_url: Option<&str>,
     ) -> JoinVoiceResult {
@@ -88,8 +141,8 @@ impl ChannelManager {
 
         let existing: Vec<UserInfo> = members
             .iter()
-            .filter(|(uid, _, _)| uid != user_id)
-            .map(|(uid, uname, avatar)| UserInfo {
+            .filter(|(uid, _, _, _)| uid != user_id)
+            .map(|(uid, _, uname, avatar)| UserInfo {
                 user_id: uid.clone(),
                 username: uname.clone(),
                 avatar_url: avatar.clone(),
@@ -97,10 +150,11 @@ impl ChannelManager {
             .collect();
 
         // Remove if already present then re-add (handles re-join)
-        members.retain(|(uid, _, _)| uid != user_id);
+        members.retain(|(uid, _, _, _)| uid != user_id);
         let was_empty = members.is_empty();
         members.push((
             user_id.to_string(),
+            connection_id.to_string(),
             username.to_string(),
             avatar_url.map(str::to_string),
         ));
@@ -125,11 +179,16 @@ impl ChannelManager {
         }
     }
 
-    pub async fn leave_voice(&self, channel_id: &str, user_id: &str) -> Option<i64> {
+    pub async fn leave_voice(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Option<i64> {
         let mut voice = self.voice.write().await;
         let mut still_active = false;
         if let Some(members) = voice.get_mut(channel_id) {
-            members.retain(|(uid, _, _)| uid != user_id);
+            members.retain(|(uid, conn_id, _, _)| !(uid == user_id && conn_id == connection_id));
             if members.is_empty() {
                 voice.remove(channel_id);
             } else {
@@ -152,13 +211,17 @@ impl ChannelManager {
     }
 
     /// Removes user from all voice channels. Returns list of channel_ids they were in.
-    pub async fn leave_all_voice(&self, user_id: &str) -> Vec<LeaveVoiceResult> {
+    pub async fn leave_all_voice(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Vec<LeaveVoiceResult> {
         let mut voice = self.voice.write().await;
         let mut left_channel_ids = Vec::new();
         let mut still_active_channels = HashSet::new();
         for (channel_id, members) in voice.iter_mut() {
             let before = members.len();
-            members.retain(|(uid, _, _)| uid != user_id);
+            members.retain(|(uid, conn_id, _, _)| !(uid == user_id && conn_id == connection_id));
             if members.len() < before {
                 left_channel_ids.push(channel_id.clone());
                 if !members.is_empty() {
@@ -210,7 +273,7 @@ impl ChannelManager {
                 continue;
             }
             let before = members.len();
-            members.retain(|(uid, _, _)| uid != user_id);
+            members.retain(|(uid, _, _, _)| uid != user_id);
             if members.len() < before {
                 left_channel_ids.push(channel_id.clone());
                 if !members.is_empty() {
@@ -251,7 +314,7 @@ impl ChannelManager {
         let voice = self.voice.read().await;
         voice
             .get(channel_id)
-            .map(|members| members.iter().any(|(uid, _, _)| uid == user_id))
+            .map(|members| members.iter().any(|(uid, _, _, _)| uid == user_id))
             .unwrap_or(false)
     }
 
@@ -267,7 +330,7 @@ impl ChannelManager {
         };
         let mut first_found = false;
         let mut second_found = false;
-        for (user_id, _, _) in members {
+        for (user_id, _, _, _) in members {
             if user_id == first_user_id {
                 first_found = true;
             }
@@ -281,6 +344,23 @@ impl ChannelManager {
         false
     }
 
+    pub async fn voice_connection_for_user(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Option<String> {
+        let voice = self.voice.read().await;
+        voice.get(channel_id).and_then(|members| {
+            members.iter().find_map(|(uid, conn_id, _, _)| {
+                if uid == user_id {
+                    Some(conn_id.clone())
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     pub async fn voice_snapshot(&self) -> HashMap<String, Vec<UserInfo>> {
         let voice = self.voice.read().await;
         voice
@@ -290,7 +370,7 @@ impl ChannelManager {
                     channel_id.clone(),
                     members
                         .iter()
-                        .map(|(uid, uname, avatar)| UserInfo {
+                        .map(|(uid, _, uname, avatar)| UserInfo {
                             user_id: uid.clone(),
                             username: uname.clone(),
                             avatar_url: avatar.clone(),
@@ -319,8 +399,12 @@ mod tests {
     #[tokio::test]
     async fn leave_other_voice_keeps_target_channel_membership() {
         let manager = ChannelManager::new();
-        manager.join_voice("voice-a", "u-1", "alpha", None).await;
-        manager.join_voice("voice-b", "u-1", "alpha", None).await;
+        manager
+            .join_voice("voice-a", "u-1", "conn-1", "alpha", None)
+            .await;
+        manager
+            .join_voice("voice-b", "u-1", "conn-1", "alpha", None)
+            .await;
 
         let left = manager.leave_other_voice("u-1", "voice-b").await;
         assert_eq!(left.len(), 1);
@@ -333,7 +417,7 @@ mod tests {
     async fn send_to_user_evicts_full_personal_queue() {
         let manager = ChannelManager::new();
         let (tx, mut rx) = mpsc::channel(1);
-        manager.register_user("u-1", tx).await;
+        manager.register_user("u-1", "conn-1", tx).await;
 
         assert!(
             manager
@@ -357,5 +441,50 @@ mod tests {
         );
         assert!(matches!(rx.recv().await, Some(_)));
         assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn leave_all_voice_ignores_non_owner_connection() {
+        let manager = ChannelManager::new();
+        manager
+            .join_voice("voice-a", "u-1", "conn-owner", "alpha", None)
+            .await;
+
+        let left = manager.leave_all_voice("u-1", "conn-other").await;
+        assert!(left.is_empty());
+        assert!(manager.voice_channel_has_user("voice-a", "u-1").await);
+
+        let owner_left = manager.leave_all_voice("u-1", "conn-owner").await;
+        assert_eq!(owner_left.len(), 1);
+        assert!(!manager.voice_channel_has_user("voice-a", "u-1").await);
+    }
+
+    #[tokio::test]
+    async fn send_to_user_connection_targets_only_requested_connection() {
+        let manager = ChannelManager::new();
+        let (tx_a, mut rx_a) = mpsc::channel(4);
+        let (tx_b, mut rx_b) = mpsc::channel(4);
+        manager.register_user("u-1", "conn-a", tx_a).await;
+        manager.register_user("u-1", "conn-b", tx_b).await;
+
+        let sent = manager
+            .send_to_user_connection(
+                "u-1",
+                "conn-b",
+                ChannelEvent::Error {
+                    message: "hello-b".to_string(),
+                },
+            )
+            .await;
+        assert!(sent);
+
+        assert!(rx_a.try_recv().is_err());
+        let msg = rx_b
+            .try_recv()
+            .expect("targeted connection should receive event");
+        match msg.as_ref() {
+            ChannelEvent::Error { message } => assert_eq!(message, "hello-b"),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

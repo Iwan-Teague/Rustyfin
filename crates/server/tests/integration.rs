@@ -1480,6 +1480,159 @@ async fn scan_tv_library_reconciles_stale_root_movie_mapping_for_episode_variant
 }
 
 #[tokio::test]
+async fn scan_movie_library_prunes_deleted_files_and_admin_counts() {
+    let tmp = std::env::temp_dir().join(format!(
+        "rustfin_test_movies_prune_deleted_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(tmp.join("Arrival (2016)")).unwrap();
+    std::fs::write(tmp.join("Arrival (2016)/Arrival (2016).mkv"), b"fake").unwrap();
+    std::fs::create_dir_all(tmp.join("Looper (2012)")).unwrap();
+    let deleted_file = tmp.join("Looper (2012)/Looper (2012).mkv");
+    std::fs::write(&deleted_file, b"fake").unwrap();
+
+    let pool = create_test_pool().await;
+    let lib = rustfin_db::repo::libraries::create_library(
+        &pool,
+        "Movies",
+        "movies",
+        &[tmp.to_string_lossy().to_string()],
+    )
+    .await
+    .unwrap();
+
+    let initial = rustfin_scanner::scan::run_library_scan(&pool, &lib.id, "movies")
+        .await
+        .unwrap();
+    assert_eq!(initial.added, 2);
+
+    let initial_items = rustfin_db::repo::items::get_library_items(&pool, &lib.id)
+        .await
+        .unwrap();
+    assert_eq!(initial_items.len(), 2);
+    assert_eq!(
+        rustfin_db::repo::libraries::count_library_items(&pool, &lib.id)
+            .await
+            .unwrap(),
+        2
+    );
+
+    std::fs::remove_file(&deleted_file).unwrap();
+
+    let rescan = rustfin_scanner::scan::run_library_scan(&pool, &lib.id, "movies")
+        .await
+        .unwrap();
+    assert_eq!(rescan.added, 0);
+
+    let items_after = rustfin_db::repo::items::get_library_items(&pool, &lib.id)
+        .await
+        .unwrap();
+    assert_eq!(items_after.len(), 1);
+    assert_eq!(items_after[0].title, "Arrival");
+
+    let count_after = rustfin_db::repo::libraries::count_library_items(&pool, &lib.id)
+        .await
+        .unwrap();
+    assert_eq!(count_after, 1);
+
+    let grouped_counts =
+        rustfin_db::repo::libraries::count_library_items_for_libraries(&pool, &[lib.id.clone()])
+            .await
+            .unwrap();
+    assert_eq!(grouped_counts, vec![(lib.id.clone(), 1)]);
+
+    let deleted_path = deleted_file.to_string_lossy().to_string();
+    let stale_media: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM media_file WHERE path = $1")
+            .bind(&deleted_path)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(stale_media.is_none());
+
+    let stale_map_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) \
+         FROM episode_file_map efm \
+         JOIN media_file mf ON mf.id = efm.file_id \
+         WHERE mf.path = $1",
+    )
+    .bind(&deleted_path)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stale_map_count, 0);
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn scan_movie_library_prunes_media_from_removed_library_paths() {
+    let tmp_a = std::env::temp_dir().join(format!(
+        "rustfin_test_movies_path_a_{}",
+        uuid::Uuid::new_v4()
+    ));
+    let tmp_b = std::env::temp_dir().join(format!(
+        "rustfin_test_movies_path_b_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(tmp_a.join("Alien (1979)")).unwrap();
+    std::fs::create_dir_all(tmp_b.join("Blade Runner (1982)")).unwrap();
+    let old_file = tmp_a.join("Alien (1979)/Alien (1979).mkv");
+    let new_file = tmp_b.join("Blade Runner (1982)/Blade Runner (1982).mkv");
+    std::fs::write(&old_file, b"fake").unwrap();
+    std::fs::write(&new_file, b"fake").unwrap();
+
+    let pool = create_test_pool().await;
+    let lib = rustfin_db::repo::libraries::create_library(
+        &pool,
+        "Movies",
+        "movies",
+        &[tmp_a.to_string_lossy().to_string()],
+    )
+    .await
+    .unwrap();
+
+    rustfin_scanner::scan::run_library_scan(&pool, &lib.id, "movies")
+        .await
+        .unwrap();
+    let first_items = rustfin_db::repo::items::get_library_items(&pool, &lib.id)
+        .await
+        .unwrap();
+    assert_eq!(first_items.len(), 1);
+    assert_eq!(first_items[0].title, "Alien");
+
+    rustfin_db::repo::libraries::replace_library_paths(
+        &pool,
+        &lib.id,
+        &[tmp_b.to_string_lossy().to_string()],
+    )
+    .await
+    .unwrap();
+
+    rustfin_scanner::scan::run_library_scan(&pool, &lib.id, "movies")
+        .await
+        .unwrap();
+
+    let items_after = rustfin_db::repo::items::get_library_items(&pool, &lib.id)
+        .await
+        .unwrap();
+    assert_eq!(items_after.len(), 1);
+    assert_eq!(items_after[0].title, "Blade Runner");
+
+    let old_path = old_file.to_string_lossy().to_string();
+    let stale_old_media: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM media_file WHERE path = $1")
+            .bind(&old_path)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(stale_old_media.is_none());
+
+    std::fs::remove_dir_all(&tmp_a).ok();
+    std::fs::remove_dir_all(&tmp_b).ok();
+}
+
+#[tokio::test]
 async fn scan_is_idempotent() {
     let tmp = std::env::temp_dir().join(format!("rustfin_test_idem_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();

@@ -6,6 +6,7 @@ import {
   WsYouTubeStateMessage,
   YouTubeSearchResult,
   lookupYouTubeVideos,
+  searchYouTubeVideos,
 } from '@/lib/watchPartyApi';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
@@ -154,8 +155,10 @@ export default function YouTubePlayer({
   const [searching, setSearching] = useState(false);
   const [searchResultsCollapsed, setSearchResultsCollapsed] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [fallbackSearchResults, setFallbackSearchResults] = useState<YouTubeSearchResult[] | null>(null);
   const sharedSearchQuery = ytState?.search_query ?? '';
-  const searchResults = ytState?.search_results ?? [];
+  const sharedSearchResults = ytState?.search_results ?? [];
+  const searchResults = fallbackSearchResults ?? sharedSearchResults;
 
   const logDebug = useCallback((message: string) => {
     if (typeof window !== 'undefined') {
@@ -255,10 +258,10 @@ export default function YouTubePlayer({
   useEffect(() => {
     if (!ytState) return;
 
-    if (searchResults.length > 0) {
+    if (sharedSearchResults.length > 0) {
       setQueueMetaById((prev) => {
         const next = { ...prev };
-        for (const result of searchResults) {
+        for (const result of sharedSearchResults) {
           next[result.video_id] = result;
         }
         return next;
@@ -268,13 +271,14 @@ export default function YouTubePlayer({
     if (pendingSearchQueryRef.current && sharedSearchQuery === pendingSearchQueryRef.current) {
       clearPendingSearchAck();
       setSearching(false);
-      setSearchError(searchResults.length === 0 ? 'No YouTube results found for that query.' : '');
+      setFallbackSearchResults(null);
+      setSearchError(sharedSearchResults.length === 0 ? 'No YouTube results found for that query.' : '');
       window.requestAnimationFrame(() => {
         searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
       });
-      logDebug(`youtube shared search update query="${sharedSearchQuery}" results=${searchResults.length}`);
+      logDebug(`youtube shared search update query="${sharedSearchQuery}" results=${sharedSearchResults.length}`);
     }
-  }, [ytState, sharedSearchQuery, searchResults, clearPendingSearchAck, logDebug]);
+  }, [ytState, sharedSearchQuery, sharedSearchResults, clearPendingSearchAck, logDebug]);
 
   const handlePlayerStateChange = useCallback((event: { target: YTPlayer; data: number }) => {
     if (applyingRemoteRef.current) return;
@@ -642,12 +646,46 @@ export default function YouTubePlayer({
     }
 
     clearPendingSearchAck();
+    setFallbackSearchResults(null);
     pendingSearchQueryRef.current = query;
     pendingSearchAckTimeoutRef.current = setTimeout(() => {
       if (pendingSearchQueryRef.current !== query) return;
-      setSearching(false);
-      setSearchError('No shared search update received yet. Check websocket/debug trace and retry.');
-      logDebug(`youtube search timeout waiting for shared update query="${query}"`);
+      logDebug(`youtube search timeout waiting for shared update query="${query}" -> falling back to direct API search`);
+      void (async () => {
+        try {
+          const directResults = await searchYouTubeVideos(roomId, query, 12);
+          if (pendingSearchQueryRef.current !== query) return;
+          clearPendingSearchAck();
+          setSearching(false);
+          setFallbackSearchResults(directResults);
+          setSearchError(directResults.length === 0 ? 'No YouTube results found for that query.' : '');
+          if (directResults.length > 0) {
+            setQueueMetaById((prev) => {
+              const next = { ...prev };
+              for (const result of directResults) {
+                next[result.video_id] = result;
+              }
+              return next;
+            });
+          }
+          window.requestAnimationFrame(() => {
+            searchResultsListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+          });
+          logDebug(
+            `youtube direct-search fallback query="${query}" results=${directResults.length}`,
+          );
+        } catch (err: unknown) {
+          if (pendingSearchQueryRef.current !== query) return;
+          clearPendingSearchAck();
+          setSearching(false);
+          setSearchError(
+            clientErrorMessage(err, 'No shared search update received yet. Check websocket/debug trace and retry.'),
+          );
+          logDebug(
+            `youtube search fallback failed query="${query}" error=${clientErrorMessage(err, 'fallback failed')}`,
+          );
+        }
+      })();
     }, 8000);
     setSearchError('');
     setSearching(true);
@@ -658,6 +696,7 @@ export default function YouTubePlayer({
 
   const clearSearchInput = useCallback(() => {
     clearPendingSearchAck();
+    setFallbackSearchResults(null);
     setSearchInput('');
     setSearchError('');
     setSearching(false);
