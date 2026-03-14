@@ -984,8 +984,19 @@ export default function PlayerPage() {
         onPlaybackToggleRequest={handlePlaybackToggleRequest}
         onQualityChange={(value) => {
           const nextTargetHeight = value === 'auto' ? null : value;
+          const video = videoRef.current;
+          const currentAbsoluteSeconds =
+            video && Number.isFinite(video.currentTime) && video.currentTime >= 0
+              ? hlsSessionStartOffsetSecs + video.currentTime
+              : undefined;
           setHlsTargetHeight(nextTargetHeight);
-          void startHls({ targetHeightOverride: nextTargetHeight });
+          void startHls({
+            targetHeightOverride: nextTargetHeight,
+            seekTimeOverrideSecs:
+              currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                ? currentAbsoluteSeconds
+                : undefined,
+          });
         }}
         onSeekRequest={handleSeek}
         onDownload={handleDownload}
@@ -994,7 +1005,6 @@ export default function PlayerPage() {
         playbackEnabled={canStartPlayback}
         seekEnabled={canStartPlayback}
         maxViewportHeightClassName="max-h-[80vh]"
-        statusText={startingHls ? 'Preparing transcoded stream…' : null}
         videoElementProps={{
           preload: 'metadata',
           onError: () => {
