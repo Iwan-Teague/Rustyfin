@@ -74,6 +74,15 @@ a {
   transition: color 160ms ease, border-color 160ms ease, transform 160ms ease, opacity 160ms ease;
 }
 
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--orange-soft);
+  outline-offset: 2px;
+}
+
 .app-nav {
   background: linear-gradient(180deg, rgba(37, 43, 61, 0.9), rgba(31, 37, 54, 0.82));
   border: 1px solid var(--border);
@@ -90,6 +99,18 @@ a {
 
 .muted {
   color: var(--text-muted);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }
 
 .panel {
@@ -367,6 +388,13 @@ a {
   box-shadow: 0 0 0 3px rgba(177, 140, 255, 0.18);
 }
 
+.input:disabled,
+.select:disabled {
+  color: rgba(248, 248, 255, 0.65);
+  background: rgba(21, 25, 38, 0.52);
+  cursor: not-allowed;
+}
+
 /* Circular toggle checkbox — no tick, accent gradient when checked */
 input[type="checkbox"] {
   appearance: none;
@@ -637,5 +665,16 @@ input[type="checkbox"]:disabled {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .mini-player-track-info {
+    max-width: 9.5rem;
+  }
+
+  .mini-player-volume {
+    width: 100%;
+    justify-content: flex-start;
   }
 }

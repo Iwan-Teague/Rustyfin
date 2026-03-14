@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useMusicPlayer } from '@/lib/musicPlayerContext';
 
 function formatSeconds(s: number): string {
@@ -29,34 +30,38 @@ export default function MiniPlayer() {
   if (queue.length === 0 || !currentTrack) return null;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--border)] bg-[var(--surface)] px-4 py-2 flex items-center gap-4">
+    <div className="fixed bottom-0 left-0 right-0 z-40 flex flex-col gap-2 border-t border-[var(--border)] bg-[var(--surface)] px-3 py-2 sm:flex-row sm:items-center sm:gap-4 sm:px-4">
       {/* Album art + track info */}
-      <div className="flex items-center gap-3 min-w-0 w-56 shrink-0">
+      <div className="flex min-w-0 items-center gap-3 sm:w-56 sm:shrink-0">
         {currentTrack.albumArtUrl ? (
-          <img
+          <Image
             src={currentTrack.albumArtUrl}
             alt={currentTrack.albumTitle}
-            className="w-10 h-10 rounded object-cover shrink-0"
+            width={40}
+            height={40}
+            unoptimized
+            className="h-10 w-10 shrink-0 rounded object-cover"
           />
         ) : (
-          <div className="w-10 h-10 rounded bg-white/10 flex items-center justify-center shrink-0 text-lg">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-white/10 text-lg">
             ♪
           </div>
         )}
-        <div className="min-w-0">
+        <div className="mini-player-track-info min-w-0">
           <p className="text-sm font-medium truncate">{currentTrack.title}</p>
           <p className="text-xs muted truncate">{currentTrack.artist}</p>
         </div>
       </div>
 
       {/* Controls + seek */}
-      <div className="flex-1 flex flex-col items-center gap-1 min-w-0">
+      <div className="flex min-w-0 flex-1 flex-col items-center gap-1">
         <div className="flex items-center gap-3">
           <button
             onClick={prev}
             disabled={currentIndex === 0}
             className="btn-ghost px-2 py-1 text-base disabled:opacity-30"
             title="Previous"
+            aria-label="Previous track"
           >
             ⏮
           </button>
@@ -64,6 +69,7 @@ export default function MiniPlayer() {
             onClick={playPause}
             className="btn-primary px-3 py-1.5 text-sm rounded-full"
             title={playing ? 'Pause' : 'Play'}
+            aria-label={playing ? 'Pause playback' : 'Start playback'}
           >
             {playing ? '⏸' : '▶'}
           </button>
@@ -72,11 +78,12 @@ export default function MiniPlayer() {
             disabled={currentIndex >= queue.length - 1}
             className="btn-ghost px-2 py-1 text-base disabled:opacity-30"
             title="Next"
+            aria-label="Next track"
           >
             ⏭
           </button>
         </div>
-        <div className="flex items-center gap-2 w-full max-w-md">
+        <div className="flex w-full max-w-md items-center gap-2">
           <span className="text-xs muted w-8 text-right shrink-0">{formatSeconds(progress)}</span>
           <input
             type="range"
@@ -86,13 +93,14 @@ export default function MiniPlayer() {
             value={progress}
             onChange={(e) => seek(Number(e.target.value))}
             className="flex-1 h-1 accent-[var(--orange-soft)]"
+            aria-label="Playback timeline"
           />
           <span className="text-xs muted w-8 shrink-0">{formatSeconds(duration)}</span>
         </div>
       </div>
 
       {/* Volume + stop */}
-      <div className="flex items-center gap-2 w-32 shrink-0 justify-end">
+      <div className="mini-player-volume flex w-full items-center gap-2 justify-end sm:w-32 sm:shrink-0">
         <span className="text-sm muted">Volume:</span>
         <input
           type="range"
@@ -102,11 +110,13 @@ export default function MiniPlayer() {
           value={volume}
           onChange={(e) => setVolume(Number(e.target.value))}
           className="w-16 h-1 accent-[var(--orange-soft)]"
+          aria-label="Volume"
         />
         <button
           onClick={stop}
           className="btn-ghost px-2 py-1 text-xs muted"
           title="Stop"
+          aria-label="Stop playback"
         >
           ✕
         </button>

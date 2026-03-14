@@ -41,7 +41,10 @@ export default function NetworkPage() {
       </header>
 
       <section className="panel-soft px-5 py-6">
-        <p className="text-sm muted">Nothing is here yet.</p>
+        <p className="text-sm text-slate-200">
+          No network controls are available yet. This space is reserved for future host routing,
+          access policy, and remote-session tooling.
+        </p>
       </section>
     </div>
   );

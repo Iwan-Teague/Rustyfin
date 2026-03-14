@@ -434,7 +434,7 @@ function ChessGamePanel({ chess, members, currentUserId, canControl, sendWs }: C
                     <span className={piece && piece === piece.toLowerCase() ? 'text-white/90' : 'text-white'}>
                       {piece ? PIECE_SYMBOLS[piece] : ''}
                     </span>
-                    <span className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/35">{square}</span>
+                    <span className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] text-white/55">{square}</span>
                   </button>
                 );
               }),

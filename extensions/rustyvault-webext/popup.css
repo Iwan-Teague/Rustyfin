@@ -50,6 +50,19 @@ body {
   margin-bottom: 12px;
 }
 
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.field-inline input[type="checkbox"] {
+  margin: 0;
+  inline-size: 16px;
+  block-size: 16px;
+}
+
 .field input {
   border: 1px solid rgba(215, 223, 255, 0.16);
   border-radius: 14px;
@@ -65,6 +78,14 @@ body {
   background: rgba(0, 0, 0, 0.22);
   color: inherit;
   padding: 11px 13px;
+}
+
+.field input:focus-visible,
+.field textarea:focus-visible,
+.field select:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid #ffc27a;
+  outline-offset: 2px;
 }
 
 .row {

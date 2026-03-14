@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Image from 'next/image';
 import { apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
 import {
@@ -561,9 +562,12 @@ export default function AudioPlayer({
               {/* Album Art */}
               <div className="mx-auto flex-shrink-0 sm:mx-0">
                 {audioState.album_art_url ? (
-                  <img
+                  <Image
                     src={audioState.album_art_url}
                     alt={audioState.album || 'Album art'}
+                    width={192}
+                    height={192}
+                    unoptimized
                     className="h-40 w-40 rounded-xl object-cover shadow-md sm:h-48 sm:w-48"
                   />
                 ) : (
@@ -852,9 +856,12 @@ export default function AudioPlayer({
                         return (
                           <li key={result.video_id} className="tile rounded-xl px-3 py-2">
                             <div className="flex items-center gap-3">
-                              <img
+                              <Image
                                 src={result.thumbnail_url}
                                 alt={result.title}
+                                width={80}
+                                height={48}
+                                unoptimized
                                 className="h-12 w-20 rounded-md object-cover"
                               />
                               <div className="min-w-0 flex-1">

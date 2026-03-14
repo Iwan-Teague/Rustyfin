@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
@@ -39,28 +39,41 @@ export default function NavBar() {
     }
   }, [menuOpen, showDesktopNav]);
 
-  const navLinks = [
-    { href: '/channels', label: 'Channels' },
-    { href: '/rooms', label: 'Rooms' },
-    { href: '/network', label: 'Network' },
-    { href: '/servers', label: 'Servers' },
-    { href: '/calendar', label: 'Calendar' },
-    { href: '/libraries', label: 'Libraries' },
-    { href: '/vault', label: 'Vault' },
-    { href: '/downloads', label: 'Downloads' },
-    ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
-  ];
-  const desktopLeftNavLinks = navLinks.filter((link) =>
-    ['/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(link.href),
+  const navLinks = useMemo(
+    () => [
+      { href: '/channels', label: 'Channels' },
+      { href: '/rooms', label: 'Rooms' },
+      { href: '/network', label: 'Network' },
+      { href: '/servers', label: 'Servers' },
+      { href: '/calendar', label: 'Calendar' },
+      { href: '/libraries', label: 'Libraries' },
+      { href: '/vault', label: 'Vault' },
+      { href: '/downloads', label: 'Downloads' },
+      ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
+    ],
+    [loading, me?.role],
   );
-  const desktopRightNavLinks = navLinks.filter((link) =>
-    ['/admin'].includes(link.href),
+  const desktopLeftNavLinks = useMemo(
+    () =>
+      navLinks.filter((link) =>
+        ['/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(link.href),
+      ),
+    [navLinks],
+  );
+  const desktopRightNavLinks = useMemo(
+    () => navLinks.filter((link) => ['/admin'].includes(link.href)),
+    [navLinks],
   );
   const hasLocalStream = voiceSession?.localStream !== null;
   const muted = voiceSession?.muted ?? false;
   const deafened = voiceSession?.deafened ?? false;
   const baseVoiceActionClass =
     'inline-flex items-center justify-center rounded-full border transition';
+  const isActivePath = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const navLinkClass = (href: string, base: string) =>
+    `${base} ${
+      isActivePath(href) ? 'border-[var(--border-strong)] bg-white/5 text-[var(--text-main)]' : ''
+    }`;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -205,7 +218,12 @@ export default function NavBar() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex min-w-0 items-center justify-start gap-2">
               {desktopLeftNavLinks.map((link) => (
-                <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  className={navLinkClass(link.href, 'btn-ghost shrink-0 px-3 py-2 text-sm')}
+                  aria-current={isActivePath(link.href) ? 'page' : undefined}
+                >
                   {link.label}
                 </Link>
               ))}
@@ -303,7 +321,12 @@ export default function NavBar() {
                     {me.username}
                   </Link>
                   {desktopRightNavLinks.map((link) => (
-                    <Link key={link.href} href={link.href} className="btn-ghost shrink-0 px-3 py-2 text-sm">
+                    <Link
+                      key={link.href}
+                      href={link.href}
+                      className={navLinkClass(link.href, 'btn-ghost shrink-0 px-3 py-2 text-sm')}
+                      aria-current={isActivePath(link.href) ? 'page' : undefined}
+                    >
                       {link.label}
                     </Link>
                   ))}
@@ -343,6 +366,7 @@ export default function NavBar() {
             onClick={() => setMenuOpen((prev) => !prev)}
             aria-label="Toggle menu"
             aria-expanded={menuOpen}
+            aria-controls="mobile-nav-menu"
           >
             ☰
           </button>
@@ -431,12 +455,13 @@ export default function NavBar() {
       ) : null}
 
       {!showDesktopNav && menuOpen ? (
-        <div className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2">
+        <div id="mobile-nav-menu" className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2">
           {navLinks.map((link) => (
             <Link
               key={link.href}
               href={link.href}
-              className="btn-ghost rounded-xl px-3 py-3 text-base"
+              className={navLinkClass(link.href, 'btn-ghost rounded-xl px-3 py-3 text-base')}
+              aria-current={isActivePath(link.href) ? 'page' : undefined}
               onClick={() => setMenuOpen(false)}
             >
               {link.label}
@@ -509,16 +534,16 @@ export default function NavBar() {
                 >
                   Cancel
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setConfirmLeaveVoiceOpen(false);
-                    leaveVoice();
-                  }}
-                  className="btn-primary bg-red-500 px-4 py-2 text-sm hover:bg-red-600"
-                >
-                  Leave
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmLeaveVoiceOpen(false);
+                      leaveVoice();
+                    }}
+                    className="btn-danger px-4 py-2 text-sm"
+                  >
+                    Leave
+                  </button>
               </div>
             </div>
           </div>,

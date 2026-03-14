@@ -6,6 +6,14 @@ function isVisible(element) {
   return rect.width > 0 && rect.height > 0;
 }
 
+function safeSendMessage(payload) {
+  try {
+    chrome.runtime.sendMessage(payload);
+  } catch {
+    // The extension context can disappear during navigation; ignore best-effort updates.
+  }
+}
+
 function locateUsernameField(form) {
   const candidates = form.querySelectorAll(
     'input[type="text"], input[type="email"], input[name*="user" i], input[name*="email" i], input[autocomplete="username"], input[autocomplete="email"]',
@@ -20,7 +28,7 @@ function locatePasswordField(form) {
 
 function notifyPageContext() {
   const hasPasswordField = Boolean(document.querySelector('input[type="password"]'));
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'page-context',
     url: window.location.href,
     hasPasswordField,
@@ -33,7 +41,7 @@ function captureFormSubmission(form) {
     return;
   }
   const usernameField = locateUsernameField(form);
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'credential-capture',
     payload: {
       title: document.title || window.location.hostname,

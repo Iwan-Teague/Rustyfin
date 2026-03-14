@@ -593,7 +593,7 @@ export default function ServersPage() {
     });
   }
 
-  async function refreshServers(selectId?: string) {
+  async function refreshServers() {
     const rows = await listMinecraftServers();
     setServers(rows);
     setServerEdits((prev) => {
@@ -779,7 +779,7 @@ export default function ServersPage() {
       setCreateStep('mode');
       setImportSourcePath('');
       setPendingImportServerId(null);
-      await refreshServers(created.id);
+      await refreshServers();
     } catch (err: unknown) {
       if (createMode === 'import') {
         setCreateStep('source');

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { useAuth } from '@/lib/auth';
 import { apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
@@ -188,9 +189,12 @@ export default function HomePage() {
                     <div className="flex min-h-[9rem] gap-4 p-4">
                       <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
                         {item.poster_url ? (
-                          <img
+                          <Image
                             src={item.poster_url}
                             alt={item.title}
+                            width={192}
+                            height={288}
+                            unoptimized
                             className="h-full w-full object-cover"
                           />
                         ) : (
@@ -204,7 +208,7 @@ export default function HomePage() {
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
                               <p className="truncate text-base font-semibold">{item.title}</p>
-                              <p className="text-xs uppercase tracking-[0.24em] text-white/40">
+                              <p className="text-xs uppercase tracking-[0.24em] text-white/60">
                                 {item.kind === 'episode' ? 'Episode' : 'Movie'}
                                 {item.year ? ` · ${item.year}` : ''}
                               </p>
@@ -238,10 +242,12 @@ export default function HomePage() {
             </Link>
           </div>
           {loadingData ? (
-            <div className="panel-soft px-4 py-3 text-sm muted">Loading open rooms...</div>
+            <div className="panel-soft px-4 py-3 text-sm muted" aria-live="polite">
+              Loading open rooms...
+            </div>
           ) : publicRooms.length === 0 ? (
             <div className="panel-soft px-4 py-3 text-sm muted">
-              No open rooms right now.
+              No open rooms right now. Open the Rooms page to start one for friends and family.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3">

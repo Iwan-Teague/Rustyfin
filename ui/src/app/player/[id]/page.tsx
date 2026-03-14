@@ -445,9 +445,6 @@ export default function PlayerPage() {
           let playbackKickInFlight = false;
           const reinforceKnownDuration = (data?: unknown) => {
             const playlistWindowDuration = extractPlaylistWindowDuration(data);
-            const details = (data as { details?: LevelDetails } | null)?.details as
-              | (LevelDetails & { totalduration?: number; edge?: number })
-              | undefined;
             const reportedWindowDuration = Math.max(
               playlistWindowDuration,
               readBufferedWindowDuration(video),

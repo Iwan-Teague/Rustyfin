@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
@@ -53,6 +53,8 @@ export default function ChannelsPage() {
   const [createName, setCreateName] = useState('');
   const [createPrivate, setCreatePrivate] = useState(false);
   const [createError, setCreateError] = useState('');
+  const createDialogTitleId = 'create-channel-dialog-title';
+  const createDialogFieldId = 'create-channel-name';
 
   if (!authLoading && !me) {
     router.replace('/login');
@@ -181,14 +183,21 @@ export default function ChannelsPage() {
 
       {/* Create channel modal */}
       {createModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4">
-            <h2 className="font-semibold text-lg">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setCreateModal(null)}>
+          <div
+            className="panel rounded-2xl p-6 w-full max-w-sm space-y-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={createDialogTitleId}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id={createDialogTitleId} className="font-semibold text-lg">
               Create {createModal.kind === 'text' ? 'Text' : 'Voice'} Channel
             </h2>
             <div className="space-y-2">
-              <label className="text-sm muted">Channel name</label>
+              <label htmlFor={createDialogFieldId} className="text-sm muted">Channel name</label>
               <input
+                id={createDialogFieldId}
                 className="panel w-full rounded-lg px-3 py-2 text-sm"
                 placeholder={createModal.kind === 'text' ? 'general' : 'Lobby'}
                 value={createName}
@@ -207,7 +216,7 @@ export default function ChannelsPage() {
                 Private channel (admins only)
               </label>
             )}
-            {createError && <p className="text-sm text-red-400">{createError}</p>}
+            {createError && <p className="text-sm text-red-400" role="alert">{createError}</p>}
             <div className="flex gap-2 justify-end">
               <button onClick={() => setCreateModal(null)} className="btn-ghost px-4 py-2 text-sm">
                 Cancel

@@ -278,7 +278,7 @@ export default function SetupWizard() {
       </div>
 
       {error && (
-        <div className="notice-error rounded-xl px-4 py-2 text-sm">
+        <div className="notice-error rounded-xl px-4 py-2 text-sm" role="alert">
           {error}
         </div>
       )}
@@ -307,48 +307,58 @@ export default function SetupWizard() {
           <h2 className="text-2xl font-semibold sm:text-3xl">Server Configuration</h2>
           <form onSubmit={(e) => { e.preventDefault(); handleConfig(); }} className="space-y-4">
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Server Name</label>
+              <label htmlFor="setup-server-name" className="mb-1 block text-sm font-medium muted">Server Name</label>
               <input
+                id="setup-server-name"
                 type="text"
                 value={serverName}
                 onChange={(e) => setServerName(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.server_name))}
                 maxLength={64}
+                aria-invalid={Boolean(fieldErrors.server_name)}
+                aria-describedby={fieldErrors.server_name ? 'setup-server-name-error' : undefined}
               />
               {fieldErrors.server_name && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.server_name[0]}</p>
+                <p id="setup-server-name-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.server_name[0]}</p>
               )}
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Default Locale (BCP-47)</label>
+              <label htmlFor="setup-default-locale" className="mb-1 block text-sm font-medium muted">Default Locale (BCP-47)</label>
               <input
+                id="setup-default-locale"
                 type="text"
                 value={locale}
                 onChange={(e) => setLocale(e.target.value)}
                 placeholder="en-GB"
                 className={inputClass(Boolean(fieldErrors.default_ui_locale))}
+                aria-invalid={Boolean(fieldErrors.default_ui_locale)}
+                aria-describedby={fieldErrors.default_ui_locale ? 'setup-default-locale-error' : undefined}
               />
               {fieldErrors.default_ui_locale && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.default_ui_locale[0]}</p>
+                <p id="setup-default-locale-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.default_ui_locale[0]}</p>
               )}
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Region (ISO 3166-1, e.g. US)</label>
+              <label htmlFor="setup-default-region" className="mb-1 block text-sm font-medium muted">Region (ISO 3166-1, e.g. US)</label>
               <input
+                id="setup-default-region"
                 type="text"
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 placeholder="GB"
                 maxLength={2}
                 className={inputClass(Boolean(fieldErrors.default_region))}
+                aria-invalid={Boolean(fieldErrors.default_region)}
+                aria-describedby={fieldErrors.default_region ? 'setup-default-region-error' : undefined}
               />
               {fieldErrors.default_region && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.default_region[0]}</p>
+                <p id="setup-default-region-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.default_region[0]}</p>
               )}
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Time Zone (IANA, optional)</label>
+              <label htmlFor="setup-time-zone" className="mb-1 block text-sm font-medium muted">Time Zone (IANA, optional)</label>
               <input
+                id="setup-time-zone"
                 type="text"
                 value={timeZone}
                 onChange={(e) => setTimeZone(e.target.value)}
@@ -375,44 +385,53 @@ export default function SetupWizard() {
           </p>
           <form onSubmit={(e) => { e.preventDefault(); handleAdmin(); }} className="space-y-4">
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Username</label>
+              <label htmlFor="setup-admin-username" className="mb-1 block text-sm font-medium muted">Username</label>
               <input
+                id="setup-admin-username"
                 type="text"
                 value={adminUsername}
                 onChange={(e) => setAdminUsername(e.target.value)}
                 placeholder="admin"
                 className={inputClass(Boolean(fieldErrors.username))}
+                aria-invalid={Boolean(fieldErrors.username)}
+                aria-describedby={fieldErrors.username ? 'setup-admin-username-error' : undefined}
               />
               {fieldErrors.username && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.username[0]}</p>
+                <p id="setup-admin-username-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.username[0]}</p>
               )}
               <p className="mt-1 text-xs muted">3-32 characters: letters, numbers, dots, hyphens, underscores</p>
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Password</label>
+              <label htmlFor="setup-admin-password" className="mb-1 block text-sm font-medium muted">Password</label>
               <input
+                id="setup-admin-password"
                 type="password"
                 minLength={6}
                 value={adminPassword}
                 onChange={(e) => setAdminPassword(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password))}
+                aria-invalid={Boolean(fieldErrors.password)}
+                aria-describedby={fieldErrors.password ? 'setup-admin-password-error' : undefined}
               />
               {fieldErrors.password && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password[0]}</p>
+                <p id="setup-admin-password-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password[0]}</p>
               )}
               <p className="mt-1 text-xs muted">Minimum 6 characters</p>
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Confirm Password</label>
+              <label htmlFor="setup-admin-password-confirm" className="mb-1 block text-sm font-medium muted">Confirm Password</label>
               <input
+                id="setup-admin-password-confirm"
                 type="password"
                 minLength={6}
                 value={adminPasswordConfirm}
                 onChange={(e) => setAdminPasswordConfirm(e.target.value)}
                 className={inputClass(Boolean(fieldErrors.password_confirm))}
+                aria-invalid={Boolean(fieldErrors.password_confirm)}
+                aria-describedby={fieldErrors.password_confirm ? 'setup-admin-password-confirm-error' : undefined}
               />
               {fieldErrors.password_confirm && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password_confirm[0]}</p>
+                <p id="setup-admin-password-confirm-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.password_confirm[0]}</p>
               )}
             </div>
             <button
@@ -434,30 +453,36 @@ export default function SetupWizard() {
           </p>
           <form onSubmit={(e) => { e.preventDefault(); handleMetadata(); }} className="space-y-4">
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Metadata Language</label>
+              <label htmlFor="setup-metadata-language" className="mb-1 block text-sm font-medium muted">Metadata Language</label>
               <input
+                id="setup-metadata-language"
                 type="text"
                 value={metaLanguage}
                 onChange={(e) => setMetaLanguage(e.target.value)}
                 placeholder="en"
                 className={inputClass(Boolean(fieldErrors.metadata_language))}
+                aria-invalid={Boolean(fieldErrors.metadata_language)}
+                aria-describedby={fieldErrors.metadata_language ? 'setup-metadata-language-error' : undefined}
               />
               {fieldErrors.metadata_language && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.metadata_language[0]}</p>
+                <p id="setup-metadata-language-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.metadata_language[0]}</p>
               )}
             </div>
             <div>
-              <label className="mb-1 block text-sm font-medium muted">Metadata Region</label>
+              <label htmlFor="setup-metadata-region" className="mb-1 block text-sm font-medium muted">Metadata Region</label>
               <input
+                id="setup-metadata-region"
                 type="text"
                 value={metaRegion}
                 onChange={(e) => setMetaRegion(e.target.value)}
                 placeholder="GB"
                 maxLength={2}
                 className={inputClass(Boolean(fieldErrors.metadata_region))}
+                aria-invalid={Boolean(fieldErrors.metadata_region)}
+                aria-describedby={fieldErrors.metadata_region ? 'setup-metadata-region-error' : undefined}
               />
               {fieldErrors.metadata_region && (
-                <p className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.metadata_region[0]}</p>
+                <p id="setup-metadata-region-error" className="mt-1 text-xs text-[var(--danger)]">{fieldErrors.metadata_region[0]}</p>
               )}
             </div>
             <button
@@ -478,8 +503,9 @@ export default function SetupWizard() {
             Configure remote access policy. Rustyfin does not perform router port forwarding.
           </p>
           <form onSubmit={(e) => { e.preventDefault(); handleNetwork(); }} className="space-y-4">
-            <label className="panel-soft flex cursor-pointer items-center gap-3 px-4 py-3">
+            <label htmlFor="setup-allow-remote" className="panel-soft flex cursor-pointer items-center gap-3 px-4 py-3">
               <input
+                id="setup-allow-remote"
                 type="checkbox"
                 checked={allowRemote}
                 onChange={(e) => setAllowRemote(e.target.checked)}

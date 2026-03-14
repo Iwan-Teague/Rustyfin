@@ -1,9 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { apiJson } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import {
   PublicRoom,
@@ -12,7 +11,6 @@ import {
   WatchPartyUser,
   createWatchPartyRoom,
   declineWatchPartyInvite,
-  getEligibleLibraries,
   listPublicRooms,
   listWatchPartyInvites,
   listWatchPartyUsers,
@@ -22,12 +20,6 @@ import RoomOptions from './components/RoomOptions';
 import InvitesPanel from './components/InvitesPanel';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
 import { clientErrorMessage } from '@/lib/errors';
-
-type LibrarySummary = {
-  id: string;
-  name: string;
-  kind: string;
-};
 
 type RoomMode = 'watch' | 'audio' | 'play' | 'create';
 
@@ -43,12 +35,10 @@ export default function WatchPartyPage() {
   const { me, loading: authLoading } = useAuth();
 
   const [users, setUsers] = useState<WatchPartyUser[]>([]);
-  const [allLibraries, setAllLibraries] = useState<LibrarySummary[]>([]);
   const [invites, setInvites] = useState<WatchPartyInvite[]>([]);
 
   const [roomMode, setRoomMode] = useState<RoomMode>('watch');
   const [selectedInvites, setSelectedInvites] = useState<Record<string, SelectedInvite>>({});
-  const [eligibleLibraryIds, setEligibleLibraryIds] = useState<string[]>([]);
   const [roomName, setRoomName] = useState('');
   const [policy, setPolicy] = useState<WatchPartyPolicy>(DEFAULT_POLICY);
   const [password, setPassword] = useState('');
@@ -63,7 +53,6 @@ export default function WatchPartyPage() {
   const [fixedColumnHeightPx, setFixedColumnHeightPx] = useState<number | null>(null);
   const roomOptionsMeasureRef = useRef<HTMLDivElement | null>(null);
 
-  const selectedInviteIds = useMemo(() => Object.keys(selectedInvites), [selectedInvites]);
   const effectivePolicyRoomMode = roomMode === 'audio'
     ? 'audio'
     : roomMode === 'create'
@@ -85,9 +74,8 @@ export default function WatchPartyPage() {
 
     (async () => {
       try {
-        const [userList, libraryList, inviteList, publicRoomList] = await Promise.all([
+        const [userList, inviteList, publicRoomList] = await Promise.all([
           listWatchPartyUsers(),
-          apiJson<LibrarySummary[]>('/libraries'),
           listWatchPartyInvites(),
           listPublicRooms(),
         ]);
@@ -95,14 +83,8 @@ export default function WatchPartyPage() {
         if (cancelled) return;
 
         setUsers(userList);
-        setAllLibraries(libraryList);
         setInvites(inviteList);
         setPublicRooms(publicRoomList);
-
-        const initialEligible = await getEligibleLibraries([]);
-        if (cancelled) return;
-
-        setEligibleLibraryIds(initialEligible);
 
       } catch (err: unknown) {
         if (!cancelled) {
@@ -119,31 +101,6 @@ export default function WatchPartyPage() {
       cancelled = true;
     };
   }, [me]);
-
-  useEffect(() => {
-    if (!me) return;
-
-    let cancelled = false;
-    setError('');
-
-    (async () => {
-      try {
-        const eligible = await getEligibleLibraries(selectedInviteIds);
-        if (cancelled) return;
-
-        setEligibleLibraryIds(eligible);
-
-      } catch (err: unknown) {
-        if (!cancelled) {
-          setError(clientErrorMessage(err, 'Failed to update shared library intersection'));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedInviteIds, me]);
 
   useEffect(() => {
     if (publicRooms.length === 0) return;

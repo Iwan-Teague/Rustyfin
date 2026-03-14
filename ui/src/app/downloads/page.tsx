@@ -148,14 +148,14 @@ export default function DownloadsPage() {
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="panel-soft min-w-[11rem] px-4 py-4">
-              <p className="text-xs uppercase tracking-[0.24em] text-white/45">Available now</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-white/60">Available now</p>
               <p className="mt-2 text-2xl font-semibold">{availableNowCount}</p>
               <p className="mt-1 text-sm muted">
                 {availableNowCount === 1 ? 'Authenticated package' : 'Authenticated packages'}
               </p>
             </div>
             <div className="panel-soft min-w-[11rem] px-4 py-4">
-              <p className="text-xs uppercase tracking-[0.24em] text-white/45">Planned</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-white/60">Planned</p>
               <p className="mt-2 text-2xl font-semibold">{plannedDownloads.length}</p>
               <p className="mt-1 text-sm muted">Future clients and companion releases</p>
             </div>
@@ -206,17 +206,17 @@ export default function DownloadsPage() {
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div className="panel-soft px-4 py-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">Use case</p>
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/60">Use case</p>
                   <p className="mt-2 font-medium">{currentRelease.summary}</p>
                 </div>
                 <div className="panel-soft px-4 py-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">Package</p>
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/60">Package</p>
                   <p className="mt-2 font-medium">
                     {catalogLoading ? 'Loading package metadata...' : currentRelease.package_filename || 'Not currently downloadable'}
                   </p>
                 </div>
                 <div className="panel-soft px-4 py-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">Setup</p>
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/60">Setup</p>
                   <p className="mt-2 font-medium">
                     {currentRelease.setup_path ? 'Continue from the Vault page' : currentRelease.detail}
                   </p>

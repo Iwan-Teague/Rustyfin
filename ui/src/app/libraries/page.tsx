@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { apiJson } from '@/lib/api';
 
 interface Library {
@@ -155,9 +156,12 @@ export default function LibrariesPage() {
                   <div className="flex min-h-[9rem] gap-4 p-4">
                     <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
                       {item.poster_url ? (
-                        <img
+                        <Image
                           src={item.poster_url}
                           alt={item.title}
+                          width={192}
+                          height={288}
+                          unoptimized
                           className="h-full w-full object-cover"
                         />
                       ) : (
@@ -171,7 +175,7 @@ export default function LibrariesPage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="truncate text-base font-semibold">{item.title}</p>
-                            <p className="text-xs uppercase tracking-[0.24em] text-white/40">
+                            <p className="text-xs uppercase tracking-[0.24em] text-white/60">
                               {item.kind === 'episode' ? 'Episode' : 'Movie'}
                               {item.year ? ` · ${item.year}` : ''}
                             </p>
@@ -208,9 +212,12 @@ export default function LibrariesPage() {
               <Link key={`rec-${item.id}`} href={`/items/${item.id}`} className="group block">
                 <div className="tile tile-hover aspect-[2/3] overflow-hidden">
                   {item.poster_url ? (
-                    <img
+                    <Image
                       src={item.poster_url}
                       alt={item.title}
+                      width={192}
+                      height={288}
+                      unoptimized
                       className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                     />
                   ) : (
