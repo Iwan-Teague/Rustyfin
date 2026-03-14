@@ -2501,9 +2501,20 @@ struct PlaybackDescriptorResponse {
     duration_ms: Option<i64>,
 }
 
-fn item_image_url(item_id: &str, img_type: &str, include_images: bool) -> Option<String> {
+fn item_image_url(
+    item_id: &str,
+    img_type: &str,
+    include_images: bool,
+    version: Option<i64>,
+) -> Option<String> {
     if include_images {
-        Some(format!("/api/v1/items/{item_id}/images/{img_type}"))
+        if let Some(version) = version {
+            Some(format!(
+                "/api/v1/items/{item_id}/images/{img_type}?v={version}"
+            ))
+        } else {
+            Some(format!("/api/v1/items/{item_id}/images/{img_type}"))
+        }
     } else {
         None
     }
@@ -2525,22 +2536,22 @@ fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool
         year: item.year,
         overview: item.overview,
         poster_url: if item.poster_url.is_some() || include_generated {
-            item_image_url(&item.id, "poster", include_images)
+            item_image_url(&item.id, "poster", include_images, Some(item.updated_ts))
         } else {
             None
         },
         backdrop_url: if item.backdrop_url.is_some() || include_generated {
-            item_image_url(&item.id, "backdrop", include_images)
+            item_image_url(&item.id, "backdrop", include_images, Some(item.updated_ts))
         } else {
             None
         },
         logo_url: if item.logo_url.is_some() {
-            item_image_url(&item.id, "logo", include_images)
+            item_image_url(&item.id, "logo", include_images, Some(item.updated_ts))
         } else {
             None
         },
         thumb_url: if item.thumb_url.is_some() || include_generated {
-            item_image_url(&item.id, "thumb", include_images)
+            item_image_url(&item.id, "thumb", include_images, Some(item.updated_ts))
         } else {
             None
         },
@@ -3060,6 +3071,7 @@ struct ContinueWatchingResponse {
     title: String,
     year: Option<i64>,
     poster_url: Option<String>,
+    thumb_url: Option<String>,
     progress_ms: i64,
     duration_ms: Option<i64>,
     last_played_ts: i64,
@@ -3144,6 +3156,11 @@ async fn list_continue_watching(
         };
 
         let include_generated_poster = supports_generated_item_images(&row.kind);
+        let include_generated_thumb = supports_generated_item_images(&row.kind);
+        let show_images = show_images_by_library
+            .get(&row.library_id)
+            .copied()
+            .unwrap_or(true);
 
         response_rows.push(ContinueWatchingResponse {
             id: row.item_id.clone(),
@@ -3151,13 +3168,13 @@ async fn list_continue_watching(
             kind: row.kind,
             title: row.title,
             year: row.year,
-            poster_url: if (row.poster_url.is_some() || include_generated_poster)
-                && show_images_by_library
-                    .get(&row.library_id)
-                    .copied()
-                    .unwrap_or(true)
-            {
-                item_image_url(&row.item_id, "poster", true)
+            poster_url: if (row.poster_url.is_some() || include_generated_poster) && show_images {
+                item_image_url(&row.item_id, "poster", true, None)
+            } else {
+                None
+            },
+            thumb_url: if (row.thumb_url.is_some() || include_generated_thumb) && show_images {
+                item_image_url(&row.item_id, "thumb", true, None)
             } else {
                 None
             },
@@ -4325,11 +4342,41 @@ async fn get_item_image(
     let ext = resolve_image_ext(query.format.as_deref(), image_url.as_deref());
     let cache_path = images_dir.join(format!("{cache_key}.{ext}"));
 
-    // Check cache
-    if !tokio::fs::try_exists(&cache_path)
+    let cache_exists = tokio::fs::try_exists(&cache_path)
         .await
-        .map_err(|e| ApiError::Internal(format!("cache existence error: {e}")))?
-    {
+        .map_err(|e| ApiError::Internal(format!("cache existence error: {e}")))?;
+    let mut should_materialize = !cache_exists;
+    if cache_exists {
+        if let Some(image_url) = image_url.as_deref() {
+            if !image_url.starts_with("http://") && !image_url.starts_with("https://") {
+                let source_path = StdPath::new(image_url);
+                if tokio::fs::try_exists(source_path)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("image source existence error: {e}")))?
+                {
+                    let cache_meta = tokio::fs::metadata(&cache_path)
+                        .await
+                        .map_err(|e| ApiError::Internal(format!("cache metadata error: {e}")))?;
+                    let source_meta = tokio::fs::metadata(source_path).await.map_err(|e| {
+                        ApiError::Internal(format!("image source metadata error: {e}"))
+                    })?;
+                    let cache_mtime = cache_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let source_mtime = source_meta
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    if cache_meta.len() != source_meta.len() || cache_mtime < source_mtime {
+                        should_materialize = true;
+                    }
+                } else {
+                    should_materialize = true;
+                }
+            }
+        }
+    }
+
+    if should_materialize {
         if let Some(image_url) = image_url.as_deref() {
             if image_url.starts_with("http://") || image_url.starts_with("https://") {
                 let resp = state
@@ -5234,7 +5281,7 @@ mod tests {
     use super::{
         ChildWatchOrderMode, LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS,
         Router, cached_image_source_token, enforce_login_rate_limit, extract_login_client_identity,
-        infer_image_ext_from_source, login_attempt_key, mounted_rustyvault_router,
+        infer_image_ext_from_source, item_image_url, login_attempt_key, mounted_rustyvault_router,
         normalize_session_start_time_secs, parse_episode_order_from_media_path,
         parse_episode_order_from_sort_title, parse_season_order_from_sort_title,
         parse_season_order_from_title, reset_login_rate_limit, resolve_child_watch_order_mode,
@@ -5534,6 +5581,19 @@ mod tests {
         );
         assert_eq!(resolve_image_ext(None, Some("/tmp/poster.avif")), "avif");
         assert_eq!(resolve_image_ext(None, None), "jpg");
+    }
+
+    #[test]
+    fn item_image_url_appends_version_query_when_available() {
+        assert_eq!(
+            item_image_url("abc", "poster", true, Some(1234)).as_deref(),
+            Some("/api/v1/items/abc/images/poster?v=1234")
+        );
+        assert_eq!(
+            item_image_url("abc", "poster", true, None).as_deref(),
+            Some("/api/v1/items/abc/images/poster")
+        );
+        assert_eq!(item_image_url("abc", "poster", false, Some(1234)), None);
     }
 
     #[test]

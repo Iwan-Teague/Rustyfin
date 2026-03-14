@@ -156,6 +156,17 @@ function sameCalendarDay(a: Date, b: Date): boolean {
   );
 }
 
+function shouldIgnoreDaySurfaceActivation(
+  target: EventTarget | null,
+  currentTarget: EventTarget | null,
+): boolean {
+  if (!(target instanceof HTMLElement) || !(currentTarget instanceof HTMLElement)) {
+    return false;
+  }
+  const interactive = target.closest('button, a, input, select, textarea, [role="button"]');
+  return Boolean(interactive && interactive !== currentTarget);
+}
+
 function eventBadgeClass(event: CalendarEvent): string {
   if (event.event_type === 'birthday') {
     return 'border-pink-400/45 bg-pink-500/10';
@@ -276,10 +287,6 @@ export default function CalendarPage() {
   useEffect(() => {
     if (view !== 'month') {
       setMonthViewCondensed(false);
-      if (sidePanelMode === 'day') {
-        setSidePanelMode('closed');
-        setSelectedDayYmd(null);
-      }
       return;
     }
 
@@ -297,10 +304,10 @@ export default function CalendarPage() {
     const observer = new ResizeObserver(updateDensity);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [loading, view, sidePanelMode]);
+  }, [loading, view]);
 
   useEffect(() => {
-    if (view !== 'month' || sidePanelMode !== 'day' || !selectedDayYmd) {
+    if (sidePanelMode !== 'day' || !selectedDayYmd) {
       return;
     }
     const selectedDayStillVisible = days.some((day) => formatYmd(day) === selectedDayYmd);
@@ -308,7 +315,7 @@ export default function CalendarPage() {
       setSidePanelMode('closed');
       setSelectedDayYmd(null);
     }
-  }, [days, selectedDayYmd, sidePanelMode, view]);
+  }, [days, selectedDayYmd, sidePanelMode]);
 
   const resetForm = useCallback(() => {
     setEditingEventId(null);
@@ -528,7 +535,21 @@ export default function CalendarPage() {
                         isToday
                           ? 'calendar-today-outline border-transparent'
                           : 'border-[var(--border)]'
-                      }`}
+                      } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                      onClick={(event) => {
+                        if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
+                          return;
+                        }
+                        openDayPanel(key);
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          openDayPanel(key);
+                        }
+                      }}
                     >
                       <p className="text-sm font-semibold">{day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</p>
                       {dayEvents.length === 0 ? (
@@ -592,7 +613,21 @@ export default function CalendarPage() {
                             isToday
                               ? 'calendar-today-outline border-transparent'
                               : 'border-[var(--border)]'
-                          }`}
+                          } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                          onClick={(event) => {
+                            if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
+                              return;
+                            }
+                            openDayPanel(key);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              openDayPanel(key);
+                            }
+                          }}
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div>
@@ -679,7 +714,21 @@ export default function CalendarPage() {
                             isToday
                               ? 'calendar-today-outline border-transparent bg-white/[0.08]'
                               : 'border-[var(--border)] bg-white/5'
-                          }`}
+                          } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                          onClick={(event) => {
+                            if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
+                              return;
+                            }
+                            openDayPanel(key);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              openDayPanel(key);
+                            }
+                          }}
                         >
                           <div className="flex items-center justify-between">
                             <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
@@ -775,8 +824,7 @@ export default function CalendarPage() {
                               : 'border-[var(--border)] bg-white/5'
                         } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
                         onClick={(event) => {
-                          const target = event.target as HTMLElement | null;
-                          if (target?.closest('button, a, input, select, textarea, [role="button"]')) {
+                          if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
                             return;
                           }
                           openDayPanel(key);

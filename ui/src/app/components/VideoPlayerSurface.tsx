@@ -31,6 +31,9 @@ type VideoPlayerSurfaceProps = {
   shellRef?: RefObject<HTMLDivElement | null>;
   videoRef: RefObject<HTMLVideoElement | null>;
   videoElementProps?: VideoHTMLAttributes<HTMLVideoElement>;
+  artworkUrl?: string | null;
+  artworkAlt?: string;
+  playbackKey?: string;
   canStartPlayback: boolean;
   knownDurationSecs: number;
   bufferedWindowEndSecs?: number | null;
@@ -243,6 +246,9 @@ export default function VideoPlayerSurface({
   shellRef,
   videoRef,
   videoElementProps,
+  artworkUrl = null,
+  artworkAlt = 'Artwork preview',
+  playbackKey,
   canStartPlayback,
   knownDurationSecs,
   bufferedWindowEndSecs,
@@ -271,9 +277,11 @@ export default function VideoPlayerSurface({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [currentPositionSecs, setCurrentPositionSecs] = useState(0);
   const [rawDurationSecs, setRawDurationSecs] = useState(0);
+  const [streamResolutionLabel, setStreamResolutionLabel] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [pendingSeekSecs, setPendingSeekSecs] = useState<number | null>(null);
+  const [hasEverPlayed, setHasEverPlayed] = useState(false);
 
   const syncFromVideo = useCallback(() => {
     const video = videoRef.current;
@@ -294,6 +302,13 @@ export default function VideoPlayerSurface({
     if (Number.isFinite(video.duration) && video.duration > 0) {
       setRawDurationSecs(video.duration);
     }
+    const width = Number.isFinite(video.videoWidth) ? video.videoWidth : 0;
+    const height = Number.isFinite(video.videoHeight) ? video.videoHeight : 0;
+    if (width > 0 && height > 0) {
+      setStreamResolutionLabel(`${width}×${height} (${height}p)`);
+    } else {
+      setStreamResolutionLabel(null);
+    }
   }, [sessionStartOffsetSecs, videoRef]);
 
   useEffect(() => {
@@ -302,32 +317,47 @@ export default function VideoPlayerSurface({
     if (!video) return;
 
     const handleSync = () => syncFromVideo();
+    const handlePlayed = () => setHasEverPlayed(true);
     const handleFullscreenChange = () => {
       setIsFullscreen(document.fullscreenElement === activeShellRef.current);
       syncFromVideo();
     };
     video.addEventListener('play', handleSync);
+    video.addEventListener('playing', handlePlayed);
     video.addEventListener('pause', handleSync);
     video.addEventListener('ended', handleSync);
     video.addEventListener('ratechange', handleSync);
     video.addEventListener('volumechange', handleSync);
     video.addEventListener('loadedmetadata', handleSync);
+    video.addEventListener('resize', handleSync);
     video.addEventListener('durationchange', handleSync);
     video.addEventListener('timeupdate', handleSync);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
 
     return () => {
       video.removeEventListener('play', handleSync);
+      video.removeEventListener('playing', handlePlayed);
       video.removeEventListener('pause', handleSync);
       video.removeEventListener('ended', handleSync);
       video.removeEventListener('ratechange', handleSync);
       video.removeEventListener('volumechange', handleSync);
       video.removeEventListener('loadedmetadata', handleSync);
+      video.removeEventListener('resize', handleSync);
       video.removeEventListener('durationchange', handleSync);
       video.removeEventListener('timeupdate', handleSync);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     };
   }, [syncFromVideo, videoRef]);
+
+  useEffect(() => {
+    if (!canStartPlayback) {
+      setStreamResolutionLabel(null);
+    }
+  }, [canStartPlayback]);
+
+  useEffect(() => {
+    setHasEverPlayed(false);
+  }, [playbackKey]);
 
   useEffect(() => {
     return () => {
@@ -454,6 +484,8 @@ export default function VideoPlayerSurface({
     void toggleFullscreen();
   }, [toggleFullscreen]);
 
+  const showArtworkOverlay = Boolean(artworkUrl && canStartPlayback && !hasEverPlayed);
+
   return (
     <div
       ref={activeShellRef}
@@ -490,6 +522,18 @@ export default function VideoPlayerSurface({
             } ${(videoElementProps?.className ?? '').trim()}`.trim()
           }
         />
+        {showArtworkOverlay ? (
+          <div className="pointer-events-none absolute inset-0 z-10">
+            <img
+              src={artworkUrl ?? undefined}
+              alt={artworkAlt}
+              className="h-full w-full object-cover"
+              loading="eager"
+              decoding="async"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/10 to-black/20" />
+          </div>
+        ) : null}
       </div>
       <div className="shrink-0 border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
         <div className="flex flex-wrap items-center gap-3">
@@ -613,6 +657,11 @@ export default function VideoPlayerSurface({
                         </option>
                       ))}
                     </select>
+                    <span className="text-[11px]">
+                      {streamResolutionLabel
+                        ? `Current stream: ${streamResolutionLabel}`
+                        : 'Current stream: Detecting…'}
+                    </span>
                   </label>
                 </div>
               ) : null}

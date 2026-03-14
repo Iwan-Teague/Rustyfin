@@ -18,6 +18,7 @@ interface Item {
   kind: string;
   year?: number;
   poster_url?: string;
+  thumb_url?: string;
 }
 
 export default function LibraryPage() {
@@ -106,30 +107,33 @@ export default function LibraryPage() {
           ))}
         </div>
       ) : (
-        /* ── Video: existing poster grid ── */
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
-          {visibleItems.map((item) => (
-            <Link key={item.id} href={`/items/${item.id}`} className="group block">
-              <div className="tile tile-hover aspect-[2/3] overflow-hidden">
-                {item.poster_url ? (
-                  <Image
-                    src={item.poster_url}
-                    alt={item.title}
-                    width={320}
-                    height={480}
-                    unoptimized
-                    className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-xs muted">
-                    No Poster
-                  </div>
-                )}
-              </div>
-              <p className="mt-2 truncate text-sm font-medium">{item.title}</p>
-              {item.year && <p className="text-xs muted">{item.year}</p>}
-            </Link>
-          ))}
+        /* ── Video: landscape artwork grid ── */
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {visibleItems.map((item) => {
+            const thumbnailUrl = item.thumb_url ?? item.poster_url;
+            return (
+              <Link key={item.id} href={`/items/${item.id}`} className="group block">
+                <div className="tile tile-hover aspect-video overflow-hidden">
+                  {thumbnailUrl ? (
+                    <Image
+                      src={thumbnailUrl}
+                      alt={item.title}
+                      width={320}
+                      height={180}
+                      unoptimized
+                      className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-xs muted">
+                      No Thumbnail
+                    </div>
+                  )}
+                </div>
+                <p className="mt-2 truncate text-sm font-medium">{item.title}</p>
+                {item.year && <p className="text-xs muted">{item.year}</p>}
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>

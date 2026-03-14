@@ -1038,12 +1038,18 @@ export default function WatchPartyRoomPage() {
                   qualityOptions={qualityOptions}
                   qualityDisabled={playback.startingHls}
                   onQualityChange={(value) => {
+                    const previousTargetHeight = playback.hlsTargetHeight;
                     const nextTargetHeight = value === 'auto' ? null : value;
                     playback.setHlsTargetHeight(nextTargetHeight);
-                    void playback.startHls({
-                      silent: true,
-                      targetHeightOverride: nextTargetHeight,
-                    });
+                    void (async () => {
+                      const started = await playback.startHls({
+                        silent: false,
+                        targetHeightOverride: nextTargetHeight,
+                      });
+                      if (!started) {
+                        playback.setHlsTargetHeight(previousTargetHeight ?? null);
+                      }
+                    })();
                   }}
                   onSeekRequest={async (targetSeconds) => {
                     const video = playback.videoRef.current;

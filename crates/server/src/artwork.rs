@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Context;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, types::ValueRef};
 use rustfin_metadata::ItemMetadata;
 use rustfin_metadata::provider::{MetadataProvider, SearchResult};
 use tracing::{debug, warn};
@@ -25,6 +25,13 @@ struct FetchedProviderMetadata {
 struct JellyfinMetadataSource {
     db_path: PathBuf,
     metadata_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct JellyfinEpisodeAnchor {
+    guid: String,
+    season_id: Option<String>,
+    series_id: Option<String>,
 }
 
 async fn resolve_tmdb_api_key(pool: &rustfin_db::DbPool) -> anyhow::Result<Option<String>> {
@@ -521,11 +528,39 @@ async fn find_local_item_artwork(
         thumb,
     };
     let had_local = has_any_artwork(&discovered);
-    if !had_local {
+    let mut jellyfin_filled = false;
+    let needs_jellyfin_fill = discovered.poster.is_none()
+        || discovered.backdrop.is_none()
+        || discovered.logo.is_none()
+        || discovered.thumb.is_none();
+    if needs_jellyfin_fill {
         if let Some(jellyfin_artwork) =
             find_jellyfin_item_artwork(item_kind, item_title, item_year, &media_path, art_dir).await
         {
-            discovered = jellyfin_artwork;
+            if discovered.poster.is_none() {
+                if let Some(poster) = jellyfin_artwork.poster {
+                    discovered.poster = Some(poster);
+                    jellyfin_filled = true;
+                }
+            }
+            if discovered.backdrop.is_none() {
+                if let Some(backdrop) = jellyfin_artwork.backdrop {
+                    discovered.backdrop = Some(backdrop);
+                    jellyfin_filled = true;
+                }
+            }
+            if discovered.logo.is_none() {
+                if let Some(logo) = jellyfin_artwork.logo {
+                    discovered.logo = Some(logo);
+                    jellyfin_filled = true;
+                }
+            }
+            if discovered.thumb.is_none() {
+                if let Some(thumb) = jellyfin_artwork.thumb {
+                    discovered.thumb = Some(thumb);
+                    jellyfin_filled = true;
+                }
+            }
         }
     }
 
@@ -533,7 +568,7 @@ async fn find_local_item_artwork(
         item_id = %item_id,
         kind = %item_kind,
         has_local = had_local,
-        has_jellyfin = !had_local && has_any_artwork(&discovered),
+        has_jellyfin = jellyfin_filled,
         "local artwork discovery finished"
     );
 
@@ -712,6 +747,66 @@ fn query_jellyfin_images_field(
     media_path: &str,
     art_dir: &Path,
 ) -> Option<String> {
+    if item_kind == "movie" {
+        if let Some(images) = query_jellyfin_images_by_path_patterns(
+            connection,
+            "(IsMovie = 1 OR lower(type) LIKE '%movies.movie')",
+            media_path,
+        ) {
+            return Some(images);
+        }
+    }
+
+    if item_kind == "series" {
+        if let Some(images) = query_jellyfin_images_by_path_patterns(
+            connection,
+            "(IsSeries = 1 OR lower(type) LIKE '%tv.series')",
+            &art_dir.to_string_lossy(),
+        ) {
+            return Some(images);
+        }
+    }
+
+    if item_kind == "season" {
+        if let Some(images) = query_jellyfin_images_by_path_patterns(
+            connection,
+            "lower(type) LIKE '%tv.season'",
+            &art_dir.to_string_lossy(),
+        ) {
+            return Some(images);
+        }
+    }
+
+    if item_kind == "episode" {
+        if let Some(images) = query_jellyfin_images_by_path_patterns(
+            connection,
+            "lower(type) LIKE '%tv.episode'",
+            media_path,
+        ) {
+            return Some(images);
+        }
+    }
+
+    if matches!(item_kind, "series" | "season" | "episode") {
+        if let Some(anchor) = query_jellyfin_episode_anchor(connection, media_path) {
+            if item_kind == "episode" {
+                if let Some(images) = query_jellyfin_images_by_guid(connection, &anchor.guid) {
+                    return Some(images);
+                }
+            } else if item_kind == "season" {
+                if let Some(season_id) = anchor.season_id.as_deref() {
+                    if let Some(images) = query_jellyfin_images_by_guid(connection, season_id) {
+                        return Some(images);
+                    }
+                }
+            } else if let Some(series_id) = anchor.series_id.as_deref() {
+                if let Some(images) = query_jellyfin_images_by_guid(connection, series_id) {
+                    return Some(images);
+                }
+            }
+        }
+    }
+
     if let Some(title) = item_title.map(str::trim).filter(|value| !value.is_empty()) {
         let by_title = if item_kind == "movie" {
             let year = item_year.unwrap_or(-1);
@@ -785,28 +880,37 @@ fn query_jellyfin_images_field(
         .and_then(|value| value.to_str())
     {
         let like_pattern = format!("%{file_name}");
+        let preferred_type_match = match item_kind {
+            "movie" => "IsMovie = 1 OR lower(type) LIKE '%movies.movie'",
+            "series" => "IsSeries = 1 OR lower(type) LIKE '%tv.series'",
+            "season" => "lower(type) LIKE '%tv.season'",
+            "episode" => "lower(type) LIKE '%tv.episode'",
+            _ => "0 = 1",
+        };
+        let by_file_name_query = format!(
+            "SELECT Images
+             FROM TypedBaseItems
+             WHERE lower(Path) LIKE lower(?1)
+               AND Images IS NOT NULL
+               AND Images <> ''
+             ORDER BY CASE
+                          WHEN {preferred_type_match} THEN 0
+                          WHEN IsMovie = 1
+                            OR IsSeries = 1
+                            OR lower(type) LIKE '%movies.movie'
+                            OR lower(type) LIKE '%tv.series'
+                            OR lower(type) LIKE '%tv.season'
+                            OR lower(type) LIKE '%tv.episode'
+                          THEN 1
+                          ELSE 2
+                      END,
+                      length(COALESCE(Path, '')) ASC
+             LIMIT 1"
+        );
         if let Some(images) = connection
-            .query_row(
-                "SELECT Images
-                 FROM TypedBaseItems
-                 WHERE lower(Path) LIKE lower(?1)
-                   AND Images IS NOT NULL
-                   AND Images <> ''
-                 ORDER BY CASE
-                              WHEN IsMovie = 1
-                                OR IsSeries = 1
-                                OR lower(type) LIKE '%movies.movie'
-                                OR lower(type) LIKE '%tv.series'
-                                OR lower(type) LIKE '%tv.season'
-                                OR lower(type) LIKE '%tv.episode'
-                              THEN 0
-                              ELSE 1
-                          END,
-                          length(COALESCE(Path, '')) ASC
-                 LIMIT 1",
-                (like_pattern,),
-                |row| row.get::<_, String>(0),
-            )
+            .query_row(&by_file_name_query, (like_pattern,), |row| {
+                row.get::<_, String>(0)
+            })
             .optional()
             .ok()
             .flatten()
@@ -841,6 +945,226 @@ fn query_jellyfin_images_field(
     }
 
     None
+}
+
+fn query_jellyfin_episode_anchor(
+    connection: &Connection,
+    media_path: &str,
+) -> Option<JellyfinEpisodeAnchor> {
+    for pattern in jellyfin_path_suffix_patterns(media_path, 5) {
+        let anchor = connection
+            .query_row(
+                "SELECT guid, SeasonId, SeriesId
+                 FROM TypedBaseItems
+                 WHERE lower(type) LIKE '%tv.episode'
+                   AND Path IS NOT NULL
+                   AND lower(Path) LIKE lower(?1) ESCAPE '\\'
+                 ORDER BY length(COALESCE(Path, '')) ASC
+                 LIMIT 1",
+                (pattern,),
+                |row| {
+                    Ok(JellyfinEpisodeAnchor {
+                        guid: jellyfin_guid_value_to_text(row.get_ref(0)?).unwrap_or_default(),
+                        season_id: jellyfin_guid_value_to_text(row.get_ref(1)?),
+                        series_id: jellyfin_guid_value_to_text(row.get_ref(2)?),
+                    })
+                },
+            )
+            .optional()
+            .ok()
+            .flatten();
+        if let Some(anchor) = anchor.filter(|row| !row.guid.is_empty()) {
+            return Some(anchor);
+        }
+    }
+    None
+}
+
+fn query_jellyfin_images_by_guid(connection: &Connection, guid: &str) -> Option<String> {
+    let trimmed = guid.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(guid_blob) = jellyfin_guid_text_to_blob(trimmed) {
+        if let Some(images) = connection
+            .query_row(
+                "SELECT Images
+                 FROM TypedBaseItems
+                 WHERE (guid = ?1 OR guid = ?2)
+                   AND Images IS NOT NULL
+                   AND Images <> ''
+                 LIMIT 1",
+                (trimmed, guid_blob.as_slice()),
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+        {
+            return Some(images);
+        }
+    }
+
+    connection
+        .query_row(
+            "SELECT Images
+             FROM TypedBaseItems
+             WHERE guid = ?1
+               AND Images IS NOT NULL
+               AND Images <> ''
+             LIMIT 1",
+            (trimmed,),
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+}
+
+fn query_jellyfin_images_by_path_patterns(
+    connection: &Connection,
+    type_filter_sql: &str,
+    path: &str,
+) -> Option<String> {
+    let sql = format!(
+        "SELECT Images
+         FROM TypedBaseItems
+         WHERE {type_filter_sql}
+           AND Path IS NOT NULL
+           AND lower(Path) LIKE lower(?1) ESCAPE '\\'
+           AND Images IS NOT NULL
+           AND Images <> ''
+         ORDER BY length(COALESCE(Path, '')) ASC
+         LIMIT 1"
+    );
+    for pattern in jellyfin_path_suffix_patterns(path, 5) {
+        if let Some(images) = connection
+            .query_row(&sql, (pattern,), |row| row.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+        {
+            return Some(images);
+        }
+    }
+    None
+}
+
+fn normalize_jellyfin_guid(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn jellyfin_guid_value_to_text(value: ValueRef<'_>) -> Option<String> {
+    match value {
+        ValueRef::Null => None,
+        ValueRef::Text(value) => std::str::from_utf8(value)
+            .ok()
+            .and_then(|text| normalize_jellyfin_guid(Some(text.to_string()))),
+        ValueRef::Blob(value) => jellyfin_guid_blob_to_text(value),
+        _ => None,
+    }
+}
+
+fn jellyfin_guid_text_to_blob(guid: &str) -> Option<[u8; 16]> {
+    let hex = guid.trim().replace('-', "");
+    if hex.len() != 32 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut raw = [0_u8; 16];
+    for idx in 0..16 {
+        let start = idx * 2;
+        raw[idx] = u8::from_str_radix(&hex[start..start + 2], 16).ok()?;
+    }
+
+    // Jellyfin stores GUIDs in SQLite using the .NET byte layout:
+    // first 4 + next 2 + next 2 bytes are little-endian, remaining 8 are big-endian.
+    let mut mapped = [0_u8; 16];
+    mapped[0..4].copy_from_slice(&raw[0..4]);
+    mapped[0..4].reverse();
+    mapped[4..6].copy_from_slice(&raw[4..6]);
+    mapped[4..6].reverse();
+    mapped[6..8].copy_from_slice(&raw[6..8]);
+    mapped[6..8].reverse();
+    mapped[8..16].copy_from_slice(&raw[8..16]);
+    Some(mapped)
+}
+
+fn jellyfin_guid_blob_to_text(value: &[u8]) -> Option<String> {
+    if value.len() != 16 {
+        return None;
+    }
+
+    let mut canonical = [0_u8; 16];
+    canonical[0..4].copy_from_slice(&value[0..4]);
+    canonical[0..4].reverse();
+    canonical[4..6].copy_from_slice(&value[4..6]);
+    canonical[4..6].reverse();
+    canonical[6..8].copy_from_slice(&value[6..8]);
+    canonical[6..8].reverse();
+    canonical[8..16].copy_from_slice(&value[8..16]);
+
+    let mut hex = String::with_capacity(32);
+    for byte in canonical {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    ))
+}
+
+fn escape_like_pattern(raw: &str) -> String {
+    raw.chars()
+        .flat_map(|ch| match ch {
+            '%' | '_' | '\\' => vec!['\\', ch],
+            _ => vec![ch],
+        })
+        .collect()
+}
+
+fn jellyfin_path_suffix_patterns(path: &str, max_segments: usize) -> Vec<String> {
+    let max_segments = max_segments.max(1);
+    let components: Vec<String> = Path::new(path)
+        .components()
+        .filter_map(|component| {
+            let segment = component.as_os_str().to_string_lossy().trim().to_string();
+            if segment.is_empty() || segment == "." || segment == "/" {
+                None
+            } else {
+                Some(segment)
+            }
+        })
+        .collect();
+    if components.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut patterns = Vec::new();
+    let max_take = components.len().min(max_segments);
+    for take in (1..=max_take).rev() {
+        let tail = components[components.len() - take..].join("/");
+        let escaped_tail = escape_like_pattern(&tail);
+        for pattern in [format!("%/{escaped_tail}"), format!("%{escaped_tail}")] {
+            if seen.insert(pattern.clone()) {
+                patterns.push(pattern);
+            }
+        }
+    }
+    patterns
 }
 
 fn parse_jellyfin_images_field(images_field: &str, metadata_path: &Path) -> Artwork {
@@ -1022,7 +1346,11 @@ fn is_supported_art_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_named_file, parse_jellyfin_images_field};
+    use super::{
+        find_named_file, jellyfin_guid_blob_to_text, jellyfin_guid_text_to_blob,
+        jellyfin_path_suffix_patterns, parse_jellyfin_images_field, query_jellyfin_images_field,
+    };
+    use rusqlite::Connection;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1138,5 +1466,274 @@ mod tests {
         assert!(parsed.logo.is_none());
         assert!(parsed.thumb.is_none());
         let _ = fs::remove_dir_all(metadata_dir);
+    }
+
+    fn create_test_typed_base_items_table(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE TypedBaseItems (
+                    guid TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    ParentId TEXT,
+                    Path TEXT,
+                    IsMovie INTEGER,
+                    IsSeries INTEGER,
+                    Name TEXT,
+                    ProductionYear INTEGER,
+                    SeasonId TEXT,
+                    SeriesId TEXT,
+                    Images TEXT
+                );",
+            )
+            .expect("create TypedBaseItems table");
+    }
+
+    #[test]
+    fn jellyfin_path_suffix_patterns_returns_longest_suffix_first() {
+        let patterns = jellyfin_path_suffix_patterns(
+            "/mnt/truenas_media/Shows/Breaking Bad/Season 01/Breaking.Bad.S01E01.mkv",
+            4,
+        );
+        assert_eq!(
+            patterns.first().map(String::as_str),
+            Some("%/Shows/Breaking Bad/Season 01/Breaking.Bad.S01E01.mkv")
+        );
+        assert!(
+            patterns
+                .iter()
+                .any(|pattern| pattern == "%/Breaking Bad/Season 01/Breaking.Bad.S01E01.mkv")
+        );
+        assert!(
+            patterns
+                .iter()
+                .any(|pattern| pattern == "%/Breaking.Bad.S01E01.mkv")
+        );
+    }
+
+    #[test]
+    fn jellyfin_guid_text_to_blob_matches_dotnet_layout() {
+        let blob =
+            jellyfin_guid_text_to_blob("8BDCCF02-5F49-4AEC-C3D3-56565185022D").expect("guid blob");
+        assert_eq!(
+            blob,
+            [
+                0x02, 0xcf, 0xdc, 0x8b, 0x49, 0x5f, 0xec, 0x4a, 0xc3, 0xd3, 0x56, 0x56, 0x51, 0x85,
+                0x02, 0x2d
+            ]
+        );
+    }
+
+    #[test]
+    fn jellyfin_guid_blob_to_text_round_trips_dotnet_layout() {
+        let original = "8bdccf02-5f49-4aec-c3d3-56565185022d";
+        let blob = jellyfin_guid_text_to_blob(original).expect("guid blob");
+        let restored = jellyfin_guid_blob_to_text(&blob).expect("guid text");
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn query_jellyfin_images_field_prefers_movie_path_tail_match() {
+        let connection = Connection::open_in_memory().expect("open sqlite");
+        create_test_typed_base_items_table(&connection);
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, ProductionYear, Images)
+                 VALUES (?1, ?2, ?3, 1, 0, ?4, 2021, ?5)",
+                (
+                    "movie-wrong",
+                    "MediaBrowser.Controller.Entities.Movies.Movie",
+                    "/media/other/Dune (2021)/Dune 2021 2160p UHD BluRay x265 10bit HDR DDP5 1 Atmos RARBG.mkv",
+                    "Dune",
+                    "%MetadataPath%/library/wrong/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert wrong movie row");
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, ProductionYear, Images)
+                 VALUES (?1, ?2, ?3, 1, 0, ?4, 2021, ?5)",
+                (
+                    "movie-correct",
+                    "MediaBrowser.Controller.Entities.Movies.Movie",
+                    "/media/movies/Dune (2021)/Dune 2021 2160p UHD BluRay x265 10bit HDR DDP5 1 Atmos RARBG.mkv",
+                    "Dune",
+                    "%MetadataPath%/library/correct/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert correct movie row");
+
+        let images = query_jellyfin_images_field(
+            &connection,
+            "movie",
+            Some("Dune"),
+            Some(2021),
+            "/mnt/truenas_media/Movies/Dune (2021)/Dune 2021 2160p UHD BluRay x265 10bit HDR DDP5 1 Atmos RARBG.mkv",
+            Path::new("/mnt/truenas_media/Movies/Dune (2021)"),
+        );
+
+        assert_eq!(
+            images.as_deref(),
+            Some("%MetadataPath%/library/correct/poster.jpg*1*Primary")
+        );
+    }
+
+    #[test]
+    fn query_jellyfin_images_field_uses_episode_hierarchy_for_series_and_season() {
+        let connection = Connection::open_in_memory().expect("open sqlite");
+        create_test_typed_base_items_table(&connection);
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, Images)
+                 VALUES (?1, ?2, ?3, 0, 1, ?4, ?5)",
+                (
+                    "series-guid",
+                    "MediaBrowser.Controller.Entities.TV.Series",
+                    "/media/shows/Breaking Bad",
+                    "Breaking Bad",
+                    "%MetadataPath%/series/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert series row");
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, SeriesId, Images)
+                 VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6)",
+                (
+                    "season-guid",
+                    "MediaBrowser.Controller.Entities.TV.Season",
+                    "/media/shows/Breaking Bad/Season 01",
+                    "Season 1",
+                    "series-guid",
+                    "%MetadataPath%/season/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert season row");
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, SeasonId, SeriesId, Images)
+                 VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6, ?7)",
+                (
+                    "episode-guid",
+                    "MediaBrowser.Controller.Entities.TV.Episode",
+                    "/media/shows/Breaking Bad/Season 01/Breaking Bad - S01E01 - Pilot.mkv",
+                    "Pilot",
+                    "season-guid",
+                    "series-guid",
+                    "%MetadataPath%/episode/thumb.jpg*1*Thumb",
+                ),
+            )
+            .expect("insert episode row");
+
+        let media_path =
+            "/mnt/truenas_media/Shows/Breaking Bad/Season 01/Breaking Bad - S01E01 - Pilot.mkv";
+        let series_images = query_jellyfin_images_field(
+            &connection,
+            "series",
+            Some("Breaking Bad"),
+            None,
+            media_path,
+            Path::new("/mnt/truenas_media/Shows/Breaking Bad"),
+        );
+        assert_eq!(
+            series_images.as_deref(),
+            Some("%MetadataPath%/series/poster.jpg*1*Primary")
+        );
+
+        let season_images = query_jellyfin_images_field(
+            &connection,
+            "season",
+            Some("Season 1"),
+            None,
+            media_path,
+            Path::new("/mnt/truenas_media/Shows/Breaking Bad/Season 01"),
+        );
+        assert_eq!(
+            season_images.as_deref(),
+            Some("%MetadataPath%/season/poster.jpg*1*Primary")
+        );
+    }
+
+    #[test]
+    fn query_jellyfin_images_field_reads_blob_guids_for_hierarchy_anchor() {
+        let connection = Connection::open_in_memory().expect("open sqlite");
+        create_test_typed_base_items_table(&connection);
+
+        let series_guid_text = "8BDCCF02-5F49-4AEC-C3D3-56565185022D";
+        let season_guid_text = "A1111111-5F49-4AEC-C3D3-56565185022D";
+        let episode_guid_text = "B2222222-5F49-4AEC-C3D3-56565185022D";
+        let series_guid_blob = jellyfin_guid_text_to_blob(series_guid_text).expect("series guid");
+        let season_guid_blob = jellyfin_guid_text_to_blob(season_guid_text).expect("season guid");
+        let episode_guid_blob =
+            jellyfin_guid_text_to_blob(episode_guid_text).expect("episode guid");
+
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, Images)
+                 VALUES (?1, ?2, ?3, 0, 1, ?4, ?5)",
+                (
+                    series_guid_blob.as_slice(),
+                    "MediaBrowser.Controller.Entities.TV.Series",
+                    "/media/index/series/asset",
+                    "Blob GUID Series",
+                    "%MetadataPath%/series/blob/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert blob-guid series");
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, SeriesId, Images)
+                 VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6)",
+                (
+                    season_guid_blob.as_slice(),
+                    "MediaBrowser.Controller.Entities.TV.Season",
+                    "/media/index/season/asset",
+                    "Season 1",
+                    series_guid_blob.as_slice(),
+                    "%MetadataPath%/season/blob/poster.jpg*1*Primary",
+                ),
+            )
+            .expect("insert blob-guid season");
+        connection
+            .execute(
+                "INSERT INTO TypedBaseItems (guid, type, Path, IsMovie, IsSeries, Name, SeasonId, SeriesId, Images)
+                 VALUES (?1, ?2, ?3, 0, 0, ?4, ?5, ?6, ?7)",
+                (
+                    episode_guid_blob.as_slice(),
+                    "MediaBrowser.Controller.Entities.TV.Episode",
+                    "/media/shows/Blob GUID Series/Season 1/S01E01 - Pilot.mkv",
+                    "Pilot",
+                    season_guid_blob.as_slice(),
+                    series_guid_blob.as_slice(),
+                    "%MetadataPath%/episode/blob/thumb.jpg*1*Thumb",
+                ),
+            )
+            .expect("insert blob-guid episode");
+
+        let media_path = "/mnt/truenas_media/Shows/Blob GUID Series/Season 1/S01E01 - Pilot.mkv";
+        let series_images = query_jellyfin_images_field(
+            &connection,
+            "series",
+            None,
+            None,
+            media_path,
+            Path::new("/mnt/truenas_media/Shows/Does Not Match"),
+        );
+        assert_eq!(
+            series_images.as_deref(),
+            Some("%MetadataPath%/series/blob/poster.jpg*1*Primary")
+        );
+
+        let season_images = query_jellyfin_images_field(
+            &connection,
+            "season",
+            None,
+            None,
+            media_path,
+            Path::new("/mnt/truenas_media/Shows/Does Not Match"),
+        );
+        assert_eq!(
+            season_images.as_deref(),
+            Some("%MetadataPath%/season/blob/poster.jpg*1*Primary")
+        );
     }
 }
