@@ -101,7 +101,7 @@ The current Rustyfin product surface includes:
 - vault / RustyVault
 - downloads page
 - admin
-- a placeholder network page
+- a placeholder network page with a defined RustyNet topology-map direction
 
 The current main navigation confirms these user-facing areas:
 
@@ -495,6 +495,21 @@ The `/downloads` page currently acts as a release/distribution surface. It prese
 ### 13.12 Network
 
 The `/network` page currently exists as a placeholder for future capability rather than as a mature product surface.
+
+The intended direction for this page is now defined:
+
+- integrate the RustyNet project as the canonical network experience inside Rustyfin
+- make the primary surface a visual network map rather than a plain settings or status page
+- present devices as node-based topology elements with a peer-to-peer / neural-network / mesh-like composition
+- render currently connected or reachable devices as green nodes
+- render known but currently offline or disconnected devices as grey nodes
+- support lightweight hover inspection for each node instead of forcing table-first navigation
+- the first hover payload should stay concise and useful, starting with node name, IP address, connection status, and any other low-risk identity metadata already available from RustyNet
+- the map should feel live and spatial, with relationships or adjacency implied visually where the backing RustyNet data supports it
+- the default experience should prioritize read-only visibility and situational awareness before deeper management actions are added later
+- if RustyNet data is unavailable, the page should degrade to an unavailable or empty-state view rather than crashing or blocking the rest of Rustyfin
+
+This means the Network page should no longer be treated as an undefined placeholder. It is now a planned RustyNet-powered topology surface with cinematic Rustyfin styling and lightweight node inspection as the initial product shape.
 
 ## 14. Data And Persistence Baseline
 
