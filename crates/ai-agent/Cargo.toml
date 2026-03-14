@@ -11,7 +11,7 @@ vulkan = ["llama-cpp-2/vulkan"]
 cpu = []
 
 [dependencies]
-llama-cpp-2 = { version = "0.1.138" }
+llama-cpp-2 = { version = "0.1.138", default-features = false }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
