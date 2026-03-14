@@ -2524,6 +2524,19 @@ fn supports_generated_item_images(kind: &str) -> bool {
     matches!(kind, "movie" | "series" | "season" | "episode")
 }
 
+fn preferred_item_image_types(item_kind: &str, img_type: &str) -> &'static [&'static str] {
+    match (item_kind, img_type) {
+        // Match Jellyfin-style episode artwork preference:
+        // use Primary (poster) before Thumb when rendering episode thumbnails.
+        ("episode", "thumb") => &["poster", "thumb"],
+        (_, "poster") => &["poster"],
+        (_, "backdrop") => &["backdrop"],
+        (_, "logo") => &["logo"],
+        (_, "thumb") => &["thumb"],
+        _ => &[],
+    }
+}
+
 fn item_to_response(item: rustfin_db::repo::items::ItemRow, include_images: bool) -> ItemResponse {
     let include_generated = supports_generated_item_images(&item.kind);
     ItemResponse {
@@ -4304,20 +4317,34 @@ async fn get_item_image(
         return Err(ApiError::NotFound("images are disabled for this library".into()).into());
     }
 
-    // Get the image URL from DB
-    let mut image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, &img_type)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let image_type_candidates = preferred_item_image_types(&item.kind, &img_type);
+
+    // Get the image URL from DB using per-kind preference order.
+    let mut image_url = None;
+    for candidate_type in image_type_candidates {
+        image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, candidate_type)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        if image_url.is_some() {
+            break;
+        }
+    }
+
     if image_url.is_none() && supports_generated_item_images(&item.kind) {
-        image_url = crate::artwork::resolve_fallback_item_image_path(
-            &state.db,
-            &item.id,
-            &item.kind,
-            Some(item.title.as_str()),
-            item.year,
-            &img_type,
-        )
-        .await;
+        for candidate_type in image_type_candidates {
+            image_url = crate::artwork::resolve_fallback_item_image_path(
+                &state.db,
+                &item.id,
+                &item.kind,
+                Some(item.title.as_str()),
+                item.year,
+                candidate_type,
+            )
+            .await;
+            if image_url.is_some() {
+                break;
+            }
+        }
     }
 
     // Build cache key from item_id + source + type + resize params so source changes
@@ -5285,7 +5312,7 @@ mod tests {
         normalize_session_start_time_secs, parse_episode_order_from_media_path,
         parse_episode_order_from_sort_title, parse_season_order_from_sort_title,
         parse_season_order_from_title, reset_login_rate_limit, resolve_child_watch_order_mode,
-        resolve_image_ext, supports_generated_item_images,
+        resolve_image_ext, supports_generated_item_images, preferred_item_image_types,
     };
     use axum::extract::ConnectInfo;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -5616,5 +5643,15 @@ mod tests {
         assert!(supports_generated_item_images("series"));
         assert!(supports_generated_item_images("episode"));
         assert!(!supports_generated_item_images("album"));
+    }
+
+    #[test]
+    fn preferred_item_image_types_match_episode_thumb_priority() {
+        assert_eq!(
+            preferred_item_image_types("episode", "thumb"),
+            &["poster", "thumb"]
+        );
+        assert_eq!(preferred_item_image_types("movie", "thumb"), &["thumb"]);
+        assert_eq!(preferred_item_image_types("episode", "poster"), &["poster"]);
     }
 }

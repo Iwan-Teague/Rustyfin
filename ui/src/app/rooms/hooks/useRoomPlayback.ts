@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { normalizePlaybackQualitySelection } from '@/app/components/VideoPlayerSurface';
+import {
+  normalizePlaybackQualitySelection,
+  resolveAutoPlaybackTargetHeight,
+} from '@/app/components/VideoPlayerSurface';
 import { apiFetch, apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
 import type { WatchPartyRoomResponse } from '@/lib/watchPartyApi';
@@ -334,7 +337,7 @@ export function useRoomPlayback({
         const selectedTargetHeight =
           options.targetHeightOverride !== undefined
             ? options.targetHeightOverride
-            : hlsTargetHeight;
+            : hlsTargetHeight ?? resolveAutoPlaybackTargetHeight(sourceVideoHeight);
         const knownDurationSeconds = Math.max(
           descriptor.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
           mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,

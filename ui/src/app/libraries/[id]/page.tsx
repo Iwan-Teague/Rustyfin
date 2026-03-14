@@ -85,7 +85,7 @@ export default function LibraryPage() {
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
           {visibleItems.map((item) => (
             <Link key={item.id} href={`/items/${item.id}`} className="group block">
-              <div className="tile tile-hover aspect-square overflow-hidden">
+              <div className="tile tile-hover media-tile-hover aspect-square overflow-hidden">
                 {item.poster_url ? (
                   <Image
                     src={item.poster_url}
@@ -93,7 +93,7 @@ export default function LibraryPage() {
                     width={320}
                     height={480}
                     unoptimized
-                    className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                    className="rf-media-zoom-image h-full w-full object-cover"
                   />
                 ) : (
                   <div className="flex h-full w-full items-center justify-center text-4xl muted">
@@ -110,10 +110,13 @@ export default function LibraryPage() {
         /* ── Video: landscape artwork grid ── */
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {visibleItems.map((item) => {
-            const thumbnailUrl = item.thumb_url ?? item.poster_url;
+            const thumbnailUrl =
+              item.kind === 'episode'
+                ? item.poster_url ?? item.thumb_url
+                : item.thumb_url ?? item.poster_url;
             return (
               <Link key={item.id} href={`/items/${item.id}`} className="group block">
-                <div className="tile tile-hover aspect-video overflow-hidden">
+                <div className="tile tile-hover media-tile-hover aspect-video overflow-hidden">
                   {thumbnailUrl ? (
                     <Image
                       src={thumbnailUrl}
@@ -121,7 +124,7 @@ export default function LibraryPage() {
                       width={320}
                       height={180}
                       unoptimized
-                      className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                      className="rf-media-zoom-image h-full w-full object-cover"
                     />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center text-xs muted">

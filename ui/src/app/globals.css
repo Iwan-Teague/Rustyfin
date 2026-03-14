@@ -295,6 +295,22 @@ textarea:focus-visible {
   transition-duration: 110ms;
 }
 
+.media-tile-hover:hover {
+  transform: translate3d(0, -4px, 0);
+  filter: none;
+}
+
+.rf-media-zoom-image {
+  transform: translate3d(0, 0, 0) scale(1);
+  backface-visibility: hidden;
+  will-change: transform;
+  transition: transform 300ms var(--ease-out-quart);
+}
+
+.group:hover .rf-media-zoom-image {
+  transform: translate3d(0, 0, 0) scale(1.03);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

@@ -602,6 +602,26 @@ fn lock_or_recover<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
+fn recommended_hw_video_bitrate_kbps(target_height: Option<u32>) -> (u32, u32, u32) {
+    let normalized_height = target_height.unwrap_or(1080);
+    if normalized_height <= 360 {
+        return (900, 1300, 1800);
+    }
+    if normalized_height <= 480 {
+        return (1400, 2100, 2800);
+    }
+    if normalized_height <= 720 {
+        return (2800, 4200, 5600);
+    }
+    if normalized_height <= 1080 {
+        return (6000, 9000, 12000);
+    }
+    if normalized_height <= 1440 {
+        return (10000, 15000, 20000);
+    }
+    (18000, 27000, 36000)
+}
+
 /// Build and spawn ffmpeg for HLS output.
 async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, TranscodeError> {
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-y".into()];
@@ -691,6 +711,18 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
     };
 
     args.extend(["-c:v".into(), vcodec]);
+    if active_hw_accel.is_some() {
+        let (target_kbps, maxrate_kbps, bufsize_kbps) =
+            recommended_hw_video_bitrate_kbps(options.target_height);
+        args.extend([
+            "-b:v".into(),
+            format!("{target_kbps}k"),
+            "-maxrate".into(),
+            format!("{maxrate_kbps}k"),
+            "-bufsize".into(),
+            format!("{bufsize_kbps}k"),
+        ]);
+    }
     if matches!(active_hw_accel, Some(HwAccel::Vaapi)) {
         args.extend(["-profile:v".into(), "high".into()]);
     }
@@ -764,4 +796,26 @@ async fn spawn_ffmpeg(options: SpawnFfmpegOptions<'_>) -> Result<Child, Transcod
 
     info!(ffmpeg_path = ?options.ffmpeg_path, ?args, "spawned ffmpeg for HLS");
     Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recommended_hw_video_bitrate_kbps;
+
+    #[test]
+    fn hw_bitrate_ladder_defaults_to_1080_profile_for_auto() {
+        assert_eq!(recommended_hw_video_bitrate_kbps(None), (6000, 9000, 12000));
+    }
+
+    #[test]
+    fn hw_bitrate_ladder_scales_with_target_height() {
+        assert_eq!(
+            recommended_hw_video_bitrate_kbps(Some(720)),
+            (2800, 4200, 5600)
+        );
+        assert_eq!(
+            recommended_hw_video_bitrate_kbps(Some(2160)),
+            (18000, 27000, 36000)
+        );
+    }
 }

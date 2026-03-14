@@ -204,7 +204,7 @@ export default function LibrariesPage() {
                   >
                     {dismissing ? '…' : '×'}
                   </button>
-                  <Link href={`/player/${item.id}`} className="tile tile-hover block overflow-hidden">
+                  <Link href={`/player/${item.id}`} className="group tile tile-hover media-tile-hover block overflow-hidden">
                     <div className="flex min-h-[9rem] gap-4 p-4">
                       <div className="h-20 w-36 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65 sm:h-24 sm:w-40">
                         {thumbnailUrl ? (
@@ -214,7 +214,7 @@ export default function LibrariesPage() {
                             width={320}
                             height={180}
                             unoptimized
-                            className="h-full w-full object-cover"
+                            className="rf-media-zoom-image h-full w-full object-cover"
                           />
                         ) : (
                           <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
@@ -262,7 +262,7 @@ export default function LibrariesPage() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {recommendedItems.map((item) => (
               <Link key={`rec-${item.id}`} href={`/items/${item.id}`} className="group block">
-                <div className="tile tile-hover aspect-video overflow-hidden">
+                <div className="tile tile-hover media-tile-hover aspect-video overflow-hidden">
                   {(item.thumb_url ?? item.poster_url) ? (
                     <Image
                       src={item.thumb_url ?? item.poster_url ?? ''}
@@ -270,7 +270,7 @@ export default function LibrariesPage() {
                       width={320}
                       height={180}
                       unoptimized
-                      className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                      className="rf-media-zoom-image h-full w-full object-cover"
                     />
                   ) : (
                     <div className="flex h-full items-center justify-center px-2 text-center text-xs muted">
