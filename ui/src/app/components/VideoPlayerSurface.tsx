@@ -14,7 +14,7 @@ import {
 export type VideoQualityOption = { value: 'auto' | number; label: string };
 
 export const VIDEO_QUALITY_OPTIONS: VideoQualityOption[] = [
-  { value: 'auto', label: 'Auto (Original)' },
+  { value: 'auto', label: 'Auto (Best for display)' },
   { value: 2160, label: '2160p (4K)' },
   { value: 1440, label: '1440p' },
   { value: 1080, label: '1080p' },
@@ -22,6 +22,10 @@ export const VIDEO_QUALITY_OPTIONS: VideoQualityOption[] = [
   { value: 480, label: '480p' },
   { value: 360, label: '360p' },
 ];
+
+const VIDEO_QUALITY_HEIGHTS_DESC = VIDEO_QUALITY_OPTIONS.filter(
+  (option): option is { value: number; label: string } => typeof option.value === 'number',
+).map((option) => option.value);
 
 type IconProps = {
   className?: string;
@@ -105,6 +109,29 @@ export function normalizePlaybackQualitySelection(
     (option) => option.value !== 'auto' && option.value <= sourceHeight,
   );
   return typeof fallback?.value === 'number' ? fallback.value : null;
+}
+
+export function resolveAutoPlaybackTargetHeight(sourceHeight?: number | null): number | null {
+  if (!sourceHeight || sourceHeight <= 0 || typeof window === 'undefined') {
+    return null;
+  }
+
+  const pixelRatio =
+    Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0
+      ? window.devicePixelRatio
+      : 1;
+  const screenHeight =
+    Number.isFinite(window.screen?.height) && (window.screen?.height ?? 0) > 0
+      ? (window.screen?.height as number)
+      : window.innerHeight;
+  if (!Number.isFinite(screenHeight) || screenHeight <= 0) {
+    return null;
+  }
+
+  const displayHeight = Math.round(screenHeight * pixelRatio);
+  const cappedHeight = Math.min(sourceHeight, displayHeight);
+  const bestMatch = VIDEO_QUALITY_HEIGHTS_DESC.find((height) => height <= cappedHeight);
+  return typeof bestMatch === 'number' ? bestMatch : null;
 }
 
 function PlayIcon({ className = 'h-5 w-5' }: IconProps) {

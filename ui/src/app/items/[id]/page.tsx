@@ -323,9 +323,7 @@ export default function ItemPage() {
                 <Link key={child.id} href={`/items/${child.id}`} className="tile tile-hover block overflow-hidden">
                   {(() => {
                     const isEpisodeChild = child.kind === 'episode';
-                    const childPoster = isEpisodeChild
-                      ? child.thumb_url ?? child.poster_url
-                      : child.poster_url ?? child.thumb_url;
+                    const childPoster = child.poster_url ?? child.thumb_url;
                     const artworkAspectClass = isEpisodeChild ? 'aspect-video' : 'aspect-[2/3]';
                     if (!childPoster) {
                       return (

@@ -7,6 +7,7 @@ import { useParams } from 'next/navigation';
 import VideoPlayerSurface, {
   filterPlaybackQualityOptions,
   normalizePlaybackQualitySelection,
+  resolveAutoPlaybackTargetHeight,
 } from '@/app/components/VideoPlayerSurface';
 import { apiFetch, apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
@@ -399,7 +400,9 @@ export default function PlayerPage() {
       }
 
       const selectedTargetHeight =
-        options?.targetHeightOverride !== undefined ? options.targetHeightOverride : hlsTargetHeight;
+        options?.targetHeightOverride !== undefined
+          ? options.targetHeightOverride
+          : hlsTargetHeight ?? resolveAutoPlaybackTargetHeight(sourceVideoHeight);
       if (options?.autoPlayOnReady !== undefined) {
         requestedPlaybackRef.current = options.autoPlayOnReady;
       }
@@ -585,7 +588,7 @@ export default function PlayerPage() {
         setStartingHls(false);
       }
     },
-    [descriptor, destroyHls, hlsTargetHeight, mediaInfo, stopSession],
+    [descriptor, destroyHls, hlsTargetHeight, mediaInfo, sourceVideoHeight, stopSession],
   );
 
   const handlePlaybackToggleRequest = useCallback(async () => {
