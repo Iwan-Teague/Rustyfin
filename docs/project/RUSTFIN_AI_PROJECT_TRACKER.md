@@ -131,6 +131,10 @@ Maintain **exactly one** authoritative status table here.
 | Testing harness | ✅ | 57 tests: 18 scanner + 7 range + 9 transcoder + 4 metadata + 19 integration | 2026-02-14 |
 | Observability (logs/metrics) | 🟡 | tracing + env-filter; metrics endpoint not yet | 2026-02-13 |
 | Security hardening | ✅ | Argon2 hashing, JWT auth, error envelope, path traversal protection on streaming | 2026-02-13 |
+| AI assistant — core chat | 🔴 | Placeholder page exists. OllamaClient + streaming SSE + model selector UI not started. Design spec: docs/plans/2026-03-14-ai-assistant-design.md | 2026-03-14 |
+| AI assistant — read tools | 🔴 | ToolRegistry + AgentLoop + calendar/users/rooms/servers/media read tools not started | 2026-03-14 |
+| AI assistant — write tools | 🔴 | create_event, create_room, invite_user, start_server write tools not started | 2026-03-14 |
+| AI assistant — conversation history | 🔴 | DB schema + ConversationStore + history sidebar not started | 2026-03-14 |
 
 ### 4.2 “Implementation log” (append-only)
 After each meaningful change, append a bullet to this section:
