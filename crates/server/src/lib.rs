@@ -4,6 +4,7 @@
     clippy::should_implement_trait
 )]
 pub mod account_prefs;
+pub mod ai;
 pub mod artwork;
 pub mod audit_log;
 pub mod auth;

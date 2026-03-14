@@ -1,0 +1,24 @@
+[package]
+name = "rustfin-ai-agent"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["cuda"]
+cuda = ["llama-cpp-2/cuda"]
+rocm = ["llama-cpp-2/rocm"]
+vulkan = ["llama-cpp-2/vulkan"]
+cpu = []
+
+[dependencies]
+llama-cpp-2 = { version = "0.1.138" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+encoding_rs = "0.8"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-stream = "0.3"

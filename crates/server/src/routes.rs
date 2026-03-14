@@ -378,6 +378,7 @@ fn api_router(state: AppState) -> Router<AppState> {
             crate::watch_party::router::watch_party_router(),
         )
         .nest("/channels", crate::channels::router::channels_router())
+        .nest("/ai", crate::ai::ai_router())
         .route("/events", get(sse_events))
         // Jobs
         .route("/jobs", get(list_jobs))
@@ -4322,9 +4323,10 @@ async fn get_item_image(
     // Get the image URL from DB using per-kind preference order.
     let mut image_url = None;
     for candidate_type in image_type_candidates {
-        image_url = rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, candidate_type)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        image_url =
+            rustfin_db::repo::items::get_item_image_url(&state.db, &item_id, candidate_type)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
         if image_url.is_some() {
             break;
         }
@@ -5311,8 +5313,8 @@ mod tests {
         infer_image_ext_from_source, item_image_url, login_attempt_key, mounted_rustyvault_router,
         normalize_session_start_time_secs, parse_episode_order_from_media_path,
         parse_episode_order_from_sort_title, parse_season_order_from_sort_title,
-        parse_season_order_from_title, reset_login_rate_limit, resolve_child_watch_order_mode,
-        resolve_image_ext, supports_generated_item_images, preferred_item_image_types,
+        parse_season_order_from_title, preferred_item_image_types, reset_login_rate_limit,
+        resolve_child_watch_order_mode, resolve_image_ext, supports_generated_item_images,
     };
     use axum::extract::ConnectInfo;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -5352,6 +5354,8 @@ mod tests {
             transcription_agent_token: None,
             servers_agent_url: None,
             servers_agent_token: None,
+            model_dir: PathBuf::from("/tmp/rustfin-ai-models-test"),
+            engine: Arc::new(tokio::sync::Mutex::new(crate::ai::EngineState::default())),
             transcoder,
             ffmpeg_path,
             ffprobe_path,
