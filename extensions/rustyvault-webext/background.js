@@ -72,9 +72,18 @@ async function fetchCurrentTab() {
 }
 
 function buildImportedItem(payload) {
+  let fallbackTitle = 'Imported login';
+  try {
+    const parsedUrl = new URL(payload.url);
+    if (parsedUrl.hostname) {
+      fallbackTitle = parsedUrl.hostname;
+    }
+  } catch {
+    // Keep default fallback for malformed URLs captured from page scripts.
+  }
   return {
     id: crypto.randomUUID(),
-    title: (payload.title || '').trim() || new URL(payload.url).hostname,
+    title: (payload.title || '').trim() || fallbackTitle,
     username: (payload.username || '').trim(),
     login_email: (payload.email || '').trim(),
     password: payload.password || '',
@@ -143,13 +152,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId);
-  if (tab?.url) {
-    try {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.url) {
       await loadMatchesForUrl(tabId, tab.url, { topLevelUrl: tab.url, isTopFrame: true });
-    } catch {
-      await updateBadge(tabId, 0, pendingByTab.has(tabId));
     }
+  } catch {
+    await updateBadge(tabId, 0, pendingByTab.has(tabId));
   }
 });
 

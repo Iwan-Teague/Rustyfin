@@ -10,7 +10,11 @@ export default function VaultPage() {
   if (!rustyvaultEnabled) {
     return (
       <div className="panel-soft animate-rise px-5 py-4">
-        <p className="text-sm muted">Vault is unavailable on this host.</p>
+        <h1 className="text-lg font-semibold text-slate-100">Vault unavailable</h1>
+        <p className="mt-2 text-sm text-slate-300">
+          RustyVault is currently disabled on this host. Ask an administrator to enable
+          `RUSTFIN_RUSTYVAULT_ENABLED` and restart the runtime when Vault access is needed.
+        </p>
       </div>
     );
   }

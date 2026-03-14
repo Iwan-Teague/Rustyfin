@@ -15,31 +15,31 @@
       </header>
 
       <section class="panel">
-        <label class="field">
+        <label class="field" for="server-url">
           <span>Rustyfin server URL</span>
-          <input id="server-url" placeholder="https://rustyfin.example:3000" />
+          <input id="server-url" type="url" inputmode="url" placeholder="https://rustyfin.example:3000" autocomplete="off" />
         </label>
-        <button id="save-server" class="btn btn-primary">Save server</button>
+        <button id="save-server" type="button" class="btn btn-primary">Save server</button>
       </section>
 
       <section id="pairing-panel" class="panel hidden">
         <h2>Pair extension</h2>
-        <label class="field">
+        <label class="field" for="pairing-code">
           <span>Pairing code</span>
-          <input id="pairing-code" placeholder="RFVLT-XXXXXX-XXXXXX-XXXXXX-XXXXXX" />
+          <input id="pairing-code" placeholder="RFVLT-XXXXXX-XXXXXX-XXXXXX-XXXXXX" autocomplete="off" />
         </label>
-        <button id="pair-device" class="btn btn-primary">Pair device</button>
+        <button id="pair-device" type="button" class="btn btn-primary">Pair device</button>
       </section>
 
       <section id="unlock-panel" class="panel hidden">
         <h2>Unlock</h2>
-        <label class="field">
+        <label class="field" for="master-password">
           <span>Vault master password</span>
-          <input id="master-password" type="password" />
+          <input id="master-password" type="password" autocomplete="current-password" />
         </label>
         <div class="row">
-          <button id="unlock-vault" class="btn btn-primary">Unlock vault</button>
-          <button id="lock-vault" class="btn btn-secondary">Lock</button>
+          <button id="unlock-vault" type="button" class="btn btn-primary">Unlock vault</button>
+          <button id="lock-vault" type="button" class="btn btn-secondary">Lock</button>
         </div>
       </section>
 
@@ -49,33 +49,33 @@
           <div id="page-policy-chips" class="chips"></div>
           <p id="page-policy-message" class="muted"></p>
         </div>
-        <div id="matches" class="stack"></div>
+        <div id="matches" class="stack" aria-live="polite"></div>
       </section>
 
       <section id="pending-panel" class="panel hidden">
         <h2>Save captured login</h2>
-        <label class="field">
+        <label class="field" for="pending-title">
           <span>Title</span>
           <input id="pending-title" />
         </label>
-        <label class="field">
+        <label class="field" for="pending-username">
           <span>Username</span>
           <input id="pending-username" />
         </label>
-        <label class="field">
+        <label class="field" for="pending-email">
           <span>Email</span>
           <input id="pending-email" />
         </label>
-        <label class="field">
+        <label class="field" for="pending-password">
           <span>Password</span>
-          <input id="pending-password" type="password" />
+          <input id="pending-password" type="password" autocomplete="off" />
         </label>
-        <button id="save-pending" class="btn btn-primary">Save login</button>
+        <button id="save-pending" type="button" class="btn btn-primary">Save login</button>
       </section>
 
       <section class="panel">
         <h2>Status</h2>
-        <p id="status" class="muted">Loading extension state...</p>
+        <p id="status" class="muted" role="status" aria-live="polite">Loading extension state...</p>
       </section>
     </main>
     <script type="module" src="popup.js"></script>

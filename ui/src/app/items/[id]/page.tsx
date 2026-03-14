@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import Image from 'next/image';
 import { apiJson } from '@/lib/api';
 import { useMusicPlayer, type MusicTrack } from '@/lib/musicPlayerContext';
 
@@ -86,9 +87,12 @@ export default function ItemPage() {
                 <Link key={album.id} href={`/items/${album.id}`} className="group block">
                   <div className="tile tile-hover aspect-square overflow-hidden">
                     {album.poster_url ? (
-                      <img
+                      <Image
                         src={album.poster_url}
                         alt={album.title}
+                        width={320}
+                        height={320}
+                        unoptimized
                         className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                       />
                     ) : (
@@ -132,7 +136,14 @@ export default function ItemPage() {
           <div className="w-48 shrink-0">
             <div className="tile overflow-hidden aspect-square">
               {albumArtUrl ? (
-                <img src={albumArtUrl} alt={item.title} className="w-full h-full object-cover" />
+                <Image
+                  src={albumArtUrl}
+                  alt={item.title}
+                  width={320}
+                  height={320}
+                  unoptimized
+                  className="h-full w-full object-cover"
+                />
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-5xl muted">
                   ♪
@@ -253,9 +264,12 @@ export default function ItemPage() {
     <div className="space-y-7 animate-rise">
       {item.backdrop_url && (
         <div className="tile relative h-64 overflow-hidden rounded-2xl sm:h-72">
-          <img
+          <Image
             src={item.backdrop_url}
             alt=""
+            width={1280}
+            height={720}
+            unoptimized
             className="h-full w-full object-cover opacity-45"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-[#1f2535] via-[#1f2535]/50 to-transparent" />
@@ -266,7 +280,7 @@ export default function ItemPage() {
         {item.poster_url && (
           <div className="w-52 flex-shrink-0">
             <div className="tile overflow-hidden">
-              <img src={item.poster_url} alt={item.title} className="w-full" />
+              <Image src={item.poster_url} alt={item.title} width={320} height={480} unoptimized className="w-full" />
             </div>
           </div>
         )}
@@ -297,22 +311,27 @@ export default function ItemPage() {
           </h2>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
             {children.map((child) => (
-              <Link
-                key={child.id}
-                href={`/items/${child.id}`}
-                className="tile tile-hover block overflow-hidden"
-              >
-                {child.poster_url || child.thumb_url ? (
-                  <img
-                    src={child.poster_url || child.thumb_url}
-                    alt={child.title}
-                    className="aspect-[2/3] w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex aspect-[2/3] items-center justify-center bg-white/5 px-2 text-xs muted">
-                    {child.kind.toUpperCase()}
-                  </div>
-                )}
+              <Link key={child.id} href={`/items/${child.id}`} className="tile tile-hover block overflow-hidden">
+                {(() => {
+                  const childPoster = child.poster_url ?? child.thumb_url;
+                  if (!childPoster) {
+                    return (
+                      <div className="flex aspect-[2/3] items-center justify-center bg-white/5 px-2 text-xs muted">
+                        {child.kind.toUpperCase()}
+                      </div>
+                    );
+                  }
+                  return (
+                    <Image
+                      src={childPoster}
+                      alt={child.title}
+                      width={320}
+                      height={480}
+                      unoptimized
+                      className="aspect-[2/3] w-full object-cover"
+                    />
+                  );
+                })()}
                 <div className="space-y-1 p-3">
                   <p className="font-medium text-sm">{child.title}</p>
                   {child.kind === 'episode' && (

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import Image from 'next/image';
 import { apiJson } from '@/lib/api';
 
 interface Library {
@@ -86,9 +87,12 @@ export default function LibraryPage() {
             <Link key={item.id} href={`/items/${item.id}`} className="group block">
               <div className="tile tile-hover aspect-square overflow-hidden">
                 {item.poster_url ? (
-                  <img
+                  <Image
                     src={item.poster_url}
                     alt={item.title}
+                    width={320}
+                    height={480}
+                    unoptimized
                     className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                   />
                 ) : (
@@ -109,9 +113,12 @@ export default function LibraryPage() {
             <Link key={item.id} href={`/items/${item.id}`} className="group block">
               <div className="tile tile-hover aspect-[2/3] overflow-hidden">
                 {item.poster_url ? (
-                  <img
+                  <Image
                     src={item.poster_url}
                     alt={item.title}
+                    width={320}
+                    height={480}
+                    unoptimized
                     className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                   />
                 ) : (

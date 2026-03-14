@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import { apiFetch } from '@/lib/api';
 import {
   cancelVoiceTranscription,
@@ -119,10 +120,13 @@ function ParticipantCard({
           }
         >
           {userInfo.avatar_url ? (
-            <img
+            <Image
               src={userInfo.avatar_url}
               alt={userInfo.username}
-              className="w-28 h-28 rounded-full object-cover border border-[var(--border)] bg-black/20"
+              width={112}
+              height={112}
+              unoptimized
+              className="h-28 w-28 rounded-full border border-[var(--border)] bg-black/20 object-cover"
               loading="lazy"
             />
           ) : (

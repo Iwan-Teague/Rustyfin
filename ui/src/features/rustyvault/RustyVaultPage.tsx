@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useDeferredValue, useEffect, useState, startTransition } from 'react';
+import { useCallback, useDeferredValue, useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { useAuth } from '@/lib/auth';
@@ -389,7 +389,7 @@ export default function RustyVaultPage() {
     setLookupResultIds(response.items.map((item) => item.id));
   }
 
-  function resetAutoLock() {
+  const resetAutoLock = useCallback(() => {
     if (!unlocked) return;
     if (prefs.auto_lock_minutes <= 0) return;
     const rustyVaultWindow = window as Window & { __rustyVaultAutoLock?: number };
@@ -401,7 +401,7 @@ export default function RustyVaultPage() {
       setShowPassword(false);
       setMessage('Vault locked after inactivity.');
     }, prefs.auto_lock_minutes * 60 * 1000);
-  }
+  }, [prefs.auto_lock_minutes, unlocked]);
 
   useEffect(() => {
     supportsRustyVaultCrypto().then(setCryptoSupported);
@@ -450,7 +450,7 @@ export default function RustyVaultPage() {
       window.removeEventListener('keydown', onActivity);
       window.removeEventListener('visibilitychange', onActivity);
     };
-  }, [prefs.auto_lock_minutes, unlocked]);
+  }, [prefs.auto_lock_minutes, resetAutoLock, unlocked]);
 
   useEffect(() => {
     setGeneratorOptions(presetOptions(generatorPreset));

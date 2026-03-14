@@ -15,15 +15,15 @@
       </header>
 
       <section class="panel">
-        <label class="field">
+        <label class="field" for="server-url">
           <span>Rustyfin server URL</span>
-          <input id="server-url" />
+          <input id="server-url" type="url" inputmode="url" autocomplete="off" />
         </label>
-        <label class="field">
+        <label class="field" for="auto-lock">
           <span>Auto-lock minutes</span>
           <input id="auto-lock" type="number" min="1" max="240" />
         </label>
-        <label class="field">
+        <label class="field" for="match-mode">
           <span>Default match mode</span>
           <select id="match-mode">
             <option value="exact">Exact</option>
@@ -32,31 +32,31 @@
             <option value="never">Never</option>
           </select>
         </label>
-        <label class="field">
+        <label class="field" for="excluded-domains">
           <span>Excluded domains</span>
           <textarea id="excluded-domains" rows="6"></textarea>
         </label>
-        <label class="field">
+        <label class="field field-inline" for="warn-http">
           <input id="warn-http" type="checkbox" />
           <span>Warn before HTTP fill</span>
         </label>
-        <label class="field">
+        <label class="field field-inline" for="allow-http-fill">
           <input id="allow-http-fill" type="checkbox" />
           <span>Allow manual fill on HTTP pages</span>
         </label>
-        <label class="field">
+        <label class="field field-inline" for="warn-iframe">
           <input id="warn-iframe" type="checkbox" />
           <span>Warn before untrusted iframe fill</span>
         </label>
-        <label class="field">
+        <label class="field field-inline" for="page-load-autofill">
           <input id="page-load-autofill" type="checkbox" />
           <span>Allow page-load autofill (not recommended)</span>
         </label>
-        <button id="save-options" class="btn btn-primary">Save options</button>
+        <button id="save-options" type="button" class="btn btn-primary">Save options</button>
       </section>
 
       <section class="panel">
-        <p id="status" class="muted">Loading settings...</p>
+        <p id="status" class="muted" role="status" aria-live="polite">Loading settings...</p>
       </section>
     </main>
     <script type="module" src="options.js"></script>

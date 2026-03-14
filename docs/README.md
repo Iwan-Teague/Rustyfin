@@ -14,6 +14,8 @@ Read these first:
   - repository operating rules and runtime policy
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
   - native Debian install, start, deploy, ports, logs, and service model
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/impeccable-comprehensive-coverage-playbook.md`
+  - comprehensive command-first workflow for full-project Impeccable UX/design coverage
 - `/Users/iwanteague/Desktop/Rustyfin/docs/setup-wizard/Rustyfin_Setup_Wizard_Package/Rustyfin_Setup_Wizard_Spec_v4_OpenAPI_Sequence.md`
   - current setup wizard contract/spec
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/documentation-audit-2026-03-12.md`

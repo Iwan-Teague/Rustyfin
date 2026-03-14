@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import type { Me } from '@/lib/auth';
 import { useMyAccount } from '@/app/account/hooks/useMyAccount';
 
@@ -176,10 +177,13 @@ export default function ChannelUserSettings({
       <div className="h-16 border-t border-[var(--border)] px-4 flex items-center justify-between shrink-0 bg-[var(--surface)]">
         <div className="flex items-center gap-3 min-w-0">
           {me.avatar_url ? (
-            <img
+            <Image
               src={me.avatar_url}
               alt={me.username}
-              className="h-10 w-10 rounded-full object-cover border border-[var(--border)] bg-black/20"
+              width={40}
+              height={40}
+              unoptimized
+              className="h-10 w-10 rounded-full border border-[var(--border)] bg-black/20 object-cover"
             />
           ) : (
             <div className="h-10 w-10 rounded-full bg-gradient-to-br from-[var(--orange)] to-[var(--purple-strong)] text-white font-semibold flex items-center justify-center">
@@ -230,10 +234,13 @@ export default function ChannelUserSettings({
                   <h3 className="text-sm font-semibold">Profile</h3>
                   <div className="flex items-center gap-3">
                     {avatarPreviewUrl ? (
-                      <img
+                      <Image
                         src={avatarPreviewUrl}
                         alt={displayName}
-                        className="h-16 w-16 rounded-full object-cover border border-[var(--border)] bg-black/20"
+                        width={64}
+                        height={64}
+                        unoptimized
+                        className="h-16 w-16 rounded-full border border-[var(--border)] bg-black/20 object-cover"
                       />
                     ) : (
                       <div className="h-16 w-16 rounded-full bg-gradient-to-br from-[var(--orange)] to-[var(--purple-strong)] text-white text-xl font-semibold flex items-center justify-center">

@@ -53,12 +53,17 @@ export default function LoginPage() {
           <p className="text-sm muted">Sign in to stream media and manage your server.</p>
         </div>
 
-        {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
+        {error && (
+          <p className="notice-error rounded-xl px-4 py-2 text-sm" role="alert">
+            {error}
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium muted">Username</label>
+            <label htmlFor="login-username" className="mb-1.5 block text-sm font-medium muted">Username</label>
             <input
+              id="login-username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -67,8 +72,9 @@ export default function LoginPage() {
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium muted">Password</label>
+            <label htmlFor="login-password" className="mb-1.5 block text-sm font-medium muted">Password</label>
             <input
+              id="login-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

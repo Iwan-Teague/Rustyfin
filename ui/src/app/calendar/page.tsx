@@ -475,7 +475,11 @@ export default function CalendarPage() {
 
           <div className="flex-1 min-h-0">
             {loading ? (
-              <div className="panel-soft rounded-xl h-full px-4 py-10 text-sm muted text-center flex items-center justify-center">
+              <div
+                className="panel-soft rounded-xl h-full px-4 py-10 text-sm muted text-center flex items-center justify-center"
+                role="status"
+                aria-live="polite"
+              >
                 Loading calendar…
               </div>
             ) : view === 'agenda_30' || view === 'events_30' ? (

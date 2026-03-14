@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 
 type ConfirmModalProps = {
@@ -35,18 +36,36 @@ export default function ConfirmModal({
   maxWidthClassName = 'max-w-sm',
   zIndexClassName = 'z-50',
 }: ConfirmModalProps) {
+  const titleId = useId();
+  const descriptionId = `${titleId}-description`;
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const firstAction = dialogRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)');
+    firstAction?.focus();
+  }, [open]);
+
   if (!open) return null;
 
   return (
     <div
       className={`fixed inset-0 ${zIndexClassName} flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]`}
+      role="presentation"
+      onClick={onCancel}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         className={`panel w-full ${maxWidthClassName} space-y-4 rounded-2xl border border-[var(--border)] p-6`}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="space-y-2">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          {description ? <div className="text-sm muted">{description}</div> : null}
+          <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
+          {description ? <div id={descriptionId} className="text-sm muted">{description}</div> : null}
         </div>
 
         {children}

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
 import { useMyAccount } from './hooks/useMyAccount';
@@ -364,10 +365,13 @@ export default function AccountPage() {
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 min-w-0">
             {avatarPreviewUrl ? (
-              <img
+              <Image
                 src={avatarPreviewUrl}
                 alt={displayName || me.username}
-                className="h-20 w-20 rounded-full object-cover border border-[var(--border)] bg-black/20"
+                width={80}
+                height={80}
+                unoptimized
+                className="h-20 w-20 rounded-full border border-[var(--border)] bg-black/20 object-cover"
               />
             ) : (
               <div className="h-20 w-20 rounded-full bg-gradient-to-br from-[var(--orange)] to-[var(--purple-strong)] text-white text-2xl font-semibold flex items-center justify-center">
@@ -413,8 +417,9 @@ export default function AccountPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs muted">Display name</label>
+                <label htmlFor="account-display-name" className="text-xs muted">Display name</label>
                 <input
+                  id="account-display-name"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={displayName}
                   onChange={(event) => setDisplayName(event.target.value)}
@@ -422,8 +427,9 @@ export default function AccountPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">Time zone</label>
+                <label htmlFor="account-time-zone" className="text-xs muted">Time zone</label>
                 <input
+                  id="account-time-zone"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={timeZone}
                   onChange={(event) => setTimeZone(event.target.value)}
@@ -437,16 +443,18 @@ export default function AccountPage() {
                 </datalist>
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">Login username</label>
+                <label htmlFor="account-login-username" className="text-xs muted">Login username</label>
                 <input
+                  id="account-login-username"
                   className="panel w-full rounded-lg px-3 py-2 text-sm opacity-80"
                   value={account.profile?.login_username ?? me.login_username ?? me.username}
                   readOnly
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">Role</label>
+                <label htmlFor="account-role" className="text-xs muted">Role</label>
                 <input
+                  id="account-role"
                   className="panel w-full rounded-lg px-3 py-2 text-sm opacity-80"
                   value={account.profile?.role ?? me.role}
                   readOnly
@@ -455,8 +463,9 @@ export default function AccountPage() {
             </div>
 
             <div className="space-y-3">
-              <label className="text-xs muted">Avatar</label>
+              <label htmlFor="account-avatar" className="text-xs muted">Avatar</label>
               <input
+                id="account-avatar"
                 type="file"
                 accept="image/png,image/jpeg,image/webp,image/gif"
                 className="w-full rounded-lg border border-[var(--border)] bg-black/20 px-3 py-2 text-xs text-white/85 file:mr-3 file:rounded-md file:border file:border-[var(--border)] file:bg-black/35 file:px-3 file:py-1 file:text-xs file:font-medium file:text-white hover:file:bg-black/45"
@@ -498,8 +507,9 @@ export default function AccountPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs muted">Input device</label>
+                <label htmlFor="account-input-device" className="text-xs muted">Input device</label>
                 <select
+                  id="account-input-device"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={selectedInputDeviceId ?? ''}
                   onChange={(event) => setSelectedInputDeviceId(event.target.value || null)}
@@ -516,8 +526,9 @@ export default function AccountPage() {
                 )}
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">Output device</label>
+                <label htmlFor="account-output-device" className="text-xs muted">Output device</label>
                 <select
+                  id="account-output-device"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={selectedOutputDeviceId ?? ''}
                   onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
@@ -553,8 +564,9 @@ export default function AccountPage() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
-                <label className="text-xs muted">Current password</label>
+                <label htmlFor="account-current-password" className="text-xs muted">Current password</label>
                 <input
+                  id="account-current-password"
                   type="password"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={passwordForm.current_password}
@@ -567,8 +579,9 @@ export default function AccountPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">New password</label>
+                <label htmlFor="account-new-password" className="text-xs muted">New password</label>
                 <input
+                  id="account-new-password"
                   type="password"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={passwordForm.new_password}
@@ -581,8 +594,9 @@ export default function AccountPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-xs muted">Confirm password</label>
+                <label htmlFor="account-confirm-password" className="text-xs muted">Confirm password</label>
                 <input
+                  id="account-confirm-password"
                   type="password"
                   className="panel w-full rounded-lg px-3 py-2 text-sm"
                   value={passwordForm.confirm_password}
@@ -616,8 +630,9 @@ export default function AccountPage() {
             <p className="text-sm muted">
               Rustyfin stores personal activity summaries for section presence, watch rooms, voice channels, and media watch time so your account page can show simple usage insights.
             </p>
-            <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-black/15 px-4 py-3 text-sm">
+            <label htmlFor="account-activity-insights" className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-black/15 px-4 py-3 text-sm">
               <input
+                id="account-activity-insights"
                 type="checkbox"
                 className="mt-1"
                 checked={account.preferences.privacy.personal_activity_enabled}

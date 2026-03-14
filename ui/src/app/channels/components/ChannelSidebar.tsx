@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import Image from 'next/image';
 import type { ChannelInfo, UserInfo } from '@/lib/channelsApi';
 import { renameChannel } from '@/lib/channelsApi';
 import { elapsedSinceSeconds, formatElapsedSeconds } from '@/lib/time';
@@ -235,10 +236,13 @@ function ChannelRow({
             aria-hidden="true"
           >
             {u.avatar_url ? (
-              <img
+              <Image
                 src={u.avatar_url}
                 alt={u.username}
-                className="inline-flex h-5 w-5 rounded-full object-cover border border-[var(--border)] bg-black/20"
+                width={20}
+                height={20}
+                unoptimized
+                className="inline-flex h-5 w-5 rounded-full border border-[var(--border)] bg-black/20 object-cover"
                 loading="lazy"
               />
             ) : (

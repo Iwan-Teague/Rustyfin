@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Image from 'next/image';
 import {
   WsYouTubeStateMessage,
   YouTubeSearchResult,
@@ -929,10 +930,13 @@ export default function YouTubePlayer({
                     return (
                       <li key={result.video_id} className="tile rounded-xl px-2 py-2">
                         <div className="flex items-start gap-3">
-                          <img
+                          <Image
                             src={result.thumbnail_url}
                             alt={result.title}
-                            className="h-16 w-28 rounded-md object-cover border border-white/10"
+                            width={112}
+                            height={64}
+                            unoptimized
+                            className="h-16 w-28 rounded-md border border-white/10 object-cover"
                             loading="lazy"
                           />
                           <div className="min-w-0 flex-1">

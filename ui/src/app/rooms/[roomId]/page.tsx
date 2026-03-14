@@ -813,7 +813,7 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className={`px-4 py-2 text-sm rounded-lg ${
                           currentReconfigureCategory === 'watch'
-                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            ? 'cursor-not-allowed border border-white/20 bg-white/10 text-white/60'
                             : reconfigure.isWatchReconfigureMode
                               ? 'btn-primary'
                               : 'btn-secondary'
@@ -827,7 +827,7 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className={`px-4 py-2 text-sm rounded-lg ${
                           currentReconfigureCategory === 'audio'
-                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            ? 'cursor-not-allowed border border-white/20 bg-white/10 text-white/60'
                             : reconfigure.reconfigureMode === 'audio'
                               ? 'btn-primary'
                               : 'btn-secondary'
@@ -841,7 +841,7 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className={`px-4 py-2 text-sm rounded-lg ${
                           currentReconfigureCategory === 'play'
-                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            ? 'cursor-not-allowed border border-white/20 bg-white/10 text-white/60'
                             : reconfigure.reconfigureMode === 'play'
                               ? 'btn-primary'
                               : 'btn-secondary'
@@ -855,7 +855,7 @@ export default function WatchPartyRoomPage() {
                         type="button"
                         className={`px-4 py-2 text-sm rounded-lg ${
                           currentReconfigureCategory === 'create'
-                            ? 'cursor-not-allowed border border-white/10 bg-white/5 text-white/35'
+                            ? 'cursor-not-allowed border border-white/20 bg-white/10 text-white/60'
                             : reconfigure.reconfigureMode === 'create'
                               ? 'btn-primary'
                               : 'btn-secondary'

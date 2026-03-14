@@ -2618,7 +2618,7 @@ export default function AdminPage() {
             {runtimeDiagnostics ? (
               <div className="mt-4 grid gap-3 xl:grid-cols-4">
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Runtime</div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Runtime</div>
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="muted">Uptime</span>
@@ -2641,7 +2641,7 @@ export default function AdminPage() {
                 </div>
 
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Transcoding</div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Transcoding</div>
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="muted">Active sessions</span>
@@ -2664,7 +2664,7 @@ export default function AdminPage() {
                 </div>
 
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">WebSockets</div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">WebSockets</div>
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <span className="muted">Channels</span>
@@ -2678,7 +2678,7 @@ export default function AdminPage() {
                 </div>
 
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
-                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75">Agent Calls</div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Agent Calls</div>
                   <div className="mt-3 space-y-2">
                     {[
                       { label: 'Servers', agent: runtimeDiagnostics.runtime.agents.servers },

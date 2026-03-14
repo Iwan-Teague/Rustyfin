@@ -78,11 +78,15 @@ async function render() {
   for (const match of response.matches || []) {
     const wrapper = document.createElement('div');
     wrapper.className = 'match';
-    wrapper.innerHTML = `
-      <strong>${match.summary.title}</strong>
-      <div class="muted">${match.summary.primary_uri || match.summary.subtitle}</div>
-      <div class="muted">${match.summary.username || match.summary.login_email || 'No username'}</div>
-    `;
+    const title = document.createElement('strong');
+    title.textContent = match.summary.title;
+    const uri = document.createElement('div');
+    uri.className = 'muted';
+    uri.textContent = match.summary.primary_uri || match.summary.subtitle;
+    const principal = document.createElement('div');
+    principal.className = 'muted';
+    principal.textContent = match.summary.username || match.summary.login_email || 'No username';
+    wrapper.append(title, uri, principal);
     const fill = document.createElement('button');
     fill.className = 'btn btn-primary';
     fill.textContent = fillButtonLabel(response.pagePolicy);
