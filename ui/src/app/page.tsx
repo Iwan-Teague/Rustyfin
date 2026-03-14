@@ -33,6 +33,10 @@ function formatDurationLabel(totalSeconds: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+function formatRoomMembersLabel(memberCount: number): string {
+  return memberCount === 1 ? '1 member' : `${memberCount} members`;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -143,12 +147,28 @@ export default function HomePage() {
   }
 
   return (
-    <div className="space-y-7 animate-rise">
-      <header className="panel space-y-3 p-6 sm:p-8">
-        <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
-        <p className="text-sm muted sm:text-base">
-          Pick up where you left off or jump into an open room.
-        </p>
+    <div className="animate-rise space-y-8">
+      <header className="panel p-6 sm:p-8">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <p className="chip chip-accent w-fit">Social continuation</p>
+            <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
+            <p className="max-w-2xl text-sm muted sm:text-base">
+              Resume what you were watching and join active rooms with one click.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href={publicRooms[0] ? `/rooms/${publicRooms[0].room_id}` : '/rooms'}
+              className="btn-primary px-4 py-2.5 text-sm"
+            >
+              Join an active room
+            </Link>
+            <Link href="/libraries" className="btn-secondary px-4 py-2.5 text-sm">
+              Browse libraries
+            </Link>
+          </div>
+        </div>
       </header>
 
       {error && (
@@ -159,15 +179,24 @@ export default function HomePage() {
 
       <div className="grid grid-cols-1 gap-7 xl:grid-cols-2 xl:items-start">
         <section id="continue-watching" className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
-            <Link href="/libraries#continue-watching" className="text-sm text-[var(--orange-soft)]">
+          <div className="flex items-end justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
+              <p className="text-xs muted sm:text-sm">Jump back into your most recent titles.</p>
+            </div>
+            <Link
+              href="/libraries#continue-watching"
+              className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]"
+            >
               View all
             </Link>
           </div>
           {continueWatching.length === 0 ? (
             <div className="panel-soft px-4 py-3 text-sm muted">
-              Start a movie or episode from a library and Rustyfin will keep your place here.
+              <p>Start a movie or episode from a library and Rustyfin will keep your place here.</p>
+              <Link href="/libraries" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
+                Open libraries
+              </Link>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4">
@@ -235,9 +264,12 @@ export default function HomePage() {
         </section>
 
         <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
-            <Link href="/rooms" className="text-sm text-[var(--orange-soft)]">
+          <div className="flex items-end justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
+              <p className="text-xs muted sm:text-sm">See who is active and jump in now.</p>
+            </div>
+            <Link href="/rooms" className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]">
               View all
             </Link>
           </div>
@@ -255,14 +287,17 @@ export default function HomePage() {
                 <Link
                   key={room.room_id}
                   href={`/rooms/${room.room_id}`}
-                  className="tile tile-hover p-4 flex flex-col gap-2"
+                  className="tile tile-hover flex flex-col gap-3 p-4"
                 >
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start justify-between gap-3">
                     <p className="font-semibold truncate leading-snug">{room.title}</p>
+                    <span className="chip chip-accent text-[0.67rem] uppercase tracking-[0.18em]">
+                      Join
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-xs muted">
                     <span>Hosted by {room.host_username}</span>
-                    <span>{room.member_count} in room</span>
+                    <span>{formatRoomMembersLabel(room.member_count)}</span>
                   </div>
                 </Link>
               ))}

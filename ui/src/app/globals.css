@@ -23,6 +23,11 @@
   --shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
   --radius-lg: 18px;
   --radius-md: 14px;
+  --focus-ring: rgba(255, 194, 122, 0.72);
+  --page-max-width: 84rem;
+  --page-pad-inline: clamp(1rem, 2.6vw, 2.75rem);
+  --page-pad-top: clamp(0.8rem, 2vw, 1.4rem);
+  --page-pad-bottom: clamp(5rem, 10vw, 7.25rem);
 }
 
 * {
@@ -44,6 +49,7 @@ body {
   color: var(--text-main);
   font-family: "Avenir Next", "Segoe UI Variable Text", "SF Pro Text", sans-serif;
   letter-spacing: 0.01em;
+  line-height: 1.5;
   position: relative;
 }
 
@@ -79,15 +85,19 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--orange-soft);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
 .app-nav {
-  background: linear-gradient(180deg, rgba(37, 43, 61, 0.9), rgba(31, 37, 54, 0.82));
-  border: 1px solid var(--border);
-  backdrop-filter: blur(16px);
-  box-shadow: var(--shadow);
+  position: sticky;
+  top: 0.5rem;
+  z-index: 45;
+  background: linear-gradient(180deg, rgba(35, 41, 59, 0.96), rgba(27, 33, 50, 0.96));
+  border: 1px solid rgba(215, 223, 255, 0.2);
+  box-shadow:
+    0 16px 35px rgba(6, 9, 15, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .accent-logo {
@@ -113,17 +123,52 @@ textarea:focus-visible {
   border-width: 0;
 }
 
+.skip-link {
+  position: fixed;
+  left: 0.75rem;
+  top: 0.75rem;
+  z-index: 60;
+  transform: translateY(-160%);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: rgba(22, 26, 39, 0.98);
+  color: var(--text-main);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.48rem 0.86rem;
+  text-decoration: none;
+  transition: transform 160ms ease;
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+.app-shell {
+  width: 100%;
+  padding-inline: var(--page-pad-inline);
+  padding-top: var(--page-pad-top);
+  padding-bottom: var(--page-pad-bottom);
+}
+
+.app-main {
+  margin-inline: auto;
+  width: min(100%, var(--page-max-width));
+  padding-block: clamp(1rem, 2.1vw, 2rem);
+}
+
 .panel {
-  background: linear-gradient(165deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01));
-  border: 1px solid var(--border);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(20, 24, 36, 0.92));
+  border: 1px solid rgba(215, 223, 255, 0.17);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(8px);
+  box-shadow:
+    0 20px 40px rgba(5, 9, 15, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .panel-soft {
-  background: var(--surface-soft);
-  border: 1px solid var(--border);
+  background: rgba(45, 53, 78, 0.78);
+  border: 1px solid rgba(215, 223, 255, 0.15);
   border-radius: var(--radius-md);
 }
 

@@ -19,11 +19,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen text-[var(--text-main)]">
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
         <Providers>
           <PrimaryButtonEffects />
-          <div className="w-full px-4 pb-20 pt-5 sm:px-6 sm:pb-24 lg:px-10">
+          <div className="app-shell">
             <NavBar />
-            <main className="mx-auto max-w-7xl px-0 py-4 sm:py-8 lg:py-10">{children}</main>
+            <main id="main-content" className="app-main">
+              {children}
+            </main>
           </div>
           <MiniPlayer />
         </Providers>
