@@ -280,6 +280,16 @@ textarea:focus-visible {
   animation: home-card-sheen 900ms var(--ease-out-quart) forwards;
 }
 
+.library-card-sheen.tile-hover::after {
+  inset: -145% auto auto -190%;
+  width: 220%;
+  height: 300%;
+}
+
+.library-card-sheen.tile-hover:hover::after {
+  animation: home-card-sheen 940ms var(--ease-out-quart) forwards;
+}
+
 .tile-hover:active {
   transform: translate3d(0, -1px, 0) scale(0.995);
   transition-duration: 110ms;
@@ -867,6 +877,162 @@ input[type="checkbox"]:disabled {
 
 .rf-modal-enter {
   animation: modal-raise-in 320ms var(--ease-out-expo) both;
+}
+
+.rf-notify-root {
+  display: inline-flex;
+  align-items: center;
+}
+
+.rf-notify-trigger {
+  color: var(--text-muted);
+}
+
+.app-nav .rf-notify-trigger.rf-nav-link {
+  overflow: visible;
+  min-width: 2.75rem;
+}
+
+.rf-notify-bell {
+  transition:
+    transform var(--motion-fast) var(--ease-out-quart),
+    opacity var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-notify-badge {
+  border: 1px solid rgba(36, 21, 7, 0.22);
+  color: #281a0d;
+  background: linear-gradient(130deg, #ffd083 0%, #ff9c63 42%, #ff7a92 100%);
+  box-shadow:
+    0 8px 18px rgba(255, 132, 88, 0.44),
+    0 0 0 1px rgba(255, 255, 255, 0.2) inset;
+}
+
+.rf-notify-popover {
+  position: relative;
+  border: 1px solid rgba(215, 223, 255, 0.2);
+  background:
+    radial-gradient(120% 120% at 0% -20%, rgba(255, 145, 77, 0.16), transparent 58%),
+    radial-gradient(110% 140% at 100% -35%, rgba(177, 140, 255, 0.15), transparent 60%),
+    linear-gradient(165deg, rgba(38, 45, 66, 0.97) 0%, rgba(24, 30, 47, 0.98) 100%);
+  box-shadow:
+    0 26px 56px rgba(0, 0, 0, 0.52),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.rf-notify-popover-floating {
+  position: fixed;
+}
+
+.rf-notify-popover::before {
+  content: "";
+  position: absolute;
+  top: 0.72rem;
+  left: 1rem;
+  right: 1rem;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 145, 77, 0.56) 0%,
+    rgba(255, 117, 136, 0.46) 52%,
+    rgba(157, 116, 255, 0.54) 100%
+  );
+  opacity: 0.44;
+  pointer-events: none;
+}
+
+.rf-notify-header {
+  border-bottom: 1px solid rgba(215, 223, 255, 0.14);
+  padding-bottom: 0.75rem;
+}
+
+.rf-notify-kicker {
+  color: rgba(255, 194, 122, 0.82);
+}
+
+.rf-notify-refresh {
+  border: 1px solid rgba(215, 223, 255, 0.18);
+  background: rgba(22, 28, 44, 0.58);
+}
+
+.rf-notify-tabs button {
+  border-radius: 999px;
+  border: 1px solid rgba(215, 223, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(248, 248, 255, 0.84);
+  transition:
+    transform var(--motion-fast) var(--ease-out-quart),
+    border-color var(--motion-fast) var(--ease-out-quart),
+    background-color var(--motion-fast) var(--ease-out-quart),
+    color var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-notify-tabs button:hover:not(:disabled) {
+  transform: translate3d(0, -1px, 0);
+  border-color: rgba(255, 194, 122, 0.42);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rf-notify-tabs button:disabled {
+  opacity: 1;
+  border-color: rgba(255, 194, 122, 0.55);
+  background: linear-gradient(
+    120deg,
+    rgba(255, 145, 77, 0.28) 0%,
+    rgba(157, 116, 255, 0.24) 100%
+  );
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.rf-notify-tabs-badges .chip {
+  border-color: rgba(255, 194, 122, 0.28);
+  background: rgba(26, 32, 48, 0.7);
+  color: rgba(255, 234, 210, 0.9);
+}
+
+.rf-notify-empty {
+  border: 1px dashed rgba(215, 223, 255, 0.24);
+  background: rgba(37, 45, 66, 0.64);
+}
+
+.rf-notify-list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 194, 122, 0.36) rgba(215, 223, 255, 0.08);
+}
+
+.rf-notify-item {
+  position: relative;
+  border: 1px solid rgba(215, 223, 255, 0.16);
+  background:
+    linear-gradient(165deg, rgba(56, 64, 89, 0.7) 0%, rgba(35, 42, 63, 0.78) 100%) padding-box,
+    linear-gradient(120deg, rgba(255, 145, 77, 0.16), rgba(157, 116, 255, 0.14)) border-box;
+  box-shadow: 0 12px 26px rgba(5, 9, 15, 0.26);
+  transition:
+    transform var(--motion-fast) var(--ease-out-quart),
+    border-color var(--motion-fast) var(--ease-out-quart),
+    box-shadow var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-notify-item:hover {
+  transform: translate3d(0, -2px, 0);
+  border-color: rgba(255, 194, 122, 0.36);
+  box-shadow: 0 16px 30px rgba(5, 9, 15, 0.32);
+}
+
+.rf-notify-item .chip {
+  border-color: rgba(255, 194, 122, 0.3);
+  background: rgba(33, 39, 59, 0.72);
+  color: rgba(255, 225, 188, 0.94);
+}
+
+.rf-notify-item-action {
+  min-height: 1.9rem;
+}
+
+.rf-notify-error {
+  border-color: rgba(255, 117, 136, 0.56);
 }
 
 @keyframes btn-click-pop {

@@ -74,6 +74,7 @@ pub struct ContinueWatchingRow {
     pub title: String,
     pub year: Option<i64>,
     pub poster_url: Option<String>,
+    pub thumb_url: Option<String>,
     pub progress_ms: i64,
     pub duration_ms: Option<i64>,
     pub last_played_ts: i64,
@@ -90,7 +91,7 @@ pub async fn list_continue_watching(
     }
 
     let mut sql = String::from(
-        "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.poster_url, \
+        "SELECT i.id, i.library_id, i.kind, i.title, i.year, i.poster_url, i.thumb_url, \
                 CAST(uis.progress_ms AS BIGINT) AS progress_ms, \
                 (SELECT mf.duration_ms FROM episode_file_map efm \
                  JOIN media_file mf ON mf.id = efm.file_id \
@@ -124,6 +125,7 @@ pub async fn list_continue_watching(
             String,
             Option<i64>,
             Option<String>,
+            Option<String>,
             i64,
             Option<i64>,
             i64,
@@ -149,6 +151,7 @@ pub async fn list_continue_watching(
                 title,
                 year,
                 poster_url,
+                thumb_url,
                 progress_ms,
                 duration_ms,
                 last_played_ts,
@@ -159,6 +162,7 @@ pub async fn list_continue_watching(
                 title,
                 year,
                 poster_url,
+                thumb_url,
                 progress_ms,
                 duration_ms,
                 last_played_ts,

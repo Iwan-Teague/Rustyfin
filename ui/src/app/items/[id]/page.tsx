@@ -265,87 +265,98 @@ export default function ItemPage() {
     item.kind === 'series' && displayChildren.some((child) => child.kind === 'season')
       ? 'Seasons'
       : 'Episodes';
+  const hasEpisodeChildren = displayChildren.some((child) => child.kind === 'episode');
+  const childGridClass = hasEpisodeChildren
+    ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4'
+    : 'grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6';
 
   return (
-    <div className="space-y-7 animate-rise">
+    <div className="relative isolate">
       {item.backdrop_url && (
-        <div className="tile relative h-64 overflow-hidden rounded-2xl sm:h-72">
+        <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
           <Image
             src={item.backdrop_url}
             alt=""
-            width={1280}
-            height={720}
+            fill
+            sizes="100vw"
             unoptimized
-            className="h-full w-full object-cover opacity-45"
+            className="object-cover opacity-35 scale-[1.04]"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#1f2535] via-[#1f2535]/50 to-transparent" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(38,48,72,0.18),rgba(18,22,34,0.7)_62%)]" />
+          <div className="absolute inset-0 bg-gradient-to-b from-[#111826]/35 via-[#1a2234]/56 to-[#1f2535]/90" />
         </div>
       )}
 
-      <div className="flex flex-col gap-6 lg:flex-row">
-        {item.poster_url && (
-          <div className="w-52 flex-shrink-0">
-            <div className="tile overflow-hidden">
-              <Image src={item.poster_url} alt={item.title} width={320} height={480} unoptimized className="w-full" />
+      <div className="relative z-10 space-y-7 animate-rise">
+        <div className="flex flex-col gap-6 lg:flex-row">
+          {item.poster_url && (
+            <div className="w-64 max-w-full flex-shrink-0 sm:w-72">
+              <div className="tile overflow-hidden">
+                <Image src={item.poster_url} alt={item.title} width={384} height={576} unoptimized className="w-full" />
+              </div>
             </div>
-          </div>
-        )}
-        <div className="flex-1 space-y-4">
-          <div className="space-y-2">
-            <h1 className="text-3xl font-semibold sm:text-4xl">{item.title}</h1>
-            {item.year && <span className="text-sm muted">{item.year}</span>}
-          </div>
-
-          {item.overview && <p className="max-w-3xl leading-relaxed muted">{item.overview}</p>}
-
-          {isPlayable && (
-            <Link
-              href={`/player/${id}`}
-              className="btn-primary inline-flex px-6 py-2.5 text-sm"
-            >
-              Play Now
-            </Link>
           )}
-        </div>
-      </div>
+          <div className="flex-1 space-y-4">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold sm:text-4xl">{item.title}</h1>
+              {item.year && <span className="text-sm muted">{item.year}</span>}
+            </div>
 
-      {displayChildren.length > 0 && (
-        <section className="space-y-4">
-          <h2 className="text-xl font-semibold">{childSectionLabel}</h2>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
-            {displayChildren.map((child) => (
-              <Link key={child.id} href={`/items/${child.id}`} className="tile tile-hover block overflow-hidden">
-                {(() => {
-                  const childPoster = child.poster_url ?? child.thumb_url;
-                  if (!childPoster) {
-                    return (
-                      <div className="flex aspect-[2/3] items-center justify-center bg-white/5 px-2 text-xs muted">
-                        {child.kind.toUpperCase()}
-                      </div>
-                    );
-                  }
-                  return (
-                    <Image
-                      src={childPoster}
-                      alt={child.title}
-                      width={320}
-                      height={480}
-                      unoptimized
-                      className="aspect-[2/3] w-full object-cover"
-                    />
-                  );
-                })()}
-                <div className="space-y-1 p-3">
-                  <p className="font-medium text-sm">{child.title}</p>
-                  {child.kind === 'episode' && (
-                    <p className="text-xs muted">Episode</p>
-                  )}
-                </div>
+            {item.overview && <p className="max-w-3xl leading-relaxed muted">{item.overview}</p>}
+
+            {isPlayable && (
+              <Link
+                href={`/player/${id}`}
+                className="btn-primary inline-flex px-6 py-2.5 text-sm"
+              >
+                Play Now
               </Link>
-            ))}
+            )}
           </div>
-        </section>
-      )}
+        </div>
+
+        {displayChildren.length > 0 && (
+          <section className="space-y-4">
+            <h2 className="text-xl font-semibold">{childSectionLabel}</h2>
+            <div className={childGridClass}>
+              {displayChildren.map((child) => (
+                <Link key={child.id} href={`/items/${child.id}`} className="tile tile-hover block overflow-hidden">
+                  {(() => {
+                    const isEpisodeChild = child.kind === 'episode';
+                    const childPoster = isEpisodeChild
+                      ? child.thumb_url ?? child.poster_url
+                      : child.poster_url ?? child.thumb_url;
+                    const artworkAspectClass = isEpisodeChild ? 'aspect-video' : 'aspect-[2/3]';
+                    if (!childPoster) {
+                      return (
+                        <div className={`flex ${artworkAspectClass} items-center justify-center bg-white/5 px-2 text-xs muted`}>
+                          {child.kind.toUpperCase()}
+                        </div>
+                      );
+                    }
+                    return (
+                      <Image
+                        src={childPoster}
+                        alt={child.title}
+                        width={isEpisodeChild ? 480 : 320}
+                        height={isEpisodeChild ? 270 : 480}
+                        unoptimized
+                        className={`${artworkAspectClass} w-full object-cover`}
+                      />
+                    );
+                  })()}
+                  <div className="space-y-1 p-3">
+                    <p className="font-medium text-sm">{child.title}</p>
+                    {child.kind === 'episode' && (
+                      <p className="text-xs muted">Episode</p>
+                    )}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
     </div>
   );
 }

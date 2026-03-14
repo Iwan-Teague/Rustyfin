@@ -233,21 +233,11 @@ export default function HomePage() {
   return (
     <div className="animate-rise space-y-8">
       <header className="panel p-6 sm:p-8">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div className="space-y-3">
-            <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
-            <p className="max-w-2xl text-sm muted sm:text-base">
-              Resume what you were watching and keep tabs on active rooms.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href="/calendar" className="btn-secondary px-4 py-2.5 text-sm">
-              Open calendar
-            </Link>
-            <Link href="/libraries" className="btn-secondary px-4 py-2.5 text-sm">
-              Browse libraries
-            </Link>
-          </div>
+        <div className="space-y-3">
+          <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
+          <p className="max-w-2xl text-sm muted sm:text-base">
+            Resume what you were watching and keep tabs on active rooms.
+          </p>
         </div>
       </header>
 
@@ -372,11 +362,7 @@ export default function HomePage() {
             <div className="panel-soft px-4 py-3 text-sm muted" aria-live="polite">
               Loading open rooms...
             </div>
-          ) : publicRooms.length === 0 ? (
-            <div className="panel-soft px-4 py-3 text-sm muted">
-              No open rooms right now. Open the Rooms page to start one for friends and family.
-            </div>
-          ) : (
+          ) : publicRooms.length > 0 ? (
             <div className="grid grid-cols-1 gap-3">
               {publicRooms.map((room) => (
                 <Link
@@ -397,16 +383,15 @@ export default function HomePage() {
                 </Link>
               ))}
             </div>
-          )}
-          <div className="panel-soft px-4 py-3 text-sm muted">
-            <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
-            <Link
-              href={publicRooms[0] ? `/rooms/${publicRooms[0].room_id}` : '/rooms'}
-              className="btn-secondary mt-3 px-3 py-1.5 text-xs"
-            >
-              Join an active room
-            </Link>
-          </div>
+          ) : null}
+          {!loadingData && publicRooms.length === 0 ? (
+            <div className="panel-soft px-4 py-3 text-sm muted">
+              <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
+              <Link href="/rooms" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
+                Join an active room
+              </Link>
+            </div>
+          ) : null}
         </section>
       </div>
 

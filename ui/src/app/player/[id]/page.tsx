@@ -53,6 +53,9 @@ type ItemSummary = {
   title: string;
   kind: string;
   parent_id?: string | null;
+  poster_url?: string | null;
+  backdrop_url?: string | null;
+  thumb_url?: string | null;
 };
 
 function shouldResumeFromCurrentSource(video: HTMLVideoElement, fileId: string): boolean {
@@ -615,6 +618,13 @@ export default function PlayerPage() {
       const video = videoRef.current;
       if (!video) return;
 
+      const shouldResumeAfterSeek = requestedPlaybackRef.current || (!video.paused && !video.ended);
+      try {
+        video.pause();
+      } catch {
+        // no-op
+      }
+
       const knownDurationSeconds = Math.max(
         descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
         mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
@@ -636,11 +646,16 @@ export default function PlayerPage() {
         await startHls({
           targetHeightOverride: hlsTargetHeight,
           seekTimeOverrideSecs: safeTarget,
+          autoPlayOnReady: shouldResumeAfterSeek,
         });
         return;
       }
 
       video.currentTime = Math.max(0, safeTarget - hlsSessionStartOffsetSecs);
+      await waitForVideoFrameData(video).catch(() => {});
+      if (shouldResumeAfterSeek) {
+        await attemptPlayWithWarmup(video);
+      }
     },
     [
       descriptor?.duration_ms,
@@ -929,6 +944,7 @@ export default function PlayerPage() {
   );
   const playerTitle = item?.title?.trim() || 'Player';
   const showTitle = seriesTitle?.trim() || null;
+  const loadingArtworkUrl = item?.thumb_url ?? item?.poster_url ?? item?.backdrop_url ?? null;
 
   return (
     <div className="space-y-5 animate-rise">
@@ -950,6 +966,9 @@ export default function PlayerPage() {
       <VideoPlayerSurface
         shellRef={playerShellRef}
         videoRef={videoRef}
+        playbackKey={id}
+        artworkUrl={loadingArtworkUrl}
+        artworkAlt={playerTitle}
         canStartPlayback={canStartPlayback}
         knownDurationSecs={knownDurationSecs}
         bufferedWindowEndSecs={

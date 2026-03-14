@@ -20,6 +20,7 @@ interface Item {
   kind: string;
   year?: number;
   poster_url?: string;
+  thumb_url?: string;
 }
 
 interface ContinueWatchingItem {
@@ -29,6 +30,7 @@ interface ContinueWatchingItem {
   kind: string;
   year?: number;
   poster_url?: string;
+  thumb_url?: string;
   progress_ms: number;
   duration_ms?: number | null;
   last_played_ts: number;
@@ -150,7 +152,7 @@ export default function LibrariesPage() {
             <Link
               key={lib.id}
               href={`/libraries/${lib.id}`}
-              className="tile tile-hover block p-5"
+              className="tile tile-hover library-card-sheen block p-5"
             >
               <div className="flex items-center justify-between gap-4">
                 <h2 className="text-lg font-semibold">{lib.name}</h2>
@@ -184,6 +186,7 @@ export default function LibrariesPage() {
                 ? `${formatDurationLabel(item.progress_ms / 1000)} / ${formatDurationLabel(totalMs / 1000)}`
                 : `Resume at ${formatDurationLabel(item.progress_ms / 1000)}`;
               const dismissing = dismissingContinueItemIds.includes(item.id);
+              const thumbnailUrl = item.thumb_url ?? item.poster_url;
 
               return (
                 <div
@@ -203,13 +206,13 @@ export default function LibrariesPage() {
                   </button>
                   <Link href={`/player/${item.id}`} className="tile tile-hover block overflow-hidden">
                     <div className="flex min-h-[9rem] gap-4 p-4">
-                      <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
-                        {item.poster_url ? (
+                      <div className="h-20 w-36 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65 sm:h-24 sm:w-40">
+                        {thumbnailUrl ? (
                           <Image
-                            src={item.poster_url}
+                            src={thumbnailUrl}
                             alt={item.title}
-                            width={192}
-                            height={288}
+                            width={320}
+                            height={180}
                             unoptimized
                             className="h-full w-full object-cover"
                           />
@@ -256,16 +259,16 @@ export default function LibrariesPage() {
         {recommendedItems.length === 0 ? (
           <div className="panel-soft px-4 py-3 text-sm muted">No recommendations yet.</div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {recommendedItems.map((item) => (
               <Link key={`rec-${item.id}`} href={`/items/${item.id}`} className="group block">
-                <div className="tile tile-hover aspect-[2/3] overflow-hidden">
-                  {item.poster_url ? (
+                <div className="tile tile-hover aspect-video overflow-hidden">
+                  {(item.thumb_url ?? item.poster_url) ? (
                     <Image
-                      src={item.poster_url}
+                      src={item.thumb_url ?? item.poster_url ?? ''}
                       alt={item.title}
-                      width={192}
-                      height={288}
+                      width={320}
+                      height={180}
                       unoptimized
                       className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                     />
