@@ -33,6 +33,9 @@ Rustyfin is a native-Debian-first local media platform with:
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages
+- An `AI` product area for the `/ai` assistant surface backed by `crates/ai-agent`
+  - native host builds must not assume CUDA is present; default to a CPU-safe AI backend unless the host or env explicitly selects `cuda`, `rocm`, or `vulkan`
+  - use `RUSTFIN_AI_GPU_BACKEND=auto|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
 
 ## Core Rules
 
@@ -104,6 +107,7 @@ Runtime behavior:
   - it verifies backend/UI/agent readiness after startup
   - it performs one native-service restart if the host boots half-ready
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
+- On Linux hosts, use `RUSTFIN_AI_GPU_BACKEND` to control the AI inference backend (`auto`, `cpu`, `cuda`, `rocm`, `vulkan`)
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
   - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default

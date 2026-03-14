@@ -168,7 +168,7 @@ vulkan  = ["llama-cpp-2/vulkan"]
 cpu     = []   # CPU-only fallback, no GPU features
 ```
 
-GPU backend is selected at compile time via Cargo features. The default for the Debian host is `cuda`. The `build.rs` script reads `RUSTFIN_AI_GPU_BACKEND` and sets the appropriate feature.
+GPU backend is selected at compile time via Cargo features. Native host builds should default to a CPU-safe path and only opt into `cuda`, `rocm`, or `vulkan` when the host or environment explicitly supports that backend.
 
 ### 4.2 `LlamaEngine` API
 
