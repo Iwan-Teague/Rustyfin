@@ -2781,8 +2781,24 @@ async fn update_progress(
         .ok_or_else(|| ApiError::NotFound("item not found".into()))?;
     ensure_library_access(&auth, &state, &item.library_id).await?;
 
+    let progress_duration_ms =
+        if let Some(duration_ms) = item.duration_ms.filter(|value| *value > 0) {
+            Some(duration_ms)
+        } else if let Some(file_id) =
+            rustfin_db::repo::items::get_item_file_id(&state.db, &body.item_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+        {
+            rustfin_db::repo::media_files::get_media_file(&state.db, &file_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .and_then(|file| file.duration_ms.filter(|value| *value > 0))
+        } else {
+            None
+        };
+
     let (progress_ms, played) =
-        normalize_progress_state(body.progress_ms, body.played, item.duration_ms);
+        normalize_progress_state(body.progress_ms, body.played, progress_duration_ms);
 
     rustfin_db::repo::playstate::update_progress(
         &state.db,
@@ -3015,11 +3031,13 @@ async fn create_playback_session(
         None
     };
 
+    let start_time_secs = normalize_session_start_time_secs(body.start_time_secs, file.duration_ms);
+
     let session_id = state
         .transcoder
         .create_session(
             input_path,
-            body.start_time_secs,
+            start_time_secs,
             target_height,
             None,
             auth.user_id.clone(),
@@ -3058,6 +3076,31 @@ fn normalize_transcode_height(raw: Option<u32>) -> Result<Option<u32>, AppError>
         )
         .into()),
     }
+}
+
+fn normalize_session_start_time_secs(
+    start_time_secs: Option<f64>,
+    duration_ms: Option<i64>,
+) -> Option<f64> {
+    let requested_secs = start_time_secs?;
+    if !requested_secs.is_finite() {
+        return None;
+    }
+
+    let sanitized_secs = requested_secs.max(0.0);
+    let Some(duration_ms) = duration_ms.filter(|value| *value > 0) else {
+        return Some(sanitized_secs);
+    };
+
+    let duration_secs = duration_ms as f64 / 1000.0;
+    if !duration_secs.is_finite() || duration_secs <= 0.0 {
+        return Some(sanitized_secs);
+    }
+
+    // Keep HLS session seeks inside a decodable window; ffmpeg at exact EOF can produce empty
+    // playlists that render as a blank player in some browsers.
+    let safe_max_secs = (duration_secs - 0.5).max(0.0);
+    Some(sanitized_secs.min(safe_max_secs))
 }
 
 #[derive(Debug, Deserialize)]
@@ -4691,7 +4734,7 @@ mod tests {
     use super::{
         LOGIN_ATTEMPT_BUCKETS, LOGIN_COOLDOWN_SECONDS, LOGIN_INITIAL_ATTEMPTS, Router,
         enforce_login_rate_limit, extract_login_client_identity, login_attempt_key,
-        mounted_rustyvault_router, reset_login_rate_limit,
+        mounted_rustyvault_router, normalize_session_start_time_secs, reset_login_rate_limit,
     };
     use axum::extract::ConnectInfo;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -4771,6 +4814,39 @@ mod tests {
         );
         let identity = extract_login_client_identity(Some(&peer), &headers);
         assert_eq!(identity, "peer:127.0.0.1");
+    }
+
+    #[test]
+    fn playback_session_start_time_rejects_non_finite_inputs() {
+        assert_eq!(normalize_session_start_time_secs(None, Some(90_000)), None);
+        assert_eq!(
+            normalize_session_start_time_secs(Some(f64::NAN), Some(90_000)),
+            None
+        );
+        assert_eq!(
+            normalize_session_start_time_secs(Some(f64::INFINITY), Some(90_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn playback_session_start_time_clamps_to_safe_duration_window() {
+        assert_eq!(
+            normalize_session_start_time_secs(Some(-5.0), Some(120_000)),
+            Some(0.0)
+        );
+        assert_eq!(
+            normalize_session_start_time_secs(Some(500.0), Some(120_000)),
+            Some(119.5)
+        );
+        assert_eq!(
+            normalize_session_start_time_secs(Some(24.0), Some(120_000)),
+            Some(24.0)
+        );
+        assert_eq!(
+            normalize_session_start_time_secs(Some(42.0), None),
+            Some(42.0)
+        );
     }
 
     #[tokio::test]

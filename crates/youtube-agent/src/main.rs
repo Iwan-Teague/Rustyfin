@@ -1012,8 +1012,6 @@ async fn download_youtube_audio_mp3_via_ytdlp(
         .arg("30")
         .arg("--output")
         .arg(output_path)
-        .arg("--ffmpeg-location")
-        .arg(ffmpeg_path)
         .arg("--user-agent")
         .arg(YOUTUBE_USER_AGENT)
         .arg("--referer")
@@ -1022,6 +1020,12 @@ async fn download_youtube_audio_mp3_via_ytdlp(
         .arg("Origin:https://www.youtube.com")
         .arg("--add-header")
         .arg("Accept-Language:en-US,en;q=0.9");
+
+    let has_explicit_ffmpeg_path =
+        ffmpeg_path.is_absolute() || ffmpeg_path.components().count() > 1;
+    if has_explicit_ffmpeg_path {
+        command.arg("--ffmpeg-location").arg(ffmpeg_path);
+    }
 
     if let Some(cookie_file_path) = cookie_file.filter(|path| path.exists()) {
         command.arg("--cookies").arg(cookie_file_path);

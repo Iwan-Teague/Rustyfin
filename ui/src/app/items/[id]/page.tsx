@@ -74,7 +74,6 @@ export default function ItemPage() {
     return (
       <div className="space-y-7 animate-rise">
         <header className="space-y-2">
-          <span className="chip">Artist</span>
           <h1 className="text-3xl font-semibold">{item.title}</h1>
           {item.overview && <p className="max-w-3xl leading-relaxed muted">{item.overview}</p>}
         </header>
@@ -155,7 +154,6 @@ export default function ItemPage() {
           {/* Album meta */}
           <div className="flex-1 space-y-3">
             <div className="space-y-1">
-              <span className="chip">Album</span>
               <h1 className="text-3xl font-semibold">{item.title}</h1>
               {artistName && (
                 <Link href={`/items/${item.parent_id}`} className="text-sm muted hover:underline">
@@ -230,7 +228,6 @@ export default function ItemPage() {
   if (item.kind === 'track') {
     return (
       <div className="space-y-6 animate-rise">
-        <span className="chip">Track</span>
         <h1 className="text-3xl font-semibold">{item.title}</h1>
         {item.parent_id && (
           <Link href={`/items/${item.parent_id}`} className="text-sm muted hover:underline block">
@@ -259,6 +256,15 @@ export default function ItemPage() {
 
   // ── Default: movies / series / episodes (existing behaviour) ──────────────
   const isPlayable = item.kind === 'movie' || item.kind === 'episode';
+  const displayChildren = (() => {
+    if (item.kind !== 'series') return children;
+    const seasonChildren = children.filter((child) => child.kind === 'season');
+    return seasonChildren.length > 0 ? seasonChildren : children;
+  })();
+  const childSectionLabel =
+    item.kind === 'series' && displayChildren.some((child) => child.kind === 'season')
+      ? 'Seasons'
+      : 'Episodes';
 
   return (
     <div className="space-y-7 animate-rise">
@@ -286,7 +292,6 @@ export default function ItemPage() {
         )}
         <div className="flex-1 space-y-4">
           <div className="space-y-2">
-            <span className="chip chip-accent">{item.kind.toUpperCase()}</span>
             <h1 className="text-3xl font-semibold sm:text-4xl">{item.title}</h1>
             {item.year && <span className="text-sm muted">{item.year}</span>}
           </div>
@@ -304,13 +309,11 @@ export default function ItemPage() {
         </div>
       </div>
 
-      {children.length > 0 && (
+      {displayChildren.length > 0 && (
         <section className="space-y-4">
-          <h2 className="text-xl font-semibold">
-            {item.kind === 'series' ? 'Seasons' : 'Episodes'}
-          </h2>
+          <h2 className="text-xl font-semibold">{childSectionLabel}</h2>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
-            {children.map((child) => (
+            {displayChildren.map((child) => (
               <Link key={child.id} href={`/items/${child.id}`} className="tile tile-hover block overflow-hidden">
                 {(() => {
                   const childPoster = child.poster_url ?? child.thumb_url;

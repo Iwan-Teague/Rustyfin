@@ -153,6 +153,7 @@ Reset runtime state and database contents:
 Compatibility aliases:
 
 - `./scripts/start.sh` delegates to `./scripts/start-native.sh`
+- `./scripts/start.sh` ignores legacy Docker-era flags for backward compatibility and continues with native startup
 - `./scripts/stop.sh` delegates to `./scripts/stop-native.sh`
 
 Detailed native operations guide:

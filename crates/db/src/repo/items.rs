@@ -77,7 +77,12 @@ pub async fn get_children(pool: &DbPool, parent_id: &str) -> Result<Vec<ItemRow>
           JOIN media_file mf2 ON mf2.id = efm2.file_id \
           WHERE efm2.episode_item_id = i.id LIMIT 1) AS duration_ms \
          FROM item i \
-         WHERE i.parent_id = $1 ORDER BY i.title",
+         WHERE i.parent_id = $1 \
+           AND ( \
+                EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+           ) \
+         ORDER BY i.title",
     )
     .bind(parent_id)
     .fetch_all(pool)

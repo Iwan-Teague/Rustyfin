@@ -59,7 +59,6 @@ export default function LibraryPage() {
   return (
     <div className="space-y-6 animate-rise">
       <header className="space-y-2">
-        <span className="chip">{isMusic ? 'Music Library' : 'Library View'}</span>
         <h1 className="text-3xl font-semibold">{library?.name ?? 'Library'}</h1>
         <p className="text-sm muted">
           Showing {visibleItems.length} of {items.length} {isMusic ? 'artists' : 'items'}

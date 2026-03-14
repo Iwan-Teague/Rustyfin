@@ -1,5 +1,5 @@
 use rustfin_db::DbPool;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tracing::{info, warn};
 
@@ -8,6 +8,12 @@ use crate::walk;
 
 static PROVIDER_ID_CLEAN_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\s*\[.*?\]\s*").expect("valid provider cleanup regex"));
+
+#[derive(Debug, Clone)]
+struct LibraryScanRoot {
+    root: PathBuf,
+    available: bool,
+}
 
 /// Run a full scan for a library, creating/updating items and media files.
 pub async fn run_library_scan(
@@ -20,13 +26,23 @@ pub async fn run_library_scan(
         .map_err(ScanError::Db)?;
 
     let mut result = ScanResult::default();
+    let scan_roots: Vec<LibraryScanRoot> = paths
+        .iter()
+        .map(|lib_path| {
+            let root = Path::new(&lib_path.path).to_path_buf();
+            let available = root.exists();
+            if !available {
+                warn!(path = %lib_path.path, "library path does not exist, skipping");
+            }
+            LibraryScanRoot { root, available }
+        })
+        .collect();
 
-    for lib_path in &paths {
-        let root = Path::new(&lib_path.path);
-        if !root.exists() {
-            warn!(path = %lib_path.path, "library path does not exist, skipping");
+    for scan_root in &scan_roots {
+        if !scan_root.available {
             continue;
         }
+        let root = scan_root.root.as_path();
 
         if library_kind == "music" {
             let sub = parse_music_library(pool, library_id, root)
@@ -40,7 +56,7 @@ pub async fn run_library_scan(
         let entries = walk::walk_media_dir(root);
         info!(
             library_id = library_id,
-            path = %lib_path.path,
+            path = %root.display(),
             files_found = entries.len(),
             "scan found video files"
         );
@@ -147,6 +163,17 @@ pub async fn run_library_scan(
                 }
             }
         }
+    }
+
+    let removed_mappings = reconcile_missing_library_mappings(pool, library_id, &scan_roots)
+        .await
+        .map_err(ScanError::Db)?;
+    if removed_mappings > 0 {
+        info!(
+            library_id = %library_id,
+            removed_mappings,
+            "scan pruned stale media mappings"
+        );
     }
 
     Ok(result)
@@ -308,6 +335,87 @@ fn infer_music_artist_album(
 struct ExistingMediaFile {
     id: String,
     has_mapping: bool,
+}
+
+struct LibraryFileMapping {
+    map_id: String,
+    item_id: String,
+    file_id: String,
+    path: String,
+}
+
+async fn reconcile_missing_library_mappings(
+    pool: &DbPool,
+    library_id: &str,
+    scan_roots: &[LibraryScanRoot],
+) -> Result<usize, sqlx::Error> {
+    let mappings: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT efm.id, efm.episode_item_id, efm.file_id, mf.path \
+         FROM episode_file_map efm \
+         JOIN item i ON i.id = efm.episode_item_id \
+         JOIN media_file mf ON mf.id = efm.file_id \
+         WHERE i.library_id = $1",
+    )
+    .bind(library_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mappings: Vec<LibraryFileMapping> = mappings
+        .into_iter()
+        .map(|(map_id, item_id, file_id, path)| LibraryFileMapping {
+            map_id,
+            item_id,
+            file_id,
+            path,
+        })
+        .collect();
+
+    let mut removed = 0usize;
+    for mapping in mappings {
+        if !should_remove_library_mapping(&mapping.path, scan_roots) {
+            continue;
+        }
+
+        sqlx::query("DELETE FROM episode_file_map WHERE id = $1")
+            .bind(&mapping.map_id)
+            .execute(pool)
+            .await?;
+        prune_item_chain_if_orphaned(pool, &mapping.item_id).await?;
+        prune_media_file_if_unmapped(pool, &mapping.file_id).await?;
+        removed += 1;
+    }
+
+    Ok(removed)
+}
+
+fn should_remove_library_mapping(file_path: &str, scan_roots: &[LibraryScanRoot]) -> bool {
+    if scan_roots.is_empty() {
+        return false;
+    }
+
+    let file_path = Path::new(file_path);
+    let mut within_configured_root = false;
+    let mut within_available_root = false;
+
+    for scan_root in scan_roots {
+        if file_path.starts_with(&scan_root.root) {
+            within_configured_root = true;
+            if scan_root.available {
+                within_available_root = true;
+            }
+        }
+    }
+
+    if !within_configured_root {
+        // Path is no longer part of this library after root edits.
+        return true;
+    }
+    if !within_available_root {
+        // All matching roots are currently unavailable; keep rows to avoid accidental wipe.
+        return false;
+    }
+
+    !file_path.exists()
 }
 
 async fn get_existing_media_file(
@@ -555,6 +663,23 @@ async fn prune_item_chain_if_orphaned(
         current_item_id = parent_id;
     }
 
+    Ok(())
+}
+
+async fn prune_media_file_if_unmapped(pool: &DbPool, file_id: &str) -> Result<(), sqlx::Error> {
+    let (map_count,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM episode_file_map WHERE file_id = $1")
+            .bind(file_id)
+            .fetch_one(pool)
+            .await?;
+    if map_count > 0 {
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM media_file WHERE id = $1")
+        .bind(file_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

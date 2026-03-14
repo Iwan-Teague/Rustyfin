@@ -609,6 +609,19 @@ export default function AccountPage() {
                 />
               </div>
             </div>
+
+            <div className="rounded-xl border border-[var(--border)] bg-black/15 px-4 py-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm muted">Sign out of this browser session.</p>
+                <button
+                  type="button"
+                  className="btn-secondary px-4 py-2 text-sm"
+                  onClick={logout}
+                >
+                  Log out
+                </button>
+              </div>
+            </div>
           </section>
         </div>
 

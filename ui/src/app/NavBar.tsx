@@ -6,17 +6,14 @@ import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
 import { usePathname } from 'next/navigation';
 import { createPortal } from 'react-dom';
-import ConfirmModal from '@/app/components/ConfirmModal';
 
 export default function NavBar() {
-  const { me, loading, logout } = useAuth();
+  const { me, loading } = useAuth();
   const { voiceSession, toggleMute, toggleDeafen, leaveVoice } = useChannels();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
-  const [confirmLogoutOpen, setConfirmLogoutOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
-  const [showDesktopNav, setShowDesktopNav] = useState(false);
   const [showCompactDesktopNav, setShowCompactDesktopNav] = useState(false);
   const desktopShellRef = useRef<HTMLDivElement | null>(null);
   const desktopLeftMeasureRef = useRef<HTMLDivElement | null>(null);
@@ -35,14 +32,13 @@ export default function NavBar() {
   }, [voiceSession, confirmLeaveVoiceOpen]);
 
   useEffect(() => {
-    if ((showDesktopNav || showCompactDesktopNav) && menuOpen) {
+    if (showCompactDesktopNav && menuOpen) {
       setMenuOpen(false);
     }
-  }, [menuOpen, showDesktopNav, showCompactDesktopNav]);
+  }, [menuOpen, showCompactDesktopNav]);
 
   const navLinks = useMemo(
     () => [
-      { href: '/', label: 'Home' },
       { href: '/channels', label: 'Channels' },
       { href: '/rooms', label: 'Rooms' },
       { href: '/network', label: 'Network' },
@@ -58,7 +54,7 @@ export default function NavBar() {
   const desktopLeftNavLinks = useMemo(
     () =>
       navLinks.filter((link) =>
-        ['/', '/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(
+        ['/channels', '/rooms', '/network', '/servers', '/calendar', '/libraries', '/vault', '/downloads'].includes(
           link.href,
         ),
       ),
@@ -84,11 +80,9 @@ export default function NavBar() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const centeredMediaQuery = window.matchMedia('(min-width: 1024px)');
     const compactMediaQuery = window.matchMedia('(min-width: 768px)');
     const updateLayoutMode = () => {
       if (!compactMediaQuery.matches) {
-        setShowDesktopNav(false);
         setShowCompactDesktopNav(false);
         return;
       }
@@ -97,17 +91,10 @@ export default function NavBar() {
       const logoWidth = desktopLogoMeasureRef.current?.getBoundingClientRect().width ?? 0;
       const leftWidth = desktopLeftMeasureRef.current?.getBoundingClientRect().width ?? 0;
       const rightWidth = desktopRightMeasureRef.current?.getBoundingClientRect().width ?? 0;
-      const sideAllowance = (shellWidth - (logoWidth + 96)) / 2;
-      const centeredFits =
-        centeredMediaQuery.matches &&
-        sideAllowance > 0 &&
-        leftWidth <= sideAllowance &&
-        rightWidth <= sideAllowance;
       const compactFits =
         compactMediaQuery.matches && shellWidth >= leftWidth + logoWidth + rightWidth + 88;
 
-      setShowDesktopNav(centeredFits);
-      setShowCompactDesktopNav(!centeredFits && compactFits);
+      setShowCompactDesktopNav(compactFits);
     };
 
     updateLayoutMode();
@@ -121,11 +108,9 @@ export default function NavBar() {
     }
 
     const handleMediaChange = () => updateLayoutMode();
-    if (typeof centeredMediaQuery.addEventListener === 'function') {
-      centeredMediaQuery.addEventListener('change', handleMediaChange);
+    if (typeof compactMediaQuery.addEventListener === 'function') {
       compactMediaQuery.addEventListener('change', handleMediaChange);
     } else {
-      centeredMediaQuery.addListener(handleMediaChange);
       compactMediaQuery.addListener(handleMediaChange);
     }
 
@@ -133,11 +118,9 @@ export default function NavBar() {
 
     return () => {
       observer?.disconnect();
-      if (typeof centeredMediaQuery.removeEventListener === 'function') {
-        centeredMediaQuery.removeEventListener('change', handleMediaChange);
+      if (typeof compactMediaQuery.removeEventListener === 'function') {
         compactMediaQuery.removeEventListener('change', handleMediaChange);
       } else {
-        centeredMediaQuery.removeListener(handleMediaChange);
         compactMediaQuery.removeListener(handleMediaChange);
       }
       window.removeEventListener('resize', updateLayoutMode);
@@ -146,12 +129,6 @@ export default function NavBar() {
 
   if (pathname.startsWith('/setup')) {
     return null;
-  }
-
-  function handleConfirmLogout() {
-    logout();
-    setConfirmLogoutOpen(false);
-    setMenuOpen(false);
   }
 
   if (!loading && !me) {
@@ -205,7 +182,7 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <Link href="/account" className="chip h-11 shrink-0 px-4 text-sm">
+                  <Link href="/account" className="btn-ghost h-11 shrink-0 px-4 text-sm">
                     {me.username}
                   </Link>
                   {desktopRightNavLinks.map((link) => (
@@ -213,7 +190,6 @@ export default function NavBar() {
                       {link.label}
                     </span>
                   ))}
-                  <span className="btn-secondary h-11 shrink-0 px-4 text-sm">Logout</span>
                 </>
               ) : (
                 <span className="btn-secondary h-11 shrink-0 px-4 text-sm">Login</span>
@@ -222,151 +198,6 @@ export default function NavBar() {
           </div>
         </div>
       </div>
-
-      {showDesktopNav ? (
-        <div className="relative hidden lg:block">
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
-            <Link
-              href="/"
-              className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
-              aria-label="Go to Rustyfin home"
-            >
-              Rustyfin
-            </Link>
-          </div>
-
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center justify-start gap-2">
-              {desktopLeftNavLinks.map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
-                  aria-current={isActivePath(link.href) ? 'page' : undefined}
-                >
-                  {link.label}
-                </Link>
-              ))}
-            </div>
-
-            <div className="flex min-w-0 items-center justify-end gap-2">
-              {voiceSession && (
-                <div className="chip h-10 shrink-0 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
-                  <Link
-                    href="/channels"
-                    className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300 hover:text-green-200"
-                    title={`Open channel: ${voiceSession.channelName}`}
-                  >
-                    <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse shrink-0" />
-                    <span className="max-w-[12rem] truncate text-xs font-medium">
-                      {voiceSession.channelName}
-                    </span>
-                  </Link>
-                  <div className="h-4 w-px bg-green-400/35" />
-                  <button
-                    type="button"
-                    onClick={toggleMute}
-                    disabled={!hasLocalStream}
-                    className={`${baseVoiceActionClass} h-9 w-9 ${
-                      muted
-                        ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                        : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
-                    }`}
-                    aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-                    title={
-                      hasLocalStream
-                        ? muted
-                          ? 'Unmute microphone'
-                          : 'Mute microphone'
-                        : 'No microphone — listening only'
-                    }
-                  >
-                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                      <rect
-                        x="9"
-                        y="3.5"
-                        width="6"
-                        height="10"
-                        rx="3"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                      />
-                      <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      {muted && (
-                        <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      )}
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={toggleDeafen}
-                    className={`${baseVoiceActionClass} h-9 w-9 ${
-                      deafened
-                        ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                        : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
-                    }`}
-                    aria-label={deafened ? 'Undeafen' : 'Deafen'}
-                    title={deafened ? 'Undeafen' : 'Deafen'}
-                  >
-                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                      <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                      <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                      <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      {deafened && (
-                        <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                      )}
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmLeaveVoiceOpen(true)}
-                    className={`${baseVoiceActionClass} h-9 w-9 border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
-                    aria-label="Disconnect from voice"
-                    title="Disconnect from voice"
-                  >
-                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                      <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-              {loading ? (
-                <span className="text-sm muted">&hellip;</span>
-              ) : me ? (
-                <>
-                  <Link href="/account" className="chip h-11 shrink-0 px-4 text-sm">
-                    {me.username}
-                  </Link>
-                  {desktopRightNavLinks.map((link) => (
-                    <Link
-                      key={link.href}
-                      href={link.href}
-                      className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
-                      aria-current={isActivePath(link.href) ? 'page' : undefined}
-                    >
-                      {link.label}
-                    </Link>
-                  ))}
-                    <button
-                      type="button"
-                      onClick={() => setConfirmLogoutOpen(true)}
-                      className="btn-secondary h-11 shrink-0 px-4 text-sm"
-                    >
-                      Logout
-                    </button>
-                  </>
-                ) : (
-                  <Link href="/login" className="btn-secondary h-11 shrink-0 px-4 text-sm">
-                    Login
-                  </Link>
-                )}
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       {showCompactDesktopNav ? (
         <div className="hidden md:block">
@@ -481,7 +312,7 @@ export default function NavBar() {
                 <span className="text-sm muted">&hellip;</span>
               ) : me ? (
                 <>
-                  <Link href="/account" className="chip h-11 shrink-0 px-4 text-sm">
+                  <Link href="/account" className="btn-ghost h-11 shrink-0 px-4 text-sm">
                     {me.username}
                   </Link>
                   {desktopRightNavLinks.map((link) => (
@@ -494,13 +325,6 @@ export default function NavBar() {
                       {link.label}
                     </Link>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() => setConfirmLogoutOpen(true)}
-                    className="btn-secondary h-11 shrink-0 px-4 text-sm"
-                  >
-                    Logout
-                  </button>
                 </>
               ) : (
                 <Link href="/login" className="btn-secondary h-11 shrink-0 px-4 text-sm">
@@ -512,7 +336,7 @@ export default function NavBar() {
         </div>
       ) : null}
 
-      {!showDesktopNav && !showCompactDesktopNav ? (
+      {!showCompactDesktopNav ? (
         <div className="relative flex items-center justify-between">
           <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
             <Link
@@ -539,7 +363,7 @@ export default function NavBar() {
 
           <div className="flex min-w-0 items-center justify-end gap-1.5">
             {!loading && me ? (
-              <Link href="/account" className="chip h-11 max-w-[8.25rem] shrink-0 px-3">
+              <Link href="/account" className="btn-ghost h-11 max-w-[9.5rem] shrink-0 px-3 text-sm">
                 <span className="truncate">{me.username}</span>
               </Link>
             ) : null}
@@ -623,7 +447,7 @@ export default function NavBar() {
         </div>
       ) : null}
 
-      {!showDesktopNav && !showCompactDesktopNav && menuOpen ? (
+      {!showCompactDesktopNav && menuOpen ? (
         <div id="mobile-nav-menu" className="mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2">
           {navLinks.map((link) => (
             <Link
@@ -636,27 +460,8 @@ export default function NavBar() {
               {link.label}
             </Link>
           ))}
-          <div className="mt-1 border-t border-[var(--border)] pt-2">
-            {loading ? (
-              <span className="px-3 py-2 text-sm muted">&hellip;</span>
-            ) : me ? (
-              <div className="flex items-center justify-between gap-2 px-1">
-                <Link
-                  href="/account"
-                  className="chip px-3 py-2 text-sm"
-                  onClick={() => setMenuOpen(false)}
-                >
-                  {me.username}
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => setConfirmLogoutOpen(true)}
-                  className="btn-secondary h-11 px-4 text-sm"
-                >
-                  Logout
-                </button>
-              </div>
-            ) : (
+          {!loading && !me ? (
+            <div className="mt-1 border-t border-[var(--border)] pt-2">
               <Link
                 href="/login"
                 className="btn-secondary block h-11 px-4 text-center text-sm leading-[2.75rem]"
@@ -664,26 +469,10 @@ export default function NavBar() {
               >
                 Login
               </Link>
-            )}
-          </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
-
-      {confirmLogoutOpen &&
-        portalMounted &&
-        createPortal(
-          <ConfirmModal
-            open={confirmLogoutOpen}
-            title="Log Out?"
-            description="You will be signed out of Rustyfin on this browser."
-            confirmLabel="Log Out"
-            cancelLabel="Cancel"
-            destructive
-            onConfirm={handleConfirmLogout}
-            onCancel={() => setConfirmLogoutOpen(false)}
-          />,
-          document.body,
-        )}
 
       {voiceSession &&
         confirmLeaveVoiceOpen &&
