@@ -20,7 +20,7 @@ usage() {
 Usage:
   ./scripts/start.sh [native start-native.sh options]
 
-Native Debian 12 runtime entrypoint.
+Native Debian runtime entrypoint.
 This is now a compatibility wrapper around ./scripts/start-native.sh.
 
 Examples:

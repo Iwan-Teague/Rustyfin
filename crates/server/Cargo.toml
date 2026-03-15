@@ -4,19 +4,20 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["rustyvault", "ai-cpu"]
+default = ["rustyvault"]
 rustyvault = ["dep:rustyvault"]
-ai-cpu = []
-ai-cuda = ["rustfin-ai-agent/cuda"]
-ai-rocm = ["rustfin-ai-agent/rocm"]
-ai-vulkan = ["rustfin-ai-agent/vulkan"]
+ai = ["dep:rustfin-ai-agent"]
+ai-cpu = ["ai"]
+ai-cuda = ["ai", "rustfin-ai-agent/cuda"]
+ai-rocm = ["ai", "rustfin-ai-agent/rocm"]
+ai-vulkan = ["ai", "rustfin-ai-agent/vulkan"]
 
 [[bin]]
 name = "rustfin-server"
 path = "src/main.rs"
 
 [dependencies]
-rustfin-ai-agent = { path = "../ai-agent", default-features = false }
+rustfin-ai-agent = { path = "../ai-agent", default-features = false, optional = true }
 rustfin-core = { path = "../core" }
 rustfin-db = { path = "../db" }
 rustfin-metadata = { path = "../metadata" }

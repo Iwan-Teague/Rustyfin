@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   echo "Usage: ./scripts/stop.sh"
   echo
-  echo "Native Debian 12 runtime stop wrapper around ./scripts/stop-native.sh"
+  echo "Native Debian runtime stop wrapper around ./scripts/stop-native.sh"
   exit 0
 fi
 

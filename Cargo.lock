@@ -3228,6 +3228,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustfin-installer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "rustfin-metadata"
 version = "0.1.0"
 dependencies = [

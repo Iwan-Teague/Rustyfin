@@ -1,0 +1,17 @@
+[package]
+name = "rustfin-installer"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rustfin-installer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

@@ -2,17 +2,19 @@
 
 Rustyfin is a local-first home server platform for media playback, live rooms, channels, calendar planning, and native game server management.
 
-The supported runtime target is native Debian 12. The repository no longer ships or supports Docker, Windows, or macOS runtime paths.
+The supported runtime target is native Debian 12 and Debian 13. The repository no longer ships or supports Docker, Windows, or macOS runtime paths.
 
 ## Supported Host
 
 - Debian 12 (Bookworm)
+- Debian 13 (Trixie)
 - Headless/minimal install is recommended
 - `systemd` is required for the native service model
 
 ## Stack
 
 - Rust backend and services
+- Rust-first Linux installer flow via `crates/installer`
 - PostgreSQL database
 - Next.js UI
 - Caddy HTTPS edge
@@ -46,8 +48,11 @@ The supported runtime target is native Debian 12. The repository no longer ships
   - Future first-party applications and companion downloads can land here without moving existing links
 - AI
   - Web `/ai` assistant surface backed by the native Rust `crates/ai-agent` integration
-  - Native host builds now fall back to a CPU-safe AI backend by default instead of assuming CUDA is present
-  - Use `RUSTFIN_AI_GPU_BACKEND=auto|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time
+  - End-user `/ai` is chat-focused; model downloads, deletion, and storage-folder management are admin-only through the Admin `AI` tab
+  - Native host builds now select a host-safe AI backend automatically instead of assuming CUDA is present
+  - On unsupported hosts, `auto` can fall back to AI being disabled so the rest of Rustyfin still runs
+  - Use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time
+  - AI models are resolved from the admin-managed `ai_model_dir` setting, then `RUSTFIN_AI_MODEL_DIR`, then the Rustyfin AI default path `/var/lib/rustyfin/ai/models`
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
   - TMDB metadata enrichment and artwork sync
@@ -73,7 +78,7 @@ The supported runtime target is native Debian 12. The repository no longer ships
   - Shared and personal event planning
 - Servers
   - Native game server management
-  - Current implementation targets Minecraft on Debian 12 through `systemd`
+  - Current implementation targets Minecraft on supported Debian hosts through `systemd`
   - Guided create/import wizard in the UI
   - Managed servers auto-provision when started
   - Only admins can create, import, and delete server records
@@ -82,7 +87,7 @@ The supported runtime target is native Debian 12. The repository no longer ships
 
 ## Runtime Services
 
-Native Rustyfin on Debian 12 runs these services directly on the host:
+Native Rustyfin on supported Debian hosts runs these services directly on the host:
 
 - `rustfin` on `127.0.0.1:8096`
 - `rustfin-calendar` on `127.0.0.1:8099`
@@ -98,6 +103,7 @@ Native Rustyfin on Debian 12 runs these services directly on the host:
 
 - `/Users/iwanteague/Desktop/Rustyfin/crates/core` - shared domain types and base errors
 - `/Users/iwanteague/Desktop/Rustyfin/crates/db` - PostgreSQL migrations and repositories
+- `/Users/iwanteague/Desktop/Rustyfin/crates/installer` - Rust-first Linux installer orchestration, currently delegating to the proven Debian-native flow
 - `/Users/iwanteague/Desktop/Rustyfin/crates/scanner` - library scanning and parsing
 - `/Users/iwanteague/Desktop/Rustyfin/crates/metadata` - metadata merge/provider logic
 - `/Users/iwanteague/Desktop/Rustyfin/crates/rustyvault` - RustyVault product logic, shared types, and extension packaging, mounted into Rustyfin through host adapters
@@ -114,9 +120,20 @@ Native Rustyfin on Debian 12 runs these services directly on the host:
 - `/Users/iwanteague/Desktop/Rustyfin/extensions/rustyvault-webext` - browser extension MVP for RustyVault
 - `/Users/iwanteague/Desktop/Rustyfin/scripts` - native install/start/stop/deploy/systemd scripts
 - `/Users/iwanteague/Desktop/Rustyfin/tests` - tests and E2E harnesses
-- `/Users/iwanteague/Desktop/Rustyfin/docs` - reports, plans, references, setup docs
+- `/Users/iwanteague/Desktop/Rustyfin/docs` - current operations guides, active plans, architecture docs, and setup specs
 
 ## Native Debian Quick Start
+
+Preferred one-shot Linux installer:
+
+```bash
+./scripts/install_linux.sh
+```
+
+This bootstraps Rust if needed and then hands off to `cargo run -p rustfin-installer`.
+The current full native install flow behind that installer is implemented for Debian 12 and Debian 13.
+The Rust installer now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, and install-manifest output.
+The public native scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
 
 Install host dependencies:
 
@@ -167,8 +184,25 @@ Detailed native operations guide:
 
 ## Native Runtime Notes
 
-- `./scripts/start-native.sh` builds Rust services directly on the Debian host
-- It also builds the Next.js UI directly on the host and runs the standalone server natively
+- `./scripts/start-native.sh` is now a thin compatibility wrapper
+- It loads the native env/default layers, drives runtime planning and artifact builds, and then hands off launch/health to `./scripts/rustfin-installer.sh launch-native-runtime`
+- Installer-owned native runtime defaults are written to:
+  - `/etc/rustyfin/native-runtime.defaults.sh`
+- Runtime planning for ports, media path, DB URL, and browser/websocket origins is now emitted by:
+  - `./scripts/rustfin-installer.sh plan-native-runtime`
+- Native artifact builds for Rust services plus the Next standalone UI are now emitted by:
+  - `./scripts/rustfin-installer.sh build-native-runtime-artifacts`
+- Native deploy sequencing is now emitted by:
+  - `./scripts/rustfin-installer.sh deploy-native`
+- Runtime TLS material, service tokens, and the persisted runtime snapshot are now written by:
+  - `./scripts/rustfin-installer.sh plan-native-runtime`
+  - `./scripts/rustfin-installer.sh write-native-runtime-snapshot`
+- Native runtime launch/stop/reset are now emitted by:
+  - `./scripts/rustfin-installer.sh launch-native-runtime`
+  - `./scripts/rustfin-installer.sh stop-native-runtime`
+  - `./scripts/rustfin-installer.sh clean-native-runtime`
+- Native systemd install/refresh is now emitted by:
+  - `./scripts/rustfin-installer.sh install-native-systemd`
 - Runtime values are written to:
   - `/Users/iwanteague/Desktop/Rustyfin/.rustyfin.runtime.env`
 - Native logs and pid files live under:
@@ -227,7 +261,7 @@ Playback and transcoding:
 - `RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL`
 - `RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS`
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS`
-- `RUSTFIN_AI_GPU_BACKEND` - native AI inference backend selection for host builds (`auto|cpu|cuda|rocm|vulkan`)
+- `RUSTFIN_AI_GPU_BACKEND` - native AI inference backend selection for host builds (`auto|disabled|cpu|cuda|rocm|vulkan`)
 
 TMDB:
 
@@ -280,7 +314,7 @@ Secrets/runtime support:
 
 ## Build and Test
 
-Debian 12 native quality gates:
+Supported-Debian native quality gates:
 
 ```bash
 ./scripts/ci/debian_native_gates.sh
@@ -342,4 +376,4 @@ Database:
 
 ## Historical Notes
 
-Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the Debian 12 native runtime documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
+Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the supported-Debian native runtime documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.

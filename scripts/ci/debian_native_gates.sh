@@ -29,7 +29,7 @@ Usage:
   ./scripts/ci/debian_native_gates.sh [options]
 
 Purpose:
-  Run the curated Debian 12 native quality gates for Rustyfin and emit a
+  Run the curated supported-Debian native quality gates for Rustyfin and emit a
   Markdown report with the results.
 
 Options:
@@ -38,7 +38,7 @@ Options:
   --skip-clippy         Skip strict clippy gates.
   --skip-tests          Skip Rust test gates.
   --skip-browser-smoke  Skip the isolated Playwright browser smoke suite.
-  --allow-non-debian    Run outside Debian 12 (runtime confidence is reduced).
+  --allow-non-debian    Run outside supported Debian hosts (runtime confidence is reduced).
   --report PATH         Write the Markdown report to PATH.
   -h, --help            Show this help.
 
@@ -154,7 +154,7 @@ run_cargo_gate() {
   run_gate "$label" env CARGO_BUILD_JOBS="$CARGO_GATE_JOBS" "$@"
 }
 
-check_debian12_host() {
+check_supported_debian_host() {
   [[ "$(uname -s)" == "Linux" ]] || {
     echo "Host OS is not Linux: $(uname -s)"
     [[ "$ALLOW_NON_DEBIAN" == "true" ]] && return "$SKIP_CODE"
@@ -169,11 +169,11 @@ check_debian12_host() {
   source /etc/os-release
   echo "ID=${ID:-unknown}"
   echo "VERSION_ID=${VERSION_ID:-unknown}"
-  if [[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == "12" ]]; then
+  if [[ "${ID:-}" == "debian" && ( "${VERSION_ID:-}" == "12" || "${VERSION_ID:-}" == "13" ) ]]; then
     return 0
   fi
   [[ "$ALLOW_NON_DEBIAN" == "true" ]] && return "$SKIP_CODE"
-  echo "Expected Debian 12, got ${ID:-unknown} ${VERSION_ID:-unknown}"
+  echo "Expected supported Debian host (12 or 13), got ${ID:-unknown} ${VERSION_ID:-unknown}"
   return 1
 }
 
@@ -443,7 +443,7 @@ write_report() {
   current_commit="$(git rev-parse HEAD)"
 
   {
-    echo "# Debian 12 Native Quality Gates"
+    echo "# Supported-Debian Native Quality Gates"
     echo
     echo "- Run ID: \`$RUN_ID\`"
     echo "- Host: \`$host_name\`"
@@ -467,10 +467,10 @@ write_report() {
   cp "$REPORT_PATH" "$LATEST_REPORT"
 }
 
-info "Running Debian 12 native quality gates..."
+info "Running supported-Debian native quality gates..."
 info "Logs: $LOG_DIR"
 
-run_gate "Host is Debian 12" check_debian12_host
+run_gate "Host is supported Debian" check_supported_debian_host
 run_gate "Required host tooling present" check_required_tooling
 run_gate "No Docker runtime files remain" check_no_docker_runtime_files
 run_gate "Live docs and scripts reflect native runtime" check_live_runtime_docs

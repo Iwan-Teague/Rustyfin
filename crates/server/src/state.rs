@@ -47,7 +47,7 @@ pub struct AppState {
     pub transcription_agent_token: Option<String>,
     pub servers_agent_url: Option<String>,
     pub servers_agent_token: Option<String>,
-    pub model_dir: std::path::PathBuf,
+    pub model_dir: Arc<tokio::sync::RwLock<std::path::PathBuf>>,
     pub engine: std::sync::Arc<tokio::sync::Mutex<crate::ai::EngineState>>,
     pub transcoder: Arc<rustfin_transcoder::session::SessionManager>,
     pub ffmpeg_path: std::path::PathBuf,
