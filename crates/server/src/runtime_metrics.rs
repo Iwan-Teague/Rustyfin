@@ -62,6 +62,8 @@ pub struct RuntimeMetrics {
     tmdb_agent: AgentCounters,
     transcription_agent: AgentCounters,
     youtube_agent: AgentCounters,
+    ai_assistant_chats: AgentCounters,
+    ai_assistant_tools: AgentCounters,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -116,11 +118,18 @@ pub struct AgentsSnapshot {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct AssistantSnapshot {
+    pub chats: AgentSnapshot,
+    pub tools: AgentSnapshot,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RuntimeMetricsSnapshot {
     pub uptime_seconds: u64,
     pub jobs: JobsSnapshot,
     pub websockets: WebSocketsSnapshot,
     pub agents: AgentsSnapshot,
+    pub assistant: AssistantSnapshot,
 }
 
 pub struct ActiveWebSocketGuard {
@@ -134,10 +143,22 @@ pub struct AgentCallGuard {
     succeeded: AtomicBool,
 }
 
+pub struct AssistantCallGuard {
+    metrics: Arc<RuntimeMetrics>,
+    kind: AssistantCallKind,
+    succeeded: AtomicBool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum WebSocketKind {
     Channels,
     WatchParty,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AssistantCallKind {
+    Chat,
+    Tool,
 }
 
 impl RuntimeMetrics {
@@ -214,6 +235,28 @@ impl RuntimeMetrics {
         }
     }
 
+    pub fn start_ai_chat_request(self: &Arc<Self>) -> AssistantCallGuard {
+        let counters = assistant_counters(self, AssistantCallKind::Chat);
+        increment_job_counter(&counters.calls_total);
+        increment_job_counter(&counters.calls_in_flight);
+        AssistantCallGuard {
+            metrics: Arc::clone(self),
+            kind: AssistantCallKind::Chat,
+            succeeded: AtomicBool::new(false),
+        }
+    }
+
+    pub fn start_ai_tool_call(self: &Arc<Self>) -> AssistantCallGuard {
+        let counters = assistant_counters(self, AssistantCallKind::Tool);
+        increment_job_counter(&counters.calls_total);
+        increment_job_counter(&counters.calls_in_flight);
+        AssistantCallGuard {
+            metrics: Arc::clone(self),
+            kind: AssistantCallKind::Tool,
+            succeeded: AtomicBool::new(false),
+        }
+    }
+
     pub fn snapshot(&self) -> RuntimeMetricsSnapshot {
         RuntimeMetricsSnapshot {
             uptime_seconds: self.uptime_seconds(),
@@ -243,11 +286,21 @@ impl RuntimeMetrics {
                 transcription: snapshot_agent_counters(&self.transcription_agent),
                 youtube: snapshot_agent_counters(&self.youtube_agent),
             },
+            assistant: AssistantSnapshot {
+                chats: snapshot_agent_counters(&self.ai_assistant_chats),
+                tools: snapshot_agent_counters(&self.ai_assistant_tools),
+            },
         }
     }
 }
 
 impl AgentCallGuard {
+    pub fn mark_success(&self) {
+        self.succeeded.store(true, Ordering::Relaxed);
+    }
+}
+
+impl AssistantCallGuard {
     pub fn mark_success(&self) {
         self.succeeded.store(true, Ordering::Relaxed);
     }
@@ -265,6 +318,19 @@ impl Drop for ActiveWebSocketGuard {
 impl Drop for AgentCallGuard {
     fn drop(&mut self) {
         let counters = agent_counters(&self.metrics, self.kind);
+        decrement_job_counter(&counters.calls_in_flight);
+        if self.succeeded.load(Ordering::Relaxed) {
+            increment_job_counter(&counters.calls_succeeded_total);
+        } else {
+            increment_job_counter(&counters.calls_failed_total);
+            counters.failure_window.record_failure();
+        }
+    }
+}
+
+impl Drop for AssistantCallGuard {
+    fn drop(&mut self) {
+        let counters = assistant_counters(&self.metrics, self.kind);
         decrement_job_counter(&counters.calls_in_flight);
         if self.succeeded.load(Ordering::Relaxed) {
             increment_job_counter(&counters.calls_succeeded_total);
@@ -301,6 +367,13 @@ fn agent_counters(metrics: &RuntimeMetrics, kind: AgentKind) -> &AgentCounters {
         AgentKind::Tmdb => &metrics.tmdb_agent,
         AgentKind::Transcription => &metrics.transcription_agent,
         AgentKind::YouTube => &metrics.youtube_agent,
+    }
+}
+
+fn assistant_counters(metrics: &RuntimeMetrics, kind: AssistantCallKind) -> &AgentCounters {
+    match kind {
+        AssistantCallKind::Chat => &metrics.ai_assistant_chats,
+        AssistantCallKind::Tool => &metrics.ai_assistant_tools,
     }
 }
 
@@ -469,5 +542,24 @@ mod tests {
         assert_eq!(snapshot.agents.youtube.calls_failed_total, 2);
         assert_eq!(snapshot.agents.youtube.failures_last_minute, 2);
         assert_eq!(snapshot.agents.youtube.failures_last_five_minutes, 2);
+    }
+
+    #[test]
+    fn assistant_call_guards_track_chat_and_tool_outcomes() {
+        let metrics = RuntimeMetrics::new();
+        {
+            let guard = metrics.start_ai_chat_request();
+            guard.mark_success();
+        }
+        {
+            let _guard = metrics.start_ai_tool_call();
+        }
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.assistant.chats.calls_total, 1);
+        assert_eq!(snapshot.assistant.chats.calls_succeeded_total, 1);
+        assert_eq!(snapshot.assistant.chats.calls_failed_total, 0);
+        assert_eq!(snapshot.assistant.tools.calls_total, 1);
+        assert_eq!(snapshot.assistant.tools.calls_failed_total, 1);
     }
 }

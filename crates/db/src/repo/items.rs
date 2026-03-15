@@ -131,6 +131,78 @@ pub async fn get_library_items(
     Ok(rows.into_iter().map(row_to_item).collect())
 }
 
+pub async fn search_items_by_title(
+    pool: &DbPool,
+    query: &str,
+    allowed_library_ids: Option<&[String]>,
+    limit: i64,
+) -> Result<Vec<ItemRow>, sqlx::Error> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() || matches!(allowed_library_ids, Some(ids) if ids.is_empty()) {
+        return Ok(Vec::new());
+    }
+
+    let pattern = format!("%{trimmed}%");
+    let exact = trimmed.to_string();
+    let limit = limit.clamp(1, 25);
+    let mut next_param = 3;
+    let mut sql = "SELECT i.id, i.library_id, i.kind, i.parent_id, i.title, i.sort_title, i.year, i.overview, \
+         poster_url, backdrop_url, logo_url, thumb_url, \
+         created_ts, updated_ts \
+         FROM item i \
+          WHERE (i.title ILIKE $1 OR COALESCE(i.sort_title, '') ILIKE $1) \
+            AND i.parent_id IS NULL \
+            AND ( \
+                 EXISTS (SELECT 1 FROM item child WHERE child.parent_id = i.id) \
+                 OR EXISTS (SELECT 1 FROM episode_file_map efm WHERE efm.episode_item_id = i.id) \
+            )"
+        .to_string();
+
+    if let Some(library_ids) = allowed_library_ids {
+        let placeholders = crate::repo::dollar_placeholders(next_param, library_ids.len());
+        sql.push_str(&format!(" AND i.library_id IN ({placeholders})"));
+        next_param += library_ids.len();
+    }
+
+    sql.push_str(&format!(
+        " ORDER BY \
+            CASE WHEN LOWER(i.title) = LOWER($2) THEN 0 ELSE 1 END, \
+            COALESCE(NULLIF(i.sort_title, ''), i.title), i.title \
+          LIMIT ${next_param}"
+    ));
+
+    let mut db_query = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        ),
+    >(&sql)
+    .bind(&pattern)
+    .bind(&exact);
+
+    if let Some(library_ids) = allowed_library_ids {
+        for library_id in library_ids {
+            db_query = db_query.bind(library_id);
+        }
+    }
+
+    let rows = db_query.bind(limit).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(row_to_item).collect())
+}
+
 /// Get the media file ID associated with an item (via episode_file_map).
 pub async fn get_item_file_id(pool: &DbPool, item_id: &str) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> =

@@ -482,6 +482,14 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    {
+        let audit_pool = pool.clone();
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
+            rustfin_server::ai_audit::run_audit_maintenance_loop(audit_pool, task_shutdown).await;
+        }));
+    }
+
     let rustyvault = detect_rustyvault_runtime_state(&pool).await;
     if !rustyvault.available {
         warn!(

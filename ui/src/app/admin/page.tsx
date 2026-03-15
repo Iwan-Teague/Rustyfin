@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 import { apiJson } from '@/lib/api';
 import {
   deleteAiModel,
+  fetchAiAuditEvents,
   fetchAiAdminState,
+  type AiAssistantAuditEvent,
   pullAiModelFromUrl,
   type AiAdminState,
   type AdminAiPullEvent,
@@ -197,6 +199,26 @@ interface DiagnosticsAgentCounter {
 }
 
 interface RuntimeDiagnosticsResponse {
+  host: {
+    available: boolean;
+    reason: string | null;
+    uptime_seconds: number | null;
+    logical_cpu_threads: number | null;
+    physical_cpu_cores: number | null;
+    cpu_usage_percent: number | null;
+    estimated_busy_logical_threads: number | null;
+    total_memory_bytes: number | null;
+    used_memory_bytes: number | null;
+    memory_used_percent: number | null;
+    total_swap_bytes: number | null;
+    used_swap_bytes: number | null;
+    swap_used_percent: number | null;
+    load_average: {
+      one: number;
+      five: number;
+      fifteen: number;
+    } | null;
+  };
   runtime: {
     uptime_seconds: number;
     jobs: {
@@ -222,6 +244,10 @@ interface RuntimeDiagnosticsResponse {
       tmdb: DiagnosticsAgentCounter;
       transcription: DiagnosticsAgentCounter;
       youtube: DiagnosticsAgentCounter;
+    };
+    assistant: {
+      chats: DiagnosticsAgentCounter;
+      tools: DiagnosticsAgentCounter;
     };
   };
   transcoding: {
@@ -339,6 +365,23 @@ function formatUptime(seconds: number): string {
   return `${minutes}m`;
 }
 
+function formatBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)}%`;
+}
+
 function diagnosticsTrendTone(lastMinute: number, lastFiveMinutes: number): string {
   if (lastMinute > 0) return 'text-[#ff8a7a]';
   if (lastFiveMinutes > 0) return 'text-[#f7c67a]';
@@ -403,6 +446,8 @@ export default function AdminPage() {
   const [vaultAuditError, setVaultAuditError] = useState('');
   const [aiAdminState, setAiAdminState] = useState<AiAdminState | null>(null);
   const [aiAdminLoading, setAiAdminLoading] = useState(false);
+  const [aiAuditEvents, setAiAuditEvents] = useState<AiAssistantAuditEvent[]>([]);
+  const [aiAuditError, setAiAuditError] = useState('');
   const [aiModelDirInput, setAiModelDirInput] = useState('');
   const [savingAiModelDir, setSavingAiModelDir] = useState(false);
   const [aiModelPullUrl, setAiModelPullUrl] = useState('');
@@ -697,11 +742,29 @@ export default function AdminPage() {
   const loadAiAdmin = useCallback(async () => {
     try {
       setAiAdminLoading(true);
-      const state = await fetchAiAdminState();
-      setAiAdminState(state);
-      setAiModelDirInput(state.model_dir);
+      setAiAuditError('');
+      const [stateResult, auditResult] = await Promise.allSettled([
+        fetchAiAdminState(),
+        fetchAiAuditEvents(40),
+      ]);
+
+      if (stateResult.status === 'fulfilled') {
+        setAiAdminState(stateResult.value);
+        setAiModelDirInput(stateResult.value.model_dir);
+      } else {
+        setAiAdminState(null);
+        throw stateResult.reason;
+      }
+
+      if (auditResult.status === 'fulfilled') {
+        setAiAuditEvents(auditResult.value);
+      } else {
+        setAiAuditEvents([]);
+        setAiAuditError(clientErrorMessage(auditResult.reason, 'Failed to load AI assistant audit'));
+      }
     } catch (err: unknown) {
       setAiAdminState(null);
+      setAiAuditEvents([]);
       setErr(clientErrorMessage(err, 'Failed to load AI admin state'));
     } finally {
       setAiAdminLoading(false);
@@ -2795,6 +2858,143 @@ export default function AdminPage() {
                     </div>
                   )}
                 </div>
+
+                <div className="panel-soft rounded-2xl border border-[var(--border)] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Assistant Audit Trail</p>
+                      <p className="text-xs muted">
+                        Recent persisted assistant requests, planned tools, execution summaries, and failure states.
+                      </p>
+                      {aiAdminState && (
+                        <p className="mt-1 text-xs muted">
+                          Retention: {aiAdminState.audit_retention_days} day
+                          {aiAdminState.audit_retention_days === 1 ? '' : 's'}.
+                          Automatic prune cadence: every{' '}
+                          {formatUptime(aiAdminState.audit_prune_interval_seconds)}.
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void loadAiAdmin();
+                      }}
+                      className="btn-ghost px-3 py-1.5 text-sm"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {aiAuditError ? (
+                    <div className="notice-error rounded-xl px-4 py-3 text-sm">{aiAuditError}</div>
+                  ) : aiAdminLoading && aiAuditEvents.length === 0 ? (
+                    <p className="text-sm muted">Loading assistant audit…</p>
+                  ) : aiAuditEvents.length === 0 ? (
+                    <p className="text-sm muted">No persisted assistant requests yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {aiAuditEvents.map((event) => (
+                        <div
+                          key={event.id}
+                          className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3"
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-medium">
+                                  {event.username}
+                                  <span className="ml-2 text-xs muted">{event.user_role}</span>
+                                </p>
+                                <span className="chip chip-accent">{titleCase(event.response_kind)}</span>
+                              </div>
+                              <p className="text-xs muted">
+                                {formatTs(event.created_ts)} · model {event.model_name} · {event.history_len} prior
+                                {event.history_len === 1 ? ' message' : ' messages'}
+                              </p>
+                              <p className="text-sm text-[var(--text-main)]">{event.message_preview}</p>
+                            </div>
+                            <p className="text-[11px] muted sm:text-right">trace {event.trace_id.slice(0, 8)}</p>
+                          </div>
+
+                          <div className="mt-3 grid gap-3 lg:grid-cols-[1fr,1.2fr]">
+                            <div className="space-y-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Planned Tools
+                              </p>
+                              {event.planned_tools.length === 0 ? (
+                                <p className="text-xs muted">No grounded tools planned.</p>
+                              ) : (
+                                <div className="flex flex-wrap gap-2">
+                                  {event.planned_tools.map((tool) => (
+                                    <span key={tool} className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                      {tool}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Grounding Sources
+                              </p>
+                              {event.grounding_sources.length === 0 ? (
+                                <p className="text-xs muted">No grounded sources recorded.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {event.grounding_sources.map((source) => (
+                                    <div key={`${event.id}-${source.tool}-${source.label}`} className="text-xs muted">
+                                      <span className="font-medium text-[var(--text-main)]">{source.label}</span>
+                                      {' · '}
+                                      {source.tool}
+                                      {' · '}
+                                      {source.status}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="space-y-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Executed Tools
+                              </p>
+                              {event.executed_tools.length === 0 ? (
+                                <p className="text-xs muted">No tool execution recorded.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {event.executed_tools.map((tool) => (
+                                    <div
+                                      key={`${event.id}-${tool.tool}-${tool.input_summary}`}
+                                      className="rounded-lg border border-[var(--border)]/70 px-3 py-2"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <p className="text-sm font-medium">{tool.tool}</p>
+                                        <span className="text-[11px] muted">
+                                          {tool.status}
+                                          {tool.result_count != null ? ` · ${tool.result_count}` : ''}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs muted">{tool.label}</p>
+                                      <p className="mt-1 truncate text-[11px] muted" title={tool.input_summary}>
+                                        {tool.input_summary}
+                                      </p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {event.error_message && (
+                            <div className="mt-3 rounded-lg border border-red-400/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                              {event.error_message}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </section>
@@ -3042,6 +3242,50 @@ export default function AdminPage() {
             {runtimeDiagnostics ? (
               <div className="mt-4 grid gap-3 xl:grid-cols-4">
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Host</div>
+                  <div className="mt-3 space-y-2">
+                    {runtimeDiagnostics.host.available ? (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="muted">Host uptime</span>
+                          <span>
+                            {runtimeDiagnostics.host.uptime_seconds != null
+                              ? formatUptime(runtimeDiagnostics.host.uptime_seconds)
+                              : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="muted">CPU</span>
+                          <span>
+                            {formatPercent(runtimeDiagnostics.host.cpu_usage_percent)} /{' '}
+                            {runtimeDiagnostics.host.logical_cpu_threads ?? '—'} threads
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="muted">Memory</span>
+                          <span>
+                            {formatBytes(runtimeDiagnostics.host.used_memory_bytes)} /{' '}
+                            {formatBytes(runtimeDiagnostics.host.total_memory_bytes)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="muted">Load</span>
+                          <span>
+                            {runtimeDiagnostics.host.load_average
+                              ? `${runtimeDiagnostics.host.load_average.one.toFixed(1)} / ${runtimeDiagnostics.host.load_average.five.toFixed(1)} / ${runtimeDiagnostics.host.load_average.fifteen.toFixed(1)}`
+                              : '—'}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm muted">
+                        {runtimeDiagnostics.host.reason || 'Host runtime stats are unavailable on this host.'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
                   <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">Runtime</div>
                   <div className="mt-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
@@ -3127,6 +3371,32 @@ export default function AdminPage() {
                         </span>
                       </div>
                     ))}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/85">AI Assistant</div>
+                  <div className="mt-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Chats</span>
+                      <span className="flex items-center gap-3">
+                        <span>{runtimeDiagnostics.runtime.assistant.chats.calls_in_flight} in flight / {runtimeDiagnostics.runtime.assistant.chats.calls_total} total</span>
+                        <DiagnosticsTrend
+                          lastMinute={runtimeDiagnostics.runtime.assistant.chats.failures_last_minute}
+                          lastFiveMinutes={runtimeDiagnostics.runtime.assistant.chats.failures_last_five_minutes}
+                        />
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="muted">Grounded tools</span>
+                      <span className="flex items-center gap-3">
+                        <span>{runtimeDiagnostics.runtime.assistant.tools.calls_in_flight} in flight / {runtimeDiagnostics.runtime.assistant.tools.calls_total} total</span>
+                        <DiagnosticsTrend
+                          lastMinute={runtimeDiagnostics.runtime.assistant.tools.failures_last_minute}
+                          lastFiveMinutes={runtimeDiagnostics.runtime.assistant.tools.failures_last_five_minutes}
+                        />
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

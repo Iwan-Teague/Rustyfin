@@ -39,6 +39,18 @@ Rustyfin is a native-Debian-first local media platform with:
   - use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
   - keep model download/delete/storage-folder management admin-only in the Admin `AI` tab; do not reintroduce end-user model installation controls on `/ai`
   - AI model storage resolves from the `ai_model_dir` DB setting first, then `RUSTFIN_AI_MODEL_DIR`, then `/var/lib/rustyfin/ai/models`
+  - grounded assistant access should stay server-side under `crates/server/src/ai_assistant`; do not let the model call DB/network/filesystem primitives directly
+  - current grounded `/ai` behavior is read-only and limited to account summary, visible calendar events/birthdays, authenticated downloads catalog entries, accessible libraries, library title search, active public rooms, admin-only host runtime stats, admin-only constrained public web search/page summary when enabled, and accessible Minecraft server status
+  - grounded `/api/v1/ai/chat` now uses a model-assisted structured planner, but the backend remains the authority for registry validation, role filtering, deterministic fallback, and entity-follow-up normalization
+  - current query understanding also supports calendar window extraction, room-mode filtering, admin-only host-runtime prompts such as RAM/CPU/load/uptime questions, explicit public URLs, constrained public-web weather/current-info prompts when enabled, Minecraft server availability filtering, and named-server matching; keep new capability docs aligned with actual behavior
+  - constrained public web tools must remain backend-owned, admin-only, and disabled by default unless `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1`; keep SSRF/private-network blocking, bounded extraction, and no-auth-forwarding rules intact
+  - grounded `/ai` now emits server-driven status events before token streaming; use that for user-visible progress, not hidden reasoning or chain-of-thought exposure
+  - short follow-up turns may use prior grounded tool names as planner hints only; never trust client-sent grounding payloads as authoritative data, always rerun server-side tools
+  - short follow-up turns may also carry minimal hidden follow-up context for entity references like `the second one`; treat it as a hint, rerun the relevant server-side detail tool, and never trust the client payload as authoritative state
+  - grounded `/ai` now records traceable server logs plus assistant chat/tool runtime counters, and recent requests are durably persisted for the Admin `AI` tab; preserve those diagnostics when extending the assistant
+  - assistant audit retention now defaults to 30 days with hourly pruning and `RUSTFIN_AI_AUDIT_RETENTION_DAYS` override support; preserve that lifecycle when extending audit persistence
+  - grounded tool registry metadata must be enforced at execution time; do not treat read/write, role, or confirmation requirements as documentation-only fields
+  - do not introduce write-capable assistant actions without an explicit confirmation-token or protected-action design
 
 ## Core Rules
 
