@@ -132,7 +132,7 @@ Preferred one-shot Linux installer:
 
 This bootstraps Rust if needed and then hands off to `cargo run -p rustfin-installer`.
 The current full native install flow behind that installer is implemented for Debian 12 and Debian 13.
-The Rust installer now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, and install-manifest output.
+The Rust installer now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if startup fails.
 The public native scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
 
 Install host dependencies:
@@ -203,6 +203,8 @@ Detailed native operations guide:
   - `./scripts/rustfin-installer.sh clean-native-runtime`
 - Native systemd install/refresh is now emitted by:
   - `./scripts/rustfin-installer.sh install-native-systemd`
+- Native installer-driven `systemd` setup now validates that the backend, agents, and HTTPS UI actually come up before reporting success.
+- If that validation fails, the installer captures `systemctl status` output plus native log tails so fresh-host failures are diagnosable without manual digging.
 - Runtime values are written to:
   - `/Users/iwanteague/Desktop/Rustyfin/.rustyfin.runtime.env`
 - Native logs and pid files live under:
