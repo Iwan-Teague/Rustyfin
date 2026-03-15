@@ -1,3 +1,4 @@
+pub mod ai_assistant_audit;
 pub mod calendar;
 pub mod channel_transcripts;
 pub mod channels;

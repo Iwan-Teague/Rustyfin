@@ -6,7 +6,42 @@ export interface AiAdminState {
   model_dir: string;
   default_model_dir: string;
   model_dir_source: 'database' | 'environment' | 'default';
+  audit_retention_days: number;
+  audit_prune_interval_seconds: number;
   models: AiModel[];
+}
+
+export interface AiAssistantAuditGroundingSource {
+  tool: string;
+  label: string;
+  access_mode: string;
+  risk_tier: string;
+  status: string;
+}
+
+export interface AiAssistantAuditToolExecution {
+  tool: string;
+  input_summary: string;
+  status: string;
+  label: string;
+  result_count: number | null;
+}
+
+export interface AiAssistantAuditEvent {
+  id: string;
+  trace_id: string;
+  user_id: string;
+  username: string;
+  user_role: string;
+  model_name: string;
+  message_preview: string;
+  history_len: number;
+  response_kind: string;
+  planned_tools: string[];
+  executed_tools: AiAssistantAuditToolExecution[];
+  grounding_sources: AiAssistantAuditGroundingSource[];
+  error_message: string | null;
+  created_ts: number;
 }
 
 export type AdminAiPullEvent =
@@ -23,6 +58,12 @@ export async function updateAiModelDir(modelDir: string): Promise<AiAdminState> 
     method: 'PUT',
     body: JSON.stringify({ model_dir: modelDir }),
   });
+}
+
+export async function fetchAiAuditEvents(limit = 40): Promise<AiAssistantAuditEvent[]> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  return apiJson<AiAssistantAuditEvent[]>(`/system/ai/audit?${params.toString()}`);
 }
 
 export async function deleteAiModel(name: string): Promise<void> {

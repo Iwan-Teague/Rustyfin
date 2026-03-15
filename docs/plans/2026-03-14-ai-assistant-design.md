@@ -1,7 +1,7 @@
 # Rustyfin AI Assistant
 
 Date: 2026-03-14
-Last revised: 2026-03-14
+Last revised: 2026-03-15
 Status: current implementation baseline
 
 ## Purpose
@@ -22,6 +22,7 @@ Its current job is narrow and explicit:
   - authenticated chat UI
   - model selection from already installed models
   - streaming SSE responses
+  - initial grounded read-only answers for selected Rustyfin domains
   - no install, delete, or storage-folder controls
 
 ### Admin surface
@@ -60,12 +61,68 @@ Current ownership is split like this:
   - feature-gated AI entrypoint and disabled-host fallback
 - `crates/server/src/ai_enabled.rs`
   - authenticated `/api/v1/ai` routes
+- `crates/server/src/ai_assistant`
+  - grounded assistant context, tool registry, planner, and read-only product tools
+- `crates/server/src/ai_audit.rs`
+  - durable assistant audit-event shaping and admin-facing parsing
 - `crates/server/src/ai_admin.rs`
-  - admin-only model-management routes
+  - admin-only model-management routes plus recent assistant audit history
 - `crates/server/src/ai_storage.rs`
   - model directory resolution, validation, discovery, download, and delete behavior
 
 The server loads models from disk on demand and keeps one active loaded model in process at a time through the shared engine state in `AppState`.
+
+Grounded assistant requests now also persist a compact audit record containing:
+
+- trace ID
+- user and role snapshot
+- model name
+- normalized prompt preview
+- planned tools
+- executed tool summaries
+- grounded source summaries
+- terminal response kind and any terminal error message
+
+Assistant audit retention now defaults to 30 days with hourly cleanup, and can be overridden with:
+
+- `RUSTFIN_AI_AUDIT_RETENTION_DAYS`
+
+The current grounded read-only tool slice can summarize:
+
+- signed-in account context
+- visible upcoming calendar events
+- visible upcoming birthdays
+- authenticated host-published downloads and planned Rustyfin artifacts
+- accessible libraries
+- accessible library title matches for a user-provided query
+- tighter single-item library summaries used after grounded entity-reference follow-ups
+- active public rooms
+- tighter active-room summaries used after grounded entity-reference follow-ups
+- admin-only host runtime stats such as RAM, memory usage, CPU thread count, CPU usage, load, uptime, and compact Rustyfin runtime counters
+- admin-only constrained public web search results when `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1`
+- admin-only constrained public page summaries for explicit public URLs when `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1`
+- accessible Minecraft server status
+- tighter single-server summaries used after grounded entity-reference follow-ups
+
+Current query-understanding support includes:
+
+- calendar windows such as `today`, `tomorrow`, `this week`, `next week`, `this month`, `next month`
+- numbered windows such as `next 10 days` and `next 2 weeks`
+- ISO-date targeting such as `2026-03-22`
+- safer library-search intent detection so generic questions like library access are not misclassified as title search
+- ambiguous calendar questions such as “What’s on my calendar?” now trigger a clarification prompt instead of a guessed default window
+- room-mode filtering such as YouTube rooms, watch rooms, audio rooms, web rooms, screen-share rooms, create rooms, and play rooms
+- Minecraft server filtering by availability such as `online`, `offline`, `healthy`, or `failed`
+- named Minecraft server matching, including prompts such as `Is the Minecraft server called Survival online?`
+- ambiguous singular server questions such as “Is the server online?” now trigger a clarification prompt instead of guessing which server was meant
+- admin-only host runtime-stat prompts such as `How much RAM is the server using right now?` and `How many CPU threads does the server have?`
+- explicit public URLs can now trigger a constrained public page fetch, summary, and source attribution path
+- weather/current-public-info prompts can now trigger constrained public web search when the host enables it
+- `/api/v1/ai/chat` now streams lightweight assistant status events before token output so the `/ai` page can show progress such as checking calendar, rooms, or server state without exposing chain-of-thought
+- `/api/v1/ai/chat` now uses a model-assisted structured planner for grounded tool selection, while the backend keeps deterministic fallback and deterministic entity-follow-up resolution as the safe normalization path
+- short follow-up prompts can now inherit the last grounded domain as a planner hint, so prompts like `What about next week?` or `Which ones are healthy?` can stay grounded without restating the domain
+- simple entity-reference follow-ups such as `the second one`, `that server`, or `the first room` can now resolve against the last grounded result set and rerun a fresh scoped detail tool for that entity
+- grounded assistant requests now emit traceable server logs and assistant chat/tool counters into the admin runtime diagnostics surface
 
 ## Runtime Model
 
@@ -100,6 +157,8 @@ Behavioral rules:
 ## Security Rules
 
 - AI chat requires a normal authenticated Rustyfin session
+- grounded tool execution stays server-side and read-only
+- constrained public web tools stay admin-only and are disabled by default unless `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1`
 - model installation, deletion, and path changes require `AdminUser`
 - no cloud inference provider is part of the current design
 - only local GGUF files are used
@@ -124,3 +183,11 @@ Future AI work should preserve these constraints:
 - keep model lifecycle management admin-only
 - keep the host-safe backend selection path
 - keep AI optional so unsupported hosts can still run the rest of Rustyfin
+
+## Planned Next Step
+
+The next major AI architecture step is grounded server-side tool calling so the assistant can answer with live Rustyfin data instead of prompt-only guesses.
+
+That design is captured in:
+
+- `/Users/iwanteague/Desktop/Rustyfin/docs/plans/2026-03-15-ai-grounded-tools-architecture.md`

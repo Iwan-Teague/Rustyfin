@@ -159,6 +159,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "040_rustyvault_preferences",
         include_str!("../migrations_pg/040_rustyvault_preferences.sql"),
     ),
+    (
+        "041_ai_assistant_audit",
+        include_str!("../migrations_pg/041_ai_assistant_audit.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;

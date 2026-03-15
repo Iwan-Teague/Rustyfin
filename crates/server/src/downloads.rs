@@ -66,7 +66,7 @@ pub async fn download_artifact_package(
     }
 }
 
-fn build_download_catalog(state: &AppState) -> DownloadCatalogResponse {
+pub(crate) fn build_download_catalog(state: &AppState) -> DownloadCatalogResponse {
     DownloadCatalogResponse {
         items: vec![
             rustyvault_webext_artifact(state),

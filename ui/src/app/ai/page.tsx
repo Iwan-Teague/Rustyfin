@@ -4,9 +4,12 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import {
+  type AiFollowUpContext,
   fetchModels,
   streamChat,
   type AiModel,
+  type AiGroundingSource,
+  type AiStatusUpdate,
   type ChatHistoryMessage,
 } from '@/lib/aiApi';
 
@@ -27,6 +30,9 @@ interface ChatEntry {
   isStreaming: boolean;
   stats: MessageStats | null;
   error: string | null;
+  groundingSources: AiGroundingSource[];
+  followUpContexts: AiFollowUpContext[];
+  statusUpdates: AiStatusUpdate[];
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +130,56 @@ function StatsBar({ stats }: { stats: MessageStats }) {
   );
 }
 
+function StatusList({ updates }: { updates: AiStatusUpdate[] }) {
+  if (updates.length === 0) return null;
+
+  return (
+    <div className="mb-2.5 space-y-1.5">
+      {updates.map((update) => {
+        const isChecking = update.kind === 'checking';
+        const isError = update.kind === 'error';
+        return (
+          <div
+            key={`${update.tool}-${update.kind}-${update.label}`}
+            className="flex items-center gap-2 text-[0.72rem] muted"
+          >
+            <span
+              className="inline-flex items-center justify-center w-4 h-4 rounded-full border flex-shrink-0"
+              style={{
+                borderColor: isError
+                  ? 'rgba(255,117,136,0.35)'
+                  : isChecking
+                    ? 'rgba(255,145,77,0.3)'
+                    : 'rgba(91,214,136,0.3)',
+                background: isError
+                  ? 'rgba(255,117,136,0.12)'
+                  : isChecking
+                    ? 'rgba(255,145,77,0.12)'
+                    : 'rgba(91,214,136,0.12)',
+              }}
+            >
+              {isChecking ? (
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full"
+                  style={{
+                    background: 'var(--orange-soft)',
+                    animation: 'pulse 1.2s ease-in-out infinite',
+                  }}
+                />
+              ) : isError ? (
+                <span className="text-[var(--danger)] leading-none">!</span>
+              ) : (
+                <span className="text-[var(--ok)] leading-none">✓</span>
+              )}
+            </span>
+            <span>{update.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Message bubble
 // ---------------------------------------------------------------------------
@@ -150,6 +206,33 @@ function MessageBubble({ entry }: { entry: ChatEntry }) {
   return (
     <div className="flex justify-start">
       <div className="max-w-[84%] w-full">
+        {entry.groundingSources.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {entry.groundingSources.map((source) => (
+              <span
+                key={`${entry.id}-${source.tool}-${source.label}`}
+                className="chip text-[0.68rem]"
+                style={{
+                  borderColor:
+                    source.status === 'error'
+                      ? 'rgba(255,120,120,0.32)'
+                      : 'rgba(255,145,77,0.24)',
+                  background:
+                    source.status === 'error'
+                      ? 'rgba(255,120,120,0.08)'
+                      : 'rgba(255,145,77,0.08)',
+                }}
+              >
+                {source.label}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {entry.isStreaming && entry.statusUpdates.length > 0 && (
+          <StatusList updates={entry.statusUpdates} />
+        )}
+
         {thinking !== null && (
           <ThinkingBlock text={thinking} live={entry.isStreaming && content === ''} />
         )}
@@ -221,13 +304,26 @@ function InferenceUnavailable({
 // ---------------------------------------------------------------------------
 // Empty / suggestions state
 // ---------------------------------------------------------------------------
-function EmptyState({ model, onSuggest }: { model: string; onSuggest: (s: string) => void }) {
+function EmptyState({
+  model,
+  isAdmin,
+  onSuggest,
+}: {
+  model: string;
+  isAdmin: boolean;
+  onSuggest: (s: string) => void;
+}) {
   const suggestions = [
-    "What's in the media library?",
+    'Do I have "Interstellar" in my library?',
     "Who has a birthday coming up?",
-    "Create a watch party and invite everyone",
-    "What rooms are active right now?",
+    'What events are coming up this week?',
+    "Are any YouTube rooms active right now?",
+    "What Minecraft servers are online?",
+    "What downloads are available right now?",
   ];
+  if (isAdmin) {
+    suggestions.push('How much RAM is the server using right now?');
+  }
 
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 py-8 text-center px-4">
@@ -254,7 +350,8 @@ function EmptyState({ model, onSuggest }: { model: string; onSuggest: (s: string
           Ask <span className="accent-logo">{modelDisplayName(model)}</span> anything
         </p>
         <p className="text-sm muted mt-1 max-w-xs">
-          I know about your media, rooms, calendar, and more.
+          I can currently search your libraries and check calendar, rooms, downloads, server status, and account context.
+          {isAdmin ? ' Admins can also ask for host runtime stats like RAM, CPU, load, and uptime.' : ''}
         </p>
       </div>
 
@@ -370,12 +467,12 @@ export default function AiPage() {
 
     const userEntry: ChatEntry = {
       id: uid(), role: 'user', content: text,
-      isStreaming: false, stats: null, error: null,
+      isStreaming: false, stats: null, error: null, groundingSources: [], followUpContexts: [], statusUpdates: [],
     };
     const assistantId = uid();
     const assistantEntry: ChatEntry = {
       id: assistantId, role: 'assistant', content: '',
-      isStreaming: true, stats: null, error: null,
+      isStreaming: true, stats: null, error: null, groundingSources: [], followUpContexts: [], statusUpdates: [],
     };
 
     setMessages((prev) => [...prev, userEntry, assistantEntry]);
@@ -383,14 +480,51 @@ export default function AiPage() {
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsStreaming(true);
 
-    const history: ChatHistoryMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
+    const history: ChatHistoryMessage[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      grounding_tools:
+        m.role === 'assistant' && m.groundingSources.length > 0
+          ? m.groundingSources.map((source) => source.tool)
+          : undefined,
+      follow_up_contexts:
+        m.role === 'assistant' && m.followUpContexts.length > 0
+          ? m.followUpContexts
+          : undefined,
+    }));
 
     stopRef.current = streamChat(
       selectedModel, text, history,
       (event) => {
-        if (event.type === 'token') {
+        if (event.type === 'status') {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              const nextUpdates = [...m.statusUpdates];
+              const existingIndex = nextUpdates.findIndex((update) => update.tool === event.update.tool);
+              if (existingIndex >= 0) {
+                nextUpdates[existingIndex] = event.update;
+              } else {
+                nextUpdates.push(event.update);
+              }
+              return { ...m, statusUpdates: nextUpdates };
+            }),
+          );
+        } else if (event.type === 'token') {
           setMessages((prev) =>
             prev.map((m) => m.id === assistantId ? { ...m, content: m.content + event.text } : m),
+          );
+        } else if (event.type === 'grounding') {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    groundingSources: event.sources,
+                    followUpContexts: event.followUpContexts,
+                  }
+                : m,
+            ),
           );
         } else if (event.type === 'stats') {
           setMessages((prev) =>
@@ -518,7 +652,11 @@ export default function AiPage() {
               <>
                 <div ref={threadRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
                   {messages.length === 0 && (
-                    <EmptyState model={selectedModel} onSuggest={(s) => setInput(s)} />
+                    <EmptyState
+                      model={selectedModel}
+                      isAdmin={me?.role === 'admin'}
+                      onSuggest={(s) => setInput(s)}
+                    />
                   )}
                   {messages.map((entry) => (
                     <MessageBubble key={entry.id} entry={entry} />

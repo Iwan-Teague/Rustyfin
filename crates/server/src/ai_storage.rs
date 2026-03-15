@@ -29,6 +29,8 @@ pub struct AiModelDirectoryState {
     pub model_dir: String,
     pub default_model_dir: String,
     pub model_dir_source: String,
+    pub audit_retention_days: i64,
+    pub audit_prune_interval_seconds: u64,
     pub models: Vec<AiModelSummary>,
 }
 

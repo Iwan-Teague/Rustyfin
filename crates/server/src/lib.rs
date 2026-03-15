@@ -7,6 +7,9 @@ pub mod account_prefs;
 pub mod ai;
 pub mod ai_admin;
 #[cfg(feature = "ai")]
+pub mod ai_assistant;
+pub mod ai_audit;
+#[cfg(feature = "ai")]
 pub mod ai_enabled;
 pub mod ai_storage;
 pub mod artwork;
@@ -19,6 +22,7 @@ pub mod host_directories;
 pub mod job_status;
 pub mod library_scan;
 pub mod routes;
+pub mod runtime_diagnostics;
 pub mod runtime_metrics;
 #[cfg(feature = "rustyvault")]
 pub mod rustyvault_host;

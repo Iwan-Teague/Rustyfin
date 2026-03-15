@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
+use crate::ai_audit::{AiAssistantAuditEventResponse, parse_audit_event_row};
 use crate::ai_storage::{
     AI_MODEL_DIR_SETTING_KEY, AiModelDirectoryState, ModelPullChunk, current_model_dir,
     delete_model_file, download_model_from_url, list_models_from_state, resolve_model_dir,
@@ -29,6 +30,11 @@ pub struct UpdateAiAdminConfigRequest {
 #[derive(Deserialize)]
 pub struct PullAiModelRequest {
     pub url: String,
+}
+
+#[derive(Deserialize)]
+pub struct ListAiAuditQuery {
+    pub limit: Option<i64>,
 }
 
 pub async fn get_ai_admin_state(
@@ -117,6 +123,25 @@ pub async fn delete_ai_model(
     Ok(StatusCode::NOT_FOUND)
 }
 
+pub async fn list_ai_audit_events(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<ListAiAuditQuery>,
+) -> Result<Json<Vec<AiAssistantAuditEventResponse>>, AppError> {
+    let rows = rustfin_db::repo::ai_assistant_audit::list_audit_events(
+        &state.db,
+        query.limit.unwrap_or(40),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(parse_audit_event_row)
+            .collect::<Vec<_>>(),
+    ))
+}
+
 async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState, AppError> {
     let (_, source) = resolve_model_dir(&state.db).await?;
     let model_dir = current_model_dir(state).await;
@@ -127,6 +152,8 @@ async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState,
         model_dir: model_dir.to_string_lossy().to_string(),
         default_model_dir: crate::ai_storage::DEFAULT_AI_MODEL_DIR.to_string(),
         model_dir_source: source,
+        audit_retention_days: crate::ai_audit::audit_retention_days(),
+        audit_prune_interval_seconds: crate::ai_audit::AI_AUDIT_PRUNE_INTERVAL_SECS,
         models,
     })
 }

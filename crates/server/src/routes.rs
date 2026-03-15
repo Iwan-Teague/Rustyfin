@@ -382,6 +382,10 @@ fn api_router(state: AppState) -> Router<AppState> {
             "/system/ai/models/{name}",
             delete(crate::ai_admin::delete_ai_model),
         )
+        .route(
+            "/system/ai/audit",
+            get(crate::ai_admin::list_ai_audit_events),
+        )
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
@@ -4995,40 +4999,13 @@ async fn get_gpu_caps(
     })))
 }
 
-#[derive(Debug, Serialize)]
-struct TranscodeDiagnosticsResponse {
-    active_sessions: usize,
-    created_total: u64,
-    create_failures_total: u64,
-    create_failures_last_minute: u64,
-    create_failures_last_five_minutes: u64,
-    cleaned_total: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct RuntimeDiagnosticsResponse {
-    runtime: crate::runtime_metrics::RuntimeMetricsSnapshot,
-    transcoding: TranscodeDiagnosticsResponse,
-}
-
 async fn get_runtime_diagnostics(
     _auth: AdminUser,
     State(state): State<AppState>,
-) -> Result<Json<RuntimeDiagnosticsResponse>, AppError> {
-    let runtime = state.runtime_metrics.snapshot();
-    let transcoding = TranscodeDiagnosticsResponse {
-        active_sessions: state.transcoder.active_count().await,
-        created_total: state.transcoder.created_total(),
-        create_failures_total: state.transcoder.create_failures_total(),
-        create_failures_last_minute: state.transcoder.create_failures_last_minute(),
-        create_failures_last_five_minutes: state.transcoder.create_failures_last_five_minutes(),
-        cleaned_total: state.transcoder.cleaned_total(),
-    };
-
-    Ok(Json(RuntimeDiagnosticsResponse {
-        runtime,
-        transcoding,
-    }))
+) -> Result<Json<crate::runtime_diagnostics::RuntimeDiagnosticsResponse>, AppError> {
+    Ok(Json(
+        crate::runtime_diagnostics::collect_runtime_diagnostics(&state).await,
+    ))
 }
 
 #[derive(Serialize)]

@@ -20,11 +20,53 @@ export interface ModelsResponse {
 export interface ChatHistoryMessage {
   role: 'user' | 'assistant';
   content: string;
+  grounding_tools?: string[];
+  follow_up_contexts?: AiFollowUpContext[];
+}
+
+export interface AiGroundingSource {
+  tool: string;
+  label: string;
+  access_mode: 'read_only' | 'write' | 'destructive_write';
+  risk_tier: 'low' | 'moderate' | 'high' | 'critical';
+  status: 'ok' | 'error';
+}
+
+export interface AiFollowUpEntity {
+  ordinal: number;
+  label: string;
+  identifier?: string | null;
+}
+
+export interface AiFollowUpInputHint {
+  calendar_label?: string;
+  calendar_from_date?: string;
+  calendar_to_date?: string;
+  room_mode?: string;
+  room_query?: string;
+  server_query?: string;
+  server_availability?: string;
+  library_query?: string;
+}
+
+export interface AiFollowUpContext {
+  tool: string;
+  label: string;
+  input_hint?: AiFollowUpInputHint;
+  entities: AiFollowUpEntity[];
+}
+
+export interface AiStatusUpdate {
+  tool: string;
+  label: string;
+  kind: 'checking' | 'complete' | 'error';
 }
 
 export type AiSseEvent =
+  | { type: 'status'; update: AiStatusUpdate }
   | { type: 'token'; text: string }
   | { type: 'stats'; prompt_tokens: number; completion_tokens: number; total_duration_ms: number; tokens_per_second: number }
+  | { type: 'grounding'; sources: AiGroundingSource[]; followUpContexts: AiFollowUpContext[] }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -105,6 +147,15 @@ export function streamChat(
               const payload = JSON.parse(raw);
               if (eventType === 'token') {
                 onEvent({ type: 'token', text: payload.text ?? '' });
+              } else if (eventType === 'status') {
+                onEvent({
+                  type: 'status',
+                  update: {
+                    tool: payload.tool ?? '',
+                    label: payload.label ?? '',
+                    kind: payload.kind ?? 'checking',
+                  },
+                });
               } else if (eventType === 'stats') {
                 onEvent({
                   type: 'stats',
@@ -112,6 +163,14 @@ export function streamChat(
                   completion_tokens: payload.completion_tokens ?? 0,
                   total_duration_ms: payload.total_duration_ms ?? 0,
                   tokens_per_second: payload.tokens_per_second ?? 0,
+                });
+              } else if (eventType === 'grounding') {
+                onEvent({
+                  type: 'grounding',
+                  sources: Array.isArray(payload.sources) ? payload.sources : [],
+                  followUpContexts: Array.isArray(payload.follow_up_contexts)
+                    ? payload.follow_up_contexts
+                    : [],
                 });
               } else if (eventType === 'done') {
                 onEvent({ type: 'done' });
