@@ -96,7 +96,7 @@ Runtime behavior:
   - installs Rust via `rustup` when needed
   - hands off to `cargo run -p rustfin-installer`
   - the current full install flow behind `rustfin-installer` is implemented for Debian 12 and Debian 13
-  - `rustfin-installer` now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, and install-manifest output
+  - `rustfin-installer` now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics when startup fails
   - public native shell scripts are now compatibility wrappers around installer subcommands
 - `start.sh` is a compatibility wrapper around `start-native.sh`
   - legacy Docker-era flags passed to `start.sh` are ignored for backward compatibility before delegating to native startup
@@ -118,6 +118,8 @@ Runtime behavior:
 - `rustyfin-post-healthcheck.service` is installed alongside the native runtime
   - it verifies backend/UI/agent readiness after startup
   - it performs one native-service restart if the host boots half-ready
+- installer-driven `systemd` setup must also prove that the backend, agents, and HTTPS UI come up before reporting success
+- if installer validation fails, keep the captured `systemctl status` output and native log tails; do not replace this with a silent or best-effort success path
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
 - On Linux hosts, use `RUSTFIN_AI_GPU_BACKEND` to control the AI inference backend (`auto`, `disabled`, `cpu`, `cuda`, `rocm`, `vulkan`)
 - Transcription GPU path:

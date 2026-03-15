@@ -1034,6 +1034,7 @@ fn install(
         run_script(repo_root, "scripts/start-native.sh", &["--build-only"])?;
         println!("[rustfin-installer] Installing native systemd services from Rust installer...");
         install_systemd_units(systemd_config, user_context)?;
+        validate_systemd_runtime_start(systemd_config, user_context)?;
     }
 
     write_install_manifest(repo_root, host, user_context, systemd_config, options)?;
@@ -1049,6 +1050,7 @@ fn install_native_systemd_command(
     ensure_current_support_boundary(host)?;
     println!("[rustfin-installer] Installing native systemd units...");
     install_systemd_units(systemd_config, user_context)?;
+    validate_systemd_runtime_start(systemd_config, user_context)?;
     println!("[rustfin-installer] Native systemd install completed.");
     Ok(())
 }
@@ -3184,6 +3186,218 @@ fn install_systemd_units(
     Ok(())
 }
 
+fn validate_systemd_runtime_start(
+    config: &SystemdInstallConfig,
+    user_context: &NativeUserContext,
+) -> anyhow::Result<()> {
+    ensure_command_available("systemctl")?;
+    ensure_command_available("curl")?;
+
+    println!("[rustfin-installer] Validating native systemd runtime startup...");
+    wait_for_root_command_success(
+        "systemctl",
+        &["is-active", "--quiet", config.agent_service_name.as_str()],
+        30,
+        user_context,
+    )?;
+    wait_for_root_command_success(
+        "systemctl",
+        &["is-active", "--quiet", config.main_service_name.as_str()],
+        60,
+        user_context,
+    )?;
+
+    let enable_servers_agent = env_bool_default("RUSTFIN_ENABLE_SERVERS_AGENT", true);
+    let backend_port = env::var("RUSTFIN_BACKEND_PORT").unwrap_or_else(|_| "8096".to_string());
+    let calendar_port = env::var("RUSTFIN_CALENDAR_PORT").unwrap_or_else(|_| "8099".to_string());
+    let tmdb_port = env::var("RUSTFIN_TMDB_AGENT_PORT").unwrap_or_else(|_| "8100".to_string());
+    let youtube_port =
+        env::var("RUSTFIN_YOUTUBE_AGENT_PORT").unwrap_or_else(|_| "8101".to_string());
+    let transcription_port =
+        env::var("RUSTFIN_TRANSCRIPTION_AGENT_PORT").unwrap_or_else(|_| "8102".to_string());
+    let servers_agent_port =
+        env::var("RUSTFIN_SERVERS_AGENT_PORT").unwrap_or_else(|_| "8103".to_string());
+    let ui_port = env::var("RUSTFIN_UI_PORT").unwrap_or_else(|_| "3000".to_string());
+
+    let backend_ready = wait_for_http(
+        "rustfin",
+        &format!("http://127.0.0.1:{backend_port}/health"),
+        60,
+        false,
+    )?;
+    let calendar_ready = wait_for_http(
+        "calendar",
+        &format!("http://127.0.0.1:{calendar_port}/health"),
+        60,
+        false,
+    )?;
+    let tmdb_ready = wait_for_http(
+        "tmdb-agent",
+        &format!("http://127.0.0.1:{tmdb_port}/health"),
+        60,
+        false,
+    )?;
+    let youtube_ready = wait_for_http(
+        "youtube-agent",
+        &format!("http://127.0.0.1:{youtube_port}/health"),
+        60,
+        false,
+    )?;
+    let transcription_ready = wait_for_http(
+        "transcription-agent",
+        &format!("http://127.0.0.1:{transcription_port}/health"),
+        60,
+        false,
+    )?;
+    let servers_agent_ready = if enable_servers_agent {
+        wait_for_http(
+            "servers-agent",
+            &format!("http://127.0.0.1:{servers_agent_port}/health"),
+            60,
+            false,
+        )?
+    } else {
+        true
+    };
+    let ui_ready = wait_for_http(
+        "ui-login",
+        &format!("https://127.0.0.1:{ui_port}/login"),
+        60,
+        true,
+    )?;
+
+    if backend_ready
+        && calendar_ready
+        && tmdb_ready
+        && youtube_ready
+        && transcription_ready
+        && servers_agent_ready
+        && ui_ready
+    {
+        println!("[rustfin-installer] Native systemd runtime validation passed.");
+        return Ok(());
+    }
+
+    bail!(
+        "Native systemd runtime validation failed.\n{}",
+        collect_systemd_start_diagnostics(config, user_context)
+    )
+}
+
+fn wait_for_root_command_success(
+    program: &str,
+    args: &[&str],
+    attempts: usize,
+    user_context: &NativeUserContext,
+) -> anyhow::Result<()> {
+    for _ in 0..attempts {
+        let status = run_root_command_allow_failure(program, args, user_context)?;
+        if status.success() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    bail!(
+        "{program} {} did not report success in time",
+        args.join(" ")
+    );
+}
+
+fn collect_systemd_start_diagnostics(
+    config: &SystemdInstallConfig,
+    user_context: &NativeUserContext,
+) -> String {
+    let mut output = String::new();
+
+    append_root_command_output(
+        &mut output,
+        "main-service-status",
+        "systemctl",
+        &[
+            "status",
+            config.main_service_name.as_str(),
+            "--no-pager",
+            "-l",
+        ],
+        user_context,
+    );
+    append_root_command_output(
+        &mut output,
+        "servers-agent-status",
+        "systemctl",
+        &[
+            "status",
+            config.agent_service_name.as_str(),
+            "--no-pager",
+            "-l",
+        ],
+        user_context,
+    );
+    append_root_command_output(
+        &mut output,
+        "post-healthcheck-status",
+        "systemctl",
+        &[
+            "status",
+            config.post_healthcheck_service_name.as_str(),
+            "--no-pager",
+            "-l",
+        ],
+        user_context,
+    );
+    append_log_tail(
+        &mut output,
+        "rustyfin-native-systemd.log",
+        &config.log_dir.join("rustyfin-native-systemd.log"),
+        80,
+    );
+    append_log_tail(
+        &mut output,
+        "rustfin.log",
+        &config.log_dir.join("rustfin.log"),
+        60,
+    );
+    append_log_tail(
+        &mut output,
+        "rustfin-ui.log",
+        &config.log_dir.join("rustfin-ui.log"),
+        60,
+    );
+
+    output
+}
+
+fn append_root_command_output(
+    output: &mut String,
+    label: &str,
+    program: &str,
+    args: &[&str],
+    user_context: &NativeUserContext,
+) {
+    output.push_str(&format!("== {label} ==\n"));
+    match run_root_command_capture(program, args, user_context) {
+        Ok(contents) => output.push_str(contents.trim()),
+        Err(error) => output.push_str(&format!("failed to capture {label}: {error}")),
+    }
+    output.push_str("\n\n");
+}
+
+fn append_log_tail(output: &mut String, label: &str, path: &Path, max_lines: usize) {
+    output.push_str(&format!("== {label} ==\n"));
+    match tail_file(path, max_lines) {
+        Some(contents) => output.push_str(contents.trim()),
+        None => output.push_str("(log unavailable)"),
+    }
+    output.push_str("\n\n");
+}
+
+fn tail_file(path: &Path, max_lines: usize) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = raw.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    Some(lines[start..].join("\n"))
+}
+
 fn render_servers_agent_env(token: &str, user_context: &NativeUserContext) -> String {
     format!(
         "RUSTFIN_SERVERS_AGENT_BIND={SERVERS_AGENT_BIND}\n\
@@ -3482,6 +3696,49 @@ fn run_root_command_allow_failure(
         .args(args)
         .status()
         .with_context(|| format!("failed to execute {program} {}", args.join(" ")))
+}
+
+fn run_root_command_capture(
+    program: &str,
+    args: &[&str],
+    user_context: &NativeUserContext,
+) -> anyhow::Result<String> {
+    let output = if user_context.uses_sudo_for_privileged_steps {
+        ensure_command_available("sudo")?;
+        Command::new("sudo")
+            .arg(program)
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to execute sudo {program} {}", args.join(" ")))?
+    } else {
+        Command::new(program)
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to execute {program} {}", args.join(" ")))?
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut combined = String::new();
+    if !stdout.trim().is_empty() {
+        combined.push_str(stdout.trim());
+    }
+    if !stderr.trim().is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(stderr.trim());
+    }
+    if !output.status.success() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&format!(
+            "(command exited with status {:?})",
+            output.status.code()
+        ));
+    }
+    Ok(combined)
 }
 
 fn run_postgres_command(
