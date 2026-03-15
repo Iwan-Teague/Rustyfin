@@ -5,6 +5,7 @@ members = [
     "crates/calendar",
     "crates/core",
     "crates/db",
+    "crates/installer",
     "crates/metadata",
     "crates/rustyvault",
     "crates/scanner",

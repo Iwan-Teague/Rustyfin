@@ -8,13 +8,14 @@ Rustyfin is a native-Debian-first local media platform with:
 
 - Rust backend (`crates/server`, Axum + PostgreSQL)
 - Rust product crate (`crates/rustyvault`) for RustyVault-owned logic, shared types, and packaging
+- Rust installer crate (`crates/installer`) for Rust-first Linux install orchestration
 - Rust microservices (`crates/calendar`, `crates/tmdb-agent`, `crates/youtube-agent`, `crates/transcription-agent`, `crates/servers-agent`)
 - Next.js frontend (`ui`)
 - Product-scoped frontend feature module (`ui/src/features/rustyvault`) for the Vault surface
 - Browser extension MVP (`extensions/rustyvault-webext`)
   - downloadable from the host Downloads page via `/api/v1/downloads/artifacts/rustyvault-webext/package`
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`, `crates/servers-host`)
-- A `Servers` product area for native game-server management, currently focused on Minecraft on Debian 12 through `systemd`
+- A `Servers` product area for native game-server management, currently focused on Minecraft on supported Debian hosts through `systemd`
 - A `Vault` product area for client-side encrypted password storage, web management, and browser-extension pairing/autofill
   - implementation ownership is being moved behind RustyVault host adapters so Rustyfin keeps only the host-facing mount points
   - shared Rust types now live in `crates/rustyvault/src/types.rs`
@@ -34,8 +35,10 @@ Rustyfin is a native-Debian-first local media platform with:
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages
 - An `AI` product area for the `/ai` assistant surface backed by `crates/ai-agent`
-  - native host builds must not assume CUDA is present; default to a CPU-safe AI backend unless the host or env explicitly selects `cuda`, `rocm`, or `vulkan`
-  - use `RUSTFIN_AI_GPU_BACKEND=auto|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
+  - native host builds must not assume CUDA is present; use a host-safe backend selection path and allow AI to be disabled when the host cannot support inference cleanly
+  - use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
+  - keep model download/delete/storage-folder management admin-only in the Admin `AI` tab; do not reintroduce end-user model installation controls on `/ai`
+  - AI model storage resolves from the `ai_model_dir` DB setting first, then `RUSTFIN_AI_MODEL_DIR`, then `/var/lib/rustyfin/ai/models`
 
 ## Core Rules
 
@@ -61,7 +64,7 @@ Rustyfin is a native-Debian-first local media platform with:
 5. Script Platform Policy
 - Runtime and operational scripts are POSIX shell (`.sh`) only.
 - Do not add or reintroduce PowerShell (`.ps1`) variants.
-- The supported runtime target is native Debian 12. Do not add new macOS, Windows, or container runtime paths.
+- The supported runtime target is native Debian 12 and Debian 13. Do not add new macOS, Windows, or container runtime paths.
 
 6. UI Animation Consistency (mandatory)
 - Save/Create/primary actions:
@@ -78,6 +81,7 @@ Rustyfin is a native-Debian-first local media platform with:
 
 - Start runtime: `./scripts/start.sh`
 - Stop runtime: `./scripts/stop.sh`
+- Preferred Linux bootstrap installer: `./scripts/install_linux.sh`
 - Start native Debian runtime directly: `./scripts/start-native.sh`
 - Deploy/update native Debian runtime: `./scripts/deploy-native.sh`
 - Stop native Debian runtime directly: `./scripts/stop-native.sh`
@@ -87,19 +91,27 @@ Rustyfin is a native-Debian-first local media platform with:
 
 Runtime behavior:
 
+- `install_linux.sh` is the preferred public installer entrypoint:
+  - installs minimal Rust bootstrap dependencies for the detected Linux package manager
+  - installs Rust via `rustup` when needed
+  - hands off to `cargo run -p rustfin-installer`
+  - the current full install flow behind `rustfin-installer` is implemented for Debian 12 and Debian 13
+  - `rustfin-installer` now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, and install-manifest output
+  - public native shell scripts are now compatibility wrappers around installer subcommands
 - `start.sh` is a compatibility wrapper around `start-native.sh`
   - legacy Docker-era flags passed to `start.sh` are ignored for backward compatibility before delegating to native startup
 - `stop.sh` is a compatibility wrapper around `stop-native.sh`
 - `start-native.sh` is the supported production and development runtime path:
-  - builds Rust services directly on the Debian host
-  - builds the Next.js UI directly on the host
-  - runs PostgreSQL, Caddy, Node, and Rust services natively
+  - loads the native env/default layers and drives the native runtime flow
+  - consumes `rustfin-installer` for runtime planning, runtime snapshot persistence, native runtime artifact builds, and native runtime launch/health orchestration
   - writes logs and pid files under `.tmp/native-runtime/`
   - supports `--build-only` for artifact refreshes without launching
-- After the first successful native build on Debian 12, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot
+- `stop-native.sh`, `install_native_systemd.sh`, and `clean_install.sh` are compatibility wrappers around `rustfin-installer` subcommands
+- After the first successful native build on a supported Debian host, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot
   - this also installs a dedicated root-run `rustfin-servers-agent.service` for privileged Minecraft host operations
 - After native `systemd` services are installed, use `./scripts/deploy-native.sh` for updates
-  - it stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
+  - it is now a compatibility wrapper around `rustfin-installer deploy-native`
+  - the Rust deploy path stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
 - `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
   - the supervisor keeps the native child-process set under `systemd` observation
   - if a core child process dies, the service exits and `systemd` restarts the stack
@@ -107,7 +119,7 @@ Runtime behavior:
   - it verifies backend/UI/agent readiness after startup
   - it performs one native-service restart if the host boots half-ready
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
-- On Linux hosts, use `RUSTFIN_AI_GPU_BACKEND` to control the AI inference backend (`auto`, `cpu`, `cuda`, `rocm`, `vulkan`)
+- On Linux hosts, use `RUSTFIN_AI_GPU_BACKEND` to control the AI inference backend (`auto`, `disabled`, `cpu`, `cuda`, `rocm`, `vulkan`)
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
   - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default
@@ -167,4 +179,4 @@ Current documentation authority, in order:
 - `/Users/iwanteague/Desktop/Rustyfin/docs/README.md`
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
 
-Older reports, plans, and trackers under `/Users/iwanteague/Desktop/Rustyfin/docs/` may remain useful context, but they are not the source of truth for current runtime behavior unless they are explicitly marked as current.
+When older docs stop matching the current code or runtime model, remove them instead of keeping in-repo archival copies.

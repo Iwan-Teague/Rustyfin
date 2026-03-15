@@ -1,10 +1,11 @@
-# Rustyfin Native Debian 12 Runtime
+# Rustyfin Native Debian Runtime
 
 This is the current operational runtime model for Rustyfin.
 
 ## Supported Environment
 
 - Debian 12 (Bookworm)
+- Debian 13 (Trixie)
 - headless or minimal install
 - `systemd`
 - PostgreSQL installed on the host
@@ -36,16 +37,21 @@ For Minecraft server management, privileged host operations are handled by `rust
 From the repository root:
 
 ```bash
+./scripts/install_linux.sh
+```
+
+This is the preferred one-shot entrypoint. It bootstraps Rust if needed and then hands off to the Rust installer (`cargo run -p rustfin-installer`), which currently drives the supported Debian native install flow.
+At this stage, the Rust installer owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, and install-manifest output.
+The public native shell scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
+
+Manual Debian-native path:
+
+```bash
 ./scripts/install_native_debian.sh
 ./scripts/start-native.sh
 ```
 
-That path:
-
-- installs and checks host dependencies
-- builds Rust services directly on the Debian host
-- builds the Next.js UI directly on the Debian host
-- launches the native runtime
+That path now loads the native env/default layers in shell and hands artifact build plus launch/health orchestration to the Rust installer.
 
 ## Boot Persistence
 
@@ -102,6 +108,7 @@ Deploy/update on a Debian host:
 ```
 
 Use `deploy-native.sh` for updates instead of a raw `systemctl restart`, because deploy rebuilds artifacts before restart.
+`deploy-native.sh` is now a compatibility wrapper around `rustfin-installer deploy-native`.
 
 Operational expectation:
 
@@ -115,7 +122,7 @@ Post-update quality gate:
 ./scripts/ci/debian_native_gates.sh
 ```
 
-This is the main Debian 12 confidence sweep. It checks:
+This is the main supported-Debian confidence sweep. It checks:
 
 - host/runtime assumptions
 - Rust formatting, lint, and targeted crate tests
@@ -182,6 +189,39 @@ Important subpaths:
 Runtime environment snapshot:
 
 - `/Users/iwanteague/Desktop/Rustyfin/.rustyfin.runtime.env`
+
+Installer-owned native runtime defaults:
+
+- `/etc/rustyfin/native-runtime.defaults.sh`
+
+Installer-driven runtime planner:
+
+- `./scripts/rustfin-installer.sh plan-native-runtime`
+
+Installer-driven native artifact build:
+
+- `./scripts/rustfin-installer.sh build-native-runtime-artifacts`
+
+Installer-driven native runtime launch:
+
+- `./scripts/rustfin-installer.sh launch-native-runtime`
+
+Installer-driven native runtime stop/reset:
+
+- `./scripts/rustfin-installer.sh stop-native-runtime`
+- `./scripts/rustfin-installer.sh clean-native-runtime`
+
+Installer-driven deploy entrypoint:
+
+- `./scripts/rustfin-installer.sh deploy-native`
+
+Installer-driven native systemd install/refresh:
+
+- `./scripts/rustfin-installer.sh install-native-systemd`
+
+Installer-driven runtime snapshot writer:
+
+- `./scripts/rustfin-installer.sh write-native-runtime-snapshot`
 
 ## Database
 

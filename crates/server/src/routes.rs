@@ -9,7 +9,7 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 #[cfg(not(feature = "rustyvault"))]
 use axum::routing::any;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
@@ -370,6 +370,18 @@ fn api_router(state: AppState) -> Router<AppState> {
         .route("/system/pick-directory", post(pick_directory))
         .route("/system/gpu", get(get_gpu_caps))
         .route("/system/tmdb", get(get_tmdb_config).put(update_tmdb_config))
+        .route(
+            "/system/ai",
+            get(crate::ai_admin::get_ai_admin_state).put(crate::ai_admin::update_ai_admin_config),
+        )
+        .route(
+            "/system/ai/models/pull",
+            post(crate::ai_admin::pull_ai_model),
+        )
+        .route(
+            "/system/ai/models/{name}",
+            delete(crate::ai_admin::delete_ai_model),
+        )
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
@@ -5354,7 +5366,9 @@ mod tests {
             transcription_agent_token: None,
             servers_agent_url: None,
             servers_agent_token: None,
-            model_dir: PathBuf::from("/tmp/rustfin-ai-models-test"),
+            model_dir: Arc::new(tokio::sync::RwLock::new(PathBuf::from(
+                "/tmp/rustfin-ai-models-test",
+            ))),
             engine: Arc::new(tokio::sync::Mutex::new(crate::ai::EngineState::default())),
             transcoder,
             ffmpeg_path,

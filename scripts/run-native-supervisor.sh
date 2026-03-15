@@ -22,6 +22,43 @@ cleanup() {
   "$REPO_ROOT/scripts/stop-native.sh" >/dev/null 2>&1 || true
 }
 
+pid_matches_service() {
+  local service="$1"
+  local pid="$2"
+  local cmdline
+
+  [[ -n "$pid" && "$pid" =~ ^[0-9]+$ && -r "/proc/${pid}/cmdline" ]] || return 1
+  cmdline="$(tr '\000' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+  [[ -n "$cmdline" ]] || return 1
+
+  case "$service" in
+    rustfin) [[ "$cmdline" == *"rustfin-server"* ]] ;;
+    rustfin-calendar) [[ "$cmdline" == *"rustfin-calendar"* ]] ;;
+    rustfin-tmdb-agent) [[ "$cmdline" == *"rustfin-tmdb-agent"* ]] ;;
+    rustfin-youtube-agent) [[ "$cmdline" == *"rustfin-youtube-agent"* ]] ;;
+    rustfin-transcription-agent) [[ "$cmdline" == *"rustfin-transcription-agent"* ]] ;;
+    rustfin-servers-agent) [[ "$cmdline" == *"rustfin-servers-agent"* ]] ;;
+    rustfin-ui) [[ "$cmdline" == *"next-server"* || ( "$cmdline" == *"node"* && "$cmdline" == *"server.js"* ) ]] ;;
+    rustfin-edge) [[ "$cmdline" == *"caddy"* && "$cmdline" == *"Caddyfile.native"* ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+find_service_pid() {
+  local service="$1"
+  local pid cmdline
+
+  while read -r pid cmdline; do
+    [[ -n "$pid" ]] || continue
+    if pid_matches_service "$service" "$pid"; then
+      printf '%s\n' "$pid"
+      return 0
+    fi
+  done < <(ps -eo pid=,args=)
+
+  return 1
+}
+
 trap cleanup EXIT INT TERM
 
 required_services=(
@@ -47,7 +84,14 @@ while true; do
       die "Missing pid file for ${service}: ${pidfile}"
     fi
     pid="$(cat "$pidfile" 2>/dev/null || true)"
-    if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ || ! -d "/proc/${pid}" ]]; then
+    if ! pid_matches_service "$service" "$pid"; then
+      replacement_pid="$(find_service_pid "$service" || true)"
+      if [[ -n "$replacement_pid" ]]; then
+        printf '%s' "$replacement_pid" > "$pidfile"
+        pid="$replacement_pid"
+      fi
+    fi
+    if ! pid_matches_service "$service" "$pid"; then
       die "Service ${service} is not running (pid=${pid:-missing})"
     fi
   done

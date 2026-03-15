@@ -4,9 +4,7 @@ Date: 2026-03-13
 
 Status: current-state architecture and planning baseline
 
-Baseline commit: `04938fa`
-
-Primary runtime target: native Debian 12 only
+Primary runtime target: native Debian 12 and Debian 13
 
 ## 1. Purpose
 
@@ -46,7 +44,7 @@ This baseline was assembled from the current authoritative repo sources and dire
 
 ## 3. Executive Summary
 
-Rustyfin is a native Debian 12 first home-server platform that combines media streaming, synchronized shared rooms, text and voice channels, calendar planning, Minecraft server management, and a client-side encrypted vault.
+Rustyfin is a native Debian-first home-server platform that combines media streaming, synchronized shared rooms, text and voice channels, calendar planning, Minecraft server management, and a client-side encrypted vault.
 
 The current system architecture is:
 
@@ -59,8 +57,9 @@ The current system architecture is:
 
 The most important current architectural truths are:
 
-- Rustyfin is no longer a Docker-first or cross-platform runtime; Debian 12 is the supported host
+- Rustyfin is no longer a Docker-first or cross-platform runtime; supported Debian hosts are the supported base
 - the platform is split into a main host backend plus focused service processes
+- AI is a built-in product area with a chat-focused `/ai` surface and admin-only model management
 - vault functionality is in a migration state toward a more isolated `RustyVault` boundary while still being presented to users as the `Vault` page
 - Minecraft server management is implemented as a privileged host-agent pattern rather than as an in-process backend feature
 - testing and operations are organized around native Debian gates, Playwright smoke coverage, and direct host-process health checks
@@ -98,6 +97,7 @@ The current Rustyfin product surface includes:
 - channels with text, attachments, voice, and transcription
 - calendar
 - servers / Minecraft management
+- AI assistant
 - vault / RustyVault
 - downloads page
 - admin
@@ -109,6 +109,7 @@ The current main navigation confirms these user-facing areas:
 - Rooms
 - Network
 - Servers
+- AI
 - Calendar
 - Libraries
 - Vault
@@ -140,7 +141,7 @@ The repository and runtime rules make the following current decisions effectivel
 
 - Rust-first backend and systems integration
 - PostgreSQL-only runtime database
-- native Debian 12 runtime only
+- native Debian runtime only
 - POSIX shell operational scripting only
 - server-side authorization as the real control plane
 - frontend checks are UX, not trust boundaries
@@ -204,6 +205,7 @@ Current deployment is source-based, on-host, and rebuild-driven:
 
 This is implemented through:
 
+- `scripts/install_linux.sh`
 - `scripts/start-native.sh`
 - `scripts/deploy-native.sh`
 - `scripts/install_native_systemd.sh`
@@ -216,6 +218,8 @@ This is implemented through:
 | --- | --- |
 | `crates/core` | shared domain types, errors, common contracts |
 | `crates/db` | PostgreSQL migrations and repository layer |
+| `crates/ai-agent` | in-process AI inference engine and chat primitives |
+| `crates/installer` | Rust-first Linux installer orchestration |
 | `crates/server` | main Rust host backend |
 | `crates/calendar` | calendar service |
 | `crates/metadata` | metadata merge/provider logic |
@@ -226,20 +230,16 @@ This is implemented through:
 | `crates/transcription-agent` | transcription service |
 | `crates/servers-host` | host-level Minecraft management logic |
 | `crates/servers-agent` | privileged system-facing Minecraft agent |
+| `crates/rustyvault` | RustyVault product logic, shared types, and extension packaging |
 
-### 9.2 Notable Additional Crate
-
-| Crate | Current Status |
-| --- | --- |
-| `crates/rustyvault` | present in repo and consumed by `crates/server` as an optional feature dependency; not listed as a top-level workspace member in the current root `Cargo.toml` |
-
-### 9.3 Frontend Structure
+### 9.2 Frontend Structure
 
 The UI uses the Next.js App Router under `ui/src/app/`.
 
 Current top-level routes include:
 
 - `/`
+- `/ai`
 - `/login`
 - `/setup`
 - `/account`
@@ -254,7 +254,7 @@ Current top-level routes include:
 - `/vault`
 - `/runtime-config`
 
-### 9.4 Frontend Feature Boundary Note
+### 9.3 Frontend Feature Boundary Note
 
 Vault is no longer implemented directly in the route file. The host route:
 
@@ -266,7 +266,7 @@ is now a thin adapter over:
 
 This is architecturally important because it reflects an explicit host/feature split rather than a generic page-local implementation.
 
-### 9.5 Browser Extension
+### 9.4 Browser Extension
 
 The current extension distribution directory is:
 
@@ -286,7 +286,7 @@ The extension is served to users through the vault/download flows rather than th
 
 | Service | Binary/Entry | Primary Responsibility | Main Dependencies |
 | --- | --- | --- | --- |
-| Rustfin host backend | `crates/server` | auth, users, libraries, playback, watch-party, channels, admin, vault mount, system APIs | PostgreSQL, agents, ffmpeg/ffprobe |
+| Rustfin host backend | `crates/server` | auth, users, libraries, playback, watch-party, channels, AI routes, admin, vault mount, system APIs | PostgreSQL, agents, ffmpeg/ffprobe, `crates/ai-agent` |
 | Calendar | `crates/calendar` | calendar event APIs and user availability data | PostgreSQL, host auth context |
 | TMDB agent | `crates/tmdb-agent` | media enrichment and artwork/metadata tasks | TMDB API, scanner/metadata/db |
 | YouTube agent | `crates/youtube-agent` | online audio download/search pipeline | external media sources, yt/ytdl stack |
@@ -306,6 +306,7 @@ Representative host API families mounted under `/api/v1` include:
 | setup | `/setup/*` | first-run ownership claim and server bootstrap |
 | auth/users | `/auth/login`, `/users`, `/users/me` | login, user CRUD, self-service profile |
 | preferences/activity | `/users/me/preferences`, `/users/me/activity/*` | account settings and browser activity |
+| AI | `/ai/models`, `/ai/chat`, `/system/ai`, `/system/ai/models/*` | chat surface plus admin-only model management |
 | libraries | `/libraries`, `/libraries/{id}`, `/libraries/{id}/scan` | library management and scans |
 | items | `/items/{id}`, `/items/{id}/playback`, `/items/{id}/providers` | media item retrieval and enrichment |
 | playback | `/playback/*` | sessions, progress, downloads, continue watching |
@@ -556,6 +557,7 @@ Current repo modules in `crates/db/src/repo/` show the active data domains:
 Operational runtime state is written under:
 
 - `.tmp/native-runtime/`
+- `/etc/rustyfin/native-runtime.defaults.sh`
 - `.rustyfin.runtime.env`
 
 This is important because Rustyfin relies on local host state and logs rather than external orchestration metadata.
@@ -602,14 +604,21 @@ This is one of the clearest security boundary decisions in the system.
 
 | Script | Purpose |
 | --- | --- |
-| `scripts/start-native.sh` | build and/or start the native runtime |
+| `scripts/install_linux.sh` | Linux bootstrap installer that installs Rust if needed and hands off to `rustfin-installer` |
+| `scripts/start-native.sh` | compatibility wrapper that loads env/default layers, plans the runtime, builds artifacts, and hands launch/health to `rustfin-installer` |
 | `scripts/deploy-native.sh` | stop, rebuild, and restart the current branch on Debian |
 | `scripts/install_native_debian.sh` | host prerequisite installation |
-| `scripts/install_native_systemd.sh` | install persistent native systemd units |
-| `scripts/stop-native.sh` | stop native runtime |
-| `scripts/clean_install.sh` | reset runtime and DB contents |
+| `scripts/install_native_systemd.sh` | compatibility wrapper for Rust-owned native systemd install/refresh |
+| `scripts/stop-native.sh` | compatibility wrapper for Rust-owned native stop |
+| `scripts/clean_install.sh` | interactive confirmation wrapper for Rust-owned native reset |
 | `scripts/ci/debian_native_gates.sh` | Debian confidence sweep |
 | `scripts/ci/debian_browser_smoke.sh` | isolated Playwright browser smoke against Debian runtime DB |
+
+Current installer ownership split:
+
+- `scripts/install_linux.sh` handles Linux bootstrap and Rust handoff
+- `crates/installer` handles Debian prerequisite installation, native-user detection, native-user Rust provisioning, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults, native runtime planning, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct systemd install/refresh, and install-manifest output
+- Native build/start still reuse the existing shell scripts
 
 ### 16.2 Runtime Health Pattern
 
@@ -683,7 +692,7 @@ It should not be treated as greenfield, but it also should not be assumed to be 
 
 ### 19.1 Constraints
 
-- Debian 12 runtime only
+- Debian runtime only
 - no Docker runtime
 - no Windows runtime
 - no macOS runtime
@@ -768,7 +777,7 @@ graph TD
 
 | ID | Dependency | Type | Why It Matters |
 | --- | --- | --- | --- |
-| `D-01` | Debian 12 host | runtime | supported operating base |
+| `D-01` | Debian 12 or Debian 13 host | runtime | supported operating base |
 | `D-02` | PostgreSQL | runtime | sole supported DB |
 | `D-03` | Caddy | runtime | HTTPS edge termination |
 | `D-04` | Rust toolchain | build/runtime | native host builds |
@@ -867,7 +876,7 @@ This document should be considered successful if it allows a new technical stake
 
 ## 26. Conclusion
 
-Rustyfin is already a substantial multi-domain platform, not a single-purpose media app. The present architecture is opinionated, host-native, Rust-heavy, and operationally centered on Debian 12.
+Rustyfin is already a substantial multi-domain platform, not a single-purpose media app. The present architecture is opinionated, host-native, Rust-heavy, and operationally centered on supported Debian hosts.
 
 The immediate planning implication is that any future roadmap should treat Rustyfin as a coordinated program with at least seven major workstreams:
 

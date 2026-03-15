@@ -17,7 +17,7 @@ usage() {
 Usage:
   ./scripts/install_native_debian.sh
 
-Installs Debian 12 native host prerequisites for Rustyfin:
+Installs supported Debian native host prerequisites for Rustyfin:
 - PostgreSQL
 - Caddy
 - Rust toolchain
@@ -43,7 +43,10 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC1091
 source /etc/os-release
 [[ "${ID:-}" == "debian" ]] || die "This installer targets Debian only."
-[[ "${VERSION_ID:-}" == "12" ]] || die "This installer targets Debian 12 (bookworm)."
+case "${VERSION_ID:-}" in
+  12|13) ;;
+  *) die "This installer targets Debian 12 and Debian 13." ;;
+esac
 
 if [[ "$(id -u)" -eq 0 ]]; then
   RUN_ROOT=()
@@ -115,7 +118,7 @@ install_managed_java_21() {
   success "Managed Java 21 installed at ${RUSTFIN_MANAGED_JAVA_CURRENT}"
 }
 
-info "Installing Debian 12 native runtime dependencies..."
+info "Installing supported Debian native runtime dependencies..."
 "${RUN_ROOT[@]}" apt-get update
 "${RUN_ROOT[@]}" apt-get install -y \
   build-essential \
@@ -143,6 +146,7 @@ info "Installing Debian 12 native runtime dependencies..."
   pkg-config \
   postgresql \
   postgresql-client \
+  sudo \
   default-jre-headless \
   python3 \
   python3-pip \
@@ -211,7 +215,7 @@ if [[ -x "${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java" ]]; then
   success "Rustyfin Minecraft default Java runtime: ${RUSTFIN_MANAGED_JAVA_CURRENT}/bin/java"
 fi
 
-success "Debian 12 native host prerequisites are installed."
+success "Supported Debian native host prerequisites are installed."
 success "Next steps:"
 echo "  1. source ${RUSTFIN_NATIVE_USER_HOME}/.cargo/env"
 echo "  2. ./scripts/start-native.sh"

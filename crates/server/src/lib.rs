@@ -5,6 +5,10 @@
 )]
 pub mod account_prefs;
 pub mod ai;
+pub mod ai_admin;
+#[cfg(feature = "ai")]
+pub mod ai_enabled;
+pub mod ai_storage;
 pub mod artwork;
 pub mod audit_log;
 pub mod auth;

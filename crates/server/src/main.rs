@@ -303,10 +303,17 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let model_dir = std::env::var("RUSTFIN_AI_MODEL_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/rustyfin/models"));
-    let _ = std::fs::create_dir_all(&model_dir);
+    let (model_dir, model_dir_source) = rustfin_server::ai_storage::resolve_model_dir(&pool)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.0.to_string()))?;
+    if let Err(error) = std::fs::create_dir_all(&model_dir) {
+        warn!(
+            path = %model_dir.display(),
+            source = %model_dir_source,
+            error = %error,
+            "failed to create AI model directory during startup; continuing with configured path"
+        );
+    }
 
     // Transcoder config
     let transcode_dir = std::env::var("RUSTFIN_TRANSCODE_DIR")
@@ -497,7 +504,7 @@ async fn main() -> anyhow::Result<()> {
         transcription_agent_token,
         servers_agent_url,
         servers_agent_token,
-        model_dir,
+        model_dir: std::sync::Arc::new(tokio::sync::RwLock::new(model_dir)),
         engine: std::sync::Arc::new(tokio::sync::Mutex::new(
             rustfin_server::ai::EngineState::default(),
         )),

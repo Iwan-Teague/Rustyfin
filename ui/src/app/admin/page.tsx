@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson } from '@/lib/api';
+import {
+  deleteAiModel,
+  fetchAiAdminState,
+  pullAiModelFromUrl,
+  type AiAdminState,
+  type AdminAiPullEvent,
+  updateAiModelDir,
+} from '@/lib/aiAdminApi';
 import { useAuth } from '@/lib/auth';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
@@ -231,6 +239,7 @@ type AdminTab =
   | 'libraries'
   | 'channels'
   | 'rooms'
+  | 'ai'
   | 'server_logs'
   | 'logs'
   | 'vault_audit'
@@ -249,11 +258,20 @@ interface PendingRoomEndAction {
   label: string;
 }
 
+interface AiModelPullState {
+  status: string;
+  percent: number;
+  active: boolean;
+  done: boolean;
+  error: string | null;
+}
+
 const ADMIN_TABS: { key: AdminTab; label: string }[] = [
   { key: 'users', label: 'Users' },
   { key: 'libraries', label: 'Libraries' },
   { key: 'channels', label: 'Channels' },
   { key: 'rooms', label: 'Rooms' },
+  { key: 'ai', label: 'AI' },
   { key: 'server_logs', label: 'Server Logs' },
   { key: 'logs', label: 'Logs' },
   { key: 'vault_audit', label: 'Vault Audit' },
@@ -383,6 +401,13 @@ export default function AdminPage() {
   const [vaultAuditEvents, setVaultAuditEvents] = useState<RustyVaultAuditEventResponse[]>([]);
   const [vaultAuditLoading, setVaultAuditLoading] = useState(false);
   const [vaultAuditError, setVaultAuditError] = useState('');
+  const [aiAdminState, setAiAdminState] = useState<AiAdminState | null>(null);
+  const [aiAdminLoading, setAiAdminLoading] = useState(false);
+  const [aiModelDirInput, setAiModelDirInput] = useState('');
+  const [savingAiModelDir, setSavingAiModelDir] = useState(false);
+  const [aiModelPullUrl, setAiModelPullUrl] = useState('');
+  const [aiModelPullState, setAiModelPullState] = useState<AiModelPullState | null>(null);
+  const [aiDeletingModel, setAiDeletingModel] = useState<string | null>(null);
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
     null,
   );
@@ -429,6 +454,7 @@ export default function AdminPage() {
   const [hostDirBrowserTargetLibraryId, setHostDirBrowserTargetLibraryId] = useState<
     string | null
   >(null);
+  const [hostDirBrowserTargetAiModelDir, setHostDirBrowserTargetAiModelDir] = useState(false);
   const [tmdbConfig, setTmdbConfig] = useState<TmdbConfig>({
     configured: false,
     key_preview: null,
@@ -443,6 +469,7 @@ export default function AdminPage() {
   const usersRef = useRef<UserAccount[]>([]);
   const channelsRef = useRef<ChannelRecord[]>([]);
   const roomsRef = useRef<RoomRecord[]>([]);
+  const aiModelPullStopRef = useRef<(() => void) | null>(null);
 
   function sameLibraryIds(a: string[], b: string[]): boolean {
     if (a.length !== b.length) return false;
@@ -667,6 +694,20 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadAiAdmin = useCallback(async () => {
+    try {
+      setAiAdminLoading(true);
+      const state = await fetchAiAdminState();
+      setAiAdminState(state);
+      setAiModelDirInput(state.model_dir);
+    } catch (err: unknown) {
+      setAiAdminState(null);
+      setErr(clientErrorMessage(err, 'Failed to load AI admin state'));
+    } finally {
+      setAiAdminLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (me?.role === 'admin') {
       void loadData();
@@ -679,6 +720,13 @@ export default function AdminPage() {
     }
     void loadVaultAudit();
   }, [activeTab, loadVaultAudit, me]);
+
+  useEffect(() => {
+    if (me?.role !== 'admin' || activeTab !== 'ai') {
+      return;
+    }
+    void loadAiAdmin();
+  }, [activeTab, loadAiAdmin, me]);
 
   useEffect(() => {
     if (me?.role !== 'admin' || activeTab !== 'server_logs' || !selectedMinecraftServerId) {
@@ -990,11 +1038,17 @@ export default function AdminPage() {
     setHostDirBrowserLoading(false);
     setHostDirBrowserError('');
     setHostDirBrowserTargetLibraryId(null);
+    setHostDirBrowserTargetAiModelDir(false);
   }
 
-  function openHostDirectoryBrowser(targetLibraryId: string | null, initialPath?: string) {
+  function openHostDirectoryBrowser(
+    targetLibraryId: string | null,
+    initialPath?: string,
+    options?: { aiModelDir?: boolean },
+  ) {
     setHostDirBrowserOpen(true);
     setHostDirBrowserTargetLibraryId(targetLibraryId);
+    setHostDirBrowserTargetAiModelDir(Boolean(options?.aiModelDir));
     setHostDirBrowserError('');
     setHostDirBrowserLoading(true);
     void fetchHostDirectories(initialPath)
@@ -1043,12 +1097,18 @@ export default function AdminPage() {
     openHostDirectoryBrowser(libraryId, editPath || existingPath || '');
   }
 
+  function browseAiModelDirectory() {
+    openHostDirectoryBrowser(null, aiModelDirInput, { aiModelDir: true });
+  }
+
   function confirmHostDirectorySelection() {
     if (!hostDirBrowserCurrentPath.trim()) {
       setHostDirBrowserError('No directory selected');
       return;
     }
-    if (hostDirBrowserTargetLibraryId) {
+    if (hostDirBrowserTargetAiModelDir) {
+      setAiModelDirInput(hostDirBrowserCurrentPath);
+    } else if (hostDirBrowserTargetLibraryId) {
       setLibraryEdit(hostDirBrowserTargetLibraryId, 'path', hostDirBrowserCurrentPath);
     } else {
       setNewLib((prev) => ({ ...prev, path: hostDirBrowserCurrentPath }));
@@ -1497,6 +1557,113 @@ export default function AdminPage() {
       setErr(clientErrorMessage(err, 'Failed to clear TMDB key'));
     } finally {
       setSavingTmdb(false);
+    }
+  }
+
+  async function saveAiModelDirectory() {
+    setSavingAiModelDir(true);
+    try {
+      const updated = await updateAiModelDir(aiModelDirInput.trim());
+      setAiAdminState(updated);
+      setAiModelDirInput(updated.model_dir);
+      setOk('AI model directory updated');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to save AI model directory'));
+    } finally {
+      setSavingAiModelDir(false);
+    }
+  }
+
+  async function resetAiModelDirectory() {
+    setSavingAiModelDir(true);
+    try {
+      const updated = await updateAiModelDir('');
+      setAiAdminState(updated);
+      setAiModelDirInput(updated.model_dir);
+      setOk('AI model directory reset');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to reset AI model directory'));
+    } finally {
+      setSavingAiModelDir(false);
+    }
+  }
+
+  function pullAiModel() {
+    const url = aiModelPullUrl.trim();
+    if (!url || aiModelPullState?.active) return;
+
+    setAiModelPullState({
+      status: 'Starting…',
+      percent: 0,
+      active: true,
+      done: false,
+      error: null,
+    });
+
+    aiModelPullStopRef.current = pullAiModelFromUrl(
+      url,
+      (event: AdminAiPullEvent) => {
+        if (event.type === 'progress') {
+          setAiModelPullState({
+            status: event.status,
+            percent: event.percent,
+            active: true,
+            done: false,
+            error: null,
+          });
+          return;
+        }
+        if (event.type === 'done') {
+          setAiModelPullState({
+            status: 'Complete',
+            percent: 100,
+            active: false,
+            done: true,
+            error: null,
+          });
+          setAiModelPullUrl('');
+          void loadAiAdmin();
+          return;
+        }
+        setAiModelPullState({
+          status: 'Failed',
+          percent: 0,
+          active: false,
+          done: false,
+          error: event.message,
+        });
+      },
+      () => {
+        setAiModelPullState((current) =>
+          current?.active
+            ? {
+                ...current,
+                active: false,
+                status: 'Cancelled',
+              }
+            : current,
+        );
+      },
+    );
+  }
+
+  function cancelAiModelPull() {
+    if (aiModelPullStopRef.current) {
+      aiModelPullStopRef.current();
+    }
+  }
+
+  async function removeAiModel(name: string) {
+    if (aiDeletingModel) return;
+    setAiDeletingModel(name);
+    try {
+      await deleteAiModel(name);
+      await loadAiAdmin();
+      setOk('AI model removed');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to remove AI model'));
+    } finally {
+      setAiDeletingModel(null);
     }
   }
 
@@ -2413,6 +2580,224 @@ export default function AdminPage() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === 'ai' && (
+        <div className="space-y-6">
+          <section className="panel space-y-4 p-6">
+            <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">AI Models</h2>
+                <p className="text-sm muted">
+                  Manage installed GGUF models and the server-side folder Rustyfin uses for AI
+                  model storage.
+                </p>
+              </div>
+              <span
+                className={`chip ${
+                  aiAdminState?.available
+                    ? 'chip-accent'
+                    : 'border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >
+                {aiAdminState?.available ? 'Inference available' : 'Inference unavailable'}
+              </span>
+            </div>
+
+            {aiAdminLoading && !aiAdminState ? (
+              <p className="text-sm muted">Loading AI configuration…</p>
+            ) : (
+              <>
+                <div className="grid gap-4 xl:grid-cols-[1.2fr,1fr]">
+                  <div className="panel-soft space-y-4 rounded-2xl border border-[var(--border)] p-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold">Model Storage Folder</p>
+                      <p className="text-xs muted">
+                        Current source:{' '}
+                        <span className="font-medium text-[var(--text-main)]">
+                          {aiAdminState ? titleCase(aiAdminState.model_dir_source) : '—'}
+                        </span>
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.12em] muted">
+                        Model Directory
+                      </label>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <input
+                          value={aiModelDirInput}
+                          onChange={(e) => setAiModelDirInput(e.target.value)}
+                          placeholder={aiAdminState?.default_model_dir || '/var/lib/rustyfin/ai/models'}
+                          className="input flex-1 px-3 py-2 text-sm font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={browseAiModelDirectory}
+                          className="btn-secondary px-4 py-2 text-sm"
+                        >
+                          Browse
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void saveAiModelDirectory();
+                        }}
+                        disabled={savingAiModelDir}
+                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                      >
+                        Save folder
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void resetAiModelDirectory();
+                        }}
+                        disabled={savingAiModelDir}
+                        className="btn-ghost px-4 py-2 text-sm disabled:opacity-50"
+                      >
+                        Use default
+                      </button>
+                    </div>
+
+                    <div className="text-xs muted space-y-1">
+                      <p>
+                        Active path:{' '}
+                        <span className="font-mono text-[var(--text-main)]">
+                          {aiAdminState?.model_dir || '—'}
+                        </span>
+                      </p>
+                      <p>
+                        Rustyfin AI default:{' '}
+                        <span className="font-mono text-[var(--text-main)]">
+                          {aiAdminState?.default_model_dir || '/var/lib/rustyfin/ai/models'}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="panel-soft space-y-4 rounded-2xl border border-[var(--border)] p-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold">Download Model From Link</p>
+                      <p className="text-xs muted">
+                        Paste a direct `.gguf` URL. Rustyfin will download it into the active model
+                        folder.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <input
+                        value={aiModelPullUrl}
+                        onChange={(e) => setAiModelPullUrl(e.target.value)}
+                        placeholder="https://…/model.gguf"
+                        className="input w-full px-3 py-2 text-sm"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {aiModelPullState?.active ? (
+                          <button
+                            type="button"
+                            onClick={cancelAiModelPull}
+                            className="btn-danger px-4 py-2 text-sm"
+                          >
+                            Stop download
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={pullAiModel}
+                            disabled={!aiModelPullUrl.trim()}
+                            className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                          >
+                            Download model
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {aiModelPullState && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3 text-xs">
+                          <span className={aiModelPullState.error ? 'text-red-300' : 'muted'}>
+                            {aiModelPullState.error || aiModelPullState.status}
+                          </span>
+                          <span className="font-medium text-[var(--text-main)]">
+                            {aiModelPullState.active ? `${aiModelPullState.percent}%` : ''}
+                            {aiModelPullState.done ? 'Done' : ''}
+                          </span>
+                        </div>
+                        {(aiModelPullState.active || aiModelPullState.done) && (
+                          <div className="rf-progress-track">
+                            <div
+                              className="rf-progress-fill transition-all duration-300"
+                              style={{ width: `${aiModelPullState.percent}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="panel-soft rounded-2xl border border-[var(--border)] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Installed Models</p>
+                      <p className="text-xs muted">
+                        {aiAdminState?.models.length ?? 0} model
+                        {(aiAdminState?.models.length ?? 0) === 1 ? '' : 's'} detected in the
+                        active AI folder.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void loadAiAdmin();
+                      }}
+                      className="btn-ghost px-3 py-1.5 text-sm"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {!aiAdminState || aiAdminState.models.length === 0 ? (
+                    <p className="text-sm muted">No `.gguf` models found in the active folder.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {aiAdminState.models.map((model) => (
+                        <div
+                          key={model.name}
+                          className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-medium">{model.name}</p>
+                            <p className="truncate text-xs muted" title={model.file}>
+                              {model.file}
+                            </p>
+                            <p className="text-xs muted">{(model.size_gb || 0).toFixed(2)} GB</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void removeAiModel(model.name);
+                            }}
+                            disabled={aiDeletingModel === model.name}
+                            className="btn-danger px-3 py-2 text-sm disabled:opacity-50"
+                          >
+                            {aiDeletingModel === model.name ? 'Removing…' : 'Delete'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
         </div>
       )}
 
