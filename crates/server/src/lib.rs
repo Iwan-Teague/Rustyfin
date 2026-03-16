@@ -21,6 +21,7 @@ pub mod error;
 pub mod host_directories;
 pub mod job_status;
 pub mod library_scan;
+pub mod network_diagnostics;
 pub mod routes;
 pub mod runtime_diagnostics;
 pub mod runtime_metrics;

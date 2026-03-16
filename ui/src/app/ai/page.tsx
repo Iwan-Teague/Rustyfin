@@ -315,14 +315,21 @@ function EmptyState({
 }) {
   const suggestions = [
     'Do I have "Interstellar" in my library?',
+    "What was recently added to my library?",
     "Who has a birthday coming up?",
     'What events are coming up this week?',
+    "What was the last call about?",
+    "What rooms can I join right now?",
+    "Any unread activity in general chat?",
+    "What is the temperature in Dublin right now?",
     "Are any YouTube rooms active right now?",
+    "What network interfaces are active right now?",
     "What Minecraft servers are online?",
     "What downloads are available right now?",
   ];
   if (isAdmin) {
     suggestions.push('How much RAM is the server using right now?');
+    suggestions.push("What services are down right now?");
   }
 
   return (

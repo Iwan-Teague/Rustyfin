@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, Utc};
 use serde::Serialize;
 use serde_json::json;
 
@@ -11,6 +11,7 @@ use super::types::{
     AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
     ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
 };
+use super::weather::{fetch_public_weather_current, fetch_public_weather_forecast};
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
 use crate::state::AppState;
 
@@ -131,6 +132,106 @@ struct CalendarEventSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct BirthdaySummary {
+    title: String,
+    event_date: String,
+    month_day_display: String,
+    next_occurs_on: String,
+    scope: String,
+    owner_username: Option<String>,
+    birthday_year: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarEventDetailSummary {
+    id: String,
+    title: String,
+    description: Option<String>,
+    event_date: String,
+    scope: String,
+    event_type: String,
+    recurrence: String,
+    owner_username: Option<String>,
+    created_by_username: Option<String>,
+    birthday_year: Option<i32>,
+    month_day_display: Option<String>,
+    next_occurs_on: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChannelActivityMessageSummary {
+    username: String,
+    content_preview: String,
+    created_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ChannelActivitySummary {
+    channel_id: String,
+    name: String,
+    kind: String,
+    is_private: bool,
+    latest_message: Option<ChannelActivityMessageSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct TranscriptSpeakerSummary {
+    username: String,
+    segment_count: usize,
+    word_count: usize,
+    approx_spoken_seconds: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TranscriptHighlightSummary {
+    username: String,
+    started_ts_ms: i64,
+    ended_ts_ms: i64,
+    relative_start: String,
+    relative_end: String,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChannelTranscriptSummary {
+    channel_id: String,
+    channel_name: String,
+    session_id: String,
+    started_ts: i64,
+    ended_ts: i64,
+    duration_seconds: i64,
+    started_by_username: String,
+    entry_count: i64,
+    speaker_count: usize,
+    top_terms: Vec<String>,
+    speakers: Vec<TranscriptSpeakerSummary>,
+    highlights: Vec<TranscriptHighlightSummary>,
+    transcript_excerpt: String,
+    transcript_excerpt_truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryRecentItemSummary {
+    id: String,
+    title: String,
+    kind: String,
+    year: Option<i64>,
+    library_name: Option<String>,
+    created_ts: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct JoinableRoomSummary {
+    room_id: String,
+    title: String,
+    room_mode: String,
+    host_username: String,
+    password_required: bool,
+    joinable_via: String,
+    member_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
 struct HostRuntimeAssistantSummary {
     host: crate::runtime_diagnostics::HostRuntimeSnapshot,
     rustyfin: HostRuntimeRustyfinSummary,
@@ -151,6 +252,83 @@ struct HostRuntimeRustyfinSummary {
 struct PublicWebSearchSummary {
     query: String,
     results: Vec<super::web::PublicWebSearchResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct BackupAssistantSummary {
+    configured: bool,
+    restore_supported: bool,
+    last_successful_backup_ts: Option<i64>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ServiceHealthComponentSummary {
+    name: String,
+    status: String,
+    configured: bool,
+    url: Option<String>,
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ServiceHealthAssistantSummary {
+    all_healthy: bool,
+    components: Vec<ServiceHealthComponentSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct TranscodeAssistantDetailedSummary {
+    active_sessions: usize,
+    active_session_ids: Vec<String>,
+    created_total: u64,
+    create_failures_total: u64,
+    create_failures_last_minute: u64,
+    create_failures_last_five_minutes: u64,
+    cleaned_total: u64,
+    ffmpeg_path: String,
+    ffprobe_path: String,
+    hw_accel: Option<String>,
+    hw_device_path: Option<String>,
+    hw_accel_required: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct StoragePathSummary {
+    name: String,
+    path: String,
+    exists: bool,
+    mount_point: Option<String>,
+    total_bytes: Option<u64>,
+    available_bytes: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageAssistantSummary {
+    available: bool,
+    reason: Option<String>,
+    paths: Vec<StoragePathSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecentErrorItemSummary {
+    source: String,
+    kind: String,
+    occurred_ts: Option<i64>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RuntimeFailureWindowSummary {
+    failures_last_minute: u64,
+    failures_last_five_minutes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RecentErrorsAssistantSummary {
+    recent_failed_jobs: Vec<RecentErrorItemSummary>,
+    transcode_failures: RuntimeFailureWindowSummary,
+    agent_failures: HashMap<String, RuntimeFailureWindowSummary>,
 }
 
 pub async fn execute_tool(
@@ -177,8 +355,20 @@ pub async fn execute_tool(
         AssistantToolName::CalendarUpcomingBirthdays => {
             calendar_upcoming_birthdays(state, context, call).await
         }
+        AssistantToolName::CalendarGetEventDetails => {
+            calendar_get_event_details(state, context, call).await
+        }
+        AssistantToolName::ChannelsListUnreadActivity => {
+            channels_list_unread_activity(state, context, call).await
+        }
+        AssistantToolName::ChannelsGetTranscriptSummary => {
+            channels_get_transcript_summary(state, context, call).await
+        }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             downloads_list_available_artifacts(state, context, call).await
+        }
+        AssistantToolName::NetworkGetTopologySummary => {
+            network_get_topology_summary(state, context).await
         }
         AssistantToolName::LibrariesListAccessible => {
             libraries_list_accessible(state, context).await
@@ -187,15 +377,26 @@ pub async fn execute_tool(
         AssistantToolName::LibraryGetItemSummary => {
             library_get_item_summary(state, context, call).await
         }
+        AssistantToolName::LibrariesGetRecentlyAdded => {
+            libraries_get_recently_added(state, context, call).await
+        }
+        AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
+        AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
         AssistantToolName::WebSearchPublicWeb => web_search_public_web(state, context, call).await,
         AssistantToolName::WebFetchPublicPageSummary => {
             web_fetch_public_page_summary(state, context, call).await
         }
         AssistantToolName::RoomsListActive => rooms_list_active(state, context, call).await,
+        AssistantToolName::RoomsListJoinable => rooms_list_joinable(state, context, call).await,
         AssistantToolName::RoomsGetRoomSummary => room_get_room_summary(state, context, call).await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
+        AssistantToolName::SystemGetBackupSummary => system_get_backup_summary().await,
+        AssistantToolName::SystemGetServiceHealth => system_get_service_health(state).await,
+        AssistantToolName::SystemGetTranscodeSummary => system_get_transcode_summary(state).await,
+        AssistantToolName::SystemGetStorageSummary => system_get_storage_summary(state).await,
+        AssistantToolName::SystemGetRecentErrors => system_get_recent_errors(state).await,
         AssistantToolName::ServersListMinecraftStatus => {
             servers_list_minecraft_status(state, context, call).await
         }
@@ -430,6 +631,44 @@ async fn downloads_list_available_artifacts(
             "availability_filter": availability_filter,
             "artifacts": summaries,
         }),
+    ))
+}
+
+async fn weather_get_current(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::Weather { location, .. } = &call.input else {
+        return Err("missing public weather location".to_string());
+    };
+    let current = fetch_public_weather_current(location).await?;
+    Ok((
+        format!("Current weather for {}", current.resolved_location),
+        serde_json::to_value(current).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn weather_get_forecast(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::Weather {
+        location,
+        forecast_days,
+    } = &call.input
+    else {
+        return Err("missing public weather location".to_string());
+    };
+    let forecast = fetch_public_weather_forecast(location, *forecast_days).await?;
+    let day_count = forecast.forecast_days.len();
+    Ok((
+        format!(
+            "{day_count}-day weather forecast for {}",
+            forecast.resolved_location
+        ),
+        serde_json::to_value(forecast).unwrap_or_else(|_| json!({})),
     ))
 }
 
@@ -830,6 +1069,20 @@ async fn server_get_minecraft_server_summary(
     ))
 }
 
+async fn network_get_topology_summary(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let snapshot =
+        crate::network_diagnostics::collect_network_topology_snapshot(state, context.is_admin)
+            .await;
+
+    Ok((
+        "Rustyfin network topology summary".to_string(),
+        serde_json::to_value(snapshot).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn calendar_list_events(
     state: &AppState,
     context: &AssistantContext,
@@ -871,6 +1124,249 @@ async fn calendar_list_events(
     ))
 }
 
+async fn calendar_get_event_details(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let (from, to, label) = calendar_window_for_call(call, 30);
+    let query = calendar_query_for_call(call)
+        .map(|query| normalize_calendar_event_query(&query))
+        .filter(|query| !query.is_empty())
+        .ok_or_else(|| "missing calendar event query".to_string())?;
+
+    let visible_events = rustfin_db::repo::calendar::list_visible_events(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &from,
+        &to,
+    )
+    .await
+    .map_err(|e| format!("failed to load visible calendar events: {e}"))?;
+
+    let matching_event = visible_events
+        .into_iter()
+        .find(|event| calendar_event_matches_query(event, &query))
+        .ok_or_else(|| format!("no visible calendar event matched \"{query}\" in {label}"))?;
+
+    let event = rustfin_db::repo::calendar::get_event(&state.db, &matching_event.id)
+        .await
+        .map_err(|e| format!("failed to load calendar event details: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "calendar event {} is no longer available",
+                matching_event.id
+            )
+        })?;
+
+    let is_birthday = event.event_type == "birthday";
+    let summary = CalendarEventDetailSummary {
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        event_date: event.event_date.clone(),
+        scope: event.scope,
+        event_type: event.event_type,
+        recurrence: event.recurrence,
+        owner_username: event.owner_username,
+        created_by_username: event.created_by_username,
+        birthday_year: event.birthday_year,
+        month_day_display: is_birthday.then(|| birthday_month_day_display(&event.event_date)),
+        next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&event.event_date)),
+    };
+
+    Ok((
+        format!("Calendar event details for \"{}\"", summary.title),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn channels_list_unread_activity(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let query = channels_query_for_call(call);
+    let channels = rustfin_db::repo::channels::list_channels(&state.db)
+        .await
+        .map_err(|e| format!("failed to load channels: {e}"))?;
+    let accessible_channels: Vec<_> = channels
+        .into_iter()
+        .filter(|channel| !channel.is_private || context.is_admin)
+        .filter(|channel| channel_matches_query(channel, query.as_deref()))
+        .collect();
+
+    let mut activity = Vec::new();
+    let before_ts = Utc::now().timestamp().saturating_add(1);
+    for channel in accessible_channels.iter().take(12) {
+        let messages =
+            rustfin_db::repo::channels::list_messages(&state.db, &channel.id, 1, before_ts, None)
+                .await
+                .map_err(|e| format!("failed to load channel activity: {e}"))?;
+        let latest_message = messages
+            .last()
+            .map(|message| ChannelActivityMessageSummary {
+                username: message.username.clone(),
+                content_preview: truncate_preview(&message.content, 140),
+                created_ts: message.created_ts,
+            });
+        activity.push(ChannelActivitySummary {
+            channel_id: channel.id.clone(),
+            name: channel.name.clone(),
+            kind: channel.kind.clone(),
+            is_private: channel.is_private,
+            latest_message,
+        });
+    }
+
+    activity.sort_by(|left, right| {
+        let left_ts = left
+            .latest_message
+            .as_ref()
+            .map(|message| message.created_ts)
+            .unwrap_or_default();
+        let right_ts = right
+            .latest_message
+            .as_ref()
+            .map(|message| message.created_ts)
+            .unwrap_or_default();
+        right_ts
+            .cmp(&left_ts)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok((
+        match query.as_deref() {
+            Some(query) => format!("Recent visible channel activity matching \"{query}\""),
+            None => "Recent visible channel activity".to_string(),
+        },
+        json!({
+            "unread_tracking_available": false,
+            "query": query,
+            "total_count": activity.len(),
+            "channels": activity,
+        }),
+    ))
+}
+
+async fn channels_get_transcript_summary(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let query = channels_query_for_call(call);
+    let channel_query = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .map(str::to_string);
+
+    let channels = rustfin_db::repo::channels::list_channels(&state.db)
+        .await
+        .map_err(|e| format!("failed to load channels: {e}"))?;
+    let accessible_voice_channels: Vec<_> = channels
+        .into_iter()
+        .filter(|channel| channel.kind.eq_ignore_ascii_case("voice"))
+        .filter(|channel| !channel.is_private || context.is_admin)
+        .filter(|channel| channel_matches_query(channel, channel_query.as_deref()))
+        .collect();
+
+    if accessible_voice_channels.is_empty() {
+        return Err(channel_query
+            .as_deref()
+            .map(|query| format!("no accessible voice channel matched \"{query}\""))
+            .unwrap_or_else(|| "no accessible voice channels are available".to_string()));
+    }
+
+    let mut selected: Option<(
+        rustfin_db::repo::channels::ChannelRow,
+        rustfin_db::repo::channel_transcripts::TranscriptSessionRow,
+    )> = None;
+    let mut latest_non_completed: Option<(
+        rustfin_db::repo::channels::ChannelRow,
+        rustfin_db::repo::channel_transcripts::TranscriptSessionRow,
+    )> = None;
+
+    for channel in accessible_voice_channels {
+        let sessions = rustfin_db::repo::channel_transcripts::list_sessions_for_channel(
+            &state.db,
+            &channel.id,
+            8,
+        )
+        .await
+        .map_err(|e| format!("failed to load transcript sessions: {e}"))?;
+
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.status == "completed")
+        {
+            let replace = selected
+                .as_ref()
+                .map(|(_, current)| session.started_ts > current.started_ts)
+                .unwrap_or(true);
+            if replace {
+                selected = Some((channel.clone(), session.clone()));
+            }
+        } else if let Some(session) = sessions.first() {
+            let replace = latest_non_completed
+                .as_ref()
+                .map(|(_, current)| session.started_ts > current.started_ts)
+                .unwrap_or(true);
+            if replace {
+                latest_non_completed = Some((channel.clone(), session.clone()));
+            }
+        }
+    }
+
+    let Some((channel, session)) = selected else {
+        if let Some((channel, session)) = latest_non_completed {
+            return Err(match session.status.as_str() {
+                "running" | "finalizing" => format!(
+                    "a transcript exists for voice channel \"{}\", but it is still {}.",
+                    channel.name, session.status
+                ),
+                "failed" => format!(
+                    "the latest transcript for voice channel \"{}\" failed: {}",
+                    channel.name,
+                    session
+                        .failure_reason
+                        .unwrap_or_else(|| "unknown reason".to_string())
+                ),
+                "cancelled" => format!(
+                    "the latest transcript for voice channel \"{}\" was cancelled and has no saved summary.",
+                    channel.name
+                ),
+                _ => format!(
+                    "no completed transcript is available yet for voice channel \"{}\".",
+                    channel.name
+                ),
+            });
+        }
+        return Err(channel_query
+            .as_deref()
+            .map(|query| format!("no completed transcript was found for \"{query}\""))
+            .unwrap_or_else(|| "no completed call transcripts were found yet".to_string()));
+    };
+
+    let entries =
+        rustfin_db::repo::channel_transcripts::list_entries_for_session(&state.db, &session.id)
+            .await
+            .map_err(|e| format!("failed to load transcript entries: {e}"))?;
+    if entries.is_empty() {
+        return Err(format!(
+            "the transcript for voice channel \"{}\" has no saved transcript lines yet.",
+            channel.name
+        ));
+    }
+
+    let summary = summarize_transcript_session(&channel, &session, &entries);
+    Ok((
+        format!("Transcript summary for \"{}\"", summary.channel_name),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn system_get_host_runtime_summary(
     state: &AppState,
     _context: &AssistantContext,
@@ -895,12 +1391,223 @@ async fn system_get_host_runtime_summary(
     ))
 }
 
+async fn system_get_backup_summary() -> Result<(String, serde_json::Value), String> {
+    let summary = BackupAssistantSummary {
+        configured: false,
+        restore_supported: false,
+        last_successful_backup_ts: None,
+        message: "Rustyfin backup and restore workflows are not implemented on this host yet."
+            .to_string(),
+    };
+
+    Ok((
+        "Rustyfin backup capability summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_service_health(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    let mut probes = vec![
+        probe_service_health_component(&state.http, "core_api", Some(local_core_health_url())),
+        probe_service_health_component(
+            &state.http,
+            "tmdb_agent",
+            Some(health_url_from_base(&state.tmdb_agent_url)),
+        ),
+        probe_service_health_component(
+            &state.http,
+            "youtube_agent",
+            Some(health_url_from_base(&state.youtube_agent_url)),
+        ),
+        probe_service_health_component(
+            &state.http,
+            "transcription_agent",
+            Some(health_url_from_base(&state.transcription_agent_url)),
+        ),
+    ];
+
+    probes.push(probe_service_health_component(
+        &state.http,
+        "servers_agent",
+        state.servers_agent_url.as_deref().map(health_url_from_base),
+    ));
+
+    let mut components = futures::future::join_all(probes).await;
+    components.push(ServiceHealthComponentSummary {
+        name: "rustyvault".to_string(),
+        status: if state.rustyvault.available {
+            "healthy".to_string()
+        } else {
+            "degraded".to_string()
+        },
+        configured: true,
+        url: None,
+        detail: if state.rustyvault.available {
+            "RustyVault runtime is available.".to_string()
+        } else {
+            state.rustyvault.public_reason().to_string()
+        },
+    });
+
+    let loaded_model = state.engine.lock().await.loaded_model.clone();
+    components.push(ServiceHealthComponentSummary {
+        name: "ai_inference".to_string(),
+        status: if crate::ai::inference_available() {
+            "healthy".to_string()
+        } else {
+            "disabled".to_string()
+        },
+        configured: true,
+        url: None,
+        detail: match (crate::ai::inference_available(), loaded_model) {
+            (true, Some(model)) => format!("Inference is available. Loaded model: {model}."),
+            (true, None) => "Inference is available. No model is currently loaded.".to_string(),
+            (false, _) => "AI inference is unavailable on this host.".to_string(),
+        },
+    });
+
+    let all_healthy = components.iter().all(|component| {
+        !component.configured || matches!(component.status.as_str(), "healthy" | "disabled")
+    });
+    let summary = ServiceHealthAssistantSummary {
+        all_healthy,
+        components,
+    };
+
+    Ok((
+        "Rustyfin service health summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_transcode_summary(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    let active_session_ids = state.transcoder.list_sessions().await;
+    let summary = TranscodeAssistantDetailedSummary {
+        active_sessions: active_session_ids.len(),
+        active_session_ids,
+        created_total: state.transcoder.created_total(),
+        create_failures_total: state.transcoder.create_failures_total(),
+        create_failures_last_minute: state.transcoder.create_failures_last_minute(),
+        create_failures_last_five_minutes: state.transcoder.create_failures_last_five_minutes(),
+        cleaned_total: state.transcoder.cleaned_total(),
+        ffmpeg_path: state.transcoder.ffmpeg_path().display().to_string(),
+        ffprobe_path: state.transcoder.ffprobe_path().display().to_string(),
+        hw_accel: state
+            .transcoder
+            .hw_accel()
+            .map(|accel| format!("{accel:?}").to_ascii_lowercase()),
+        hw_device_path: state
+            .transcoder
+            .hw_device_path()
+            .map(|path| path.display().to_string()),
+        hw_accel_required: state.transcoder_hw_accel_required,
+    };
+
+    Ok((
+        "Rustyfin transcode summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_storage_summary(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    let summary = collect_storage_summary(state).await;
+    Ok((
+        "Rustyfin storage summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_recent_errors(state: &AppState) -> Result<(String, serde_json::Value), String> {
+    let failed_jobs = rustfin_db::repo::jobs::list_jobs_filtered(
+        &state.db,
+        &["failed", "error"],
+        None,
+        Some(8),
+        None,
+    )
+    .await
+    .map_err(|e| format!("failed to load recent failed jobs: {e}"))?;
+    let recent_failed_jobs = failed_jobs
+        .into_iter()
+        .map(|job| RecentErrorItemSummary {
+            source: "job".to_string(),
+            kind: job.kind,
+            occurred_ts: Some(job.updated_ts),
+            message: job
+                .error
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or_else(|| format!("job {} ended with status {}", job.id, job.status)),
+        })
+        .collect::<Vec<_>>();
+
+    let runtime = state.runtime_metrics.snapshot();
+    let summary = RecentErrorsAssistantSummary {
+        recent_failed_jobs,
+        transcode_failures: RuntimeFailureWindowSummary {
+            failures_last_minute: state.transcoder.create_failures_last_minute(),
+            failures_last_five_minutes: state.transcoder.create_failures_last_five_minutes(),
+        },
+        agent_failures: HashMap::from([
+            (
+                "servers".to_string(),
+                RuntimeFailureWindowSummary {
+                    failures_last_minute: runtime.agents.servers.failures_last_minute,
+                    failures_last_five_minutes: runtime.agents.servers.failures_last_five_minutes,
+                },
+            ),
+            (
+                "tmdb".to_string(),
+                RuntimeFailureWindowSummary {
+                    failures_last_minute: runtime.agents.tmdb.failures_last_minute,
+                    failures_last_five_minutes: runtime.agents.tmdb.failures_last_five_minutes,
+                },
+            ),
+            (
+                "transcription".to_string(),
+                RuntimeFailureWindowSummary {
+                    failures_last_minute: runtime.agents.transcription.failures_last_minute,
+                    failures_last_five_minutes: runtime
+                        .agents
+                        .transcription
+                        .failures_last_five_minutes,
+                },
+            ),
+            (
+                "youtube".to_string(),
+                RuntimeFailureWindowSummary {
+                    failures_last_minute: runtime.agents.youtube.failures_last_minute,
+                    failures_last_five_minutes: runtime.agents.youtube.failures_last_five_minutes,
+                },
+            ),
+            (
+                "assistant".to_string(),
+                RuntimeFailureWindowSummary {
+                    failures_last_minute: runtime.assistant.tools.failures_last_minute,
+                    failures_last_five_minutes: runtime.assistant.tools.failures_last_five_minutes,
+                },
+            ),
+        ]),
+    };
+
+    Ok((
+        "Recent Rustyfin failures and errors".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
 async fn calendar_upcoming_birthdays(
     state: &AppState,
     context: &AssistantContext,
     call: &PlannedToolCall,
 ) -> Result<(String, serde_json::Value), String> {
     let (from, to, label) = calendar_window_for_call(call, 30);
+    let birthday_query = calendar_query_for_call(call);
     let events = rustfin_db::repo::calendar::list_visible_events(
         &state.db,
         &context.user_id,
@@ -911,28 +1618,184 @@ async fn calendar_upcoming_birthdays(
     .await
     .map_err(|e| format!("failed to load upcoming birthdays: {e}"))?;
 
-    let birthdays: Vec<_> = events
+    let all_birthdays: Vec<_> = events
         .into_iter()
         .filter(|event| event.event_type == "birthday")
+        .collect();
+    let total_count = all_birthdays.len();
+    let birthdays: Vec<_> = all_birthdays
+        .into_iter()
+        .filter(|event| {
+            birthday_query
+                .as_deref()
+                .is_none_or(|query| birthday_matches_query(event, query))
+        })
         .take(12)
-        .map(|event| CalendarEventSummary {
+        .map(|event| BirthdaySummary {
+            month_day_display: birthday_month_day_display(&event.event_date),
+            next_occurs_on: next_birthday_occurrence(&event.event_date),
+            birthday_year: event.birthday_year,
             title: event.title,
             event_date: event.event_date,
             scope: event.scope,
-            event_type: event.event_type,
             owner_username: event.owner_username,
         })
         .collect();
+    let match_count = birthdays.len();
 
     Ok((
-        format!("Upcoming birthdays for {label}"),
+        match birthday_query.as_deref() {
+            Some(query) => format!("Birthdays matching \"{query}\" for {label}"),
+            None => format!("Upcoming birthdays for {label}"),
+        },
         json!({
             "window": {
                 "from": from,
                 "to": to,
                 "label": label,
             },
+            "query": birthday_query,
+            "match_count": match_count,
+            "total_count": total_count,
             "birthdays": birthdays,
+        }),
+    ))
+}
+
+async fn libraries_get_recently_added(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let query = library_recent_query_for_call(call);
+    let allowed_library_ids = if context.is_admin {
+        None
+    } else {
+        Some(
+            rustfin_db::repo::users::get_library_access(&state.db, &context.user_id)
+                .await
+                .map_err(|e| format!("failed to load library permissions: {e}"))?,
+        )
+    };
+
+    let items = rustfin_db::repo::items::list_recent_items(
+        &state.db,
+        allowed_library_ids.as_deref(),
+        query.as_deref(),
+        10,
+    )
+    .await
+    .map_err(|e| format!("failed to load recently added library items: {e}"))?;
+
+    let library_names = rustfin_db::repo::libraries::list_libraries(&state.db)
+        .await
+        .map_err(|e| format!("failed to load libraries: {e}"))?
+        .into_iter()
+        .map(|library| (library.id, library.name))
+        .collect::<HashMap<_, _>>();
+
+    let recent_items: Vec<_> = items
+        .into_iter()
+        .map(|item| LibraryRecentItemSummary {
+            id: item.id,
+            title: item.title,
+            kind: item.kind,
+            year: item.year,
+            library_name: library_names.get(&item.library_id).cloned(),
+            created_ts: item.created_ts,
+        })
+        .collect();
+
+    Ok((
+        match query.as_deref() {
+            Some(query) => format!("Recently added library items matching \"{query}\""),
+            None => "Recently added library items".to_string(),
+        },
+        json!({
+            "query": query,
+            "total_count": recent_items.len(),
+            "items": recent_items,
+        }),
+    ))
+}
+
+async fn rooms_list_joinable(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let room_mode_filter = room_mode_filter_for_call(call);
+    let room_query_filter = room_query_filter_for_call(call);
+    let public_rooms = rustfin_db::repo::watch_party::list_public_rooms(&state.db)
+        .await
+        .map_err(|e| format!("failed to load public rooms: {e}"))?;
+    let invites = rustfin_db::repo::watch_party::list_invites_for_user(&state.db, &context.user_id)
+        .await
+        .map_err(|e| format!("failed to load room invites: {e}"))?;
+
+    let mut rooms = Vec::new();
+    let mut seen = HashSet::new();
+
+    for room in public_rooms {
+        if room_mode_filter
+            .as_deref()
+            .is_some_and(|room_mode| room.room_mode != room_mode)
+        {
+            continue;
+        }
+        if !public_room_matches_query(&room, room_query_filter.as_deref()) {
+            continue;
+        }
+        seen.insert(room.id.clone());
+        rooms.push(JoinableRoomSummary {
+            room_id: room.id.clone(),
+            title: room_title_for_listing(
+                &room.room_name,
+                &room.room_mode,
+                &room.audio_source,
+                &room.item_title,
+                &room.audio_library_name,
+                &room.web_url,
+            ),
+            room_mode: room.room_mode,
+            host_username: room.host_username,
+            password_required: room.password_required,
+            joinable_via: "public_lobby".to_string(),
+            member_count: Some(room.member_count),
+        });
+    }
+
+    for invite in invites {
+        if !seen.insert(invite.room_id.clone()) {
+            continue;
+        }
+        if !invite_matches_room_mode(&invite, room_mode_filter.as_deref()) {
+            continue;
+        }
+        if !invite_matches_query(&invite, room_query_filter.as_deref()) {
+            continue;
+        }
+        rooms.push(JoinableRoomSummary {
+            room_id: invite.room_id,
+            title: invite.item_title,
+            room_mode: "invite".to_string(),
+            host_username: invite.host_username,
+            password_required: invite.password_required,
+            joinable_via: "invite".to_string(),
+            member_count: None,
+        });
+    }
+
+    Ok((
+        match room_mode_filter.as_deref() {
+            Some(mode) => format!("Joinable {} rooms", room_mode_label(mode)),
+            None => "Joinable rooms".to_string(),
+        },
+        json!({
+            "room_mode": room_mode_filter,
+            "query": room_query_filter,
+            "total_count": rooms.len(),
+            "rooms": rooms,
         }),
     ))
 }
@@ -946,10 +1809,14 @@ fn calendar_window_for_call(
             from_date,
             to_date,
             label,
+            ..
         } => (from_date.clone(), to_date.clone(), label.clone()),
         AssistantToolInput::None
+        | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
         | AssistantToolInput::LibrarySearch { .. }
+        | AssistantToolInput::LibraryRecent { .. }
+        | AssistantToolInput::Weather { .. }
         | AssistantToolInput::WebSearch { .. }
         | AssistantToolInput::WebFetch { .. }
         | AssistantToolInput::RoomsFilter { .. }
@@ -962,6 +1829,379 @@ fn calendar_window_for_call(
                 format!("the next {fallback_days} days"),
             )
         }
+    }
+}
+
+fn calendar_query_for_call(call: &PlannedToolCall) -> Option<String> {
+    match &call.input {
+        AssistantToolInput::CalendarWindow { query, .. } => query.clone(),
+        _ => None,
+    }
+}
+
+fn normalize_calendar_event_query(query: &str) -> String {
+    let trimmed = query.trim();
+    if let Some((title, _date)) = trimmed.rsplit_once(" (")
+        && trimmed.ends_with(')')
+    {
+        return title.trim().to_string();
+    }
+    trimmed.to_string()
+}
+
+fn calendar_event_matches_query(
+    event: &rustfin_db::repo::calendar::CalendarEventRow,
+    query: &str,
+) -> bool {
+    let normalized_query = normalize_calendar_event_query(query).to_ascii_lowercase();
+    if normalized_query.is_empty() {
+        return true;
+    }
+
+    [
+        Some(event.title.as_str()),
+        event.description.as_deref(),
+        event.owner_username.as_deref(),
+        event.created_by_username.as_deref(),
+        Some(event.event_date.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.to_ascii_lowercase())
+    .any(|value| value.contains(&normalized_query))
+}
+
+fn birthday_matches_query(
+    event: &rustfin_db::repo::calendar::CalendarEventRow,
+    query: &str,
+) -> bool {
+    let normalized_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() {
+        return true;
+    }
+
+    [
+        Some(event.title.as_str()),
+        event.owner_username.as_deref(),
+        event.description.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| value.to_ascii_lowercase())
+    .any(|value| value.contains(&normalized_query))
+}
+
+fn birthday_month_day_display(event_date: &str) -> String {
+    chrono::NaiveDate::parse_from_str(event_date, "%Y-%m-%d")
+        .map(|date| date.format("%B %-d").to_string())
+        .unwrap_or_else(|_| event_date.to_string())
+}
+
+fn next_birthday_occurrence(event_date: &str) -> String {
+    let today = Utc::now().date_naive();
+    let Ok(date) = chrono::NaiveDate::parse_from_str(event_date, "%Y-%m-%d") else {
+        return event_date.to_string();
+    };
+
+    for year in [
+        today.year(),
+        today.year() + 1,
+        today.year() + 2,
+        today.year() + 3,
+    ] {
+        if let Some(candidate) = chrono::NaiveDate::from_ymd_opt(year, date.month(), date.day()) {
+            if candidate >= today {
+                return candidate.format("%F").to_string();
+            }
+        }
+    }
+
+    event_date.to_string()
+}
+
+fn channels_query_for_call(call: &PlannedToolCall) -> Option<String> {
+    match &call.input {
+        AssistantToolInput::ChannelsFilter { query } => query.clone(),
+        _ => None,
+    }
+}
+
+fn channel_matches_query(
+    channel: &rustfin_db::repo::channels::ChannelRow,
+    query: Option<&str>,
+) -> bool {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return true;
+    };
+    let query = query.to_ascii_lowercase();
+    channel.name.to_ascii_lowercase().contains(&query)
+        || channel.kind.to_ascii_lowercase().contains(&query)
+}
+
+fn summarize_transcript_session(
+    channel: &rustfin_db::repo::channels::ChannelRow,
+    session: &rustfin_db::repo::channel_transcripts::TranscriptSessionRow,
+    entries: &[rustfin_db::repo::channel_transcripts::TranscriptEntryRow],
+) -> ChannelTranscriptSummary {
+    let started_ts_ms = session.started_ts.saturating_mul(1000);
+
+    let mut speaker_counts: HashMap<String, TranscriptSpeakerSummary> = HashMap::new();
+    let mut term_counts: HashMap<String, usize> = HashMap::new();
+    for entry in entries {
+        let speaker =
+            speaker_counts
+                .entry(entry.username.clone())
+                .or_insert(TranscriptSpeakerSummary {
+                    username: entry.username.clone(),
+                    segment_count: 0,
+                    word_count: 0,
+                    approx_spoken_seconds: 0,
+                });
+        speaker.segment_count += 1;
+        speaker.word_count += transcript_word_count(&entry.text);
+        speaker.approx_spoken_seconds += transcript_segment_duration_seconds(entry);
+
+        for term in transcript_terms(&entry.text) {
+            *term_counts.entry(term).or_insert(0) += 1;
+        }
+    }
+
+    let mut speakers: Vec<_> = speaker_counts.into_values().collect();
+    speakers.sort_by(|left, right| {
+        right
+            .segment_count
+            .cmp(&left.segment_count)
+            .then_with(|| right.word_count.cmp(&left.word_count))
+            .then_with(|| left.username.cmp(&right.username))
+    });
+
+    let top_terms = transcript_top_terms(&term_counts, 8);
+    let highlights = transcript_highlights(entries, started_ts_ms, &term_counts, 6);
+    let (transcript_excerpt, transcript_excerpt_truncated) =
+        transcript_excerpt(entries, started_ts_ms, 9, 7_500);
+
+    ChannelTranscriptSummary {
+        channel_id: channel.id.clone(),
+        channel_name: channel.name.clone(),
+        session_id: session.id.clone(),
+        started_ts: session.started_ts,
+        ended_ts: session.ended_ts.unwrap_or(session.started_ts),
+        duration_seconds: session
+            .ended_ts
+            .unwrap_or(session.started_ts)
+            .saturating_sub(session.started_ts),
+        started_by_username: session.started_by_username.clone(),
+        entry_count: session.entry_count,
+        speaker_count: speakers.len(),
+        top_terms,
+        speakers,
+        highlights,
+        transcript_excerpt,
+        transcript_excerpt_truncated,
+    }
+}
+
+fn transcript_word_count(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|word| !word.is_empty())
+        .count()
+}
+
+fn transcript_segment_duration_seconds(
+    entry: &rustfin_db::repo::channel_transcripts::TranscriptEntryRow,
+) -> i64 {
+    entry
+        .ended_ts_ms
+        .max(entry.started_ts_ms)
+        .saturating_sub(entry.started_ts_ms)
+        / 1000
+}
+
+fn transcript_terms(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '\'')
+        .map(|token| token.trim_matches('\'').to_ascii_lowercase())
+        .filter(|token| token.len() >= 3)
+        .filter(|token| !TRANSCRIPT_STOPWORDS.contains(&token.as_str()))
+        .collect()
+}
+
+fn transcript_top_terms(term_counts: &HashMap<String, usize>, limit: usize) -> Vec<String> {
+    let mut terms: Vec<_> = term_counts.iter().collect();
+    terms.sort_by(|(left_term, left_count), (right_term, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_term.cmp(right_term))
+    });
+    terms
+        .into_iter()
+        .take(limit)
+        .map(|(term, _)| term.clone())
+        .collect()
+}
+
+fn transcript_highlights(
+    entries: &[rustfin_db::repo::channel_transcripts::TranscriptEntryRow],
+    session_started_ts_ms: i64,
+    term_counts: &HashMap<String, usize>,
+    limit: usize,
+) -> Vec<TranscriptHighlightSummary> {
+    let mut ranked: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let normalized = truncate_preview(&entry.text, 220);
+            if normalized.is_empty() {
+                return None;
+            }
+            let score = transcript_terms(&entry.text)
+                .into_iter()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .map(|term| term_counts.get(&term).copied().unwrap_or_default())
+                .sum::<usize>();
+            Some((index, score.max(1), normalized, entry))
+        })
+        .collect();
+    ranked.sort_by(
+        |(left_index, left_score, _, _), (right_index, right_score, _, _)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_index.cmp(right_index))
+        },
+    );
+    ranked.truncate(limit);
+    ranked.sort_by_key(|(index, _, _, _)| *index);
+
+    ranked
+        .into_iter()
+        .map(|(_, _, text, entry)| TranscriptHighlightSummary {
+            username: entry.username.clone(),
+            started_ts_ms: entry.started_ts_ms,
+            ended_ts_ms: entry.ended_ts_ms,
+            relative_start: format_transcript_relative_ms(
+                entry.started_ts_ms.saturating_sub(session_started_ts_ms),
+            ),
+            relative_end: format_transcript_relative_ms(
+                entry
+                    .ended_ts_ms
+                    .max(entry.started_ts_ms)
+                    .saturating_sub(session_started_ts_ms),
+            ),
+            text,
+        })
+        .collect()
+}
+
+fn transcript_excerpt(
+    entries: &[rustfin_db::repo::channel_transcripts::TranscriptEntryRow],
+    session_started_ts_ms: i64,
+    sample_limit: usize,
+    max_chars: usize,
+) -> (String, bool) {
+    let sample_indexes = transcript_excerpt_indexes(entries.len(), sample_limit);
+    let mut lines = Vec::new();
+    let mut total_chars = 0usize;
+    let mut truncated = false;
+
+    for index in sample_indexes.iter().copied() {
+        let Some(entry) = entries.get(index) else {
+            continue;
+        };
+        let line = format!(
+            "[{}-{}] {}: {}",
+            format_transcript_relative_ms(
+                entry.started_ts_ms.saturating_sub(session_started_ts_ms)
+            ),
+            format_transcript_relative_ms(
+                entry
+                    .ended_ts_ms
+                    .max(entry.started_ts_ms)
+                    .saturating_sub(session_started_ts_ms)
+            ),
+            entry.username,
+            truncate_preview(&entry.text, 240)
+        );
+        if total_chars + line.len() + usize::from(!lines.is_empty()) > max_chars {
+            truncated = true;
+            break;
+        }
+        total_chars += line.len() + usize::from(!lines.is_empty());
+        lines.push(line);
+    }
+
+    if lines.is_empty() {
+        return (String::new(), false);
+    }
+
+    if sample_indexes.len() < entries.len() {
+        truncated = true;
+    }
+
+    (lines.join("\n"), truncated)
+}
+
+fn transcript_excerpt_indexes(total: usize, sample_limit: usize) -> Vec<usize> {
+    if total == 0 || sample_limit == 0 {
+        return Vec::new();
+    }
+    if total <= sample_limit {
+        return (0..total).collect();
+    }
+
+    let front = sample_limit.min(3);
+    let back = sample_limit.min(3);
+    let middle_target = sample_limit.saturating_sub(front + back);
+    let mut indexes: Vec<_> = (0..front).collect();
+    if middle_target > 0 {
+        let middle_start = front;
+        let middle_end = total.saturating_sub(back);
+        let span = middle_end.saturating_sub(middle_start);
+        for offset in 0..middle_target {
+            let numerator = (offset + 1) * span;
+            let position = middle_start + (numerator / (middle_target + 1));
+            indexes.push(position.min(total.saturating_sub(back + 1)));
+        }
+    }
+    indexes.extend((total - back)..total);
+    indexes.sort_unstable();
+    indexes.dedup();
+    indexes
+}
+
+fn format_transcript_relative_ms(relative_ms: i64) -> String {
+    let total_seconds = relative_ms.max(0) / 1000;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
+}
+
+const TRANSCRIPT_STOPWORDS: &[&str] = &[
+    "the", "and", "that", "this", "with", "from", "have", "just", "about", "into", "like", "yeah",
+    "okay", "right", "really", "maybe", "going", "gonna", "call", "voice", "channel", "they",
+    "them", "then", "than", "there", "their", "what", "when", "where", "which", "who", "would",
+    "could", "should", "your", "youre", "were", "been", "being", "also", "very", "some", "more",
+    "much", "many", "want", "need", "dont", "cant", "lets", "well", "im", "ive", "its", "our",
+    "out", "for", "are", "was", "were", "has", "had", "did", "not", "but", "all", "any", "can",
+    "get",
+];
+
+fn truncate_preview(content: &str, max_chars: usize) -> String {
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    normalized.chars().take(max_chars).collect::<String>() + "..."
+}
+
+fn library_recent_query_for_call(call: &PlannedToolCall) -> Option<String> {
+    match &call.input {
+        AssistantToolInput::LibraryRecent { query } => query.clone(),
+        _ => None,
     }
 }
 
@@ -1073,6 +2313,47 @@ fn room_matches_query(
     title.to_ascii_lowercase().contains(&query)
 }
 
+fn public_room_matches_query(
+    room: &rustfin_db::repo::watch_party::PublicRoomRow,
+    query: Option<&str>,
+) -> bool {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return true;
+    };
+    let query = query.to_ascii_lowercase();
+    let title = room_title_for_listing(
+        &room.room_name,
+        &room.room_mode,
+        &room.audio_source,
+        &room.item_title,
+        &room.audio_library_name,
+        &room.web_url,
+    );
+    title.to_ascii_lowercase().contains(&query)
+}
+
+fn invite_matches_room_mode(
+    _invite: &rustfin_db::repo::watch_party::WatchPartyInviteSummary,
+    room_mode: Option<&str>,
+) -> bool {
+    match room_mode {
+        Some("invite") | None => true,
+        Some(_) => false,
+    }
+}
+
+fn invite_matches_query(
+    invite: &rustfin_db::repo::watch_party::WatchPartyInviteSummary,
+    query: Option<&str>,
+) -> bool {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return true;
+    };
+    let query = query.to_ascii_lowercase();
+    invite.item_title.to_ascii_lowercase().contains(&query)
+        || invite.host_username.to_ascii_lowercase().contains(&query)
+}
+
 fn web_room_title(web_url: &str) -> String {
     if let Ok(url) = reqwest::Url::parse(web_url.trim()) {
         if let Some(host) = url.host_str() {
@@ -1124,6 +2405,187 @@ fn room_title_for_listing(
     }
 }
 
+fn local_core_health_url() -> String {
+    let bind = std::env::var("RUSTFIN_BIND").unwrap_or_else(|_| "0.0.0.0:8096".to_string());
+    if let Ok(addr) = bind.parse::<std::net::SocketAddr>() {
+        let host = if addr.ip().is_unspecified() {
+            "127.0.0.1".to_string()
+        } else {
+            addr.ip().to_string()
+        };
+        return format!(
+            "http://{}:{}/health",
+            format_host_for_url(&host),
+            addr.port()
+        );
+    }
+
+    let trimmed = bind
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    if let Some((host, port)) = trimmed.rsplit_once(':') {
+        let normalized_host = match host {
+            "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+            other => other,
+        };
+        return format!(
+            "http://{}:{}/health",
+            format_host_for_url(normalized_host),
+            port.trim()
+        );
+    }
+
+    "http://127.0.0.1:8096/health".to_string()
+}
+
+fn format_host_for_url(host: &str) -> String {
+    let trimmed = host.trim().trim_matches(['[', ']']);
+    if trimmed.contains(':') {
+        format!("[{trimmed}]")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn health_url_from_base(base_url: &str) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(mut url) => {
+            url.set_path("/health");
+            url.set_query(None);
+            url.to_string()
+        }
+        Err(_) => format!("{}/health", base_url.trim_end_matches('/')),
+    }
+}
+
+async fn probe_service_health_component(
+    client: &reqwest::Client,
+    name: &str,
+    url: Option<String>,
+) -> ServiceHealthComponentSummary {
+    let Some(url) = url else {
+        return ServiceHealthComponentSummary {
+            name: name.to_string(),
+            status: "disabled".to_string(),
+            configured: false,
+            url: None,
+            detail: "Service is not configured on this host.".to_string(),
+        };
+    };
+
+    let response =
+        tokio::time::timeout(std::time::Duration::from_secs(3), client.get(&url).send()).await;
+
+    match response {
+        Ok(Ok(response)) if response.status().is_success() => ServiceHealthComponentSummary {
+            name: name.to_string(),
+            status: "healthy".to_string(),
+            configured: true,
+            url: Some(url),
+            detail: format!("Health check returned HTTP {}.", response.status().as_u16()),
+        },
+        Ok(Ok(response)) => ServiceHealthComponentSummary {
+            name: name.to_string(),
+            status: "error".to_string(),
+            configured: true,
+            url: Some(url),
+            detail: format!("Health check returned HTTP {}.", response.status().as_u16()),
+        },
+        Ok(Err(error)) => ServiceHealthComponentSummary {
+            name: name.to_string(),
+            status: "error".to_string(),
+            configured: true,
+            url: Some(url),
+            detail: format!("Health check failed: {error}"),
+        },
+        Err(_) => ServiceHealthComponentSummary {
+            name: name.to_string(),
+            status: "error".to_string(),
+            configured: true,
+            url: Some(url),
+            detail: "Health check timed out.".to_string(),
+        },
+    }
+}
+
+async fn collect_storage_summary(state: &AppState) -> StorageAssistantSummary {
+    let mut paths = vec![
+        ("cache_dir".to_string(), state.cache_dir.clone()),
+        (
+            "watch_party_audio_dir".to_string(),
+            state.watch_party_audio_dir.clone(),
+        ),
+        (
+            "ai_model_dir".to_string(),
+            crate::ai_storage::current_model_dir(state).await,
+        ),
+    ];
+
+    if let Ok(media_root) = std::env::var("RUSTFIN_MEDIA_PATH") {
+        let trimmed = media_root.trim();
+        if !trimmed.is_empty() {
+            paths.push(("media_root".to_string(), std::path::PathBuf::from(trimmed)));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        match tokio::task::spawn_blocking(move || collect_linux_storage_summary(paths)).await {
+            Ok(summary) => summary,
+            Err(error) => StorageAssistantSummary {
+                available: false,
+                reason: Some(format!("Failed to collect storage summary: {error}")),
+                paths: Vec::new(),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = paths;
+        StorageAssistantSummary {
+            available: false,
+            reason: Some("Storage summary is only available on Linux hosts.".to_string()),
+            paths: Vec::new(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_storage_summary(
+    paths: Vec<(String, std::path::PathBuf)>,
+) -> StorageAssistantSummary {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let summaries = paths
+        .into_iter()
+        .map(|(name, path)| {
+            let exists = path.exists();
+            let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let disk = disks
+                .list()
+                .iter()
+                .filter(|disk| target.starts_with(disk.mount_point()))
+                .max_by_key(|disk| disk.mount_point().components().count());
+
+            StoragePathSummary {
+                name,
+                path: path.display().to_string(),
+                exists,
+                mount_point: disk.map(|disk| disk.mount_point().display().to_string()),
+                total_bytes: disk.map(|disk| disk.total_space()),
+                available_bytes: disk.map(|disk| disk.available_space()),
+            }
+        })
+        .collect();
+
+    StorageAssistantSummary {
+        available: true,
+        reason: None,
+        paths: summaries,
+    }
+}
+
 fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
     match &call.input {
         AssistantToolInput::None => AssistantFollowUpInputHint::default(),
@@ -1131,10 +2593,16 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             from_date,
             to_date,
             label,
+            query,
         } => AssistantFollowUpInputHint {
             calendar_label: Some(label.clone()),
             calendar_from_date: Some(from_date.clone()),
             calendar_to_date: Some(to_date.clone()),
+            calendar_query: query.clone(),
+            ..AssistantFollowUpInputHint::default()
+        },
+        AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
+            channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::DownloadsFilter {
@@ -1147,6 +2615,18 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
         },
         AssistantToolInput::LibrarySearch { query } => AssistantFollowUpInputHint {
             library_query: Some(query.clone()),
+            ..AssistantFollowUpInputHint::default()
+        },
+        AssistantToolInput::LibraryRecent { query } => AssistantFollowUpInputHint {
+            library_query: query.clone(),
+            ..AssistantFollowUpInputHint::default()
+        },
+        AssistantToolInput::Weather {
+            location,
+            forecast_days,
+        } => AssistantFollowUpInputHint {
+            weather_location: Some(location.clone()),
+            weather_days: *forecast_days,
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::WebSearch { query } => AssistantFollowUpInputHint {
@@ -1178,6 +2658,88 @@ fn follow_up_entities(
     block: &AssistantToolContextBlock,
 ) -> Vec<AssistantFollowUpEntity> {
     match tool {
+        AssistantToolName::CalendarListEvents => block
+            .data
+            .get("events")
+            .and_then(serde_json::Value::as_array)
+            .map(|events| {
+                events
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, event)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
+                                "{} ({})",
+                                event.get("title")?.as_str()?,
+                                event.get("event_date")?.as_str()?
+                            ),
+                            identifier: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarUpcomingBirthdays => block
+            .data
+            .get("birthdays")
+            .and_then(serde_json::Value::as_array)
+            .map(|events| {
+                events
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, event)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
+                                "{} ({})",
+                                event.get("title")?.as_str()?,
+                                event.get("event_date")?.as_str()?
+                            ),
+                            identifier: None,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarGetEventDetails => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: format!(
+                "{} ({})",
+                block
+                    .data
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&block.label),
+                block
+                    .data
+                    .get("event_date")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            ),
+            identifier: block
+                .data
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        }],
+        AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
+        AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
+                .data
+                .get("channel_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&block.label)
+                .to_string(),
+            identifier: block
+                .data
+                .get("channel_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        }],
         AssistantToolName::DownloadsListAvailableArtifacts => block
             .data
             .get("artifacts")
@@ -1222,6 +2784,28 @@ fn follow_up_entities(
                     .collect()
             })
             .unwrap_or_default(),
+        AssistantToolName::LibrariesGetRecentlyAdded => block
+            .data
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: item.get("title")?.as_str()?.to_string(),
+                            identifier: item
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         AssistantToolName::LibraryGetItemSummary => vec![AssistantFollowUpEntity {
             ordinal: 1,
             label: block
@@ -1237,6 +2821,28 @@ fn follow_up_entities(
                 .map(str::to_string),
         }],
         AssistantToolName::RoomsListActive => block
+            .data
+            .get("rooms")
+            .and_then(serde_json::Value::as_array)
+            .map(|rooms| {
+                rooms
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, room)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: room.get("title")?.as_str()?.to_string(),
+                            identifier: room
+                                .get("room_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::RoomsListJoinable => block
             .data
             .get("rooms")
             .and_then(serde_json::Value::as_array)
@@ -1344,40 +2950,17 @@ fn follow_up_entities(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         }],
-        AssistantToolName::CalendarListEvents | AssistantToolName::CalendarUpcomingBirthdays => {
-            block
-                .data
-                .get(
-                    if matches!(tool, AssistantToolName::CalendarUpcomingBirthdays) {
-                        "birthdays"
-                    } else {
-                        "events"
-                    },
-                )
-                .and_then(serde_json::Value::as_array)
-                .map(|events| {
-                    events
-                        .iter()
-                        .take(8)
-                        .enumerate()
-                        .filter_map(|(index, event)| {
-                            Some(AssistantFollowUpEntity {
-                                ordinal: index + 1,
-                                label: format!(
-                                    "{} ({})",
-                                    event.get("title")?.as_str()?,
-                                    event.get("event_date")?.as_str()?
-                                ),
-                                identifier: None,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
-        AssistantToolName::AccountGetProfileSummary
+        AssistantToolName::WeatherGetCurrent
+        | AssistantToolName::WeatherGetForecast
+        | AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
-        | AssistantToolName::SystemGetHostRuntimeSummary => Vec::new(),
+        | AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::SystemGetHostRuntimeSummary
+        | AssistantToolName::SystemGetBackupSummary
+        | AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetTranscodeSummary
+        | AssistantToolName::SystemGetStorageSummary
+        | AssistantToolName::SystemGetRecentErrors => Vec::new(),
     }
 }
 
@@ -1438,12 +3021,16 @@ fn downloads_status_label(count: usize, query: Option<&str>, availability: Optio
 
 #[cfg(test)]
 mod tests {
-    use super::enforce_tool_policy;
+    use super::{
+        birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
+        next_birthday_occurrence, transcript_excerpt_indexes, transcript_terms,
+    };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::types::{
         AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier,
         ToolRoleRequirement,
     };
+    use rustfin_db::repo::calendar::CalendarEventRow;
 
     fn assistant_context(role: &str) -> AssistantContext {
         AssistantContext {
@@ -1517,5 +3104,72 @@ mod tests {
         );
         let message = enforce_tool_policy(&context, spec).expect("policy should reject");
         assert!(message.contains("confirmation flow is implemented"));
+    }
+
+    fn birthday_event(title: &str, owner_username: Option<&str>) -> CalendarEventRow {
+        CalendarEventRow {
+            id: "birthday-test".to_string(),
+            scope: "global".to_string(),
+            owner_user_id: None,
+            owner_username: owner_username.map(str::to_string),
+            title: title.to_string(),
+            description: Some("Friend birthday".to_string()),
+            event_date: "2001-02-03".to_string(),
+            event_type: "birthday".to_string(),
+            recurrence: "yearly".to_string(),
+            birthday_year: Some(2001),
+            created_by_user_id: "creator".to_string(),
+            created_by_username: Some("creator".to_string()),
+            created_ts: 0,
+            updated_ts: 0,
+        }
+    }
+
+    #[test]
+    fn birthday_match_checks_title_and_owner() {
+        let title_match = birthday_event("Rachel", None);
+        assert!(birthday_matches_query(&title_match, "rachel"));
+
+        let owner_match = birthday_event("Shared Birthday", Some("rachel"));
+        assert!(birthday_matches_query(&owner_match, "rachel"));
+
+        let miss = birthday_event("Sam", Some("sam"));
+        assert!(!birthday_matches_query(&miss, "rachel"));
+    }
+
+    #[test]
+    fn birthday_display_uses_month_day() {
+        assert_eq!(birthday_month_day_display("2001-02-03"), "February 3");
+    }
+
+    #[test]
+    fn next_birthday_occurrence_returns_iso_date() {
+        let next = next_birthday_occurrence("2001-02-03");
+        assert_eq!(next.len(), 10);
+        assert!(next.chars().all(|ch| ch.is_ascii_digit() || ch == '-'));
+    }
+
+    #[test]
+    fn transcript_excerpt_sampling_keeps_early_middle_and_late_lines() {
+        let indexes = transcript_excerpt_indexes(12, 9);
+        assert!(indexes.contains(&0));
+        assert!(indexes.contains(&1));
+        assert!(indexes.contains(&2));
+        assert!(indexes.contains(&9));
+        assert!(indexes.contains(&10));
+        assert!(indexes.contains(&11));
+        assert!(indexes.len() <= 9);
+    }
+
+    #[test]
+    fn transcript_terms_drop_common_fillers() {
+        let terms = transcript_terms(
+            "Yeah okay the server deploy failed again and Rachel fixed the backup path.",
+        );
+        assert!(terms.contains(&"server".to_string()));
+        assert!(terms.contains(&"deploy".to_string()));
+        assert!(terms.contains(&"rachel".to_string()));
+        assert!(!terms.contains(&"yeah".to_string()));
+        assert!(!terms.contains(&"okay".to_string()));
     }
 }
