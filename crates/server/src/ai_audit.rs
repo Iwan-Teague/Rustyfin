@@ -270,7 +270,14 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             from_date,
             to_date,
             label,
-        } => format!("calendar:{label}:{from_date}->{to_date}"),
+            query,
+        } => format!(
+            "calendar:{label}:{from_date}->{to_date}:query={}",
+            query.as_deref().unwrap_or("*")
+        ),
+        AssistantToolInput::ChannelsFilter { query } => {
+            format!("channels:query={}", query.as_deref().unwrap_or("*"))
+        }
         AssistantToolInput::DownloadsFilter {
             query,
             availability,
@@ -280,6 +287,19 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             availability.as_deref().unwrap_or("*")
         ),
         AssistantToolInput::LibrarySearch { query } => format!("library_query:{query}"),
+        AssistantToolInput::LibraryRecent { query } => {
+            format!("library_recent:query={}", query.as_deref().unwrap_or("*"))
+        }
+        AssistantToolInput::Weather {
+            location,
+            forecast_days,
+        } => format!(
+            "weather:location={}:days={}",
+            location,
+            forecast_days
+                .map(|days| days.to_string())
+                .unwrap_or_else(|| "current".to_string())
+        ),
         AssistantToolInput::WebSearch { query } => format!("web_search:{query}"),
         AssistantToolInput::WebFetch { url } => format!("web_fetch:{url}"),
         AssistantToolInput::RoomsFilter { room_mode, query } => format!(

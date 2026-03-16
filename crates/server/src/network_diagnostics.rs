@@ -1,0 +1,325 @@
+use std::path::Path;
+
+#[cfg(target_os = "linux")]
+use serde::Deserialize;
+use serde::Serialize;
+
+use crate::state::AppState;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkAddressSummary {
+    pub family: String,
+    pub address: String,
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkNodeSummary {
+    pub name: String,
+    pub status: String,
+    pub is_loopback: bool,
+    pub addresses: Vec<NetworkAddressSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkTopologySnapshot {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub host_label: Option<String>,
+    pub public_host: Option<String>,
+    pub remote_access_enabled: bool,
+    pub trusted_proxy_count: usize,
+    pub trusted_proxies: Option<Vec<String>>,
+    pub online_node_count: usize,
+    pub offline_node_count: usize,
+    pub loopback_node_count: usize,
+    pub nodes: Vec<NetworkNodeSummary>,
+}
+
+impl NetworkTopologySnapshot {
+    fn unavailable(
+        reason: impl Into<String>,
+        host_label: Option<String>,
+        public_host: Option<String>,
+        remote_access_enabled: bool,
+        trusted_proxies: Vec<String>,
+        include_admin_details: bool,
+    ) -> Self {
+        Self {
+            available: false,
+            reason: Some(reason.into()),
+            host_label,
+            public_host,
+            remote_access_enabled,
+            trusted_proxy_count: trusted_proxies.len(),
+            trusted_proxies: include_admin_details.then_some(trusted_proxies),
+            online_node_count: 0,
+            offline_node_count: 0,
+            loopback_node_count: 0,
+            nodes: Vec::new(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Deserialize)]
+struct IpAddressShowRow {
+    ifname: String,
+    #[serde(default)]
+    operstate: Option<String>,
+    #[serde(default)]
+    flags: Vec<String>,
+    #[serde(default)]
+    addr_info: Vec<IpAddressInfo>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Deserialize)]
+struct IpAddressInfo {
+    family: String,
+    local: String,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+pub async fn collect_network_topology_snapshot(
+    state: &AppState,
+    include_admin_details: bool,
+) -> NetworkTopologySnapshot {
+    let remote_access_enabled = rustfin_db::repo::settings::get(&state.db, "allow_remote_access")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "true");
+    let trusted_proxies = rustfin_db::repo::settings::get(&state.db, "trusted_proxies")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default();
+
+    let host_label = detect_host_label();
+    let public_host = std::env::var("RUSTFIN_PUBLIC_HOST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    #[cfg(target_os = "linux")]
+    {
+        match collect_linux_network_nodes().await {
+            Ok(nodes) => {
+                let online_node_count = nodes.iter().filter(|node| node.status == "online").count();
+                let offline_node_count =
+                    nodes.iter().filter(|node| node.status == "offline").count();
+                let loopback_node_count = nodes
+                    .iter()
+                    .filter(|node| node.status == "loopback")
+                    .count();
+                NetworkTopologySnapshot {
+                    available: true,
+                    reason: None,
+                    host_label,
+                    public_host,
+                    remote_access_enabled,
+                    trusted_proxy_count: trusted_proxies.len(),
+                    trusted_proxies: include_admin_details.then_some(trusted_proxies),
+                    online_node_count,
+                    offline_node_count,
+                    loopback_node_count,
+                    nodes,
+                }
+            }
+            Err(error) => NetworkTopologySnapshot::unavailable(
+                error,
+                host_label,
+                public_host,
+                remote_access_enabled,
+                trusted_proxies,
+                include_admin_details,
+            ),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        NetworkTopologySnapshot::unavailable(
+            "Host network topology is only available on Linux hosts.",
+            host_label,
+            public_host,
+            remote_access_enabled,
+            trusted_proxies,
+            include_admin_details,
+        )
+    }
+}
+
+fn detect_host_label() -> Option<String> {
+    if let Ok(value) = std::env::var("HOSTNAME") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    let hostname_path = Path::new("/etc/hostname");
+    std::fs::read_to_string(hostname_path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+async fn collect_linux_network_nodes() -> Result<Vec<NetworkNodeSummary>, String> {
+    use tokio::process::Command;
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        Command::new("ip")
+            .args(["-json", "address", "show"])
+            .output(),
+    )
+    .await
+    .map_err(|_| "timed out while reading host network interfaces".to_string())?
+    .map_err(|error| format!("failed to run `ip -json address show`: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("`ip -json address show` exited with {}", output.status)
+        } else {
+            format!("`ip -json address show` failed: {stderr}")
+        });
+    }
+
+    let rows: Vec<IpAddressShowRow> = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("failed to parse host network interface data: {error}"))?;
+
+    let mut nodes = rows
+        .into_iter()
+        .map(|row| {
+            let addresses = row
+                .addr_info
+                .into_iter()
+                .filter(|address| matches!(address.family.as_str(), "inet" | "inet6"))
+                .map(|address| NetworkAddressSummary {
+                    family: address.family,
+                    address: address.local,
+                    scope: address.scope,
+                })
+                .collect::<Vec<_>>();
+            let is_loopback = row.flags.iter().any(|flag| flag == "LOOPBACK")
+                || row.ifname == "lo"
+                || addresses
+                    .iter()
+                    .all(|address| is_loopback_address(&address.address));
+            let status =
+                classify_network_node_status(row.operstate.as_deref(), is_loopback, &addresses);
+
+            NetworkNodeSummary {
+                name: row.ifname,
+                status: status.to_string(),
+                is_loopback,
+                addresses,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    nodes.sort_by(|left, right| {
+        status_rank(&left.status)
+            .cmp(&status_rank(&right.status))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(nodes)
+}
+
+#[cfg(target_os = "linux")]
+fn classify_network_node_status(
+    operstate: Option<&str>,
+    is_loopback: bool,
+    addresses: &[NetworkAddressSummary],
+) -> &'static str {
+    if is_loopback {
+        return "loopback";
+    }
+
+    let operstate = operstate.unwrap_or_default();
+    if operstate.eq_ignore_ascii_case("UP")
+        || operstate.eq_ignore_ascii_case("UNKNOWN") && !addresses.is_empty()
+    {
+        "online"
+    } else if !addresses.is_empty() {
+        "online"
+    } else {
+        "offline"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn status_rank(status: &str) -> u8 {
+    match status {
+        "online" => 0,
+        "offline" => 1,
+        "loopback" => 2,
+        _ => 3,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_loopback_address(address: &str) -> bool {
+    address == "127.0.0.1" || address == "::1"
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "linux")]
+    use super::{IpAddressShowRow, classify_network_node_status, is_loopback_address, status_rank};
+
+    #[cfg(target_os = "linux")]
+    use crate::network_diagnostics::NetworkAddressSummary;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn loopback_addresses_are_detected() {
+        assert!(is_loopback_address("127.0.0.1"));
+        assert!(is_loopback_address("::1"));
+        assert!(!is_loopback_address("192.168.1.5"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classify_network_node_status_prefers_loopback() {
+        let status = classify_network_node_status(None, true, &[]);
+        assert_eq!(status, "loopback");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classify_network_node_status_marks_up_nodes_online() {
+        let addresses = vec![NetworkAddressSummary {
+            family: "inet".to_string(),
+            address: "192.168.1.5".to_string(),
+            scope: Some("global".to_string()),
+        }];
+        let status = classify_network_node_status(Some("UP"), false, &addresses);
+        assert_eq!(status, "online");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn status_rank_orders_online_before_offline() {
+        assert!(status_rank("online") < status_rank("offline"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ip_json_shape_parses_expected_fields() {
+        let rows: Vec<IpAddressShowRow> = serde_json::from_str(
+            r#"[{"ifname":"eth0","operstate":"UP","flags":["BROADCAST","UP"],"addr_info":[{"family":"inet","local":"192.168.1.2","scope":"global"}]}]"#,
+        )
+        .expect("expected interface JSON to parse");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].ifname, "eth0");
+        assert_eq!(rows[0].addr_info[0].local, "192.168.1.2");
+    }
+}

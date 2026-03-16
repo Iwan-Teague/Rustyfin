@@ -180,10 +180,23 @@ Rules:\n\
 - Use detail tools only when the user is asking about one specific room, one specific server, or one specific library item.\n\
 - Use libraries_list_accessible for generic library access questions.\n\
 - Use library_search_titles for searching by title.\n\
-- Use calendar_upcoming_birthdays only for birthday requests.\n\
+- Use libraries_get_recently_added for recently added or newest library items.\n\
+- Use calendar_upcoming_birthdays only for birthday requests, including named questions like \"When is Rachel's birthday?\".\n\
+- Use calendar_get_event_details when the user wants more detail about one specific calendar event.\n\
+- Use channels_list_unread_activity for recent visible channel activity; exact unread counts are not available.\n\
+- Use channels_get_transcript_summary when the user asks what a transcribed voice call was about or wants a transcript-based call summary.\n\
+- Use network_get_topology_summary for Rustyfin network, interface, IP address, hostname, remote-access, proxy, or topology questions.\n\
+- Use weather_get_current for current weather, temperature, wind, or conditions right now.\n\
+- Use weather_get_forecast for forecast, tomorrow, weekend, next few days, rain chance, or weather planning questions.\n\
+- Use rooms_list_joinable for invites or rooms the user can join now.\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
+- Use system_get_backup_summary for backup or restore capability questions.\n\
+- Use system_get_service_health for internal service or agent health questions.\n\
+- Use system_get_transcode_summary for transcoding, ffmpeg, hardware acceleration, or transcode-failure questions.\n\
+- Use system_get_storage_summary for storage, disk, cache, model directory, or free-space questions.\n\
+- Use system_get_recent_errors for recent failures, problem summaries, or error overviews.\n\
 - Use web_fetch_public_page_summary only for explicit public URLs.\n\
-- Use web_search_public_web only for current public web information not already covered by a Rustyfin tool.\n\
+- Use web_search_public_web only for current public web information not already covered by a Rustyfin tool or curated public-weather tools.\n\
 - If the request is unsupported, casual chat, or a write action, return mode none.\n\
 - Allowed availability values for downloads: available, planned, unavailable.\n\
 - Allowed availability values for servers: online, offline, healthy, problem.\n\
@@ -235,16 +248,32 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: none; the backend derives the calendar time window from the message."
         }
         AssistantToolName::CalendarUpcomingBirthdays => {
-            " Args: none; the backend derives the birthday time window from the message."
+            " Args: optional query; the backend derives the birthday time window from the message and can narrow results to a named person."
+        }
+        AssistantToolName::CalendarGetEventDetails => {
+            " Args: required query; the backend derives the visible calendar window from the message or follow-up context."
+        }
+        AssistantToolName::ChannelsListUnreadActivity => {
+            " Args: optional query; exact unread counts are unavailable."
+        }
+        AssistantToolName::ChannelsGetTranscriptSummary => {
+            " Args: optional query; the backend picks the latest accessible completed voice transcript for a matching channel."
         }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             " Args: optional query, optional availability."
         }
+        AssistantToolName::NetworkGetTopologySummary => " Args: none.",
         AssistantToolName::LibrarySearchTitles => " Args: required query.",
         AssistantToolName::LibraryGetItemSummary => " Args: required query.",
+        AssistantToolName::LibrariesGetRecentlyAdded => " Args: optional query.",
+        AssistantToolName::WeatherGetCurrent => " Args: required location.",
+        AssistantToolName::WeatherGetForecast => {
+            " Args: required location; the backend derives a short forecast window from the message."
+        }
         AssistantToolName::WebSearchPublicWeb => " Args: required query.",
         AssistantToolName::WebFetchPublicPageSummary => " Args: required url.",
         AssistantToolName::RoomsListActive => " Args: optional room_mode, optional query.",
+        AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
@@ -254,7 +283,12 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         }
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
-        | AssistantToolName::SystemGetHostRuntimeSummary => " Args: none.",
+        | AssistantToolName::SystemGetHostRuntimeSummary
+        | AssistantToolName::SystemGetBackupSummary
+        | AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetTranscodeSummary
+        | AssistantToolName::SystemGetStorageSummary
+        | AssistantToolName::SystemGetRecentErrors => " Args: none.",
     }
 }
 
@@ -406,9 +440,36 @@ fn normalize_model_tool_input(
     match tool {
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
-        | AssistantToolName::SystemGetHostRuntimeSummary => Some(AssistantToolInput::None),
-        AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7)),
-        AssistantToolName::CalendarUpcomingBirthdays => Some(extract_calendar_window(message, 30)),
+        | AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::SystemGetHostRuntimeSummary
+        | AssistantToolName::SystemGetBackupSummary
+        | AssistantToolName::SystemGetServiceHealth
+        | AssistantToolName::SystemGetTranscodeSummary
+        | AssistantToolName::SystemGetStorageSummary
+        | AssistantToolName::SystemGetRecentErrors => Some(AssistantToolInput::None),
+        AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7, None)),
+        AssistantToolName::CalendarUpcomingBirthdays => Some(extract_calendar_window(
+            message,
+            30,
+            normalize_optional_query(response.query.clone())
+                .or_else(|| extract_birthday_query(message)),
+        )),
+        AssistantToolName::CalendarGetEventDetails => Some(extract_calendar_window(
+            message,
+            30,
+            normalize_optional_query(response.query.clone())
+                .or_else(|| extract_calendar_event_detail_query(message)),
+        )),
+        AssistantToolName::ChannelsListUnreadActivity => Some(AssistantToolInput::ChannelsFilter {
+            query: normalize_optional_query(response.query.clone())
+                .or_else(|| extract_channel_query(message)),
+        }),
+        AssistantToolName::ChannelsGetTranscriptSummary => {
+            Some(AssistantToolInput::ChannelsFilter {
+                query: normalize_optional_query(response.query.clone())
+                    .or_else(|| extract_transcript_channel_query(message)),
+            })
+        }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             Some(AssistantToolInput::DownloadsFilter {
                 query: normalize_optional_query(response.query.clone())
@@ -429,6 +490,20 @@ fn normalize_model_tool_input(
                 .or_else(|| extract_library_follow_up_query(message))
                 .or_else(|| extract_library_search_query(message))?,
         }),
+        AssistantToolName::LibrariesGetRecentlyAdded => Some(AssistantToolInput::LibraryRecent {
+            query: normalize_optional_query(response.query.clone())
+                .or_else(|| extract_recent_library_query(message)),
+        }),
+        AssistantToolName::WeatherGetCurrent => Some(AssistantToolInput::Weather {
+            location: normalize_optional_query(response.query.clone())
+                .or_else(|| extract_weather_location(message))?,
+            forecast_days: None,
+        }),
+        AssistantToolName::WeatherGetForecast => Some(AssistantToolInput::Weather {
+            location: normalize_optional_query(response.query.clone())
+                .or_else(|| extract_weather_location(message))?,
+            forecast_days: Some(extract_weather_forecast_days(message)),
+        }),
         AssistantToolName::WebSearchPublicWeb => Some(AssistantToolInput::WebSearch {
             query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_public_web_search_query(message))?,
@@ -442,6 +517,12 @@ fn normalize_model_tool_input(
             room_mode: normalize_room_mode(response.room_mode.as_deref())
                 .or_else(|| detect_room_mode(message)),
             query: normalize_optional_query(response.query.clone()),
+        }),
+        AssistantToolName::RoomsListJoinable => Some(AssistantToolInput::RoomsFilter {
+            room_mode: normalize_room_mode(response.room_mode.as_deref())
+                .or_else(|| detect_room_mode(message)),
+            query: normalize_optional_query(response.query.clone())
+                .or_else(|| extract_room_query(message)),
         }),
         AssistantToolName::RoomsGetRoomSummary => Some(AssistantToolInput::RoomsFilter {
             room_mode: normalize_room_mode(response.room_mode.as_deref())
@@ -531,6 +612,11 @@ fn clarification_for_message(message: &str) -> Option<String> {
     if is_non_birthday_calendar_query(&lower) && !calendar_query_has_explicit_window(&lower) {
         return Some(
             "What time window should I check for your calendar? Try today, tomorrow, this week, next week, this month, or a specific date like 2026-03-22.".to_string(),
+        );
+    }
+    if is_weather_query(&lower) && extract_weather_location(message).is_none() {
+        return Some(
+            "Which location should I check the weather for? Try a place name like Dublin, Cork, or Galway.".to_string(),
         );
     }
     if is_ambiguous_server_query(&lower, message) {
@@ -628,11 +714,19 @@ pub fn plan_tool_calls_with_history(
             "upcoming birthday",
         ],
     ) {
-        let calendar_input = extract_calendar_window(message, 30);
+        let calendar_input = extract_calendar_window(message, 30, extract_birthday_query(message));
         push_tool(
             &mut planned,
             &mut seen,
             AssistantToolName::CalendarUpcomingBirthdays,
+            calendar_input,
+        );
+    } else if let Some(query) = extract_calendar_event_detail_query(message) {
+        let calendar_input = extract_calendar_window(message, 30, Some(query));
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarGetEventDetails,
             calendar_input,
         );
     } else if has_any(
@@ -646,7 +740,7 @@ pub fn plan_tool_calls_with_history(
             "coming up",
         ],
     ) {
-        let calendar_input = extract_calendar_window(message, 7);
+        let calendar_input = extract_calendar_window(message, 7, None);
         push_tool(
             &mut planned,
             &mut seen,
@@ -655,7 +749,38 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if has_any(
+    if is_channel_activity_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::ChannelsListUnreadActivity,
+            AssistantToolInput::ChannelsFilter {
+                query: extract_channel_query(message),
+            },
+        );
+    }
+
+    if is_transcript_summary_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::ChannelsGetTranscriptSummary,
+            AssistantToolInput::ChannelsFilter {
+                query: extract_transcript_channel_query(message)
+                    .or_else(|| recent_transcript_query_hint(history)),
+            },
+        );
+    }
+
+    if is_joinable_rooms_query(&lower) {
+        let room_input = extract_room_filter(message);
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::RoomsListJoinable,
+            room_input,
+        );
+    } else if has_any(
         &lower,
         &[
             "room",
@@ -695,6 +820,21 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
+    if let Some(weather_input) = extract_weather_input(message) {
+        let weather_tool = match weather_input {
+            AssistantToolInput::Weather {
+                forecast_days: Some(_),
+                ..
+            } => AssistantToolName::WeatherGetForecast,
+            AssistantToolInput::Weather {
+                forecast_days: None,
+                ..
+            } => AssistantToolName::WeatherGetCurrent,
+            _ => AssistantToolName::WeatherGetCurrent,
+        };
+        push_tool(&mut planned, &mut seen, weather_tool, weather_input);
+    }
+
     if public_web_tools_enabled() {
         if let Some(url) = extract_public_web_url(message) {
             push_tool(
@@ -713,11 +853,65 @@ pub fn plan_tool_calls_with_history(
         }
     }
 
+    if is_network_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::NetworkGetTopologySummary,
+            AssistantToolInput::None,
+        );
+    }
+
     if is_host_runtime_query(&lower) {
         push_tool(
             &mut planned,
             &mut seen,
             AssistantToolName::SystemGetHostRuntimeSummary,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_backup_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetBackupSummary,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_service_health_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetServiceHealth,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_transcode_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetTranscodeSummary,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_storage_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetStorageSummary,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_recent_errors_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetRecentErrors,
             AssistantToolInput::None,
         );
     }
@@ -728,6 +922,15 @@ pub fn plan_tool_calls_with_history(
             &mut seen,
             AssistantToolName::LibrarySearchTitles,
             AssistantToolInput::LibrarySearch { query },
+        );
+    } else if is_recent_library_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::LibrariesGetRecentlyAdded,
+            AssistantToolInput::LibraryRecent {
+                query: extract_recent_library_query(message),
+            },
         );
     } else if has_any(
         &lower,
@@ -749,6 +952,9 @@ pub fn plan_tool_calls_with_history(
     }
 
     if !is_host_runtime_query(&lower)
+        && !is_service_health_query(&lower)
+        && !is_recent_errors_query(&lower)
+        && !is_transcode_query(&lower)
         && has_any(
             &lower,
             &["server", "servers", "minecraft", "minecraft server"],
@@ -842,10 +1048,41 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::CalendarListEvents, _) => "Checking calendar events".to_string(),
         (
             AssistantToolName::CalendarUpcomingBirthdays,
+            AssistantToolInput::CalendarWindow {
+                label,
+                query: Some(query),
+                ..
+            },
+        ) => format!("Checking birthdays matching \"{query}\" for {label}"),
+        (
+            AssistantToolName::CalendarUpcomingBirthdays,
             AssistantToolInput::CalendarWindow { label, .. },
         ) => format!("Checking birthdays for {label}"),
         (AssistantToolName::CalendarUpcomingBirthdays, _) => {
             "Checking upcoming birthdays".to_string()
+        }
+        (
+            AssistantToolName::CalendarGetEventDetails,
+            AssistantToolInput::CalendarWindow {
+                query: Some(query), ..
+            },
+        ) => format!("Loading calendar details for \"{query}\""),
+        (AssistantToolName::CalendarGetEventDetails, _) => {
+            "Loading calendar event details".to_string()
+        }
+        (
+            AssistantToolName::ChannelsListUnreadActivity,
+            AssistantToolInput::ChannelsFilter { query: Some(query) },
+        ) => format!("Checking recent channel activity in \"{query}\""),
+        (AssistantToolName::ChannelsListUnreadActivity, _) => {
+            "Checking recent channel activity".to_string()
+        }
+        (
+            AssistantToolName::ChannelsGetTranscriptSummary,
+            AssistantToolInput::ChannelsFilter { query: Some(query) },
+        ) => format!("Checking the latest transcript summary for \"{query}\""),
+        (AssistantToolName::ChannelsGetTranscriptSummary, _) => {
+            "Checking the latest completed call transcript".to_string()
         }
         (
             AssistantToolName::DownloadsListAvailableArtifacts,
@@ -871,6 +1108,22 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::DownloadsListAvailableArtifacts, _) => {
             "Checking available downloads".to_string()
         }
+        (AssistantToolName::NetworkGetTopologySummary, _) => {
+            "Checking network topology and interface state".to_string()
+        }
+        (AssistantToolName::WeatherGetCurrent, AssistantToolInput::Weather { location, .. }) => {
+            format!("Checking current weather for \"{location}\"")
+        }
+        (
+            AssistantToolName::WeatherGetForecast,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: Some(days),
+            },
+        ) => format!("Checking the next {days} days of weather for \"{location}\""),
+        (AssistantToolName::WeatherGetForecast, AssistantToolInput::Weather { location, .. }) => {
+            format!("Checking weather forecast for \"{location}\"")
+        }
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
         }
@@ -882,6 +1135,13 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         }
         (AssistantToolName::LibraryGetItemSummary, AssistantToolInput::LibrarySearch { query }) => {
             format!("Loading library item details for \"{query}\"")
+        }
+        (
+            AssistantToolName::LibrariesGetRecentlyAdded,
+            AssistantToolInput::LibraryRecent { query: Some(query) },
+        ) => format!("Checking recently added library items matching \"{query}\""),
+        (AssistantToolName::LibrariesGetRecentlyAdded, _) => {
+            "Checking recently added library items".to_string()
         }
         (AssistantToolName::WebSearchPublicWeb, AssistantToolInput::WebSearch { query }) => {
             format!("Searching the public web for \"{query}\"")
@@ -915,6 +1175,24 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         ) => format!("Loading room details for \"{query}\""),
         (AssistantToolName::RoomsGetRoomSummary, _) => "Loading room details".to_string(),
         (
+            AssistantToolName::RoomsListJoinable,
+            AssistantToolInput::RoomsFilter {
+                room_mode: Some(room_mode),
+                ..
+            },
+        ) => format!(
+            "Checking joinable {} rooms",
+            room_mode_status_label(room_mode)
+        ),
+        (
+            AssistantToolName::RoomsListJoinable,
+            AssistantToolInput::RoomsFilter {
+                room_mode: None,
+                query: Some(query),
+            },
+        ) => format!("Checking joinable rooms matching \"{query}\""),
+        (AssistantToolName::RoomsListJoinable, _) => "Checking joinable rooms".to_string(),
+        (
             AssistantToolName::ServersListMinecraftStatus,
             AssistantToolInput::ServerFilter {
                 query: Some(query),
@@ -946,6 +1224,17 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         ) => format!("Loading Minecraft server details for \"{query}\""),
         (AssistantToolName::ServersGetMinecraftServerSummary, _) => {
             "Loading Minecraft server details".to_string()
+        }
+        (AssistantToolName::SystemGetBackupSummary, _) => "Checking backup capability".to_string(),
+        (AssistantToolName::SystemGetServiceHealth, _) => "Checking service health".to_string(),
+        (AssistantToolName::SystemGetTranscodeSummary, _) => {
+            "Checking transcoding health and hardware acceleration".to_string()
+        }
+        (AssistantToolName::SystemGetStorageSummary, _) => {
+            "Checking storage paths and free space".to_string()
+        }
+        (AssistantToolName::SystemGetRecentErrors, _) => {
+            "Checking recent failures and errors".to_string()
         }
         _ => format!("Checking {}", call.tool.spec().summary.to_ascii_lowercase()),
     }
@@ -997,22 +1286,75 @@ fn apply_follow_up_tool_hints(
     for tool in recent_tools {
         match tool {
             AssistantToolName::CalendarListEvents => {
-                if message_has_calendar_follow_up_hint(message) {
+                if let Some(query) = extract_calendar_event_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetEventDetails,
+                        extract_calendar_window(message, 30, Some(query)),
+                    );
+                } else if message_has_calendar_follow_up_hint(message) {
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::CalendarListEvents,
-                        extract_calendar_window(message, 7),
+                        extract_calendar_window(message, 7, None),
                     );
                 }
             }
             AssistantToolName::CalendarUpcomingBirthdays => {
-                if message_has_calendar_follow_up_hint(message) {
+                let birthday_query = extract_birthday_query(message);
+                if message_has_calendar_follow_up_hint(message) || birthday_query.is_some() {
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::CalendarUpcomingBirthdays,
-                        extract_calendar_window(message, 30),
+                        extract_calendar_window(message, 30, birthday_query),
+                    );
+                }
+            }
+            AssistantToolName::CalendarGetEventDetails => {
+                if let Some(query) = extract_calendar_event_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetEventDetails,
+                        extract_calendar_window(message, 30, Some(query)),
+                    );
+                } else if message_has_calendar_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarListEvents,
+                        extract_calendar_window(message, 7, None),
+                    );
+                }
+            }
+            AssistantToolName::ChannelsListUnreadActivity => {
+                if message_has_channel_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::ChannelsListUnreadActivity,
+                        AssistantToolInput::ChannelsFilter {
+                            query: extract_channel_query(message),
+                        },
+                    );
+                }
+            }
+            AssistantToolName::ChannelsGetTranscriptSummary => {
+                if is_transcript_summary_query(&message.to_ascii_lowercase())
+                    || message_has_transcript_follow_up_hint(message)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::ChannelsGetTranscriptSummary,
+                        AssistantToolInput::ChannelsFilter {
+                            query: extract_transcript_channel_query(message)
+                                .or_else(|| extract_channel_query(message))
+                                .or_else(|| recent_transcript_query_hint(history)),
+                        },
                     );
                 }
             }
@@ -1026,12 +1368,32 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
+            AssistantToolName::NetworkGetTopologySummary => {
+                if message_has_network_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::NetworkGetTopologySummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
             AssistantToolName::RoomsListActive | AssistantToolName::RoomsGetRoomSummary => {
                 if message_has_room_follow_up_hint(message) {
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::RoomsListActive,
+                        extract_room_filter(message),
+                    );
+                }
+            }
+            AssistantToolName::RoomsListJoinable => {
+                if message_has_room_follow_up_hint(message) || is_joinable_rooms_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::RoomsListJoinable,
                         extract_room_filter(message),
                     );
                 }
@@ -1049,13 +1411,23 @@ fn apply_follow_up_tool_hints(
             }
             AssistantToolName::LibrariesListAccessible
             | AssistantToolName::LibrarySearchTitles
-            | AssistantToolName::LibraryGetItemSummary => {
+            | AssistantToolName::LibraryGetItemSummary
+            | AssistantToolName::LibrariesGetRecentlyAdded => {
                 if let Some(query) = extract_library_follow_up_query(message) {
                     push_tool(
                         planned,
                         seen,
                         AssistantToolName::LibrarySearchTitles,
                         AssistantToolInput::LibrarySearch { query },
+                    );
+                } else if is_recent_library_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::LibrariesGetRecentlyAdded,
+                        AssistantToolInput::LibraryRecent {
+                            query: extract_recent_library_query(message),
+                        },
                     );
                 } else if message_has_library_listing_follow_up_hint(message) {
                     push_tool(
@@ -1064,6 +1436,11 @@ fn apply_follow_up_tool_hints(
                         AssistantToolName::LibrariesListAccessible,
                         AssistantToolInput::None,
                     );
+                }
+            }
+            AssistantToolName::WeatherGetCurrent | AssistantToolName::WeatherGetForecast => {
+                if let Some((tool, input)) = extract_weather_follow_up_call(message, history) {
+                    push_tool(planned, seen, tool, input);
                 }
             }
             AssistantToolName::WebSearchPublicWeb
@@ -1091,6 +1468,56 @@ fn apply_follow_up_tool_hints(
                         planned,
                         seen,
                         AssistantToolName::SystemGetHostRuntimeSummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetBackupSummary => {
+                if is_backup_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetBackupSummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetServiceHealth => {
+                if is_service_health_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetServiceHealth,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetTranscodeSummary => {
+                if is_transcode_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetTranscodeSummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetStorageSummary => {
+                if is_storage_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetStorageSummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
+            AssistantToolName::SystemGetRecentErrors => {
+                if is_recent_errors_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetRecentErrors,
                         AssistantToolInput::None,
                     );
                 }
@@ -1132,6 +1559,47 @@ fn apply_follow_up_entity_reference(
     };
 
     match context.tool.as_str() {
+        "calendar_list_events" | "calendar_get_event_details" => {
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::CalendarGetEventDetails,
+                AssistantToolInput::CalendarWindow {
+                    from_date: context
+                        .input_hint
+                        .calendar_from_date
+                        .clone()
+                        .unwrap_or_else(|| Utc::now().date_naive().format("%F").to_string()),
+                    to_date: context
+                        .input_hint
+                        .calendar_to_date
+                        .clone()
+                        .unwrap_or_else(|| {
+                            (Utc::now().date_naive() + Duration::days(30))
+                                .format("%F")
+                                .to_string()
+                        }),
+                    label: context
+                        .input_hint
+                        .calendar_label
+                        .clone()
+                        .unwrap_or_else(|| "the current calendar window".to_string()),
+                    query: Some(entity.label.clone()),
+                },
+            );
+            true
+        }
+        "channels_get_transcript_summary" => {
+            push_tool(
+                planned,
+                seen,
+                AssistantToolName::ChannelsGetTranscriptSummary,
+                AssistantToolInput::ChannelsFilter {
+                    query: Some(entity.label.clone()),
+                },
+            );
+            true
+        }
         "servers_list_minecraft_status" | "servers_get_minecraft_server_summary" => {
             push_tool(
                 planned,
@@ -1145,7 +1613,7 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
-        "rooms_list_active" | "rooms_get_room_summary" => {
+        "rooms_list_active" | "rooms_list_joinable" | "rooms_get_room_summary" => {
             push_tool(
                 planned,
                 seen,
@@ -1158,7 +1626,7 @@ fn apply_follow_up_entity_reference(
             );
             true
         }
-        "library_search_titles" | "library_get_item_summary" => {
+        "library_search_titles" | "library_get_item_summary" | "libraries_get_recently_added" => {
             push_tool(
                 planned,
                 seen,
@@ -1235,29 +1703,44 @@ fn recent_follow_up_contexts(
 fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     match context.tool.as_str() {
+        "calendar_list_events" | "calendar_upcoming_birthdays" | "calendar_get_event_details" => {
+            message_has_calendar_follow_up_hint(message)
+                || extract_calendar_event_detail_query(message).is_some()
+                || extract_birthday_query(message).is_some()
+                || has_any(
+                    &lower,
+                    &["calendar", "event", "events", "birthday", "birthdays"],
+                )
+        }
+        "channels_list_unread_activity" => is_channel_activity_query(&lower),
+        "channels_get_transcript_summary" => {
+            is_transcript_summary_query(&lower) || message_has_transcript_follow_up_hint(message)
+        }
         "servers_list_minecraft_status" | "servers_get_minecraft_server_summary" => {
             extract_server_availability(message).is_some()
                 || extract_server_query(message).is_some()
                 || has_any(&lower, &["server", "servers"])
         }
-        "rooms_list_active" | "rooms_get_room_summary" => {
+        "rooms_list_active" | "rooms_list_joinable" | "rooms_get_room_summary" => {
             detect_room_mode(message).is_some() || has_any(&lower, &["room", "rooms"])
         }
-        "library_search_titles" | "library_get_item_summary" => has_any(
-            &lower,
-            &[
-                "movie",
-                "movies",
-                "show",
-                "shows",
-                "song",
-                "songs",
-                "album",
-                "artist",
-                "library",
-                "libraries",
-            ],
-        ),
+        "library_search_titles" | "library_get_item_summary" | "libraries_get_recently_added" => {
+            has_any(
+                &lower,
+                &[
+                    "movie",
+                    "movies",
+                    "show",
+                    "shows",
+                    "song",
+                    "songs",
+                    "album",
+                    "artist",
+                    "library",
+                    "libraries",
+                ],
+            )
+        }
         "downloads_list_available_artifacts" => has_any(
             &lower,
             &[
@@ -1272,11 +1755,33 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
                 "companion",
             ],
         ),
+        "weather_get_current" | "weather_get_forecast" => {
+            is_weather_query(&lower)
+                || extract_weather_location(message).is_some()
+                || has_any(
+                    &lower,
+                    &[
+                        "today",
+                        "tomorrow",
+                        "weekend",
+                        "this week",
+                        "next week",
+                        "rain",
+                        "wind",
+                        "temperature",
+                    ],
+                )
+        }
         "web_search_public_web" | "web_fetch_public_page_summary" => {
             extract_public_web_url(message).is_some()
                 || extract_public_web_search_query(message).is_some()
         }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
+        "system_get_backup_summary" => is_backup_query(&lower),
+        "system_get_service_health" => is_service_health_query(&lower),
+        "system_get_transcode_summary" => is_transcode_query(&lower),
+        "system_get_storage_summary" => is_storage_query(&lower),
+        "system_get_recent_errors" => is_recent_errors_query(&lower),
         _ => false,
     }
 }
@@ -1298,6 +1803,7 @@ fn extract_follow_up_entity_reference(message: &str) -> Option<FollowUpEntityRef
             "that room",
             "that movie",
             "that show",
+            "that event",
         ],
     ) {
         return Some(FollowUpEntityReference::Demonstrative);
@@ -1360,6 +1866,31 @@ fn message_has_calendar_follow_up_hint(message: &str) -> bool {
         )
 }
 
+fn message_has_channel_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    is_channel_activity_query(&lower)
+        || extract_channel_query(message).is_some()
+        || has_any(&lower, &["what about", "how about", "and in", "and on"])
+}
+
+fn message_has_transcript_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_transcript_channel_query(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "transcript",
+                "transcription",
+                "call summary",
+                "summarize the call",
+                "summarise the call",
+                "what was it about",
+                "what did they talk about",
+                "what was discussed",
+            ],
+        )
+}
+
 fn message_has_room_follow_up_hint(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     detect_room_mode(message).is_some() || has_any(&lower, &["room", "rooms"])
@@ -1391,6 +1922,31 @@ fn message_has_host_runtime_follow_up_hint(message: &str) -> bool {
     )
 }
 
+fn message_has_network_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "network",
+            "topology",
+            "interface",
+            "interfaces",
+            "ip",
+            "ip address",
+            "ip addresses",
+            "address",
+            "addresses",
+            "hostname",
+            "remote access",
+            "trusted proxy",
+            "trusted proxies",
+            "proxy",
+            "proxies",
+            "lan",
+        ],
+    )
+}
+
 fn message_has_library_listing_follow_up_hint(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     has_any(
@@ -1405,6 +1961,65 @@ fn message_has_library_listing_follow_up_hint(message: &str) -> bool {
             "libraries",
         ],
     )
+}
+
+fn is_channel_activity_query(message_lower: &str) -> bool {
+    let channel_scope = has_any(
+        message_lower,
+        &[
+            "channel",
+            "channels",
+            "chat",
+            "messages",
+            "message activity",
+            "general chat",
+        ],
+    );
+    let activity_hint = has_any(
+        message_lower,
+        &[
+            "unread",
+            "recent",
+            "latest",
+            "activity",
+            "new",
+            "happening",
+            "going on",
+        ],
+    );
+    channel_scope && activity_hint
+}
+
+fn is_transcript_summary_query(message_lower: &str) -> bool {
+    let transcript_scope = has_any(
+        message_lower,
+        &[
+            "transcript",
+            "transcription",
+            "voice call",
+            "call",
+            "voice chat",
+            "call summary",
+        ],
+    );
+    let summary_hint = has_any(
+        message_lower,
+        &[
+            "summarize",
+            "summarise",
+            "summary",
+            "what was",
+            "what were",
+            "what did",
+            "what was it about",
+            "what was the call about",
+            "what did they talk about",
+            "what was discussed",
+            "recap",
+        ],
+    );
+
+    transcript_scope && summary_hint
 }
 
 fn message_has_downloads_follow_up_hint(message: &str) -> bool {
@@ -1505,6 +2120,413 @@ fn extract_downloads_availability(message: &str) -> Option<String> {
     }
 }
 
+fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let detail_hint = has_any(
+        &lower,
+        &[
+            "details",
+            "detail",
+            "tell me more",
+            "tell me about",
+            "more about",
+            "what time is",
+            "when is",
+            "who created",
+            "describe",
+        ],
+    );
+    if !detail_hint && !has_any(&lower, &["calendar", "event", "events", "schedule"]) {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    for marker in [
+        "event called ",
+        "event named ",
+        "details for ",
+        "tell me about ",
+        "tell me more about ",
+        "more about ",
+        "what time is ",
+        "when is ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.']).unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+
+    None
+}
+
+fn extract_channel_query(message: &str) -> Option<String> {
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    let lower = message.to_ascii_lowercase();
+    for marker in ["channel called ", "channel named ", "in ", "on "] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let mut candidate = rest[..end].trim().to_string();
+        for suffix in [" about", " again", " please"] {
+            if candidate.to_ascii_lowercase().ends_with(suffix) {
+                let keep_len = candidate.len().saturating_sub(suffix.len());
+                candidate.truncate(keep_len);
+                candidate = candidate.trim().to_string();
+            }
+        }
+        if candidate.is_empty() {
+            continue;
+        }
+        let candidate_lower = candidate.to_ascii_lowercase();
+        if matches!(
+            candidate_lower.as_str(),
+            "channels" | "channel" | "chat" | "messages" | "latest" | "recent" | "unread"
+        ) {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+
+    None
+}
+
+fn extract_transcript_channel_query(message: &str) -> Option<String> {
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    let lower = message.to_ascii_lowercase();
+    for marker in [
+        "call in ",
+        "call on ",
+        "transcript for ",
+        "transcript in ",
+        "transcript on ",
+        "transcription for ",
+        "transcription in ",
+        "voice channel ",
+        "channel called ",
+        "channel named ",
+    ] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let mut candidate = rest[..end].trim().to_string();
+        for suffix in [" about", " again", " please"] {
+            if candidate.to_ascii_lowercase().ends_with(suffix) {
+                let keep_len = candidate.len().saturating_sub(suffix.len());
+                candidate.truncate(keep_len);
+                candidate = candidate.trim().to_string();
+            }
+        }
+        if candidate.is_empty() {
+            continue;
+        }
+        let candidate_lower = candidate.to_ascii_lowercase();
+        if matches!(
+            candidate_lower.as_str(),
+            "call" | "voice" | "voice call" | "transcript" | "transcription"
+        ) {
+            continue;
+        }
+        return Some(candidate);
+    }
+
+    extract_channel_query(message)
+}
+
+fn extract_weather_input(message: &str) -> Option<AssistantToolInput> {
+    let lower = message.to_ascii_lowercase();
+    if !is_weather_query(&lower) {
+        return None;
+    }
+
+    let location = extract_weather_location(message)?;
+    let forecast_days = if weather_prefers_forecast(&lower) {
+        Some(extract_weather_forecast_days(message))
+    } else {
+        None
+    };
+    Some(AssistantToolInput::Weather {
+        location,
+        forecast_days,
+    })
+}
+
+fn extract_weather_follow_up_call(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+) -> Option<(AssistantToolName, AssistantToolInput)> {
+    let lower = message.to_ascii_lowercase();
+    let (default_tool, fallback_location, fallback_days) = recent_weather_hint(history)?;
+    let has_hint = is_weather_query(&lower)
+        || extract_weather_location(message).is_some()
+        || has_any(
+            &lower,
+            &[
+                "today",
+                "tomorrow",
+                "weekend",
+                "this week",
+                "next week",
+                "weather",
+                "forecast",
+                "temperature",
+                "rain",
+                "wind",
+                "humidity",
+                "hot",
+                "cold",
+                "sunny",
+                "cloudy",
+            ],
+        );
+    if !has_hint {
+        return None;
+    }
+
+    let location = extract_weather_location(message).unwrap_or(fallback_location);
+    let tool = weather_follow_up_tool(&lower, default_tool);
+    let explicit_forecast_days = if weather_prefers_forecast(&lower) {
+        Some(extract_weather_forecast_days(message))
+    } else {
+        None
+    };
+    let forecast_days = match tool {
+        AssistantToolName::WeatherGetForecast => {
+            explicit_forecast_days.or(fallback_days).or(Some(3))
+        }
+        _ => None,
+    };
+
+    Some((
+        tool,
+        AssistantToolInput::Weather {
+            location,
+            forecast_days,
+        },
+    ))
+}
+
+fn recent_weather_hint(
+    history: &[AssistantHistoryMessage],
+) -> Option<(AssistantToolName, String, Option<u8>)> {
+    for context in recent_follow_up_contexts(history) {
+        let tool = match context.tool.as_str() {
+            "weather_get_current" => AssistantToolName::WeatherGetCurrent,
+            "weather_get_forecast" => AssistantToolName::WeatherGetForecast,
+            _ => continue,
+        };
+        let location = context.input_hint.weather_location.clone()?;
+        return Some((tool, location, context.input_hint.weather_days));
+    }
+    None
+}
+
+fn recent_transcript_query_hint(history: &[AssistantHistoryMessage]) -> Option<String> {
+    for context in recent_follow_up_contexts(history) {
+        if context.tool != "channels_get_transcript_summary" {
+            continue;
+        }
+        if let Some(query) = context.input_hint.channels_query.clone() {
+            return Some(query);
+        }
+        if let Some(entity) = context.entities.first() {
+            return Some(entity.label.clone());
+        }
+    }
+    None
+}
+
+fn weather_follow_up_tool(
+    message_lower: &str,
+    default_tool: AssistantToolName,
+) -> AssistantToolName {
+    if weather_prefers_forecast(message_lower) {
+        AssistantToolName::WeatherGetForecast
+    } else if weather_prefers_current(message_lower) {
+        AssistantToolName::WeatherGetCurrent
+    } else {
+        default_tool
+    }
+}
+
+fn is_weather_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "weather",
+            "forecast",
+            "temperature",
+            "rain",
+            "raining",
+            "wind",
+            "windy",
+            "humidity",
+            "humid",
+            "sunny",
+            "cloudy",
+            "storm",
+            "hot in ",
+            "cold in ",
+        ],
+    )
+}
+
+fn weather_prefers_current(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "right now",
+            "currently",
+            "current",
+            "at the moment",
+            "temperature",
+            "how hot",
+            "how cold",
+            "how warm",
+        ],
+    ) && !weather_prefers_forecast(message_lower)
+}
+
+fn weather_prefers_forecast(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "forecast",
+            "tomorrow",
+            "weekend",
+            "this week",
+            "next week",
+            "next few days",
+            "coming days",
+            "will it",
+            "rain chance",
+            "expected",
+        ],
+    ) || extract_next_numbered_window(message_lower, "day", "days").is_some()
+}
+
+fn extract_weather_forecast_days(message: &str) -> u8 {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("tomorrow") {
+        2
+    } else if lower.contains("today") {
+        1
+    } else if lower.contains("weekend")
+        || lower.contains("this week")
+        || lower.contains("next week")
+    {
+        7
+    } else if let Some(days) = extract_next_numbered_window(&lower, "day", "days") {
+        days.clamp(1, 7) as u8
+    } else {
+        3
+    }
+}
+
+fn extract_weather_location(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    for marker in [
+        "weather in ",
+        "weather for ",
+        "forecast in ",
+        "forecast for ",
+        "temperature in ",
+        "temperature for ",
+        "conditions in ",
+        "conditions for ",
+        "rain in ",
+        "rain for ",
+        "raining in ",
+        "wind in ",
+        "wind for ",
+        "windy in ",
+        "humidity in ",
+        "humidity for ",
+        "humid in ",
+        "humid for ",
+        "hot in ",
+        "cold in ",
+    ] {
+        if let Some(candidate) = extract_location_after_marker(message, &lower, marker) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn extract_location_after_marker(message: &str, lower: &str, marker: &str) -> Option<String> {
+    let idx = lower.find(marker)?;
+    let raw = message[idx + marker.len()..].trim();
+    normalize_weather_location_candidate(raw)
+}
+
+fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
+    let trimmed =
+        raw.trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch));
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let stop_markers = [
+        " right now",
+        " currently",
+        " today",
+        " tomorrow",
+        " this week",
+        " next week",
+        " this weekend",
+        " weekend",
+        " next few days",
+        " in the next ",
+        " over the next ",
+        " please",
+    ];
+
+    let mut end = trimmed.len();
+    for marker in stop_markers {
+        if let Some(idx) = lower.find(marker) {
+            end = end.min(idx);
+        }
+    }
+
+    let candidate = trimmed[..end]
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .trim();
+    if candidate.is_empty() {
+        return None;
+    }
+    Some(candidate.to_string())
+}
+
 fn extract_public_web_url(message: &str) -> Option<String> {
     message
         .split_whitespace()
@@ -1525,8 +2547,8 @@ fn extract_public_web_search_query(message: &str) -> Option<String> {
     }
 
     let lower = message.to_ascii_lowercase();
-    if has_any(&lower, &["weather", "forecast", "temperature", "rain in "]) {
-        return Some(message.trim().to_string());
+    if is_weather_query(&lower) {
+        return None;
     }
 
     for marker in [
@@ -1644,6 +2666,46 @@ fn extract_library_search_query(message: &str) -> Option<String> {
     None
 }
 
+fn is_recent_library_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "recently added",
+            "recent additions",
+            "new in my library",
+            "newest in my library",
+            "latest additions",
+            "latest in my library",
+            "what was added recently",
+        ],
+    )
+}
+
+fn extract_recent_library_query(message: &str) -> Option<String> {
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        return Some(quoted);
+    }
+
+    let lower = message.to_ascii_lowercase();
+    for marker in ["recently added ", "new in my library ", "latest additions "] {
+        let Some(idx) = lower.find(marker) else {
+            continue;
+        };
+        let rest = message[idx + marker.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.']).unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+
+    None
+}
+
 fn extract_library_follow_up_query(message: &str) -> Option<String> {
     if let Some(quoted) = extract_quoted_phrase(message) {
         return Some(quoted);
@@ -1687,7 +2749,7 @@ fn extract_library_follow_up_query(message: &str) -> Option<String> {
 fn extract_room_filter(message: &str) -> AssistantToolInput {
     AssistantToolInput::RoomsFilter {
         room_mode: detect_room_mode(message),
-        query: None,
+        query: extract_room_query(message),
     }
 }
 
@@ -1772,6 +2834,22 @@ fn detect_room_mode(message: &str) -> Option<String> {
     room_mode.map(str::to_string)
 }
 
+fn is_joinable_rooms_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "joinable room",
+            "joinable rooms",
+            "can i join",
+            "what rooms can i join",
+            "what room can i join",
+            "my invites",
+            "room invites",
+            "invites to rooms",
+        ],
+    )
+}
+
 fn extract_server_filter(message: &str) -> AssistantToolInput {
     AssistantToolInput::ServerFilter {
         query: extract_server_query(message),
@@ -1830,6 +2908,125 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
     );
 
     explicit_host_stats || (resource_keywords && (host_scope || standalone_host_usage))
+}
+
+fn is_backup_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "backup",
+            "backups",
+            "restore",
+            "restores",
+            "recovery",
+            "snapshot",
+            "snapshots",
+        ],
+    )
+}
+
+fn is_service_health_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "service health",
+            "services healthy",
+            "services health",
+            "agent health",
+            "agents healthy",
+            "what services are up",
+            "what services are down",
+            "is the system healthy",
+            "internal services",
+        ],
+    )
+}
+
+fn is_transcode_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "transcode",
+            "transcoding",
+            "ffmpeg",
+            "ffprobe",
+            "hardware acceleration",
+            "hw accel",
+            "transcoder",
+            "transcode session",
+            "transcode sessions",
+        ],
+    )
+}
+
+fn is_storage_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "storage",
+            "disk",
+            "disks",
+            "free space",
+            "space left",
+            "cache dir",
+            "cache directory",
+            "model dir",
+            "model directory",
+            "media path",
+            "media root",
+        ],
+    )
+}
+
+fn is_recent_errors_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "recent errors",
+            "recent failures",
+            "what failed",
+            "what is failing",
+            "what's failing",
+            "problems lately",
+            "issues lately",
+            "error summary",
+            "failure summary",
+        ],
+    )
+}
+
+fn is_network_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "network topology",
+            "network map",
+            "network status",
+            "network interfaces",
+            "network interface",
+            "remote access",
+            "trusted proxy",
+            "trusted proxies",
+            "hostname",
+            "host name",
+            "lan ip",
+            "local ip",
+            "ip address",
+            "ip addresses",
+            "what network",
+            "what interfaces",
+        ],
+    ) || (has_any(
+        message_lower,
+        &[
+            "network",
+            "topology",
+            "interfaces",
+            "interface",
+            "proxy",
+            "proxies",
+        ],
+    ) && !message_lower.contains("internet"))
 }
 
 fn extract_server_query(message: &str) -> Option<String> {
@@ -1927,7 +3124,195 @@ fn extract_quoted_phrase(message: &str) -> Option<String> {
     None
 }
 
-fn extract_calendar_window(message: &str, fallback_days: i64) -> AssistantToolInput {
+fn extract_birthday_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    let has_birthday_context = has_any(
+        &lower,
+        &["birthday", "birthdays", "born", "turning", "turns"],
+    );
+
+    if has_birthday_context {
+        if let Some(quoted) = extract_quoted_phrase(message) {
+            return normalize_birthday_query_candidate(&quoted);
+        }
+
+        for suffix in ["'s birthday", "’s birthday", " birthday", " birthdays"] {
+            if let Some(idx) = lower.find(suffix) {
+                let prefix = message[..idx].trim();
+                if let Some(candidate) = extract_named_tail_after_marker(
+                    prefix,
+                    &[
+                        "when is ",
+                        "when's ",
+                        "whens ",
+                        "what is ",
+                        "what's ",
+                        "whats ",
+                        "tell me about ",
+                        "tell me ",
+                        "check ",
+                        "is ",
+                    ],
+                )
+                .and_then(|candidate| normalize_birthday_query_candidate(&candidate))
+                {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        for marker in [
+            "birthday of ",
+            "birthday for ",
+            "when is ",
+            "when's ",
+            "whens ",
+            "what is ",
+            "what's ",
+            "whats ",
+        ] {
+            if let Some(candidate) = extract_tail_after_marker(message, &lower, marker)
+                .and_then(|candidate| normalize_birthday_query_candidate(&candidate))
+            {
+                return Some(candidate);
+            }
+        }
+    }
+
+    extract_follow_up_subject_query(message)
+        .and_then(|candidate| normalize_birthday_query_candidate(&candidate))
+}
+
+fn extract_follow_up_subject_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    for needle in [
+        "what about ",
+        "how about ",
+        "and what about ",
+        "and ",
+        "what else about ",
+    ] {
+        let Some(idx) = lower.find(needle) else {
+            continue;
+        };
+        let rest = message[idx + needle.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+        let candidate = rest[..end].trim();
+        if candidate.is_empty() || looks_like_calendar_window_phrase(candidate) {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+
+    None
+}
+
+fn extract_named_tail_after_marker(message: &str, markers: &[&str]) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    for marker in markers {
+        if let Some(candidate) = extract_tail_after_marker(message, &lower, marker) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn extract_tail_after_marker(message: &str, lower: &str, marker: &str) -> Option<String> {
+    let idx = lower.find(marker)?;
+    let rest = message[idx + marker.len()..].trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let end = rest.find(['?', '!', '.', ',']).unwrap_or(rest.len());
+    let candidate = rest[..end].trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate.to_string())
+    }
+}
+
+fn normalize_birthday_query_candidate(candidate: &str) -> Option<String> {
+    let mut normalized = candidate
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+    if looks_like_calendar_window_phrase(&lower) {
+        return None;
+    }
+
+    for prefix in ["the birthday of ", "birthday of ", "birthday for ", "the "] {
+        if lower.starts_with(prefix) {
+            normalized = normalized[prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    for suffix in [
+        "'s birthday",
+        "’s birthday",
+        " birthday",
+        " birthdays",
+        "'s",
+        "’s",
+    ] {
+        if normalized.to_ascii_lowercase().ends_with(suffix) {
+            let keep_len = normalized.len().saturating_sub(suffix.len());
+            normalized.truncate(keep_len);
+            normalized = normalized.trim().to_string();
+            break;
+        }
+    }
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lower = normalized.to_ascii_lowercase();
+    if looks_like_calendar_window_phrase(&lower)
+        || matches!(
+            lower.as_str(),
+            "it" | "them" | "those" | "these" | "ones" | "one"
+        )
+    {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn looks_like_calendar_window_phrase(candidate: &str) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    calendar_query_has_explicit_window(&lower)
+        || has_any(
+            &lower,
+            &[
+                "coming up",
+                "upcoming",
+                "next week",
+                "this week",
+                "next month",
+                "this month",
+                "today",
+                "tomorrow",
+                "soon",
+            ],
+        )
+}
+
+fn extract_calendar_window(
+    message: &str,
+    fallback_days: i64,
+    query: Option<String>,
+) -> AssistantToolInput {
     let today = Utc::now().date_naive();
     let lower = message.to_ascii_lowercase();
 
@@ -1936,6 +3321,7 @@ fn extract_calendar_window(message: &str, fallback_days: i64) -> AssistantToolIn
             from_date: date.format("%F").to_string(),
             to_date: date.format("%F").to_string(),
             label: format!("{} only", date.format("%F")),
+            query,
         };
     }
 
@@ -1972,6 +3358,7 @@ fn extract_calendar_window(message: &str, fallback_days: i64) -> AssistantToolIn
         from_date: from.format("%F").to_string(),
         to_date: to.format("%F").to_string(),
         label,
+        query,
     }
 }
 
@@ -2131,6 +3518,19 @@ mod tests {
     }
 
     #[test]
+    fn planner_extracts_named_birthday_query() {
+        let tools = plan_tool_calls("When is Rachel's birthday?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarUpcomingBirthdays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Rachel"));
+            }
+            _ => panic!("expected birthday calendar window"),
+        }
+    }
+
+    #[test]
     fn clarification_triggers_for_ambiguous_calendar_question() {
         let clarification = clarification_for_message("What's on my calendar?");
         assert!(clarification.is_some());
@@ -2171,7 +3571,10 @@ mod tests {
             AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Interstellar"),
             AssistantToolInput::None => panic!("expected library search input"),
             AssistantToolInput::CalendarWindow { .. } => panic!("unexpected calendar window"),
+            AssistantToolInput::ChannelsFilter { .. } => panic!("unexpected channel filter"),
             AssistantToolInput::DownloadsFilter { .. } => panic!("unexpected downloads filter"),
+            AssistantToolInput::LibraryRecent { .. } => panic!("unexpected recent library input"),
+            AssistantToolInput::Weather { .. } => panic!("unexpected weather input"),
             AssistantToolInput::WebSearch { .. } => panic!("unexpected web search"),
             AssistantToolInput::WebFetch { .. } => panic!("unexpected web fetch"),
             AssistantToolInput::RoomsFilter { .. } => panic!("unexpected room filter"),
@@ -2208,6 +3611,54 @@ mod tests {
             }
             _ => panic!("expected downloads filter"),
         }
+    }
+
+    #[test]
+    fn planner_detects_network_query() {
+        let tools = plan_tool_calls("What network interfaces are active right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_detects_current_weather_query() {
+        let tools = plan_tool_calls("What is the temperature in Dublin right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetCurrent);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Dublin");
+                assert_eq!(*forecast_days, None);
+            }
+            _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_weather_forecast_query() {
+        let tools = plan_tool_calls("What is the weather forecast for Cork tomorrow?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Cork");
+                assert_eq!(*forecast_days, Some(2));
+            }
+            _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn clarification_triggers_for_weather_without_location() {
+        let clarification = clarification_for_message("What's the weather like?");
+        assert!(clarification.is_some());
     }
 
     #[test]
@@ -2376,6 +3827,20 @@ mod tests {
     }
 
     #[test]
+    fn planner_uses_birthday_follow_up_history_for_named_person() {
+        let history = grounded_history(&["calendar_upcoming_birthdays"]);
+        let tools = plan_tool_calls_with_history("What about Rachel?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarUpcomingBirthdays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Rachel"));
+            }
+            _ => panic!("expected birthday calendar window"),
+        }
+    }
+
+    #[test]
     fn planner_uses_server_follow_up_history() {
         let history = grounded_history(&["servers_list_minecraft_status"]);
         let tools = plan_tool_calls_with_history("Which ones are healthy?", &history);
@@ -2438,6 +3903,41 @@ mod tests {
                 assert_eq!(availability.as_deref(), Some("planned"));
             }
             _ => panic!("expected downloads filter"),
+        }
+    }
+
+    #[test]
+    fn planner_uses_network_follow_up_history() {
+        let history = grounded_history(&["network_get_topology_summary"]);
+        let tools = plan_tool_calls_with_history("What about the IP addresses?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_uses_weather_follow_up_history() {
+        let history = history_with_follow_up_context(
+            "weather_get_forecast",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Dublin".to_string()),
+                weather_days: Some(3),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("What about tomorrow?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Dublin");
+                assert_eq!(*forecast_days, Some(2));
+            }
+            _ => panic!("expected weather input"),
         }
     }
 
@@ -2560,5 +4060,104 @@ mod tests {
             }
             _ => panic!("expected downloads filter"),
         }
+    }
+
+    #[test]
+    fn planner_routes_calendar_detail_queries() {
+        let tools = plan_tool_calls("Tell me more about the \"Team Meeting\" event.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetEventDetails);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Team Meeting"));
+            }
+            _ => panic!("expected calendar detail input"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_channel_activity_queries() {
+        let tools = plan_tool_calls("Any unread activity in general chat?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::ChannelsListUnreadActivity);
+        match &tools[0].input {
+            AssistantToolInput::ChannelsFilter { query } => {
+                assert_eq!(query.as_deref(), Some("general chat"));
+            }
+            _ => panic!("expected channel filter"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_transcript_summary_queries() {
+        let tools = plan_tool_calls("What was the call in general voice about?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::ChannelsGetTranscriptSummary
+        );
+        match &tools[0].input {
+            AssistantToolInput::ChannelsFilter { query } => {
+                assert_eq!(query.as_deref(), Some("general voice"));
+            }
+            _ => panic!("expected transcript channel filter"),
+        }
+    }
+
+    #[test]
+    fn planner_uses_transcript_follow_up_history() {
+        let history = history_with_follow_up_context(
+            "channels_get_transcript_summary",
+            &["General Voice"],
+            AssistantFollowUpInputHint {
+                channels_query: Some("General Voice".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("What was that call about again?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::ChannelsGetTranscriptSummary
+        );
+        match &tools[0].input {
+            AssistantToolInput::ChannelsFilter { query } => {
+                assert_eq!(query.as_deref(), Some("General Voice"));
+            }
+            _ => panic!("expected transcript follow-up filter"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_recently_added_library_queries() {
+        let tools = plan_tool_calls("What was recently added to my library?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::LibrariesGetRecentlyAdded);
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::LibraryRecent { .. }
+        ));
+    }
+
+    #[test]
+    fn planner_routes_joinable_rooms_queries() {
+        let tools = plan_tool_calls("What rooms can I join right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::RoomsListJoinable);
+    }
+
+    #[test]
+    fn planner_routes_admin_ops_queries() {
+        let tools = plan_tool_calls("What services are down right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetServiceHealth);
+
+        let tools = plan_tool_calls("Summarize recent errors.");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetRecentErrors);
+
+        let tools = plan_tool_calls("How much free space is left on disk?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetStorageSummary);
     }
 }

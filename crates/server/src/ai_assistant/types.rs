@@ -26,6 +26,10 @@ pub enum AssistantToolInput {
         from_date: String,
         to_date: String,
         label: String,
+        query: Option<String>,
+    },
+    ChannelsFilter {
+        query: Option<String>,
     },
     DownloadsFilter {
         query: Option<String>,
@@ -33,6 +37,13 @@ pub enum AssistantToolInput {
     },
     LibrarySearch {
         query: String,
+    },
+    LibraryRecent {
+        query: Option<String>,
+    },
+    Weather {
+        location: String,
+        forecast_days: Option<u8>,
     },
     WebSearch {
         query: String,
@@ -144,6 +155,8 @@ pub struct AssistantFollowUpInputHint {
     pub calendar_label: Option<String>,
     pub calendar_from_date: Option<String>,
     pub calendar_to_date: Option<String>,
+    pub calendar_query: Option<String>,
+    pub channels_query: Option<String>,
     pub downloads_query: Option<String>,
     pub downloads_availability: Option<String>,
     pub room_mode: Option<String>,
@@ -151,6 +164,8 @@ pub struct AssistantFollowUpInputHint {
     pub server_query: Option<String>,
     pub server_availability: Option<String>,
     pub library_query: Option<String>,
+    pub weather_location: Option<String>,
+    pub weather_days: Option<u8>,
     pub web_search_query: Option<String>,
     pub web_url: Option<String>,
 }

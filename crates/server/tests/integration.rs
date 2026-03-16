@@ -1406,6 +1406,17 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         &other_user_id,
     )
     .await;
+    create_calendar_event(
+        &state.db,
+        "personal",
+        Some(&limited_user_id),
+        "Rachel",
+        "2003-04-04",
+        "birthday",
+        "yearly",
+        &limited_user_id,
+    )
+    .await;
 
     let limited_user = rustfin_server::auth::AuthUser {
         user_id: limited_user_id.clone(),
@@ -1464,6 +1475,33 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
     assert!(limited_birthday_titles.contains(&"Shared Birthday"));
     assert!(limited_birthday_titles.contains(&"Limited Birthday"));
     assert!(!limited_birthday_titles.contains(&"Other Birthday"));
+
+    let named_birthday_turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        &state,
+        &limited_user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: "When is Rachel's birthday?".to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    let named_birthday_blocks = extract_grounding_blocks(&named_birthday_turn.messages);
+    assert_eq!(
+        named_birthday_blocks[0]["tool"],
+        "calendar_upcoming_birthdays"
+    );
+    assert_eq!(
+        named_birthday_blocks[0]["data"]["query"].as_str(),
+        Some("Rachel")
+    );
+    let named_birthday_titles: Vec<_> = named_birthday_blocks[0]["data"]["birthdays"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["title"].as_str())
+        .collect();
+    assert_eq!(named_birthday_titles, vec!["Rachel"]);
 
     let admin_events_turn = rustfin_server::ai_assistant::prepare_assistant_turn(
         &state,
@@ -1724,6 +1762,210 @@ async fn ai_assistant_grounding_requires_admin_for_host_runtime_stats() {
     assert_eq!(admin_blocks[0]["status"], "ok");
     assert!(admin_blocks[0]["data"]["host"]["available"].is_boolean());
     assert!(admin_blocks[0]["data"]["rustyfin"]["uptime_seconds"].is_u64());
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_grounding_lists_recently_added_accessible_items() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let (allowed_library_id, _, tmp_allowed) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "AI Recent Allowed Library",
+        "Recently Added Allowed (2024).mp4",
+    )
+    .await;
+    let (_restricted_library_id, _, tmp_restricted) = create_library_and_first_item(
+        &server,
+        &admin_hdr,
+        "AI Recent Restricted Library",
+        "Recently Added Restricted (2024).mp4",
+    )
+    .await;
+
+    let limited_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_recent_user",
+        "ai_recent_user_pass_123",
+        "user",
+        std::slice::from_ref(&allowed_library_id),
+    )
+    .await;
+    let limited_user = rustfin_server::auth::AuthUser {
+        user_id: limited_user_id,
+        username: "ai_recent_user".to_string(),
+        role: "user".to_string(),
+    };
+
+    let turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        &state,
+        &limited_user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: "What was recently added to my library?".to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    let grounding_blocks = extract_grounding_blocks(&turn.messages);
+    assert_eq!(grounding_blocks.len(), 1);
+    assert_eq!(grounding_blocks[0]["tool"], "libraries_get_recently_added");
+    let titles: Vec<_> = grounding_blocks[0]["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["title"].as_str())
+        .collect();
+    assert!(titles.contains(&"Recently Added Allowed"));
+    assert!(!titles.contains(&"Recently Added Restricted"));
+
+    std::fs::remove_dir_all(&tmp_allowed).ok();
+    std::fs::remove_dir_all(&tmp_restricted).ok();
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_grounding_lists_joinable_rooms() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let regular_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_joinable_user",
+        "ai_joinable_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id: regular_user_id.clone(),
+        username: "ai_joinable_user".to_string(),
+        role: "user".to_string(),
+    };
+
+    create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_name": "Joinable Public Lounge",
+            "room_mode": "audio",
+            "audio_source": "online",
+            "invites": []
+        }),
+    )
+    .await;
+    create_watch_party_room(
+        &server,
+        &admin_hdr,
+        json!({
+            "room_name": "Invite Only AI Room",
+            "room_mode": "audio",
+            "audio_source": "online",
+            "invites": [{
+                "user_id": regular_user_id,
+                "role": "viewer"
+            }],
+            "policy": {
+                "allow_non_host_play_pause": true,
+                "allow_non_host_seek": false,
+                "default_join_role": "viewer",
+                "invite_only": true
+            }
+        }),
+    )
+    .await;
+
+    let turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        &state,
+        &regular_user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: "What rooms can I join right now?".to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    let grounding_blocks = extract_grounding_blocks(&turn.messages);
+    assert_eq!(grounding_blocks.len(), 1);
+    assert_eq!(grounding_blocks[0]["tool"], "rooms_list_joinable");
+    let room_titles: Vec<_> = grounding_blocks[0]["data"]["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|room| room["title"].as_str())
+        .collect();
+    assert!(room_titles.contains(&"Joinable Public Lounge"));
+    assert!(room_titles.contains(&"Invite Only AI Room"));
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_grounding_requires_admin_for_service_health() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_service_health_user",
+        "ai_service_health_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id,
+        username: "ai_service_health_user".to_string(),
+        role: "user".to_string(),
+    };
+    let admin_user = rustfin_server::auth::AuthUser {
+        user_id: admin_user_id,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+    };
+
+    let limited_turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        &state,
+        &regular_user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: "What services are down right now?".to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    let limited_blocks = extract_grounding_blocks(&limited_turn.messages);
+    assert_eq!(limited_blocks.len(), 1);
+    assert_eq!(limited_blocks[0]["tool"], "system_get_service_health");
+    assert_eq!(limited_blocks[0]["status"], "error");
+
+    let admin_turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        &state,
+        &admin_user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: "What services are down right now?".to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    let admin_blocks = extract_grounding_blocks(&admin_turn.messages);
+    assert_eq!(admin_blocks.len(), 1);
+    assert_eq!(admin_blocks[0]["tool"], "system_get_service_health");
+    assert!(admin_blocks[0]["data"]["components"].is_array());
 }
 
 #[tokio::test]

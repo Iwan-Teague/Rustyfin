@@ -3,6 +3,7 @@ pub mod orchestrator;
 pub mod registry;
 pub mod tools;
 pub mod types;
+pub mod weather;
 pub mod web;
 
 pub use orchestrator::{

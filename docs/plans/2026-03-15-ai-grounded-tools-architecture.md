@@ -27,16 +27,30 @@ This document defines the architecture, boundaries, rollout order, and security 
   - `account_get_profile_summary`
   - `calendar_list_events`
   - `calendar_upcoming_birthdays`
+  - `calendar_get_event_details`
+  - `channels_list_unread_activity`
+  - `channels_get_transcript_summary`
   - `downloads_list_available_artifacts`
+  - `network_get_topology_summary`
   - `libraries_list_accessible`
   - `library_search_titles`
   - `library_get_item_summary`
+  - `libraries_get_recently_added`
   - `rooms_list_active`
+  - `rooms_list_joinable`
   - `rooms_get_room_summary`
   - `system_get_host_runtime_summary`
+  - `system_get_backup_summary`
+  - `system_get_service_health`
+  - `system_get_transcode_summary`
+  - `system_get_storage_summary`
+  - `system_get_recent_errors`
   - `servers_list_minecraft_status`
   - `servers_get_minecraft_server_summary`
-- query understanding exists for calendar windows, room-mode filtering, named/availability-filtered Minecraft server queries, and ambiguity clarification for underspecified calendar or singular server prompts
+- query understanding exists for calendar windows, direct calendar-event detail prompts, recent channel-activity prompts, recently-added library prompts, joinable-room prompts, room-mode filtering, named/availability-filtered Minecraft server queries, and ambiguity clarification for underspecified calendar or singular server prompts
+- transcript-summary prompts such as `What was the call about?`, `Summarize the transcript from General Voice`, and `What did they talk about in that call?` can now route to the latest accessible completed voice transcript for a matching channel
+- birthday questions can now narrow the birthday tool to a named visible person, so prompts like `When is Rachel's birthday?` do not have to fall back to a broad upcoming-birthdays list
+- initial network grounding now exists for host-visible interface/IP topology plus saved Rustyfin network settings, so `/ai` can answer interface, IP address, hostname, remote-access, and proxy questions without waiting for full RustyNet mesh data
 - admin-only host/runtime stats grounding now exists for RAM, memory usage, CPU thread count, CPU usage, load, and uptime questions, backed by the shared runtime-diagnostics path
 - grounded follow-up behavior exists for:
   - domain reuse such as `What about next week?`
@@ -46,8 +60,9 @@ This document defines the architecture, boundaries, rollout order, and security 
 - runtime assistant logging and diagnostics now include per-request trace IDs plus assistant chat/tool counters in runtime diagnostics
 - tool registry policy is now enforced at execution time, so admin-only or write-capable tools stay blocked unless the registry and runtime flow both allow them
 - `/api/v1/ai/chat` now uses a model-assisted structured planner for tool selection, with strict registry/role validation plus deterministic fallback and deterministic entity-follow-up resolution
+- authenticated fixed-provider weather tools now exist for `weather_get_current` and `weather_get_forecast`, giving normal users safe internet-backed weather without generic browsing
 - admin-only constrained public web tools now exist for `web_search_public_web` and `web_fetch_public_page_summary`, gated behind `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1` with SSRF/private-network blocking and bounded public-page extraction
-- assistant integration coverage now proves library-access scoping, public-room-only visibility, calendar visibility, Minecraft server access scoping, authenticated downloads catalog grounding, and admin-only host runtime gating through grounded turn preparation
+- assistant integration coverage now proves library-access scoping, recently-added library access scoping, public-room-only visibility, joinable-room grounding, calendar visibility, Minecraft server access scoping, authenticated downloads catalog grounding, and admin-only host runtime/service-health gating through grounded turn preparation
 - dedicated assistant audit persistence now exists with admin-readable recent request history in the Admin `AI` tab
 - assistant audit retention/pruning policy now exists with a 30-day default window, hourly cleanup, and `RUSTFIN_AI_AUDIT_RETENTION_DAYS` override support
 
@@ -57,8 +72,7 @@ This document defines the architecture, boundaries, rollout order, and security 
 
 ### Future
 
-- network grounding tools
-- richer entity detail tools for calendar events
+- richer RustyNet mesh/topology grounding once live multi-node RustyNet data exists server-side
 - write-capable tools with confirmation-token or protected-action gating
 - admin-only assistant mode, if deliberately designed later
 
@@ -86,6 +100,7 @@ Important limitation:
 - the grounded path now uses a model-assisted structured planner, but the backend still keeps deterministic fallback and follow-up/entity normalization as the safety net
 - the current tool set is read-only and deliberately small
 - constrained public web search/page fetch now exists, but it is admin-only and disabled by default unless `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1` is set on the host
+- curated fixed-provider external read tools now exist for weather and are the preferred non-admin pattern for public internet-backed assistant features
 - independent read-only tools can now execute in parallel in the backend orchestration layer
 - there are no write tools or confirmation flows yet
 - room grounding currently reflects active public rooms, not every possible room visibility edge case
@@ -95,6 +110,9 @@ Important limitation:
 Current implemented query-understanding improvements:
 
 - common calendar windows are extracted server-side for `today`, `tomorrow`, `this week`, `next week`, `this month`, and `next month`
+- named birthday queries such as `When is Rachel's birthday?` now pass an optional person query into the birthday tool so the backend narrows visible birthday results before the model answers
+- network prompts such as `What network interfaces are active right now?`, `What IP address is this server on?`, and `Is remote access enabled?` now route to a host-known network-topology tool backed by interface discovery plus Rustyfin network settings
+- authenticated weather prompts now route to fixed-provider current/forecast tools instead of generic web search
 - numbered windows such as `next 10 days`, `next 2 weeks`, and `next 2 months` are supported
 - explicit ISO dates can be targeted directly
 - library title search heuristics now distinguish title-search intent from generic library-access questions
@@ -108,7 +126,8 @@ Current implemented query-understanding improvements:
 - the assistant can now carry a minimal hidden follow-up context for the last grounded result set so references like `the second one` or `that server` can be resolved and re-grounded safely
 - follow-up entity references can now escalate from a list tool to a tighter detail tool for the selected library item, active room, or Minecraft server
 - explicit public URLs can now route to a constrained page-summary tool
-- weather/current-public-info prompts can now route to constrained public web search when the host enables public web tools
+- weather follow-up prompts such as `What about tomorrow?` can now reuse the last grounded weather location without trusting client-side state
+- transcript-summary prompts can now route to the latest accessible completed voice-call transcript for a matching voice channel, and transcript follow-ups can reuse the last grounded transcript channel as a hint
 
 ## Goal
 
@@ -123,6 +142,7 @@ The assistant should be able to answer questions like:
 - “How much RAM is the server using right now?”
 - “How many CPU threads does the server have?”
 - “What downloads are available right now?”
+- “What was the General Voice call about?”
 - “What about next week?”
 - “Which ones are healthy?”
 - “What about the second one?”
@@ -388,23 +408,37 @@ Phase 1 read-only user tools:
 
 - `calendar_list_events`
 - `calendar_upcoming_birthdays`
+- `calendar_get_event_details`
+- `channels_list_unread_activity`
+- `channels_get_transcript_summary`
 - `downloads_list_available_artifacts`
+- `network_get_topology_summary`
 - `rooms_list_active`
+- `rooms_list_joinable`
 - `libraries_list_accessible`
 - `library_search_titles`
+- `library_get_item_summary`
+- `libraries_get_recently_added`
+- `weather_get_current`
+- `weather_get_forecast`
 - `servers_list_minecraft_status`
+- `servers_get_minecraft_server_summary`
 - `account_get_profile_summary`
 
 Implemented admin-only host-opt-in read-only tools:
 
 - `system_get_host_runtime_summary`
+- `system_get_backup_summary`
+- `system_get_service_health`
+- `system_get_transcode_summary`
+- `system_get_storage_summary`
+- `system_get_recent_errors`
 - `web_search_public_web`
 - `web_fetch_public_page_summary`
 
 Remaining likely phase 2 read-only tools:
 
-- `calendar_get_event_details`
-- `network_get_topology_summary` once the RustyNet page exists
+- richer RustyNet mesh/topology detail tools once live multi-node RustyNet data exists server-side
 
 Possible future write tools, not enabled initially:
 
@@ -612,6 +646,14 @@ Required rule:
 
 Implemented initial external tool set:
 
+- `weather_get_current`
+  - purpose: fetch current public weather conditions for one named location from a fixed provider
+  - input: `location`
+  - output: resolved location, timezone, observed-at timestamp, current condition, temperature, and compact current-weather metrics
+- `weather_get_forecast`
+  - purpose: fetch a short public weather forecast for one named location from a fixed provider
+  - input: `location`, backend-derived day window
+  - output: resolved location, timezone, current conditions, and a short daily forecast summary
 - `web_search_public_web`
   - purpose: fetch a small set of public search results for a user query
   - input: `query`, optional `limit`
@@ -1128,7 +1170,7 @@ If a write is proposed but not permitted:
 - remaining:
   - tighten prompts and response style further
   - expand permission-bound integration coverage across the remaining grounded domains
-  - expand grounded domains such as Network
+  - deepen grounded domains such as RustyNet-backed Network mesh detail once the backend data exists
 
 ### Phase 3
 
