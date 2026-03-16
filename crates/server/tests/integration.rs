@@ -263,6 +263,25 @@ fn extract_grounding_blocks(messages: &[rustfin_ai_agent::ChatMessage]) -> Vec<V
     serde_json::from_str::<Vec<Value>>(grounding).expect("grounding block JSON should parse")
 }
 
+#[cfg(feature = "ai")]
+async fn assistant_grounding_for_message(
+    state: &AppState,
+    user: &rustfin_server::auth::AuthUser,
+    message: &str,
+) -> Vec<Value> {
+    let turn = rustfin_server::ai_assistant::prepare_assistant_turn(
+        state,
+        user,
+        rustfin_server::ai_assistant::AssistantChatRequest {
+            model: "missing-model".to_string(),
+            message: message.to_string(),
+            history: vec![],
+        },
+    )
+    .await;
+    extract_grounding_blocks(&turn.messages)
+}
+
 /// Helper: login and return JWT token.
 async fn login(server: &TestServer, username: &str, password: &str) -> String {
     let resp = server
@@ -1087,6 +1106,90 @@ async fn create_minecraft_server_as_admin(
     resp.assert_status(axum::http::StatusCode::CREATED);
     let body: Value = resp.json();
     body["id"].as_str().unwrap().to_string()
+}
+
+#[cfg(feature = "ai")]
+async fn create_voice_channel(
+    pool: &rustfin_db::DbPool,
+    name: &str,
+    is_private: bool,
+    created_by: &str,
+    position: i64,
+) -> String {
+    rustfin_db::repo::channels::create_channel(
+        pool, name, "voice", is_private, created_by, position,
+    )
+    .await
+    .unwrap()
+    .id
+}
+
+#[cfg(feature = "ai")]
+async fn create_transcript_session(
+    pool: &rustfin_db::DbPool,
+    channel_id: &str,
+    started_by_user_id: &str,
+    started_by_username: &str,
+    status: &str,
+    entries: &[&str],
+    failure_reason: Option<&str>,
+) -> String {
+    let session = rustfin_db::repo::channel_transcripts::create_running_session(
+        pool,
+        channel_id,
+        started_by_user_id,
+        started_by_username,
+    )
+    .await
+    .unwrap();
+
+    for (idx, text) in entries.iter().enumerate() {
+        let offset_ms = (idx as i64) * 5_000;
+        rustfin_db::repo::channel_transcripts::append_entry(
+            pool,
+            rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
+                session_id: &session.id,
+                channel_id,
+                user_id: started_by_user_id,
+                username: started_by_username,
+                started_ts_ms: offset_ms,
+                ended_ts_ms: offset_ms + 3_000,
+                text,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    match status {
+        "running" => {}
+        "completed" => {
+            rustfin_db::repo::channel_transcripts::complete_session(
+                pool,
+                &session.id,
+                &format!("/tmp/{}.md", session.id),
+            )
+            .await
+            .unwrap();
+        }
+        "failed" => {
+            rustfin_db::repo::channel_transcripts::fail_session(
+                pool,
+                &session.id,
+                failure_reason.unwrap_or("unknown failure"),
+            )
+            .await
+            .unwrap();
+        }
+        "cancelled" => {
+            rustfin_db::repo::channel_transcripts::cancel_session(pool, &session.id)
+                .await
+                .unwrap();
+        }
+        other => panic!("unsupported transcript status for test setup: {other}"),
+    }
+
+    session.id
 }
 
 #[cfg(feature = "ai")]
@@ -1966,6 +2069,450 @@ async fn ai_assistant_grounding_requires_admin_for_service_health() {
     assert_eq!(admin_blocks.len(), 1);
     assert_eq!(admin_blocks[0]["tool"], "system_get_service_health");
     assert!(admin_blocks[0]["data"]["components"].is_array());
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_grounding_handles_transcript_lifecycle_and_visibility() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let regular_user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_transcript_user",
+        "ai_transcript_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let public_completed_channel_id = create_voice_channel(
+        &state.db,
+        "AI Transcript Complete",
+        false,
+        &admin_user_id,
+        100,
+    )
+    .await;
+    let public_running_channel_id = create_voice_channel(
+        &state.db,
+        "AI Transcript Running",
+        false,
+        &admin_user_id,
+        101,
+    )
+    .await;
+    let public_failed_channel_id = create_voice_channel(
+        &state.db,
+        "AI Transcript Failed",
+        false,
+        &admin_user_id,
+        102,
+    )
+    .await;
+    let public_cancelled_channel_id = create_voice_channel(
+        &state.db,
+        "AI Transcript Cancelled",
+        false,
+        &admin_user_id,
+        103,
+    )
+    .await;
+    let public_empty_channel_id =
+        create_voice_channel(&state.db, "AI Transcript Empty", false, &admin_user_id, 104).await;
+    let private_completed_channel_id = create_voice_channel(
+        &state.db,
+        "AI Transcript Private",
+        true,
+        &admin_user_id,
+        105,
+    )
+    .await;
+
+    create_transcript_session(
+        &state.db,
+        &public_completed_channel_id,
+        &admin_user_id,
+        "admin",
+        "completed",
+        &[
+            "We discussed the new release timeline and Rachel's upcoming birthday dinner.",
+            "The next deployment window is Friday night.",
+        ],
+        None,
+    )
+    .await;
+    create_transcript_session(
+        &state.db,
+        &public_running_channel_id,
+        &admin_user_id,
+        "admin",
+        "running",
+        &["The transcription is still capturing audio."],
+        None,
+    )
+    .await;
+    create_transcript_session(
+        &state.db,
+        &public_failed_channel_id,
+        &admin_user_id,
+        "admin",
+        "failed",
+        &[],
+        Some("transcription agent crashed"),
+    )
+    .await;
+    create_transcript_session(
+        &state.db,
+        &public_cancelled_channel_id,
+        &admin_user_id,
+        "admin",
+        "cancelled",
+        &[],
+        None,
+    )
+    .await;
+    create_transcript_session(
+        &state.db,
+        &public_empty_channel_id,
+        &admin_user_id,
+        "admin",
+        "completed",
+        &[],
+        None,
+    )
+    .await;
+    create_transcript_session(
+        &state.db,
+        &private_completed_channel_id,
+        &admin_user_id,
+        "admin",
+        "completed",
+        &["We rotated secrets and reviewed the deploy keys."],
+        None,
+    )
+    .await;
+
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id: regular_user_id,
+        username: "ai_transcript_user".to_string(),
+        role: "user".to_string(),
+    };
+    let admin_user = rustfin_server::auth::AuthUser {
+        user_id: admin_user_id,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+    };
+
+    let completed_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Complete\".",
+    )
+    .await;
+    assert_eq!(completed_blocks.len(), 1);
+    assert_eq!(
+        completed_blocks[0]["tool"],
+        "channels_get_transcript_summary"
+    );
+    assert_eq!(completed_blocks[0]["status"], "ok");
+    assert_eq!(
+        completed_blocks[0]["data"]["channel_name"].as_str(),
+        Some("AI Transcript Complete")
+    );
+    assert_eq!(completed_blocks[0]["data"]["entry_count"].as_i64(), Some(2));
+    assert!(completed_blocks[0]["data"]["highlights"].is_array());
+
+    let running_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Running\".",
+    )
+    .await;
+    assert_eq!(running_blocks[0]["tool"], "channels_get_transcript_summary");
+    assert_eq!(running_blocks[0]["status"], "error");
+    let running_error = running_blocks[0]["data"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(running_error.contains("still running"));
+
+    let failed_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Failed\".",
+    )
+    .await;
+    assert_eq!(failed_blocks[0]["tool"], "channels_get_transcript_summary");
+    assert_eq!(failed_blocks[0]["status"], "error");
+    let failed_error = failed_blocks[0]["data"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(failed_error.contains("failed: transcription agent crashed"));
+
+    let cancelled_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Cancelled\".",
+    )
+    .await;
+    assert_eq!(
+        cancelled_blocks[0]["tool"],
+        "channels_get_transcript_summary"
+    );
+    assert_eq!(cancelled_blocks[0]["status"], "error");
+    let cancelled_error = cancelled_blocks[0]["data"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(cancelled_error.contains("was cancelled"));
+
+    let empty_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Empty\".",
+    )
+    .await;
+    assert_eq!(empty_blocks[0]["tool"], "channels_get_transcript_summary");
+    assert_eq!(empty_blocks[0]["status"], "error");
+    let empty_error = empty_blocks[0]["data"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(empty_error.contains("no saved transcript lines yet"));
+
+    let private_regular_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Summarize the transcript from \"AI Transcript Private\".",
+    )
+    .await;
+    assert_eq!(
+        private_regular_blocks[0]["tool"],
+        "channels_get_transcript_summary"
+    );
+    assert_eq!(private_regular_blocks[0]["status"], "error");
+    let private_regular_error = private_regular_blocks[0]["data"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(private_regular_error.contains("no accessible voice channel matched"));
+
+    let private_admin_blocks = assistant_grounding_for_message(
+        &state,
+        &admin_user,
+        "Summarize the transcript from \"AI Transcript Private\".",
+    )
+    .await;
+    assert_eq!(
+        private_admin_blocks[0]["tool"],
+        "channels_get_transcript_summary"
+    );
+    assert_eq!(private_admin_blocks[0]["status"], "ok");
+    assert_eq!(
+        private_admin_blocks[0]["data"]["channel_name"].as_str(),
+        Some("AI Transcript Private")
+    );
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_grounding_requires_admin_for_remaining_system_summaries() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_system_tools_user",
+        "ai_system_tools_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id,
+        username: "ai_system_tools_user".to_string(),
+        role: "user".to_string(),
+    };
+    let admin_user = rustfin_server::auth::AuthUser {
+        user_id: admin_user_id,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+    };
+
+    let backup_limited = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "Are backups configured on this server?",
+    )
+    .await;
+    assert_eq!(backup_limited[0]["tool"], "system_get_backup_summary");
+    assert_eq!(backup_limited[0]["status"], "error");
+    assert!(
+        backup_limited[0]["data"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("requires an admin Rustyfin account")
+    );
+
+    let backup_admin = assistant_grounding_for_message(
+        &state,
+        &admin_user,
+        "Are backups configured on this server?",
+    )
+    .await;
+    assert_eq!(backup_admin[0]["tool"], "system_get_backup_summary");
+    assert_eq!(backup_admin[0]["status"], "ok");
+    assert_eq!(backup_admin[0]["data"]["configured"].as_bool(), Some(false));
+    assert_eq!(
+        backup_admin[0]["data"]["restore_supported"].as_bool(),
+        Some(false)
+    );
+
+    let transcode_limited = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "How is transcoding doing right now?",
+    )
+    .await;
+    assert_eq!(transcode_limited[0]["tool"], "system_get_transcode_summary");
+    assert_eq!(transcode_limited[0]["status"], "error");
+
+    let transcode_admin =
+        assistant_grounding_for_message(&state, &admin_user, "How is transcoding doing right now?")
+            .await;
+    assert_eq!(transcode_admin[0]["tool"], "system_get_transcode_summary");
+    assert_eq!(transcode_admin[0]["status"], "ok");
+    assert!(transcode_admin[0]["data"]["active_sessions"].is_u64());
+    assert!(transcode_admin[0]["data"]["ffmpeg_path"].is_string());
+
+    let storage_limited =
+        assistant_grounding_for_message(&state, &regular_user, "How much free storage is left?")
+            .await;
+    assert_eq!(storage_limited[0]["tool"], "system_get_storage_summary");
+    assert_eq!(storage_limited[0]["status"], "error");
+
+    let storage_admin =
+        assistant_grounding_for_message(&state, &admin_user, "How much free storage is left?")
+            .await;
+    assert_eq!(storage_admin[0]["tool"], "system_get_storage_summary");
+    assert_eq!(storage_admin[0]["status"], "ok");
+    assert!(storage_admin[0]["data"]["available"].is_boolean());
+    assert!(storage_admin[0]["data"]["paths"].is_array());
+
+    let errors_limited = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "What recent errors have there been?",
+    )
+    .await;
+    assert_eq!(errors_limited[0]["tool"], "system_get_recent_errors");
+    assert_eq!(errors_limited[0]["status"], "error");
+
+    let errors_admin =
+        assistant_grounding_for_message(&state, &admin_user, "What recent errors have there been?")
+            .await;
+    assert_eq!(errors_admin[0]["tool"], "system_get_recent_errors");
+    assert_eq!(errors_admin[0]["status"], "ok");
+    assert!(errors_admin[0]["data"]["recent_failed_jobs"].is_array());
+    assert!(errors_admin[0]["data"]["agent_failures"].is_object());
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_assistant_network_grounding_hides_trusted_proxy_details_from_non_admins() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    rustfin_db::repo::settings::set(&state.db, "allow_remote_access", "true")
+        .await
+        .unwrap();
+    rustfin_db::repo::settings::set(&state.db, "trusted_proxies", r#"["10.0.0.10","10.0.0.11"]"#)
+        .await
+        .unwrap();
+
+    let user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_network_user",
+        "ai_network_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let regular_user = rustfin_server::auth::AuthUser {
+        user_id,
+        username: "ai_network_user".to_string(),
+        role: "user".to_string(),
+    };
+    let admin_user = rustfin_server::auth::AuthUser {
+        user_id: admin_user_id,
+        username: "admin".to_string(),
+        role: "admin".to_string(),
+    };
+
+    let limited_blocks = assistant_grounding_for_message(
+        &state,
+        &regular_user,
+        "What network interfaces are active, and is remote access enabled?",
+    )
+    .await;
+    assert_eq!(limited_blocks.len(), 1);
+    assert_eq!(limited_blocks[0]["tool"], "network_get_topology_summary");
+    assert_eq!(limited_blocks[0]["status"], "ok");
+    assert_eq!(
+        limited_blocks[0]["data"]["remote_access_enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        limited_blocks[0]["data"]["trusted_proxy_count"].as_u64(),
+        Some(2)
+    );
+    assert!(limited_blocks[0]["data"]["trusted_proxies"].is_null());
+
+    let admin_blocks = assistant_grounding_for_message(
+        &state,
+        &admin_user,
+        "What network interfaces are active, and is remote access enabled?",
+    )
+    .await;
+    assert_eq!(admin_blocks.len(), 1);
+    assert_eq!(admin_blocks[0]["tool"], "network_get_topology_summary");
+    assert_eq!(admin_blocks[0]["status"], "ok");
+    assert_eq!(
+        admin_blocks[0]["data"]["remote_access_enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        admin_blocks[0]["data"]["trusted_proxy_count"].as_u64(),
+        Some(2)
+    );
+    let trusted_proxies = admin_blocks[0]["data"]["trusted_proxies"]
+        .as_array()
+        .expect("admin should see trusted proxy details");
+    let proxy_values: Vec<_> = trusted_proxies
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert_eq!(proxy_values, vec!["10.0.0.10", "10.0.0.11"]);
 }
 
 #[tokio::test]

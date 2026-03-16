@@ -14,6 +14,8 @@ The supported runtime for Rustyfin is **native Debian 12 and Debian 13**. If a d
   - install, start, deploy, ports, and service model
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/rustyfin-current-state-design-baseline-2026-03-13.md`
   - current architecture and product baseline
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-03-16-feature-gap-audit-excluding-network.md`
+  - audit of documented-but-unshipped feature areas, excluding the Network page / RustyNet work
 
 ## Current Docs By Area
 
