@@ -98,25 +98,56 @@ struct ForecastDaily {
 pub async fn fetch_public_weather_current(
     location_query: &str,
 ) -> Result<PublicWeatherCurrentSummary, String> {
-    let query = normalize_location_query(location_query)?;
     let client = weather_client()?;
-    let resolved = geocode_location(&client, &query).await?;
-    let forecast = fetch_forecast(&client, &resolved, 1).await?;
-    let current = build_current_summary(&query, &resolved, &forecast)?;
-    Ok(current)
+    fetch_public_weather_current_with_endpoints(
+        &client,
+        location_query,
+        GEOCODING_URL,
+        FORECAST_URL,
+    )
+    .await
 }
 
 pub async fn fetch_public_weather_forecast(
     location_query: &str,
     forecast_days: Option<u8>,
 ) -> Result<PublicWeatherForecastSummary, String> {
+    let client = weather_client()?;
+    fetch_public_weather_forecast_with_endpoints(
+        &client,
+        location_query,
+        forecast_days,
+        GEOCODING_URL,
+        FORECAST_URL,
+    )
+    .await
+}
+
+async fn fetch_public_weather_current_with_endpoints(
+    client: &reqwest::Client,
+    location_query: &str,
+    geocoding_url: &str,
+    forecast_url: &str,
+) -> Result<PublicWeatherCurrentSummary, String> {
+    let query = normalize_location_query(location_query)?;
+    let resolved = geocode_location_from_base(client, &query, geocoding_url).await?;
+    let forecast = fetch_forecast_from_base(client, &resolved, 1, forecast_url).await?;
+    build_current_summary(&query, &resolved, &forecast)
+}
+
+async fn fetch_public_weather_forecast_with_endpoints(
+    client: &reqwest::Client,
+    location_query: &str,
+    forecast_days: Option<u8>,
+    geocoding_url: &str,
+    forecast_url: &str,
+) -> Result<PublicWeatherForecastSummary, String> {
     let query = normalize_location_query(location_query)?;
     let forecast_days = forecast_days
         .unwrap_or(3)
         .clamp(FORECAST_DAY_MIN, FORECAST_DAY_MAX);
-    let client = weather_client()?;
-    let resolved = geocode_location(&client, &query).await?;
-    let forecast = fetch_forecast(&client, &resolved, forecast_days).await?;
+    let resolved = geocode_location_from_base(client, &query, geocoding_url).await?;
+    let forecast = fetch_forecast_from_base(client, &resolved, forecast_days, forecast_url).await?;
     let current = build_current_summary(&query, &resolved, &forecast)?;
     let forecast_days = build_forecast_days(&forecast);
     Ok(PublicWeatherForecastSummary {
@@ -138,12 +169,13 @@ fn weather_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("failed to build public weather client: {error}"))
 }
 
-async fn geocode_location(
+async fn geocode_location_from_base(
     client: &reqwest::Client,
     query: &str,
+    geocoding_url: &str,
 ) -> Result<GeocodingResult, String> {
     let url = Url::parse_with_params(
-        GEOCODING_URL,
+        geocoding_url,
         &[
             ("name", query),
             ("count", "5"),
@@ -174,16 +206,17 @@ async fn geocode_location(
         .ok_or_else(|| format!("no public weather location matched \"{query}\""))
 }
 
-async fn fetch_forecast(
+async fn fetch_forecast_from_base(
     client: &reqwest::Client,
     location: &GeocodingResult,
     forecast_days: u8,
+    forecast_url: &str,
 ) -> Result<ForecastResponse, String> {
     let latitude = location.latitude.to_string();
     let longitude = location.longitude.to_string();
     let forecast_days = forecast_days.to_string();
     let url = Url::parse_with_params(
-        FORECAST_URL,
+        forecast_url,
         &[
             ("latitude", latitude.as_str()),
             ("longitude", longitude.as_str()),
@@ -325,8 +358,58 @@ fn weather_code_description(code: Option<i32>) -> &'static str {
 mod tests {
     use super::{
         ForecastDaily, ForecastResponse, GeocodingResult, build_forecast_days,
-        format_resolved_location, normalize_location_query, weather_code_description,
+        fetch_public_weather_current_with_endpoints, fetch_public_weather_forecast_with_endpoints,
+        format_resolved_location, normalize_location_query, weather_client,
+        weather_code_description,
     };
+    use axum::{
+        Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Clone)]
+    struct WeatherTestState {
+        geocode_status: StatusCode,
+        geocode_body: serde_json::Value,
+        forecast_status: StatusCode,
+        forecast_body: String,
+    }
+
+    async fn spawn_weather_test_server(
+        state: WeatherTestState,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        async fn geocode_handler(
+            State(state): State<Arc<Mutex<WeatherTestState>>>,
+        ) -> impl IntoResponse {
+            let guard = state.lock().await;
+            (guard.geocode_status, Json(guard.geocode_body.clone()))
+        }
+
+        async fn forecast_handler(
+            State(state): State<Arc<Mutex<WeatherTestState>>>,
+        ) -> impl IntoResponse {
+            let guard = state.lock().await;
+            (
+                guard.forecast_status,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                guard.forecast_body.clone(),
+            )
+        }
+
+        let state = Arc::new(Mutex::new(state));
+        let app = Router::new()
+            .route("/geocode", get(geocode_handler))
+            .route("/forecast", get(forecast_handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), handle)
+    }
 
     #[test]
     fn normalize_location_query_rejects_blank_values() {
@@ -374,5 +457,98 @@ mod tests {
         assert_eq!(days[0].condition, "Mainly clear");
         assert_eq!(days[1].condition, "Rain");
         assert_eq!(days[1].precipitation_probability_max_percent, Some(80.0));
+    }
+
+    #[tokio::test]
+    async fn weather_current_reports_geocoding_status_failures() {
+        let (base, handle) = spawn_weather_test_server(WeatherTestState {
+            geocode_status: StatusCode::SERVICE_UNAVAILABLE,
+            geocode_body: json!({ "error": true }),
+            forecast_status: StatusCode::OK,
+            forecast_body: "{}".to_string(),
+        })
+        .await;
+        let client = weather_client().unwrap();
+        let error = fetch_public_weather_current_with_endpoints(
+            &client,
+            "Dublin",
+            &format!("{base}/geocode"),
+            &format!("{base}/forecast"),
+        )
+        .await
+        .expect_err("expected downstream geocoding failure");
+        assert!(error.contains("weather geocoding request failed with status 503"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn weather_forecast_reports_invalid_downstream_json() {
+        let (base, handle) = spawn_weather_test_server(WeatherTestState {
+            geocode_status: StatusCode::OK,
+            geocode_body: json!({
+                "results": [{
+                    "name": "Dublin",
+                    "latitude": 53.3498,
+                    "longitude": -6.2603,
+                    "country": "Ireland",
+                    "admin1": "Leinster"
+                }]
+            }),
+            forecast_status: StatusCode::OK,
+            forecast_body: "{not valid json".to_string(),
+        })
+        .await;
+        let client = weather_client().unwrap();
+        let error = fetch_public_weather_forecast_with_endpoints(
+            &client,
+            "Dublin",
+            Some(2),
+            &format!("{base}/geocode"),
+            &format!("{base}/forecast"),
+        )
+        .await
+        .expect_err("expected invalid forecast JSON failure");
+        assert!(error.contains("failed to parse weather forecast response"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn weather_current_reports_missing_current_conditions() {
+        let (base, handle) = spawn_weather_test_server(WeatherTestState {
+            geocode_status: StatusCode::OK,
+            geocode_body: json!({
+                "results": [{
+                    "name": "Dublin",
+                    "latitude": 53.3498,
+                    "longitude": -6.2603,
+                    "country": "Ireland",
+                    "admin1": "Leinster"
+                }]
+            }),
+            forecast_status: StatusCode::OK,
+            forecast_body: json!({
+                "timezone": "Europe/Dublin",
+                "daily": {
+                    "time": ["2026-03-16"],
+                    "weather_code": [1],
+                    "temperature_2m_max": [10.0],
+                    "temperature_2m_min": [3.0],
+                    "precipitation_probability_max": [10.0]
+                }
+            })
+            .to_string(),
+        })
+        .await;
+        let client = weather_client().unwrap();
+        let error = fetch_public_weather_current_with_endpoints(
+            &client,
+            "Dublin",
+            &format!("{base}/geocode"),
+            &format!("{base}/forecast"),
+        )
+        .await
+        .expect_err("expected missing current conditions failure");
+        assert!(error.contains("did not include current conditions"));
+        handle.abort();
     }
 }

@@ -136,35 +136,41 @@ async fn fetch_public_text_url(raw_url: &str) -> Result<FetchedPublicText, Strin
                 response.status()
             ));
         }
-
-        let final_url = response.url().clone();
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        if !is_supported_text_content_type(&content_type) {
-            return Err(format!(
-                "public web response content type is not supported: {content_type}"
-            ));
-        }
-        let body = read_limited_text_body(response).await?;
-        let source_host = final_url
-            .host_str()
-            .unwrap_or("unknown")
-            .trim()
-            .to_ascii_lowercase();
-        return Ok(FetchedPublicText {
-            requested_url,
-            final_url: final_url.to_string(),
-            source_host,
-            content_type,
-            body,
-        });
+        return finalize_public_text_response(requested_url.clone(), response).await;
     }
 
     Err("public web request exceeded redirect limit".to_string())
+}
+
+async fn finalize_public_text_response(
+    requested_url: String,
+    response: Response,
+) -> Result<FetchedPublicText, String> {
+    let final_url = response.url().clone();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    if !is_supported_text_content_type(&content_type) {
+        return Err(format!(
+            "public web response content type is not supported: {content_type}"
+        ));
+    }
+    let body = read_limited_text_body(response).await?;
+    let source_host = final_url
+        .host_str()
+        .unwrap_or("unknown")
+        .trim()
+        .to_ascii_lowercase();
+    Ok(FetchedPublicText {
+        requested_url,
+        final_url: final_url.to_string(),
+        source_host,
+        content_type,
+        body,
+    })
 }
 
 fn normalize_public_url(raw_url: &str) -> Result<Url, String> {
@@ -438,10 +444,38 @@ fn truncate_chars(raw: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_page_title, is_public_ip, normalize_search_result_url, parse_duckduckgo_results,
-        summarize_page_body,
+        extract_page_title, finalize_public_text_response, is_public_ip, normalize_public_url,
+        normalize_search_result_url, parse_duckduckgo_results, summarize_page_body,
+        validate_public_target,
     };
+    use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+    use reqwest::Client;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    async fn spawn_web_test_server(
+        status: StatusCode,
+        content_type: &'static str,
+        body: String,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        async fn handler(
+            State((status, content_type, body)): State<(StatusCode, &'static str, String)>,
+        ) -> impl IntoResponse {
+            (
+                status,
+                [(axum::http::header::CONTENT_TYPE, content_type)],
+                body,
+            )
+        }
+        let app = Router::new()
+            .route("/", get(handler))
+            .with_state((status, content_type, body));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/"), handle)
+    }
 
     #[test]
     fn private_ipv4_is_not_public() {
@@ -494,5 +528,61 @@ mod tests {
         "#;
         assert_eq!(extract_page_title(html).as_deref(), Some("Example Page"));
         assert!(summarize_page_body(html, "text/html").contains("useful summary paragraph"));
+    }
+
+    #[test]
+    fn normalize_public_url_rejects_credentialed_and_custom_port_urls() {
+        let credentialed = normalize_public_url("https://user:pass@example.com/");
+        assert!(
+            credentialed
+                .expect_err("credentialed URL should fail")
+                .contains("credentialed")
+        );
+
+        let custom_port = normalize_public_url("https://example.com:8443/");
+        assert!(
+            custom_port
+                .expect_err("custom port URL should fail")
+                .contains("default public web ports")
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_public_target_rejects_localhost_hosts() {
+        let url = normalize_public_url("http://localhost/").unwrap();
+        let error = validate_public_target(&url)
+            .await
+            .expect_err("localhost should be blocked");
+        assert!(error.contains("not allowed"));
+    }
+
+    #[tokio::test]
+    async fn finalize_public_text_response_rejects_binary_content_types() {
+        let (url, handle) = spawn_web_test_server(
+            StatusCode::OK,
+            "application/octet-stream",
+            "binary".to_string(),
+        )
+        .await;
+        let response = Client::new().get(&url).send().await.unwrap();
+        let error = match finalize_public_text_response(url.clone(), response).await {
+            Ok(_) => panic!("binary content type should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("content type is not supported"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn finalize_public_text_response_rejects_oversized_bodies() {
+        let oversized = "a".repeat(70 * 1024);
+        let (url, handle) = spawn_web_test_server(StatusCode::OK, "text/plain", oversized).await;
+        let response = Client::new().get(&url).send().await.unwrap();
+        let error = match finalize_public_text_response(url.clone(), response).await {
+            Ok(_) => panic!("oversized body should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("exceeded size limit"));
+        handle.abort();
     }
 }

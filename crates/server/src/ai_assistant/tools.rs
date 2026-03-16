@@ -3023,14 +3023,30 @@ fn downloads_status_label(count: usize, query: Option<&str>, availability: Optio
 mod tests {
     use super::{
         birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
-        next_birthday_occurrence, transcript_excerpt_indexes, transcript_terms,
+        next_birthday_occurrence, probe_service_health_component, transcript_excerpt_indexes,
+        transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::types::{
         AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier,
         ToolRoleRequirement,
     };
+    use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
     use rustfin_db::repo::calendar::CalendarEventRow;
+
+    async fn spawn_health_test_server(status: StatusCode) -> (String, tokio::task::JoinHandle<()>) {
+        async fn handler(status: StatusCode) -> impl IntoResponse {
+            status
+        }
+
+        let app = Router::new().route("/health", get(move || handler(status)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/health"), handle)
+    }
 
     fn assistant_context(role: &str) -> AssistantContext {
         AssistantContext {
@@ -3171,5 +3187,41 @@ mod tests {
         assert!(terms.contains(&"rachel".to_string()));
         assert!(!terms.contains(&"yeah".to_string()));
         assert!(!terms.contains(&"okay".to_string()));
+    }
+
+    #[tokio::test]
+    async fn service_health_probe_marks_healthy_services() {
+        let (url, handle) = spawn_health_test_server(StatusCode::OK).await;
+        let client = reqwest::Client::new();
+        let summary = probe_service_health_component(&client, "core_api", Some(url)).await;
+        assert_eq!(summary.status, "healthy");
+        assert!(summary.detail.contains("HTTP 200"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn service_health_probe_marks_http_failures_as_error() {
+        let (url, handle) = spawn_health_test_server(StatusCode::SERVICE_UNAVAILABLE).await;
+        let client = reqwest::Client::new();
+        let summary = probe_service_health_component(&client, "core_api", Some(url)).await;
+        assert_eq!(summary.status, "error");
+        assert!(summary.detail.contains("HTTP 503"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn service_health_probe_reports_connection_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let client = reqwest::Client::new();
+        let summary = probe_service_health_component(
+            &client,
+            "core_api",
+            Some(format!("http://{addr}/health")),
+        )
+        .await;
+        assert_eq!(summary.status, "error");
+        assert!(summary.detail.contains("Health check failed"));
     }
 }

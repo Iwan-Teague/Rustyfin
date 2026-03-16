@@ -1,7 +1,7 @@
 # Rustyfin AI Grounded Tools Architecture
 
 Date: 2026-03-15
-Last revised: 2026-03-15
+Last revised: 2026-03-16
 Status: implementation tracker
 
 ## Purpose
@@ -60,15 +60,18 @@ This document defines the architecture, boundaries, rollout order, and security 
 - runtime assistant logging and diagnostics now include per-request trace IDs plus assistant chat/tool counters in runtime diagnostics
 - tool registry policy is now enforced at execution time, so admin-only or write-capable tools stay blocked unless the registry and runtime flow both allow them
 - `/api/v1/ai/chat` now uses a model-assisted structured planner for tool selection, with strict registry/role validation plus deterministic fallback and deterministic entity-follow-up resolution
+- planner hardening now covers malformed planner JSON, surrounding prose extraction, duplicate tool deduplication, mode-none suppression, and invalid model tool inputs falling back to safe no-op behavior
 - authenticated fixed-provider weather tools now exist for `weather_get_current` and `weather_get_forecast`, giving normal users safe internet-backed weather without generic browsing
 - admin-only constrained public web tools now exist for `web_search_public_web` and `web_fetch_public_page_summary`, gated behind `RUSTFIN_AI_PUBLIC_WEB_ENABLED=1` with SSRF/private-network blocking and bounded public-page extraction
-- assistant integration coverage now proves library-access scoping, recently-added library access scoping, public-room-only visibility, joinable-room grounding, calendar visibility, Minecraft server access scoping, authenticated downloads catalog grounding, and admin-only host runtime/service-health gating through grounded turn preparation
+- assistant integration coverage now proves library-access scoping, recently-added library access scoping, public-room-only visibility, joinable-room grounding, calendar visibility, Minecraft server access scoping, authenticated downloads catalog grounding, transcript-summary lifecycle/failure handling, private voice-channel transcript visibility, network trusted-proxy privacy boundaries, and admin-only host runtime/backup/service/transcode/storage/recent-error gating through grounded turn preparation
+- injected downstream failure coverage now exists for public weather failures, constrained public-web validation/body limits, degraded service-health probes, and unavailable or malformed host network topology snapshots
 - dedicated assistant audit persistence now exists with admin-readable recent request history in the Admin `AI` tab
 - assistant audit retention/pruning policy now exists with a 30-day default window, hourly cleanup, and `RUSTFIN_AI_AUDIT_RETENTION_DAYS` override support
+- assistant audit hardening now covers malformed stored JSON payloads and invalid retention env values falling back to safe defaults
 
 ### In Progress
 
-- permission-bound integration/security testing is now in place across the current differentiated grounded domains, but it is still lighter than the design target for broader lifecycle, failure, and future-domain coverage
+- permission-bound integration/security testing is now in place across the differentiated grounded domains plus the main transcript/system-summary, network-privacy, and external-runtime failure paths, but it is still lighter than the design target for broader future domains such as richer RustyNet mesh data
 
 ### Future
 

@@ -3681,6 +3681,32 @@ mod tests {
     }
 
     #[test]
+    fn model_planner_parser_extracts_json_from_surrounding_prose() {
+        let parsed = parse_model_planner_response(
+            "I will use a grounded tool.\n{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"}]}\nThanks!",
+        )
+        .expect("expected parsed planner response");
+        assert_eq!(parsed.mode.as_deref(), Some("tool_plan"));
+        assert_eq!(parsed.tools.len(), 1);
+        assert_eq!(parsed.tools[0].tool, "calendar_list_events");
+    }
+
+    #[test]
+    fn model_planner_parser_rejects_non_json_output() {
+        assert!(parse_model_planner_response("no usable planner json here").is_none());
+    }
+
+    #[test]
+    fn model_planner_mode_none_discards_tool_entries() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"none\",\"tools\":[{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
+        )
+        .expect("expected planner response");
+        let tools = normalize_model_plan(&response, &auth_user("admin"), "Do I have Dune?");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn model_planner_normalization_respects_role_visibility() {
         let response: ModelPlannerResponse = serde_json::from_str(
             "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_host_runtime_summary\"},{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
@@ -3717,6 +3743,28 @@ mod tests {
             }
             _ => panic!("expected server filter"),
         }
+    }
+
+    #[test]
+    fn model_planner_normalization_deduplicates_duplicate_tools() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"}]}",
+        )
+        .expect("expected planner response");
+        let tools =
+            normalize_model_plan(&response, &auth_user("user"), "What events are this week?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
+    }
+
+    #[test]
+    fn model_planner_normalization_ignores_tools_without_required_inputs() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\"},{\"tool\":\"weather_get_current\"}]}",
+        )
+        .expect("expected planner response");
+        let tools = normalize_model_plan(&response, &auth_user("user"), "Hello there");
+        assert!(tools.is_empty());
     }
 
     #[test]

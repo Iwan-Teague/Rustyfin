@@ -191,9 +191,18 @@ async fn collect_linux_network_nodes() -> Result<Vec<NetworkNodeSummary>, String
         });
     }
 
-    let rows: Vec<IpAddressShowRow> = serde_json::from_slice(&output.stdout)
-        .map_err(|error| format!("failed to parse host network interface data: {error}"))?;
+    let rows = parse_linux_network_rows(&output.stdout)?;
+    Ok(build_network_nodes_from_rows(rows))
+}
 
+#[cfg(target_os = "linux")]
+fn parse_linux_network_rows(stdout: &[u8]) -> Result<Vec<IpAddressShowRow>, String> {
+    serde_json::from_slice(stdout)
+        .map_err(|error| format!("failed to parse host network interface data: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn build_network_nodes_from_rows(rows: Vec<IpAddressShowRow>) -> Vec<NetworkNodeSummary> {
     let mut nodes = rows
         .into_iter()
         .map(|row| {
@@ -229,8 +238,7 @@ async fn collect_linux_network_nodes() -> Result<Vec<NetworkNodeSummary>, String
             .cmp(&status_rank(&right.status))
             .then_with(|| left.name.cmp(&right.name))
     });
-
-    Ok(nodes)
+    nodes
 }
 
 #[cfg(target_os = "linux")]
@@ -272,11 +280,53 @@ fn is_loopback_address(address: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::NetworkTopologySnapshot;
+
     #[cfg(target_os = "linux")]
-    use super::{IpAddressShowRow, classify_network_node_status, is_loopback_address, status_rank};
+    use super::{
+        IpAddressShowRow, classify_network_node_status, is_loopback_address,
+        parse_linux_network_rows, status_rank,
+    };
 
     #[cfg(target_os = "linux")]
     use crate::network_diagnostics::NetworkAddressSummary;
+
+    #[test]
+    fn unavailable_snapshot_hides_trusted_proxies_for_non_admins() {
+        let snapshot = NetworkTopologySnapshot::unavailable(
+            "network diagnostics unavailable",
+            Some("rustyfin-host".to_string()),
+            Some("rustyfin.example".to_string()),
+            true,
+            vec!["10.0.0.10".to_string(), "10.0.0.11".to_string()],
+            false,
+        );
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.trusted_proxy_count, 2);
+        assert_eq!(snapshot.trusted_proxies, None);
+        assert_eq!(
+            snapshot.reason.as_deref(),
+            Some("network diagnostics unavailable")
+        );
+    }
+
+    #[test]
+    fn unavailable_snapshot_exposes_trusted_proxies_for_admins() {
+        let snapshot = NetworkTopologySnapshot::unavailable(
+            "network diagnostics unavailable",
+            Some("rustyfin-host".to_string()),
+            Some("rustyfin.example".to_string()),
+            true,
+            vec!["10.0.0.10".to_string(), "10.0.0.11".to_string()],
+            true,
+        );
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.trusted_proxy_count, 2);
+        assert_eq!(
+            snapshot.trusted_proxies,
+            Some(vec!["10.0.0.10".to_string(), "10.0.0.11".to_string()])
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -321,5 +371,13 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].ifname, "eth0");
         assert_eq!(rows[0].addr_info[0].local, "192.168.1.2");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn invalid_ip_json_reports_parse_failure() {
+        let error =
+            parse_linux_network_rows(br#"{"not":"an array"}"#).expect_err("expected parse failure");
+        assert!(error.contains("failed to parse host network interface data"));
     }
 }

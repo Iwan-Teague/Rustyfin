@@ -354,9 +354,11 @@ fn result_count(block: &crate::ai_assistant::types::AssistantToolContextBlock) -
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_AI_AUDIT_RETENTION_DAYS, MAX_AI_AUDIT_RETENTION_DAYS, MIN_AI_AUDIT_RETENTION_DAYS,
-        normalize_audit_retention_days, normalize_message_preview,
+        AiAssistantAuditEventResponse, DEFAULT_AI_AUDIT_RETENTION_DAYS,
+        MAX_AI_AUDIT_RETENTION_DAYS, MIN_AI_AUDIT_RETENTION_DAYS, normalize_audit_retention_days,
+        normalize_message_preview, parse_audit_event_row,
     };
+    use rustfin_db::repo::ai_assistant_audit::AiAssistantAuditEventRow;
 
     #[test]
     fn normalize_message_preview_collapses_whitespace() {
@@ -400,5 +402,42 @@ mod tests {
             normalize_audit_retention_days(Some("9999")),
             MAX_AI_AUDIT_RETENTION_DAYS
         );
+    }
+
+    #[test]
+    fn audit_retention_uses_default_for_blank_and_invalid_values() {
+        assert_eq!(
+            normalize_audit_retention_days(Some("   ")),
+            DEFAULT_AI_AUDIT_RETENTION_DAYS
+        );
+        assert_eq!(
+            normalize_audit_retention_days(Some("not-a-number")),
+            DEFAULT_AI_AUDIT_RETENTION_DAYS
+        );
+    }
+
+    #[test]
+    fn parse_audit_event_row_tolerates_invalid_json_payloads() {
+        let parsed: AiAssistantAuditEventResponse =
+            parse_audit_event_row(AiAssistantAuditEventRow {
+                id: "audit-1".to_string(),
+                trace_id: "trace-1".to_string(),
+                user_id: "user-1".to_string(),
+                username: "tester".to_string(),
+                user_role: "user".to_string(),
+                model_name: "model.gguf".to_string(),
+                message_preview: "hello".to_string(),
+                history_len: 2,
+                response_kind: "completed".to_string(),
+                planned_tools_json: "{bad json".to_string(),
+                executed_tools_json: "{bad json".to_string(),
+                grounding_sources_json: "{bad json".to_string(),
+                error_message: Some("oops".to_string()),
+                created_ts: 123,
+            });
+        assert!(parsed.planned_tools.is_empty());
+        assert!(parsed.executed_tools.is_empty());
+        assert!(parsed.grounding_sources.is_empty());
+        assert_eq!(parsed.error_message.as_deref(), Some("oops"));
     }
 }
