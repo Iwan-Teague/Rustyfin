@@ -1055,6 +1055,34 @@ fn install_native_systemd_command(
     Ok(())
 }
 
+fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Result<()> {
+    // Only attempt if an NVIDIA GPU is present
+    if !command_exists("nvidia-smi") {
+        return Ok(());
+    }
+    // Already have build support — nothing to do
+    if has_cuda_build_support() {
+        println!("[rustfin-installer] CUDA build support already available.");
+        return Ok(());
+    }
+    println!(
+        "[rustfin-installer] NVIDIA GPU detected but CUDA toolkit not found. Installing nvidia-cuda-toolkit..."
+    );
+    let result = run_root_command("apt-get", &["install", "-y", "nvidia-cuda-toolkit"], user_context);
+    match result {
+        Ok(_) => {
+            println!("[rustfin-installer] CUDA toolkit installed successfully.");
+        }
+        Err(e) => {
+            eprintln!(
+                "[rustfin-installer] Warning: CUDA toolkit install failed: {}. GPU-accelerated AI backend will be unavailable. Install manually: sudo apt-get install nvidia-cuda-toolkit",
+                e
+            );
+        }
+    }
+    Ok(())
+}
+
 fn install_debian_prerequisites(
     host: &HostPlatform,
     user_context: &NativeUserContext,
@@ -1068,6 +1096,9 @@ fn install_debian_prerequisites(
 
     println!("[rustfin-installer] Installing Debian runtime packages...");
     install_debian_runtime_packages(user_context)?;
+
+    println!("[rustfin-installer] Ensuring NVIDIA CUDA toolkit (if GPU present)...");
+    ensure_nvidia_cuda_toolkit(user_context)?;
 
     println!(
         "[rustfin-installer] Ensuring Rust toolchain for native user {}...",
@@ -2492,11 +2523,55 @@ fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
     Ok(None)
 }
 
-fn detect_default_ai_backend(host: &HostPlatform) -> &'static str {
-    if command_exists("nvcc")
-        || Path::new("/usr/local/cuda").exists()
-        || Path::new("/opt/cuda").exists()
+/// Returns true when a CUDA build toolchain is detectable on this host.
+/// Checks nvcc in PATH, common versioned CUDA install prefixes (NVIDIA runfile,
+/// deb/rpm, conda), and CUDA header presence — works across distros and
+/// install methods without assuming a fixed path.
+fn has_cuda_build_support() -> bool {
+    // nvcc available in PATH (distro package manager or toolkit already in PATH)
+    if command_exists("nvcc") {
+        return true;
+    }
+    // Common versioned CUDA toolkit prefixes installed by NVIDIA runfile / deb
+    let cuda_nvcc_candidates = [
+        "/usr/local/cuda/bin/nvcc",
+        "/usr/local/cuda-12/bin/nvcc",
+        "/usr/local/cuda-12.0/bin/nvcc",
+        "/usr/local/cuda-12.1/bin/nvcc",
+        "/usr/local/cuda-12.2/bin/nvcc",
+        "/usr/local/cuda-12.3/bin/nvcc",
+        "/usr/local/cuda-12.4/bin/nvcc",
+        "/usr/local/cuda-12.5/bin/nvcc",
+        "/usr/local/cuda-12.6/bin/nvcc",
+        "/usr/local/cuda-11/bin/nvcc",
+        "/usr/local/cuda-11.8/bin/nvcc",
+        "/usr/lib/cuda/bin/nvcc",
+        "/opt/cuda/bin/nvcc",
+    ];
+    for path in &cuda_nvcc_candidates {
+        if Path::new(path).exists() {
+            return true;
+        }
+    }
+    // Toolkit root present — cmake FindCUDA/FindCUDAToolkit can locate nvcc from here
+    if Path::new("/usr/local/cuda").exists()
+        || Path::new("/usr/local/cuda-12").exists()
+        || Path::new("/usr/lib/cuda").exists()
     {
+        return true;
+    }
+    // CUDA headers present — toolkit installed but bin dir not added to PATH yet
+    if Path::new("/usr/include/cuda.h").exists()
+        || Path::new("/usr/local/cuda/include/cuda.h").exists()
+        || Path::new("/usr/lib/cuda/include/cuda.h").exists()
+    {
+        return true;
+    }
+    false
+}
+
+fn detect_default_ai_backend(host: &HostPlatform) -> &'static str {
+    if has_cuda_build_support() {
         return "cuda";
     }
     if command_exists("hipcc") || command_exists("rocminfo") || Path::new("/opt/rocm").exists() {
@@ -2507,6 +2582,13 @@ fn detect_default_ai_backend(host: &HostPlatform) -> &'static str {
     }
     if matches!(host.architecture.as_str(), "aarch64" | "arm64") {
         return "disabled";
+    }
+    // NVIDIA GPU present but CUDA toolkit not installed — fall back to CPU.
+    // Install the CUDA toolkit (e.g. nvidia-cuda-toolkit) and re-run to enable GPU acceleration.
+    if command_exists("nvidia-smi") {
+        eprintln!(
+            "[rustfin-installer] Note: NVIDIA GPU detected but CUDA build toolchain not found. AI inference will use CPU. Install the CUDA toolkit and re-deploy to enable GPU acceleration."
+        );
     }
     "cpu"
 }
@@ -4161,20 +4243,33 @@ fn ensure_linux() -> anyhow::Result<()> {
 }
 
 fn ensure_current_support_boundary(host: &HostPlatform) -> anyhow::Result<()> {
-    let id = host.id.as_deref().unwrap_or("");
+    let id = host.id.as_deref().unwrap_or("").to_lowercase();
     let version = host.version_id.as_deref().unwrap_or("");
-    if id == "debian" && matches!(version, "12" | "13") {
+
+    // Fully supported: Debian LTS
+    if id == "debian" && matches!(version, "11" | "12" | "13" | "14") {
+        return Ok(());
+    }
+
+    // Fully supported: Ubuntu (any version — runtime deps are distro-agnostic)
+    if id == "ubuntu" {
+        return Ok(());
+    }
+
+    // Other Linux distributions: warn but proceed — systemd + standard tools work across distros
+    if !id.is_empty() {
+        eprintln!(
+            "[rustfin-installer] Warning: Running on {} {}. Full support is tested on Debian 12/13 and Ubuntu LTS. Proceeding — if you encounter issues, report them at https://github.com/Iwan-Teague/Rustyfin/issues",
+            &id,
+            if version.is_empty() { "" } else { version }
+        );
         return Ok(());
     }
 
     bail!(
-        "Full native install is currently implemented for Debian 12 and Debian 13 only. Detected {} {}.",
-        if id.is_empty() { "unknown" } else { id },
-        if version.is_empty() {
-            "unknown"
-        } else {
-            version
-        }
+        "rustfin-installer requires a Linux host. Detected: {} {}.",
+        if id.is_empty() { "unknown" } else { &*id },
+        if version.is_empty() { "unknown" } else { version }
     )
 }
 

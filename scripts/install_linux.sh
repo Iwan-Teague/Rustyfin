@@ -105,6 +105,12 @@ install_bootstrap_packages() {
         git \
         pkg-config \
         sudo
+      # Install CUDA toolkit if NVIDIA GPU is detected and toolkit not present
+      if command -v nvidia-smi &>/dev/null && ! command -v nvcc &>/dev/null; then
+        info "NVIDIA GPU detected — installing CUDA toolkit for GPU-accelerated AI..."
+        "${RUN_ROOT[@]}" apt-get install -y nvidia-cuda-toolkit || \
+          warn "CUDA toolkit install failed; AI GPU backend will be disabled"
+      fi
       ;;
     dnf)
       info "Installing Rust bootstrap packages with dnf..."
