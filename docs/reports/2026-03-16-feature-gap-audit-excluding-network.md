@@ -34,9 +34,10 @@ The main documented-but-unshipped feature areas are:
 
 1. Downloads expansion beyond the RustyVault extension
 2. Real backup and restore workflows
-3. AI write-capable actions and an optional admin-only assistant mode
-4. Deferred Minecraft/Servers expansion features beyond the current Vanilla/Paper scope
-5. The cross-distro/productized Linux installer work beyond the current Debian 12/13 path
+3. A planned Smart Home surface for linked home devices
+4. AI write-capable actions and an optional admin-only assistant mode
+5. Deferred Minecraft/Servers expansion features beyond the current Vanilla/Paper scope
+6. The cross-distro/productized Linux installer work beyond the current Debian 12/13 path
 
 The docs that are mostly complete from a feature-delivery perspective are:
 
@@ -51,6 +52,7 @@ The docs that are mostly complete from a feature-delivery perspective are:
 Documented intent:
 
 - `README.md` says Downloads should later carry future first-party applications and companion downloads.
+- the design baseline now explicitly calls out Windows, macOS, Linux, Android APK, and iOS as planned Downloads artifacts.
 
 Current reality:
 
@@ -64,7 +66,11 @@ Current evidence:
 
 Missing feature set:
 
-- first-party Rustyfin application downloads
+- Windows client downloads
+- macOS client downloads
+- Linux client downloads
+- Android APK downloads
+- iOS app distribution/download guidance
 - companion downloads beyond the RustyVault extension
 
 ### 2. Backup and restore workflows do not exist yet
@@ -94,7 +100,32 @@ Missing feature set:
 - scheduled backups
 - export/recovery tooling
 
-### 3. AI write actions are still intentionally absent
+### 3. Smart Home is now planned but entirely unimplemented
+
+Documented intent:
+
+- the main design baseline now defines Smart Home as a future Rustyfin product surface for linked cameras, lights, doors/locks, alarms, and other smart-home devices
+
+Current reality:
+
+- there is no Smart Home page, API family, or device integration surface in the shipped product
+
+Current evidence:
+
+- `docs/reports/rustyfin-current-state-design-baseline-2026-03-13.md`
+
+Missing feature set:
+
+- Smart Home page/surface
+- linked smart-home device inventory
+- security camera visibility/previews
+- smart light state/control surface
+- door/lock state surface
+- alarm-system state surface
+- room/zone grouping for smart-home devices
+- graceful unavailable/empty-state Smart Home UI
+
+### 4. AI write actions are still intentionally absent
 
 Documented intent:
 
@@ -122,7 +153,7 @@ Missing feature set:
 - protected-action support for high-risk AI writes
 - optional admin-only assistant mode
 
-### 4. Minecraft/Servers follow-on features remain unshipped
+### 5. Minecraft/Servers follow-on features remain unshipped
 
 Documented intent:
 
@@ -163,7 +194,7 @@ Deferred but still explicitly outlined in docs:
 - in-browser server console write access
 - full mod marketplace management
 
-### 5. The Linux installer is not yet at the full planned scope
+### 6. The Linux installer is not yet at the full planned scope
 
 Documented intent:
 
@@ -217,15 +248,17 @@ If this audit is turned into delivery work, the highest-value non-network sequen
 
 1. real backup/restore workflows
 2. Downloads expansion beyond the RustyVault extension
-3. AI write-capable actions with proper confirmation/protected-action flow
-4. next-wave Minecraft features
-5. cross-distro installer expansion
+3. Smart Home surface and device integrations
+4. AI write-capable actions with proper confirmation/protected-action flow
+5. next-wave Minecraft features
+6. cross-distro installer expansion
 
 ## Bottom Line
 
 Excluding the Network page and RustyNet work, the docs currently point to five real unshipped feature areas:
 
 - broader Downloads artifacts
+- Smart Home product surface
 - real backup/restore workflows
 - AI write/admin mode work
 - deferred Minecraft/Servers expansion
