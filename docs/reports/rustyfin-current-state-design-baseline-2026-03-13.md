@@ -103,6 +103,8 @@ The current Rustyfin product surface includes:
 - admin
 - a placeholder network page with a defined RustyNet topology-map direction
 
+It does not currently include a Smart Home product surface, but Smart Home is now a defined planned direction for future Rustyfin expansion.
+
 The current main navigation confirms these user-facing areas:
 
 - Channels
@@ -493,6 +495,15 @@ The `/downloads` page currently acts as a release/distribution surface. It prese
 - install instructions for unpacked extension loading
 - placeholders for future downloadable Rustyfin artifacts
 
+The intended direction for Downloads is now explicit:
+
+- Windows desktop application packages
+- macOS desktop application packages
+- Linux desktop application packages
+- Android APK releases
+- iOS application release/download guidance
+- companion downloads should stay centralized on `/downloads` instead of being scattered across feature pages
+
 ### 13.12 Network
 
 The `/network` page currently exists as a placeholder for future capability rather than as a mature product surface.
@@ -511,6 +522,25 @@ The intended direction for this page is now defined:
 - if RustyNet data is unavailable, the page should degrade to an unavailable or empty-state view rather than crashing or blocking the rest of Rustyfin
 
 This means the Network page should no longer be treated as an undefined placeholder. It is now a planned RustyNet-powered topology surface with cinematic Rustyfin styling and lightweight node inspection as the initial product shape.
+
+### 13.13 Smart Home
+
+Smart Home does not currently exist as a shipped Rustyfin product surface.
+
+The intended direction for this area is now defined:
+
+- add a dedicated Smart Home surface where users can see linked smart-home devices in one place
+- start with read-first situational awareness before deeper control actions
+- support linked security cameras, smart lights, doors/locks, alarm systems, and other smart-home devices already integrated into the host environment
+- show concise live state for each linked device, such as online/offline, armed/disarmed, open/closed, on/off, brightness, lock state, or motion/alarm state where available
+- prioritize a visually scannable dashboard rather than forcing a settings-first or table-first experience
+- allow camera surfaces to show useful lightweight previews or snapshot-oriented visibility where the backing integration supports it
+- group devices by home/zone/room where the source integration already provides that structure
+- keep the first hover/detail payload concise and useful, starting with device name, type, current state, room/zone, and any low-risk metadata already available from the underlying integration
+- treat security-sensitive controls carefully; initial product shape should emphasize visibility, awareness, and state reporting before high-risk write actions such as unlocking doors or disarming alarms
+- if Smart Home integrations are unavailable, the surface should degrade to an empty or unavailable state rather than blocking the rest of Rustyfin
+
+This means Smart Home should be treated as a planned product surface alongside the broader Rustyfin ecosystem, even though it is not yet implemented in the current repo/runtime.
 
 ## 14. Data And Persistence Baseline
 

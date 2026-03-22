@@ -46,6 +46,7 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - Current implementation exposes the RustyVault browser extension package through `/api/v1/downloads/artifacts/rustyvault-webext/package`
   - The Downloads host route is the authoritative public package-delivery surface for first-party artifacts
   - Future first-party applications and companion downloads can land here without moving existing links
+  - Planned first-party client artifacts now explicitly include Windows, macOS, Linux, Android APK, and iOS distribution paths
 - AI
   - Web `/ai` assistant surface backed by the native Rust `crates/ai-agent` integration
   - End-user `/ai` is chat-focused; model downloads, deletion, and storage-folder management are admin-only through the Admin `AI` tab

@@ -101,8 +101,8 @@ textarea:focus-visible {
 }
 
 .app-nav {
-  position: sticky;
-  top: 0.5rem;
+  position: relative;
+  top: 0;
   z-index: 45;
   background: linear-gradient(180deg, rgba(35, 41, 59, 0.96), rgba(27, 33, 50, 0.96));
   border: 1px solid rgba(215, 223, 255, 0.2);
@@ -113,6 +113,13 @@ textarea:focus-visible {
     border-color var(--motion-base) var(--ease-out-quart),
     box-shadow var(--motion-base) var(--ease-out-quart);
   animation: app-nav-settle 620ms var(--ease-out-expo) both;
+}
+
+@media (min-width: 768px) {
+  .app-nav {
+    position: sticky;
+    top: 0.5rem;
+  }
 }
 
 .accent-logo {
