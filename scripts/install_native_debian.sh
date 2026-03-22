@@ -42,10 +42,18 @@ cd "$REPO_ROOT"
 [[ -f /etc/os-release ]] || die "/etc/os-release not found"
 # shellcheck disable=SC1091
 source /etc/os-release
-[[ "${ID:-}" == "debian" ]] || die "This installer targets Debian only."
-case "${VERSION_ID:-}" in
-  12|13) ;;
-  *) die "This installer targets Debian 12 and Debian 13." ;;
+# Supported: Debian 11/12/13/14 and Ubuntu LTS
+case "${ID:-}" in
+  debian)
+    case "${VERSION_ID:-}" in
+      11|12|13|14) ;;
+      *) warn "Running on Debian ${VERSION_ID:-unknown}. Tested on Debian 12/13. Proceeding." ;;
+    esac
+    ;;
+  ubuntu) ;;
+  *)
+    warn "Running on ${ID:-unknown} ${VERSION_ID:-}. Tested on Debian/Ubuntu LTS. Proceeding."
+    ;;
 esac
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -151,6 +159,20 @@ info "Installing supported Debian native runtime dependencies..."
   python3 \
   python3-pip \
   python3-venv
+
+
+# Install CUDA toolkit if NVIDIA GPU present and toolkit not yet available
+# Install CUDA toolkit if NVIDIA GPU present and toolkit not yet available
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if ! command -v nvcc >/dev/null 2>&1 \
+      && ! [[ -x /usr/local/cuda/bin/nvcc ]] \
+      && ! [[ -x /usr/local/cuda-12/bin/nvcc ]] \
+      && ! [[ -f /usr/include/cuda.h ]]; then
+    info "NVIDIA GPU detected. Installing CUDA toolkit for GPU-accelerated AI..."
+    "${RUN_ROOT[@]}" apt-get install -y nvidia-cuda-toolkit \
+      || warn "CUDA toolkit install failed. Install manually: sudo apt-get install nvidia-cuda-toolkit"
+  fi
+fi
 
 if [[ ! -x "${RUSTFIN_NATIVE_USER_HOME}/.cargo/bin/cargo" ]] || [[ ! -x "${RUSTFIN_NATIVE_USER_HOME}/.cargo/bin/rustc" ]]; then
   info "Installing Rust toolchain via rustup for user ${RUSTFIN_NATIVE_USER}..."
