@@ -1063,6 +1063,8 @@ fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Resul
     // Already have build support — nothing to do
     if has_cuda_build_support() {
         println!("[rustfin-installer] CUDA build support already available.");
+        // Still ensure library symlinks exist (Ubuntu apt puts libs in a non-standard path)
+        ensure_cuda_lib_symlinks(user_context);
         return Ok(());
     }
     println!(
@@ -1072,6 +1074,7 @@ fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Resul
     match result {
         Ok(_) => {
             println!("[rustfin-installer] CUDA toolkit installed successfully.");
+            ensure_cuda_lib_symlinks(user_context);
         }
         Err(e) => {
             eprintln!(
@@ -1081,6 +1084,34 @@ fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Resul
         }
     }
     Ok(())
+}
+
+/// On Ubuntu, `nvidia-cuda-toolkit` places libraries in `/usr/lib/x86_64-linux-gnu/`
+/// rather than `/usr/lib/cuda/lib64/` where CMake's FindCUDAToolkit module looks.
+/// This creates symlinks so llama-cpp (and any other cmake-based CUDA crate) can
+/// find `libcudart_static.a` and friends without extra `-L` flags.
+fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) {
+    let cuda_lib64 = Path::new("/usr/lib/cuda/lib64");
+    if !cuda_lib64.exists() {
+        return;
+    }
+    let arch_lib = Path::new("/usr/lib/x86_64-linux-gnu");
+    let libs = [
+        "libcudart_static.a",
+        "libcudart.so",
+        "libcudart.so.12",
+    ];
+    for lib in &libs {
+        let src = arch_lib.join(lib);
+        let dst = cuda_lib64.join(lib);
+        if src.exists() && !dst.exists() {
+            let _ = run_root_command(
+                "ln",
+                &["-sf", src.to_str().unwrap_or(""), dst.to_str().unwrap_or("")],
+                user_context,
+            );
+        }
+    }
 }
 
 fn install_debian_prerequisites(
