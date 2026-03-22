@@ -1090,16 +1090,26 @@ fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Resul
 /// rather than `/usr/lib/cuda/lib64/` where CMake's FindCUDAToolkit module looks.
 /// This creates symlinks so llama-cpp (and any other cmake-based CUDA crate) can
 /// find `libcudart_static.a` and friends without extra `-L` flags.
+///
+/// It also writes `CUDA_PATH` and `RUSTFLAGS` entries to `/etc/environment.d/` so
+/// the values survive reboots and future `deploy-native` runs without requiring the
+/// user to set them manually.
 fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) {
     let cuda_lib64 = Path::new("/usr/lib/cuda/lib64");
     if !cuda_lib64.exists() {
         return;
     }
     let arch_lib = Path::new("/usr/lib/x86_64-linux-gnu");
+    // All static/shared libs needed by llama-cpp-sys-2 when linking with ai-cuda
     let libs = [
         "libcudart_static.a",
         "libcudart.so",
         "libcudart.so.12",
+        "libcublas_static.a",
+        "libcublasLt_static.a",
+        "libcublas.so",
+        "libcublasLt.so",
+        "libculibos.a",
     ];
     for lib in &libs {
         let src = arch_lib.join(lib);
@@ -1108,6 +1118,34 @@ fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) {
             let _ = run_root_command(
                 "ln",
                 &["-sf", src.to_str().unwrap_or(""), dst.to_str().unwrap_or("")],
+                user_context,
+            );
+        }
+    }
+    // Persist RUSTFLAGS so future cargo builds (including deploy-native) can find
+    // the CUDA static libs in /usr/lib/cuda/lib64 without manual env setup.
+    let env_d_dir = Path::new("/etc/environment.d");
+    if env_d_dir.exists() {
+        let env_file = env_d_dir.join("50-rustyfin-cuda.conf");
+        if !env_file.exists() {
+            let env_content = concat!(
+                "# Written by rustfin-installer: paths for Ubuntu apt CUDA toolkit layout
+",
+                "CUDA_PATH=/usr/lib/cuda
+",
+                "RUSTFLAGS=-L/usr/lib/x86_64-linux-gnu -L/usr/lib/cuda/lib64
+",
+            );
+            let _ = run_root_command(
+                "bash",
+                &[
+                    "-c",
+                    &format!(
+                        "printf '%s' '{}' > {}",
+                        env_content,
+                        env_file.display()
+                    ),
+                ],
                 user_context,
             );
         }
