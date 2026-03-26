@@ -9,6 +9,7 @@
     "lint": "node ./scripts/lint-if-config.cjs"
   },
   "dependencies": {
+    "date-fns": "^4.1.0",
     "hls.js": "^1.5.0",
     "next": "^15.0.0",
     "react": "^19.0.0",

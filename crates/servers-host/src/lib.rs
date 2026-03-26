@@ -1048,6 +1048,162 @@ async fn resolve_paper_server_download(version: &str) -> Result<String, String> 
     ))
 }
 
+/// Resolves the Fabric server launcher download URL for a given Minecraft version.
+/// Fabric uses a meta API to find the latest loader and installer versions.
+async fn resolve_fabric_server_download(version: &str) -> Result<String, String> {
+    // Get the latest loader version
+    let loaders: Vec<Value> = OUTBOUND_HTTP
+        .get("https://meta.fabricmc.net/v2/versions/loader")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to fetch Fabric loader versions: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Fabric loader versions request failed: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("failed to decode Fabric loader versions: {error}"))?;
+
+    let loader_version = loaders
+        .first()
+        .and_then(|v| v.get("version"))
+        .and_then(Value::as_str)
+        .ok_or("no Fabric loader versions found")?;
+
+    // Get the latest installer version
+    let installers: Vec<Value> = OUTBOUND_HTTP
+        .get("https://meta.fabricmc.net/v2/versions/installer")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to fetch Fabric installer versions: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Fabric installer versions request failed: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("failed to decode Fabric installer versions: {error}"))?;
+
+    let installer_version = installers
+        .first()
+        .and_then(|v| v.get("version"))
+        .and_then(Value::as_str)
+        .ok_or("no Fabric installer versions found")?;
+
+    // Return the direct server launcher jar URL
+    Ok(format!(
+        "https://meta.fabricmc.net/v2/versions/loader/{version}/{loader_version}/{installer_version}/server/jar"
+    ))
+}
+
+/// Resolves the Forge server installer download URL for a given Minecraft version.
+/// Forge uses a Maven-style repository for artifact downloads.
+async fn resolve_forge_server_download(version: &str) -> Result<String, String> {
+    // Fetch the promotions list to find the recommended or latest Forge version for this MC version
+    let promotions: Value = OUTBOUND_HTTP
+        .get("https://files.minecraftforge.net/maven/net/minecraftforge/forge/promotions_slim.json")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to fetch Forge promotions: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Forge promotions request failed: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("failed to decode Forge promotions: {error}"))?;
+
+    let promos = promotions
+        .get("promos")
+        .and_then(Value::as_object)
+        .ok_or("Forge promotions did not include promos object")?;
+
+    // Try recommended first, then latest
+    let forge_version = promos
+        .get(&format!("{version}-recommended"))
+        .or_else(|| promos.get(&format!("{version}-latest")))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("no Forge version found for Minecraft {version}"))?;
+
+    let full_version = format!("{version}-{forge_version}");
+
+    // Return the installer jar URL
+    Ok(format!(
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/{full_version}/forge-{full_version}-installer.jar"
+    ))
+}
+
+/// Resolves the NeoForge server installer download URL for a given Minecraft version.
+/// NeoForge is a fork of Forge and uses a similar Maven-style distribution.
+async fn resolve_neoforge_server_download(version: &str) -> Result<String, String> {
+    // NeoForge versions are formatted differently - they use the MC version as a prefix
+    // e.g., for MC 1.20.4, NeoForge might be 20.4.x
+    
+    // Fetch the versions list from NeoForge Maven
+    let versions_page: String = OUTBOUND_HTTP
+        .get("https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to fetch NeoForge versions: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("NeoForge versions request failed: {error}"))?
+        .text()
+        .await
+        .map_err(|error| format!("failed to read NeoForge versions: {error}"))?;
+
+    let versions_data: Value = serde_json::from_str(&versions_page)
+        .map_err(|error| format!("failed to decode NeoForge versions: {error}"))?;
+
+    let versions = versions_data
+        .get("versions")
+        .and_then(Value::as_array)
+        .ok_or("NeoForge versions response did not include versions array")?;
+
+    // NeoForge version format: for MC 1.20.4, versions are like 20.4.x
+    // We need to find versions that match our MC version
+    let mc_parts: Vec<&str> = version.split('.').collect();
+    let neoforge_prefix = if mc_parts.len() >= 2 {
+        // Remove the leading "1." from MC version to get NeoForge prefix
+        // e.g., "1.20.4" -> "20.4"
+        if mc_parts[0] == "1" && mc_parts.len() >= 3 {
+            format!("{}.{}", mc_parts[1], mc_parts[2])
+        } else {
+            format!("{}.{}", mc_parts[0], mc_parts.get(1).unwrap_or(&"0"))
+        }
+    } else {
+        return Err(format!("invalid Minecraft version format: {version}"));
+    };
+
+    // Find the latest version matching the prefix
+    let mut best_version: Option<&str> = None;
+    for v in versions.iter().rev() {
+        if let Some(ver_str) = v.as_str() {
+            if ver_str.starts_with(&neoforge_prefix) {
+                best_version = Some(ver_str);
+                break;
+            }
+        }
+    }
+
+    let neoforge_version = best_version
+        .ok_or_else(|| format!("no NeoForge version found for Minecraft {version}"))?;
+
+    Ok(format!(
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/{neoforge_version}/neoforge-{neoforge_version}-installer.jar"
+    ))
+}
+
 async fn ensure_managed_server_artifact(spec: &ManagedProvisionSpec) -> Result<PathBuf, String> {
     let cache_root = artifact_cache_root();
     let version_dir = cache_root
@@ -1070,6 +1226,9 @@ async fn ensure_managed_server_artifact(spec: &ManagedProvisionSpec) -> Result<P
     let download_url = match spec.server_distribution.as_str() {
         "vanilla" => resolve_vanilla_server_download(&spec.minecraft_version).await?,
         "paper" => resolve_paper_server_download(&spec.minecraft_version).await?,
+        "fabric" => resolve_fabric_server_download(&spec.minecraft_version).await?,
+        "forge" => resolve_forge_server_download(&spec.minecraft_version).await?,
+        "neoforge" => resolve_neoforge_server_download(&spec.minecraft_version).await?,
         other => return Err(format!("unsupported managed server distribution: {other}")),
     };
 

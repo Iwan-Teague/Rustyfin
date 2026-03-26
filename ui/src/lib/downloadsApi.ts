@@ -6,12 +6,21 @@ export type DownloadArtifactAvailability = 'available' | 'unavailable' | 'planne
 
 export type DownloadArtifact = {
   id: string;
+  artifact_id: string;
   title: string;
   summary: string;
   availability: DownloadArtifactAvailability;
   detail: string;
+  platform: string;
+  architecture: string;
   version?: string | null;
+  channel: string;
   package_filename?: string | null;
+  file_size?: number | null;
+  checksum?: string | null;
+  signature_status: string;
+  distribution_mode: string;
+  external_url?: string | null;
   download_path?: string | null;
   install_mode?: string | null;
   setup_path?: string | null;

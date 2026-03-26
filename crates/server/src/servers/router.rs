@@ -18,7 +18,7 @@ pub fn servers_router() -> Router<AppState> {
             "/minecraft/instances/{id}",
             get(super::handlers::get_minecraft_server)
                 .patch(super::handlers::update_minecraft_server)
-                .delete(super::handlers::delete_minecraft_server),
+                .delete(super::handlers::delete_minecraft_server_safe),
         )
         .route(
             "/minecraft/instances/{id}/status",
@@ -33,6 +33,10 @@ pub fn servers_router() -> Router<AppState> {
             post(super::handlers::import_minecraft_server),
         )
         .route(
+            "/minecraft/instances/{id}/import/preflight",
+            post(super::handlers::preflight_import),
+        )
+        .route(
             "/minecraft/instances/{id}/events",
             get(super::handlers::list_minecraft_server_events),
         )
@@ -45,7 +49,25 @@ pub fn servers_router() -> Router<AppState> {
             post(super::handlers::request_minecraft_server_action),
         )
         .route(
+            "/minecraft/instances/{id}/members",
+            get(super::handlers::list_server_members)
+                .post(super::handlers::add_server_member),
+        )
+        .route(
+            "/minecraft/instances/{id}/members/{user_id}",
+            axum::routing::patch(super::handlers::update_server_member)
+                .delete(super::handlers::remove_server_member),
+        )
+        .route(
             "/minecraft/discovery/scan",
             get(super::handlers::scan_minecraft_discovery_candidates),
+        )
+        .route(
+            "/minecraft/discovery/candidates",
+            get(super::handlers::list_discovery_candidates),
+        )
+        .route(
+            "/minecraft/discovery/candidates/{id}/ignore",
+            post(super::handlers::ignore_discovery_candidate),
         )
 }

@@ -50,6 +50,22 @@ cd "$REPO_ROOT"
 # shellcheck disable=SC1091
 source /etc/os-release
 
+# Task 1H: Fail unsupported hosts before partial bootstrap work
+case "$ID" in
+  debian)
+    # Debian 12 (bookworm) and 13 (trixie)
+    if [[ "$VERSION_ID" != "12" && "$VERSION_ID" != "13" ]]; then
+       die "Rustyfin currently supports Debian 12 and 13. Detected: $ID $VERSION_ID"
+    fi
+    ;;
+  ubuntu)
+    # Ubuntu LTS (jammy/noble) - allow bootstrap to proceed, Rust installer enforces version
+    ;;
+  *)
+    die "Rustyfin currently supports Debian 12/13 and Ubuntu LTS. Detected: $ID ${VERSION_ID:-}"
+    ;;
+esac
+
 if [[ "$(id -u)" -eq 0 ]]; then
   RUN_ROOT=()
   INSTALL_USER="${RUSTFIN_NATIVE_USER:-${SUDO_USER:-root}}"
@@ -77,19 +93,7 @@ detect_package_manager() {
     echo "apt"
     return
   fi
-  if command -v dnf >/dev/null 2>&1; then
-    echo "dnf"
-    return
-  fi
-  if command -v pacman >/dev/null 2>&1; then
-    echo "pacman"
-    return
-  fi
-  if command -v zypper >/dev/null 2>&1; then
-    echo "zypper"
-    return
-  fi
-  die "No supported package manager detected (expected apt-get, dnf, pacman, or zypper)."
+  die "No supported package manager detected (expected apt-get)."
 }
 
 install_bootstrap_packages() {
@@ -104,47 +108,8 @@ install_bootstrap_packages() {
         curl \
         git \
         pkg-config \
-        sudo
-      # Install CUDA toolkit if NVIDIA GPU is detected and toolkit not present
-      if command -v nvidia-smi &>/dev/null && ! command -v nvcc &>/dev/null; then
-        info "NVIDIA GPU detected — installing CUDA toolkit for GPU-accelerated AI..."
-        "${RUN_ROOT[@]}" apt-get install -y nvidia-cuda-toolkit || \
-          warn "CUDA toolkit install failed; AI GPU backend will be disabled"
-      fi
-      ;;
-    dnf)
-      info "Installing Rust bootstrap packages with dnf..."
-      "${RUN_ROOT[@]}" dnf install -y \
-        ca-certificates \
-        curl \
-        gcc \
-        gcc-c++ \
-        git \
-        make \
-        pkgconf-pkg-config \
-        sudo
-      ;;
-    pacman)
-      info "Installing Rust bootstrap packages with pacman..."
-      "${RUN_ROOT[@]}" pacman -Sy --noconfirm --needed \
-        base-devel \
-        ca-certificates \
-        curl \
-        git \
-        pkgconf \
-        sudo
-      ;;
-    zypper)
-      info "Installing Rust bootstrap packages with zypper..."
-      "${RUN_ROOT[@]}" zypper --non-interactive install \
-        ca-certificates \
-        curl \
-        gcc \
-        gcc-c++ \
-        git \
-        make \
-        pkg-config \
-        sudo
+        sudo \
+        libssl-dev
       ;;
     *)
       die "Unsupported package manager: $manager"

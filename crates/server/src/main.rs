@@ -490,6 +490,14 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
+    {
+        let backup_pool = pool.clone();
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
+            rustfin_server::backups::scheduler::run_scheduler(backup_pool, task_shutdown).await;
+        }));
+    }
+
     let rustyvault = detect_rustyvault_runtime_state(&pool).await;
     if !rustyvault.available {
         warn!(
@@ -569,6 +577,16 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+        }));
+    }
+
+    // Spawn servers reconciler for status refresh and auto-stop enforcement (Task 3J).
+    {
+        let reconciler_state = app_state.clone();
+        let task_shutdown = shutdown.clone();
+        background_tasks.push(tokio::spawn(async move {
+            rustfin_server::servers::reconciler::run_reconciler(reconciler_state, task_shutdown)
+                .await;
         }));
     }
 

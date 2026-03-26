@@ -13,6 +13,20 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
+mod distro;
+mod utils;
+
+use crate::utils::{
+    command_exists, default_native_linux_target, detect_default_ai_backend, detect_host_platform,
+    detect_native_user_context, ensure_command_available, ensure_success, has_cuda_build_support,
+    id_value, resolve_ai_gpu_backend, resolve_command_path, resolve_user_home,
+    run_as_native_user_shell, run_command_capture, run_command_in_dir_as_user,
+    run_command_in_dir_as_user_allow_failure, run_command_in_dir_as_user_capture, run_root_command,
+    run_root_command_allow_failure, run_root_command_capture, run_script, run_script_as_repo_owner,
+    server_features_for_ai_backend, stat_value, trim_os_release_value, uname_value, user_home_dir,
+    HostPlatform, NativeUserContext,
+};
+
 const SERVERS_AGENT_BIND: &str = "127.0.0.1:8103";
 const SERVERS_AGENT_URL: &str = "http://127.0.0.1:8103";
 const SERVERS_DEFAULT_JAVA: &str = "/opt/rustyfin/java/current/bin/java";
@@ -24,38 +38,7 @@ const MANAGED_JAVA_ROOT: &str = "/opt/rustyfin/java";
 const MANAGED_JAVA_CURRENT: &str = "/opt/rustyfin/java/current";
 const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
 
-const DEBIAN_RUNTIME_PACKAGES: &[&str] = &[
-    "build-essential",
-    "ca-certificates",
-    "caddy",
-    "clang",
-    "clinfo",
-    "cmake",
-    "curl",
-    "default-jre-headless",
-    "ffmpeg",
-    "git",
-    "iproute2",
-    "jq",
-    "libclblast-dev",
-    "libclang-dev",
-    "libpq-dev",
-    "libsqlite3-dev",
-    "libssl-dev",
-    "lsof",
-    "nodejs",
-    "npm",
-    "ocl-icd-libopencl1",
-    "ocl-icd-opencl-dev",
-    "openssl",
-    "pkg-config",
-    "postgresql",
-    "postgresql-client",
-    "sudo",
-    "python3",
-    "python3-pip",
-    "python3-venv",
-];
+
 
 const DIRECTORY_PICKER_HELPER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import json
@@ -221,23 +204,9 @@ struct Cli {
     command: CliCommand,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct HostPlatform {
-    id: Option<String>,
-    version_id: Option<String>,
-    id_like: Option<String>,
-    architecture: String,
-    package_manager: String,
-}
 
-#[derive(Debug, Clone, Serialize)]
-struct NativeUserContext {
-    name: String,
-    home: String,
-    repo_owner_user: String,
-    repo_owner_group: String,
-    uses_sudo_for_privileged_steps: bool,
-}
+
+
 
 #[derive(Debug, Clone)]
 struct SystemdInstallConfig {
@@ -894,82 +863,7 @@ fn repo_root() -> anyhow::Result<PathBuf> {
         .context("failed to resolve repository root from CARGO_MANIFEST_DIR")
 }
 
-fn detect_host_platform() -> anyhow::Result<HostPlatform> {
-    ensure_linux()?;
 
-    let os_release_path = Path::new("/etc/os-release");
-    let mut values = HashMap::new();
-    if os_release_path.exists() {
-        let raw = fs::read_to_string(os_release_path)
-            .with_context(|| format!("failed to read {}", os_release_path.display()))?;
-        for line in raw.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            let Some((key, value)) = trimmed.split_once('=') else {
-                continue;
-            };
-            values.insert(key.to_string(), trim_os_release_value(value));
-        }
-    }
-
-    Ok(HostPlatform {
-        id: values.get("ID").cloned(),
-        version_id: values.get("VERSION_ID").cloned(),
-        id_like: values.get("ID_LIKE").cloned(),
-        architecture: uname_value("-m")?,
-        package_manager: detect_package_manager(),
-    })
-}
-
-fn detect_package_manager() -> String {
-    for (cmd, name) in [
-        ("apt-get", "apt"),
-        ("dnf", "dnf"),
-        ("pacman", "pacman"),
-        ("zypper", "zypper"),
-    ] {
-        if command_exists(cmd) {
-            return name.to_string();
-        }
-    }
-    "unknown".to_string()
-}
-
-fn detect_native_user_context(repo_root: &Path) -> anyhow::Result<NativeUserContext> {
-    let current_uid = id_value("-u")?;
-    let uses_sudo_for_privileged_steps = current_uid != "0";
-    let user_name = env::var("RUSTFIN_NATIVE_USER")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            if current_uid == "0" {
-                env::var("SUDO_USER")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| Some("root".to_string()))
-            } else {
-                env::var("USER")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| Some(id_value("-un").ok()?))
-            }
-        })
-        .context("failed to resolve native install user")?;
-
-    let home = resolve_user_home(&user_name)?;
-    let repo_owner_user = stat_value(repo_root, "%U")?;
-    let repo_owner_group = stat_value(repo_root, "%G")?;
-
-    Ok(NativeUserContext {
-        name: user_name,
-        home: home.display().to_string(),
-        repo_owner_user,
-        repo_owner_group,
-        uses_sudo_for_privileged_steps,
-    })
-}
 
 fn build_systemd_config(repo_root: &Path) -> SystemdInstallConfig {
     let main_service_name =
@@ -1002,7 +896,14 @@ fn install(
     systemd_config: &SystemdInstallConfig,
     options: &InstallOptions,
 ) -> anyhow::Result<()> {
-    ensure_current_support_boundary(host)?;
+    let adapter = crate::distro::resolve_adapter(host);
+    if adapter.name() == "unsupported" {
+        bail!(
+            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            host.id.as_deref().unwrap_or("unknown"),
+            host.version_id.as_deref().unwrap_or("unknown")
+        );
+    }
 
     println!(
         "[rustfin-installer] Host detected: id={}, version={}, id_like={}, arch={}, package_manager={}",
@@ -1016,9 +917,32 @@ fn install(
         "[rustfin-installer] Native runtime user: {} ({})",
         user_context.name, user_context.home
     );
+    println!("[rustfin-installer] Using distro adapter: {}", adapter.name());
 
     if !options.skip_prereqs {
-        install_debian_prerequisites(host, user_context)?;
+        println!("[rustfin-installer] Installing runtime packages...");
+        adapter.install_packages(user_context)?;
+
+        println!("[rustfin-installer] Ensuring GPU support (if applicable)...");
+        adapter.install_gpu_support(user_context)?;
+
+        println!(
+            "[rustfin-installer] Ensuring Rust toolchain for native user {}...",
+            user_context.name
+        );
+        ensure_native_user_rust_toolchain(user_context)?;
+
+        println!("[rustfin-installer] Installing yt-dlp runtime...");
+        install_ytdlp_runtime(user_context)?;
+
+        println!("[rustfin-installer] Ensuring PostgreSQL is enabled...");
+        ensure_postgresql_ready(user_context)?;
+
+        println!("[rustfin-installer] Configuring PostgreSQL role/database...");
+        configure_postgresql(user_context)?;
+
+        println!("[rustfin-installer] Ensuring managed Java 21 runtime...");
+        ensure_managed_java_21(user_context)?;
     } else {
         println!("[rustfin-installer] Skipping prerequisite installation.");
     }
@@ -1047,7 +971,14 @@ fn install_native_systemd_command(
     user_context: &NativeUserContext,
     systemd_config: &SystemdInstallConfig,
 ) -> anyhow::Result<()> {
-    ensure_current_support_boundary(host)?;
+    let adapter = crate::distro::resolve_adapter(host);
+    if adapter.name() == "unsupported" {
+        bail!(
+            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            host.id.as_deref().unwrap_or("unknown"),
+            host.version_id.as_deref().unwrap_or("unknown")
+        );
+    }
     println!("[rustfin-installer] Installing native systemd units...");
     install_systemd_units(systemd_config, user_context)?;
     validate_systemd_runtime_start(systemd_config, user_context)?;
@@ -1055,149 +986,9 @@ fn install_native_systemd_command(
     Ok(())
 }
 
-fn ensure_nvidia_cuda_toolkit(user_context: &NativeUserContext) -> anyhow::Result<()> {
-    // Only attempt if an NVIDIA GPU is present
-    if !command_exists("nvidia-smi") {
-        return Ok(());
-    }
-    // Already have build support — nothing to do
-    if has_cuda_build_support() {
-        println!("[rustfin-installer] CUDA build support already available.");
-        // Still ensure library symlinks exist (Ubuntu apt puts libs in a non-standard path)
-        ensure_cuda_lib_symlinks(user_context);
-        return Ok(());
-    }
-    println!(
-        "[rustfin-installer] NVIDIA GPU detected but CUDA toolkit not found. Installing nvidia-cuda-toolkit..."
-    );
-    let result = run_root_command("apt-get", &["install", "-y", "nvidia-cuda-toolkit"], user_context);
-    match result {
-        Ok(_) => {
-            println!("[rustfin-installer] CUDA toolkit installed successfully.");
-            ensure_cuda_lib_symlinks(user_context);
-        }
-        Err(e) => {
-            eprintln!(
-                "[rustfin-installer] Warning: CUDA toolkit install failed: {}. GPU-accelerated AI backend will be unavailable. Install manually: sudo apt-get install nvidia-cuda-toolkit",
-                e
-            );
-        }
-    }
-    Ok(())
-}
 
-/// On Ubuntu, `nvidia-cuda-toolkit` places libraries in `/usr/lib/x86_64-linux-gnu/`
-/// rather than `/usr/lib/cuda/lib64/` where CMake's FindCUDAToolkit module looks.
-/// This creates symlinks so llama-cpp (and any other cmake-based CUDA crate) can
-/// find `libcudart_static.a` and friends without extra `-L` flags.
-///
-/// It also writes `CUDA_PATH` and `RUSTFLAGS` entries to `/etc/environment.d/` so
-/// the values survive reboots and future `deploy-native` runs without requiring the
-/// user to set them manually.
-fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) {
-    let cuda_lib64 = Path::new("/usr/lib/cuda/lib64");
-    if !cuda_lib64.exists() {
-        return;
-    }
-    let arch_lib = Path::new("/usr/lib/x86_64-linux-gnu");
-    // All static/shared libs needed by llama-cpp-sys-2 when linking with ai-cuda
-    let libs = [
-        "libcudart_static.a",
-        "libcudart.so",
-        "libcudart.so.12",
-        "libcublas_static.a",
-        "libcublasLt_static.a",
-        "libcublas.so",
-        "libcublasLt.so",
-        "libculibos.a",
-    ];
-    for lib in &libs {
-        let src = arch_lib.join(lib);
-        let dst = cuda_lib64.join(lib);
-        if src.exists() && !dst.exists() {
-            let _ = run_root_command(
-                "ln",
-                &["-sf", src.to_str().unwrap_or(""), dst.to_str().unwrap_or("")],
-                user_context,
-            );
-        }
-    }
-    // Persist RUSTFLAGS so future cargo builds (including deploy-native) can find
-    // the CUDA static libs in /usr/lib/cuda/lib64 without manual env setup.
-    let env_d_dir = Path::new("/etc/environment.d");
-    if env_d_dir.exists() {
-        let env_file = env_d_dir.join("50-rustyfin-cuda.conf");
-        if !env_file.exists() {
-            let env_content = concat!(
-                "# Written by rustfin-installer: paths for Ubuntu apt CUDA toolkit layout
-",
-                "CUDA_PATH=/usr/lib/cuda
-",
-                "RUSTFLAGS=-L/usr/lib/x86_64-linux-gnu -L/usr/lib/cuda/lib64
-",
-            );
-            let _ = run_root_command(
-                "bash",
-                &[
-                    "-c",
-                    &format!(
-                        "printf '%s' '{}' > {}",
-                        env_content,
-                        env_file.display()
-                    ),
-                ],
-                user_context,
-            );
-        }
-    }
-}
 
-fn install_debian_prerequisites(
-    host: &HostPlatform,
-    user_context: &NativeUserContext,
-) -> anyhow::Result<()> {
-    if host.package_manager != "apt" {
-        bail!(
-            "Supported Debian install path expects apt, but detected package manager {}",
-            host.package_manager
-        );
-    }
 
-    println!("[rustfin-installer] Installing Debian runtime packages...");
-    install_debian_runtime_packages(user_context)?;
-
-    println!("[rustfin-installer] Ensuring NVIDIA CUDA toolkit (if GPU present)...");
-    ensure_nvidia_cuda_toolkit(user_context)?;
-
-    println!(
-        "[rustfin-installer] Ensuring Rust toolchain for native user {}...",
-        user_context.name
-    );
-    ensure_native_user_rust_toolchain(user_context)?;
-
-    println!("[rustfin-installer] Installing yt-dlp runtime...");
-    install_ytdlp_runtime(user_context)?;
-
-    println!("[rustfin-installer] Ensuring PostgreSQL is enabled...");
-    ensure_postgresql_ready(user_context)?;
-
-    println!("[rustfin-installer] Configuring PostgreSQL role/database...");
-    configure_postgresql(user_context)?;
-
-    println!("[rustfin-installer] Ensuring managed Java 21 runtime...");
-    ensure_managed_java_21(user_context)?;
-
-    Ok(())
-}
-
-fn install_debian_runtime_packages(user_context: &NativeUserContext) -> anyhow::Result<()> {
-    ensure_command_available("apt-get")?;
-    let mut install_args = vec!["install", "-y"];
-    install_args.extend(DEBIAN_RUNTIME_PACKAGES.iter().copied());
-
-    run_root_command("apt-get", &["update"], user_context)?;
-    run_root_command("apt-get", &install_args, user_context)
-}
 
 fn ensure_native_user_rust_toolchain(user_context: &NativeUserContext) -> anyhow::Result<()> {
     let cargo_bin = Path::new(&user_context.home).join(".cargo/bin/cargo");
@@ -1957,7 +1748,14 @@ fn deploy_native(
     user_context: &NativeUserContext,
     options: &DeployNativeOptions,
 ) -> anyhow::Result<()> {
-    ensure_current_support_boundary(host)?;
+    let adapter = crate::distro::resolve_adapter(host);
+    if adapter.name() == "unsupported" {
+        bail!(
+            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            host.id.as_deref().unwrap_or("unknown"),
+            host.version_id.as_deref().unwrap_or("unknown")
+        );
+    }
     ensure_command_available("git")?;
     ensure_command_available("cargo")?;
     ensure_command_available("rustc")?;
@@ -2593,103 +2391,7 @@ fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
 }
 
 /// Returns true when a CUDA build toolchain is detectable on this host.
-/// Checks nvcc in PATH, common versioned CUDA install prefixes (NVIDIA runfile,
-/// deb/rpm, conda), and CUDA header presence — works across distros and
-/// install methods without assuming a fixed path.
-fn has_cuda_build_support() -> bool {
-    // nvcc available in PATH (distro package manager or toolkit already in PATH)
-    if command_exists("nvcc") {
-        return true;
-    }
-    // Common versioned CUDA toolkit prefixes installed by NVIDIA runfile / deb
-    let cuda_nvcc_candidates = [
-        "/usr/local/cuda/bin/nvcc",
-        "/usr/local/cuda-12/bin/nvcc",
-        "/usr/local/cuda-12.0/bin/nvcc",
-        "/usr/local/cuda-12.1/bin/nvcc",
-        "/usr/local/cuda-12.2/bin/nvcc",
-        "/usr/local/cuda-12.3/bin/nvcc",
-        "/usr/local/cuda-12.4/bin/nvcc",
-        "/usr/local/cuda-12.5/bin/nvcc",
-        "/usr/local/cuda-12.6/bin/nvcc",
-        "/usr/local/cuda-11/bin/nvcc",
-        "/usr/local/cuda-11.8/bin/nvcc",
-        "/usr/lib/cuda/bin/nvcc",
-        "/opt/cuda/bin/nvcc",
-    ];
-    for path in &cuda_nvcc_candidates {
-        if Path::new(path).exists() {
-            return true;
-        }
-    }
-    // Toolkit root present — cmake FindCUDA/FindCUDAToolkit can locate nvcc from here
-    if Path::new("/usr/local/cuda").exists()
-        || Path::new("/usr/local/cuda-12").exists()
-        || Path::new("/usr/lib/cuda").exists()
-    {
-        return true;
-    }
-    // CUDA headers present — toolkit installed but bin dir not added to PATH yet
-    if Path::new("/usr/include/cuda.h").exists()
-        || Path::new("/usr/local/cuda/include/cuda.h").exists()
-        || Path::new("/usr/lib/cuda/include/cuda.h").exists()
-    {
-        return true;
-    }
-    false
-}
 
-fn detect_default_ai_backend(host: &HostPlatform) -> &'static str {
-    if has_cuda_build_support() {
-        return "cuda";
-    }
-    if command_exists("hipcc") || command_exists("rocminfo") || Path::new("/opt/rocm").exists() {
-        return "rocm";
-    }
-    if command_exists("vulkaninfo") {
-        return "vulkan";
-    }
-    if matches!(host.architecture.as_str(), "aarch64" | "arm64") {
-        return "disabled";
-    }
-    // NVIDIA GPU present but CUDA toolkit not installed — fall back to CPU.
-    // Install the CUDA toolkit (e.g. nvidia-cuda-toolkit) and re-run to enable GPU acceleration.
-    if command_exists("nvidia-smi") {
-        eprintln!(
-            "[rustfin-installer] Note: NVIDIA GPU detected but CUDA build toolchain not found. AI inference will use CPU. Install the CUDA toolkit and re-deploy to enable GPU acceleration."
-        );
-    }
-    "cpu"
-}
-
-fn resolve_ai_gpu_backend(host: &HostPlatform, requested: &str) -> anyhow::Result<String> {
-    match requested {
-        "auto" => Ok(detect_default_ai_backend(host).to_string()),
-        "disabled" | "none" | "off" => Ok("disabled".to_string()),
-        "cpu" => Ok("cpu".to_string()),
-        "cuda" | "rocm" | "vulkan" => Ok(requested.to_string()),
-        other => bail!("Unsupported RUSTFIN_AI_GPU_BACKEND value: {other}"),
-    }
-}
-
-fn server_features_for_ai_backend(backend: &str) -> &'static str {
-    match backend {
-        "disabled" => "",
-        "cpu" => "ai-cpu",
-        "cuda" => "ai-cuda",
-        "rocm" => "ai-rocm",
-        "vulkan" => "ai-vulkan",
-        _ => "",
-    }
-}
-
-fn default_native_linux_target(host: &HostPlatform) -> anyhow::Result<&'static str> {
-    match host.architecture.as_str() {
-        "aarch64" | "arm64" => Ok("aarch64-unknown-linux-gnu"),
-        "x86_64" | "amd64" => Ok("x86_64-unknown-linux-gnu"),
-        other => bail!("unsupported host arch '{other}' for native Linux target selection"),
-    }
-}
 
 fn is_ipv4(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
@@ -3819,78 +3521,9 @@ fn temp_file_path(destination: &Path) -> PathBuf {
     env::temp_dir().join(format!("{name}.{nonce}.tmp"))
 }
 
-fn run_root_command(
-    program: &str,
-    args: &[&str],
-    user_context: &NativeUserContext,
-) -> anyhow::Result<()> {
-    let status = run_root_command_allow_failure(program, args, user_context)
-        .with_context(|| format!("failed to execute {program} {}", args.join(" ")))?;
-    ensure_success(program, status)
-}
 
-fn run_root_command_allow_failure(
-    program: &str,
-    args: &[&str],
-    user_context: &NativeUserContext,
-) -> anyhow::Result<ExitStatus> {
-    if user_context.uses_sudo_for_privileged_steps {
-        ensure_command_available("sudo")?;
-        return Command::new("sudo")
-            .arg(program)
-            .args(args)
-            .status()
-            .with_context(|| format!("failed to execute sudo {program} {}", args.join(" ")));
-    }
 
-    Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("failed to execute {program} {}", args.join(" ")))
-}
 
-fn run_root_command_capture(
-    program: &str,
-    args: &[&str],
-    user_context: &NativeUserContext,
-) -> anyhow::Result<String> {
-    let output = if user_context.uses_sudo_for_privileged_steps {
-        ensure_command_available("sudo")?;
-        Command::new("sudo")
-            .arg(program)
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to execute sudo {program} {}", args.join(" ")))?
-    } else {
-        Command::new(program)
-            .args(args)
-            .output()
-            .with_context(|| format!("failed to execute {program} {}", args.join(" ")))?
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut combined = String::new();
-    if !stdout.trim().is_empty() {
-        combined.push_str(stdout.trim());
-    }
-    if !stderr.trim().is_empty() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(stderr.trim());
-    }
-    if !output.status.success() {
-        if !combined.is_empty() {
-            combined.push('\n');
-        }
-        combined.push_str(&format!(
-            "(command exited with status {:?})",
-            output.status.code()
-        ));
-    }
-    Ok(combined)
-}
 
 fn run_postgres_command(
     program: &str,
@@ -3963,53 +3596,7 @@ fn run_postgres_command_allow_failure(
         .with_context(|| format!("failed to execute runuser -u postgres -- {program}"))
 }
 
-fn run_as_native_user_shell(script: &str, user_context: &NativeUserContext) -> anyhow::Result<()> {
-    let current_uid = id_value("-u")?;
-    let status = if current_uid == "0" && user_context.name != "root" {
-        let mut cmd = Command::new(resolve_command_path("runuser"));
-        cmd.arg("-u")
-            .arg(user_context.name.as_str())
-            .arg("--")
-            .arg("bash")
-            .arg("-lc")
-            .arg(script)
-            .env("HOME", &user_context.home)
-            .env("USER", &user_context.name)
-            .env("LOGNAME", &user_context.name)
-            .env_remove("RUSTUP_HOME")
-            .env_remove("CARGO_HOME");
-        cmd.status().with_context(|| {
-            format!(
-                "failed to execute native-user shell for {}",
-                user_context.name
-            )
-        })?
-    } else {
-        let mut cmd = Command::new("bash");
-        cmd.arg("-lc")
-            .arg(script)
-            .env("HOME", &user_context.home)
-            .env("USER", &user_context.name)
-            .env("LOGNAME", &user_context.name)
-            .env_remove("RUSTUP_HOME")
-            .env_remove("CARGO_HOME");
-        cmd.status()
-            .context("failed to execute native-user shell")?
-    };
 
-    ensure_success("native-user shell", status)
-}
-
-fn run_command_capture(program: &str, args: &[&str]) -> anyhow::Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to execute {program} {}", args.join(" ")))?;
-    if !output.status.success() {
-        bail!("{program} exited with status {:?}", output.status.code());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
 
 #[derive(Debug, Clone)]
 struct RustToolchainCommand {
@@ -4303,44 +3890,9 @@ fn generate_secret_hex() -> String {
     hex::encode(bytes)
 }
 
-fn ensure_linux() -> anyhow::Result<()> {
-    let name = uname_value("-s")?;
-    if name != "Linux" {
-        bail!("rustfin-installer currently supports Linux hosts only");
-    }
-    Ok(())
-}
 
-fn ensure_current_support_boundary(host: &HostPlatform) -> anyhow::Result<()> {
-    let id = host.id.as_deref().unwrap_or("").to_lowercase();
-    let version = host.version_id.as_deref().unwrap_or("");
 
-    // Fully supported: Debian LTS
-    if id == "debian" && matches!(version, "11" | "12" | "13" | "14") {
-        return Ok(());
-    }
 
-    // Fully supported: Ubuntu (any version — runtime deps are distro-agnostic)
-    if id == "ubuntu" {
-        return Ok(());
-    }
-
-    // Other Linux distributions: warn but proceed — systemd + standard tools work across distros
-    if !id.is_empty() {
-        eprintln!(
-            "[rustfin-installer] Warning: Running on {} {}. Full support is tested on Debian 12/13 and Ubuntu LTS. Proceeding — if you encounter issues, report them at https://github.com/Iwan-Teague/Rustyfin/issues",
-            &id,
-            if version.is_empty() { "" } else { version }
-        );
-        return Ok(());
-    }
-
-    bail!(
-        "rustfin-installer requires a Linux host. Detected: {} {}.",
-        if id.is_empty() { "unknown" } else { &*id },
-        if version.is_empty() { "unknown" } else { version }
-    )
-}
 
 fn validate_sql_identifier(var_name: &str, value: &str) -> anyhow::Result<()> {
     let mut chars = value.chars();
@@ -4360,237 +3912,4 @@ fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
 
-fn run_script(repo_root: &Path, relative_script: &str, args: &[&str]) -> anyhow::Result<()> {
-    let script_path = repo_root.join(relative_script);
-    let status = Command::new(&script_path)
-        .args(args)
-        .current_dir(repo_root)
-        .status()
-        .with_context(|| format!("failed to execute {}", script_path.display()))?;
-    ensure_success(relative_script, status)
-}
 
-fn run_script_as_repo_owner(
-    repo_root: &Path,
-    relative_script: &str,
-    args: &[&str],
-    repo_owner_user: &str,
-) -> anyhow::Result<()> {
-    let script_path = repo_root.join(relative_script);
-    let program = script_path
-        .to_str()
-        .context("script path contains non-utf8 characters")?;
-    run_command_in_dir_as_user(program, args, repo_root, repo_owner_user)
-}
-
-fn run_command_in_dir_as_user(
-    program: &str,
-    args: &[&str],
-    current_dir: &Path,
-    user_name: &str,
-) -> anyhow::Result<()> {
-    let status = run_command_in_dir_as_user_allow_failure(program, args, current_dir, user_name)?;
-    ensure_success(program, status)
-}
-
-fn run_command_in_dir_as_user_capture(
-    program: &str,
-    args: &[&str],
-    current_dir: &Path,
-    user_name: &str,
-) -> anyhow::Result<String> {
-    let output = if should_run_as_user(user_name)? {
-        let user_home = user_home_dir(user_name)?;
-        Command::new(resolve_command_path("runuser"))
-            .arg("-u")
-            .arg(user_name)
-            .arg("--")
-            .arg(program)
-            .args(args)
-            .current_dir(current_dir)
-            .env("HOME", &user_home)
-            .env("USER", user_name)
-            .env("LOGNAME", user_name)
-            .env_remove("RUSTUP_HOME")
-            .env_remove("CARGO_HOME")
-            .output()
-            .with_context(|| format!("failed to execute {program} as {user_name}"))?
-    } else {
-        Command::new(program)
-            .args(args)
-            .current_dir(current_dir)
-            .output()
-            .with_context(|| format!("failed to execute {program}"))?
-    };
-
-    if !output.status.success() {
-        bail!("{program} exited with status {:?}", output.status.code());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn run_command_in_dir_as_user_allow_failure(
-    program: &str,
-    args: &[&str],
-    current_dir: &Path,
-    user_name: &str,
-) -> anyhow::Result<ExitStatus> {
-    if should_run_as_user(user_name)? {
-        let user_home = user_home_dir(user_name)?;
-        return Command::new(resolve_command_path("runuser"))
-            .arg("-u")
-            .arg(user_name)
-            .arg("--")
-            .arg(program)
-            .args(args)
-            .current_dir(current_dir)
-            .env("HOME", &user_home)
-            .env("USER", user_name)
-            .env("LOGNAME", user_name)
-            .env_remove("RUSTUP_HOME")
-            .env_remove("CARGO_HOME")
-            .status()
-            .with_context(|| format!("failed to execute {program} as {user_name}"));
-    }
-
-    Command::new(program)
-        .args(args)
-        .current_dir(current_dir)
-        .status()
-        .with_context(|| format!("failed to execute {program}"))
-}
-
-fn should_run_as_user(user_name: &str) -> anyhow::Result<bool> {
-    Ok(id_value("-u")? == "0" && user_name != "root")
-}
-
-fn user_home_dir(user_name: &str) -> anyhow::Result<String> {
-    let passwd = run_command_capture("getent", &["passwd", user_name])
-        .with_context(|| format!("failed to resolve home directory for {user_name}"))?;
-    let mut fields = passwd.split(':');
-    let _name = fields.next();
-    let _password = fields.next();
-    let _uid = fields.next();
-    let _gid = fields.next();
-    let _gecos = fields.next();
-    let home = fields
-        .next()
-        .filter(|value| !value.trim().is_empty())
-        .context("passwd entry missing home directory")?;
-    Ok(home.to_string())
-}
-
-fn ensure_success(step: &str, status: ExitStatus) -> anyhow::Result<()> {
-    if status.success() {
-        return Ok(());
-    }
-
-    match status.code() {
-        Some(code) => bail!("{step} exited with status code {code}"),
-        None => bail!("{step} terminated by signal"),
-    }
-}
-
-fn trim_os_release_value(value: &str) -> String {
-    let trimmed = value.trim();
-    let unquoted = trimmed
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(trimmed);
-    unquoted.to_string()
-}
-
-fn command_exists(name: &str) -> bool {
-    Command::new("sh")
-        .arg("-lc")
-        .arg(format!("command -v {name} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
-fn resolve_command_path(name: &str) -> String {
-    for prefix in [
-        "/usr/local/sbin",
-        "/usr/local/bin",
-        "/usr/sbin",
-        "/usr/bin",
-        "/sbin",
-        "/bin",
-    ] {
-        let candidate = Path::new(prefix).join(name);
-        if candidate.exists() {
-            return candidate.display().to_string();
-        }
-    }
-    name.to_string()
-}
-
-fn ensure_command_available(name: &str) -> anyhow::Result<()> {
-    if command_exists(name) {
-        return Ok(());
-    }
-    bail!("{name} is required for this installer step");
-}
-
-fn uname_value(flag: &str) -> anyhow::Result<String> {
-    let output = Command::new("uname")
-        .arg(flag)
-        .output()
-        .with_context(|| format!("failed to run uname {flag}"))?;
-    if !output.status.success() {
-        bail!("uname {flag} exited with status {:?}", output.status.code());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn id_value(flag: &str) -> anyhow::Result<String> {
-    let output = Command::new("id")
-        .arg(flag)
-        .output()
-        .with_context(|| format!("failed to run id {flag}"))?;
-    if !output.status.success() {
-        bail!("id {flag} exited with status {:?}", output.status.code());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn resolve_user_home(user_name: &str) -> anyhow::Result<PathBuf> {
-    let output = Command::new("getent")
-        .arg("passwd")
-        .arg(user_name)
-        .output()
-        .with_context(|| format!("failed to resolve home for user {user_name}"))?;
-    if !output.status.success() {
-        bail!(
-            "getent passwd {user_name} exited with status {:?}",
-            output.status.code()
-        );
-    }
-    let line = String::from_utf8_lossy(&output.stdout);
-    let home = line
-        .trim()
-        .split(':')
-        .nth(5)
-        .filter(|value| !value.is_empty())
-        .context("failed to parse user home from getent output")?;
-    Ok(PathBuf::from(home))
-}
-
-fn stat_value(path: &Path, format: &str) -> anyhow::Result<String> {
-    let output = Command::new("stat")
-        .arg("-c")
-        .arg(format)
-        .arg(path)
-        .output()
-        .with_context(|| format!("failed to stat {}", path.display()))?;
-    if !output.status.success() {
-        bail!(
-            "stat -c {format} {} exited with status {:?}",
-            path.display(),
-            output.status.code()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
