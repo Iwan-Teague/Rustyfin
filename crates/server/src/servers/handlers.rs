@@ -18,7 +18,7 @@ use crate::error::AppError;
 use crate::runtime_metrics::JobFamily;
 use crate::state::AppState;
 
-const ALLOWED_SERVER_DISTRIBUTIONS: &[&str] = &["vanilla", "paper"];
+const ALLOWED_SERVER_DISTRIBUTIONS: &[&str] = &["vanilla", "paper", "fabric", "forge", "neoforge"];
 const ALLOWED_GAMEMODES: &[&str] = &["survival", "creative", "adventure", "spectator"];
 const ALLOWED_DIFFICULTIES: &[&str] = &["peaceful", "easy", "normal", "hard"];
 
@@ -419,7 +419,7 @@ fn can_control_server(
 ) -> bool {
     auth.role == "admin"
         || auth.user_id == server.owner_user_id
-        || matches!(server.current_user_role.as_deref(), Some("manager"))
+        || matches!(server.current_user_role.as_deref(), Some("manager") | Some("operator"))
 }
 
 fn requires_provisioning_before_lifecycle(
@@ -1980,6 +1980,412 @@ pub async fn create_minecraft_server(
     .await;
 
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServerMemberResponse {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub created_ts: i64,
+}
+
+pub async fn list_server_members(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ServerMemberResponse>>, AppError> {
+    let is_admin = auth.role == "admin";
+    let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db, &auth.user_id, is_admin, &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .ok_or_else(|| ApiError::NotFound("Server not found".into()))?;
+
+    let role = server.current_user_role.clone();
+    if !is_admin && role.as_deref() != Some("manager") {
+        return Err(ApiError::Forbidden("Insufficient permissions".into()).into());
+    }
+
+    let members = rustfin_db::repo::servers::list_server_members(&state.db, &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(
+        members
+            .into_iter()
+            .map(|m| ServerMemberResponse {
+                user_id: m.user_id,
+                username: m.username,
+                display_name: m.display_name,
+                role: m.role,
+                created_ts: m.created_ts,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddServerMemberRequest {
+    pub user_id: String,
+    pub role: String,
+}
+
+pub async fn add_server_member(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AddServerMemberRequest>,
+) -> Result<StatusCode, AppError> {
+    let is_admin = auth.role == "admin";
+    let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db, &auth.user_id, is_admin, &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .ok_or_else(|| ApiError::NotFound("Server not found".into()))?;
+
+    let role = server.current_user_role.clone();
+    if !is_admin && role.as_deref() != Some("manager") {
+        return Err(ApiError::Forbidden("Insufficient permissions".into()).into());
+    }
+
+    if !["viewer", "operator", "manager"].contains(&body.role.as_str()) {
+        return Err(ApiError::BadRequest("Invalid role".into()).into());
+    }
+
+    rustfin_db::repo::servers::add_server_member(&state.db, &id, &body.user_id, &body.role, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(StatusCode::CREATED)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateServerMemberRequest {
+    pub role: String,
+}
+
+pub async fn update_server_member(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((id, user_id)): Path<(String, String)>,
+    Json(body): Json<UpdateServerMemberRequest>,
+) -> Result<StatusCode, AppError> {
+    let is_admin = auth.role == "admin";
+    let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db, &auth.user_id, is_admin, &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .ok_or_else(|| ApiError::NotFound("Server not found".into()))?;
+
+    let role = server.current_user_role.clone();
+    if !is_admin && role.as_deref() != Some("manager") {
+        return Err(ApiError::Forbidden("Insufficient permissions".into()).into());
+    }
+
+    if !["viewer", "operator", "manager"].contains(&body.role.as_str()) {
+        return Err(ApiError::BadRequest("Invalid role".into()).into());
+    }
+
+    if user_id == server.owner_user_id {
+        return Err(ApiError::BadRequest("Cannot change owner role".into()).into());
+    }
+
+    rustfin_db::repo::servers::update_server_member_role(&state.db, &id, &user_id, &body.role)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(StatusCode::OK)
+}
+
+pub async fn remove_server_member(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((id, user_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let is_admin = auth.role == "admin";
+    let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db, &auth.user_id, is_admin, &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
+    .ok_or_else(|| ApiError::NotFound("Server not found".into()))?;
+
+    let role = server.current_user_role.clone();
+    if !is_admin && role.as_deref() != Some("manager") {
+        return Err(ApiError::Forbidden("Insufficient permissions".into()).into());
+    }
+
+    if user_id == server.owner_user_id {
+        return Err(ApiError::BadRequest("Cannot remove server owner".into()).into());
+    }
+
+    rustfin_db::repo::servers::remove_server_member(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --- Task 3G: Persistent discovery state handlers ---
+
+#[derive(Debug, Serialize)]
+pub struct DiscoveryCandidateResponse {
+    pub id: String,
+    pub game_kind: String,
+    pub canonical_path: String,
+    pub detected_name: Option<String>,
+    pub detected_distribution: Option<String>,
+    pub detected_version: Option<String>,
+    pub imported_instance_id: Option<String>,
+    pub status: String,
+    pub first_seen_ts: i64,
+    pub last_seen_ts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListDiscoveryCandidatesQuery {
+    pub status: Option<String>,
+}
+
+pub async fn list_discovery_candidates(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Query(query): Query<ListDiscoveryCandidatesQuery>,
+) -> Result<Json<Vec<DiscoveryCandidateResponse>>, AppError> {
+    let candidates = rustfin_db::repo::servers::list_discovery_candidates(
+        &state.db,
+        "minecraft",
+        query.status.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(Json(
+        candidates
+            .into_iter()
+            .map(|c| DiscoveryCandidateResponse {
+                id: c.id,
+                game_kind: c.game_kind,
+                canonical_path: c.canonical_path,
+                detected_name: c.detected_name,
+                detected_distribution: c.detected_distribution,
+                detected_version: c.detected_version,
+                imported_instance_id: c.imported_instance_id,
+                status: c.last_scan_status,
+                first_seen_ts: c.first_seen_ts,
+                last_seen_ts: c.last_seen_ts,
+            })
+            .collect(),
+    ))
+}
+
+pub async fn ignore_discovery_candidate(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(candidate_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let updated = rustfin_db::repo::servers::mark_discovery_candidate_ignored(&state.db, &candidate_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if !updated {
+        return Err(ApiError::NotFound("discovery candidate not found".into()).into());
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --- Task 3H: Import-mode semantics ---
+
+#[derive(Debug, Deserialize)]
+pub struct ImportWithModeRequest {
+    pub source_path: String,
+    #[serde(default)]
+    pub import_mode: ImportMode,
+    pub discovery_candidate_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    #[default]
+    CopyToManaged,
+    AdoptInPlace,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportPreflightResponse {
+    pub source_path: String,
+    pub source_exists: bool,
+    pub has_server_properties: bool,
+    pub has_eula: bool,
+    pub detected_name: Option<String>,
+    pub detected_world: Option<String>,
+    pub estimated_size_bytes: Option<u64>,
+    pub warnings: Vec<String>,
+}
+
+pub async fn preflight_import(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Json(req): Json<ImportWithModeRequest>,
+) -> Result<Json<ImportPreflightResponse>, AppError> {
+    let source_path = req.source_path.trim();
+    if source_path.is_empty() {
+        return Err(ApiError::BadRequest("source_path is required".into()).into());
+    }
+
+    // Check if there's an existing discovery candidate
+    let candidate = rustfin_db::repo::servers::get_discovery_candidate_by_path(&state.db, source_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let mut warnings = Vec::new();
+
+    // Check if path exists on disk
+    let source_exists = std::path::Path::new(source_path).exists();
+    if !source_exists {
+        warnings.push("Source path does not exist on disk".to_string());
+    }
+
+    let (has_server_properties, has_eula, detected_name, detected_world) = if source_exists {
+        let props_path = std::path::Path::new(source_path).join("server.properties");
+        let eula_path = std::path::Path::new(source_path).join("eula.txt");
+        let has_props = props_path.exists();
+        let has_eula = eula_path.exists();
+
+        if !has_props {
+            warnings.push("No server.properties found - this may not be a valid Minecraft server".to_string());
+        }
+        if !has_eula {
+            warnings.push("No eula.txt found - server may require EULA acceptance".to_string());
+        }
+
+        let detected = candidate.as_ref().map(|c| {
+            (c.detected_name.clone(), {
+                // Parse detection_json for world_name
+                serde_json::from_str::<serde_json::Value>(&c.detection_json)
+                    .ok()
+                    .and_then(|v| v.get("world_name").and_then(|w| w.as_str()).map(String::from))
+            })
+        });
+
+        (has_props, has_eula, detected.as_ref().and_then(|d| d.0.clone()), detected.and_then(|d| d.1))
+    } else {
+        (false, false, None, None)
+    };
+
+    // Estimate size
+    let estimated_size_bytes = if source_exists {
+        std::fs::read_dir(source_path)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.len())
+                    .sum::<u64>()
+            })
+    } else {
+        None
+    };
+
+    if req.import_mode == ImportMode::AdoptInPlace {
+        warnings.push("Adopt-in-place will NOT copy files. The server will run from the original location.".to_string());
+    }
+
+    Ok(Json(ImportPreflightResponse {
+        source_path: source_path.to_string(),
+        source_exists,
+        has_server_properties,
+        has_eula,
+        detected_name,
+        detected_world,
+        estimated_size_bytes,
+        warnings,
+    }))
+}
+
+// --- Task 3I: Safe delete semantics ---
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteServerQuery {
+    #[serde(default)]
+    pub delete_files: bool,
+}
+
+pub async fn delete_minecraft_server_safe(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path(id): Path<String>,
+    Query(query): Query<DeleteServerQuery>,
+) -> Result<Json<MinecraftServerDeleteResponse>, AppError> {
+    let Some(current) = rustfin_db::repo::servers::get_accessible_minecraft_server(
+        &state.db,
+        &admin.user_id,
+        true,
+        &id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+    else {
+        return Err(ApiError::NotFound("server instance not found".into()).into());
+    };
+
+    let message = if query.delete_files {
+        // Full delete including files (current behavior)
+        delete_managed_instance(&state, &current.systemd_unit_name, &current.instance_root)
+            .await
+            .map_err(ApiError::BadRequest)?;
+
+        rustfin_db::repo::servers::delete_minecraft_server(&state.db, &current.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        format!(
+            "Deleted Minecraft server {} and removed its managed host files.",
+            current.display_name
+        )
+    } else {
+        // Unregister only - stop service but keep files
+        let _ = run_lifecycle_action(&state, &current.systemd_unit_name, ServerLifecycleAction::Stop).await;
+
+        rustfin_db::repo::servers::unregister_minecraft_server(&state.db, &current.id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+        format!(
+            "Unregistered Minecraft server {}. Files preserved at {}.",
+            current.display_name, current.instance_root
+        )
+    };
+
+    crate::audit_log::record_event(
+        &state,
+        if query.delete_files {
+            "servers.minecraft.delete"
+        } else {
+            "servers.minecraft.unregister"
+        },
+        json!({
+            "instance_id": current.id,
+            "display_name": current.display_name,
+            "systemd_unit_name": current.systemd_unit_name,
+            "deleted_files": query.delete_files,
+            "deleted_by": admin.username,
+        }),
+    )
+    .await;
+
+    Ok(Json(MinecraftServerDeleteResponse {
+        deleted_id: current.id,
+        message,
+    }))
 }
 
 #[cfg(test)]

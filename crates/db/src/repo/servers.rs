@@ -639,3 +639,346 @@ pub async fn delete_minecraft_server(
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+#[derive(Debug, Clone)]
+pub struct ServerMemberRow {
+    pub instance_id: String,
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub role: String,
+    pub created_by_user_id: String,
+    pub created_ts: i64,
+}
+
+pub async fn list_server_members(
+    pool: &DbPool,
+    instance_id: &str,
+) -> Result<Vec<ServerMemberRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT m.instance_id, m.user_id, u.username, u.display_name, m.role, m.created_by_user_id, m.created_ts
+           FROM server_instance_member m
+           JOIN "user" u ON u.id = m.user_id
+           WHERE m.instance_id = $1
+           ORDER BY m.created_ts"#,
+    )
+    .bind(instance_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ServerMemberRow {
+            instance_id: r.get("instance_id"),
+            user_id: r.get("user_id"),
+            username: r.get("username"),
+            display_name: r.get("display_name"),
+            role: r.get("role"),
+            created_by_user_id: r.get("created_by_user_id"),
+            created_ts: r.get("created_ts"),
+        })
+        .collect())
+}
+
+pub async fn get_server_member_role(
+    pool: &DbPool,
+    instance_id: &str,
+    user_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT role FROM server_instance_member WHERE instance_id = $1 AND user_id = $2",
+    )
+    .bind(instance_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(r,)| r))
+}
+
+pub async fn add_server_member(
+    pool: &DbPool,
+    instance_id: &str,
+    user_id: &str,
+    role: &str,
+    created_by_user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let result = sqlx::query(
+        "INSERT INTO server_instance_member (instance_id, user_id, role, created_by_user_id, created_ts)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (instance_id, user_id) DO NOTHING",
+    )
+    .bind(instance_id)
+    .bind(user_id)
+    .bind(role)
+    .bind(created_by_user_id)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn update_server_member_role(
+    pool: &DbPool,
+    instance_id: &str,
+    user_id: &str,
+    new_role: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE server_instance_member SET role = $1 WHERE instance_id = $2 AND user_id = $3",
+    )
+    .bind(new_role)
+    .bind(instance_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn remove_server_member(
+    pool: &DbPool,
+    instance_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM server_instance_member WHERE instance_id = $1 AND user_id = $2",
+    )
+    .bind(instance_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// --- Task 3G: Persistent discovery state ---
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryCandidateRow {
+    pub id: String,
+    pub game_kind: String,
+    pub canonical_path: String,
+    pub detected_name: Option<String>,
+    pub detected_distribution: Option<String>,
+    pub detected_version: Option<String>,
+    pub detection_json: String,
+    pub imported_instance_id: Option<String>,
+    pub last_scan_status: String,
+    pub first_seen_ts: i64,
+    pub last_seen_ts: i64,
+}
+
+pub async fn upsert_discovery_candidate(
+    pool: &DbPool,
+    game_kind: &str,
+    canonical_path: &str,
+    detected_name: Option<&str>,
+    detected_distribution: Option<&str>,
+    detected_version: Option<&str>,
+    detection_json: &str,
+    scan_status: &str,
+) -> Result<String, sqlx::Error> {
+    let now = chrono::Utc::now().timestamp();
+    let id = uuid::Uuid::new_v4().to_string();
+
+    let row: (String,) = sqlx::query_as(
+        r#"INSERT INTO server_discovery_candidate
+           (id, game_kind, canonical_path, detected_name, detected_distribution, detected_version,
+            detection_json, last_scan_status, first_seen_ts, last_seen_ts)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $9)
+           ON CONFLICT (canonical_path) DO UPDATE SET
+             detected_name = EXCLUDED.detected_name,
+             detected_distribution = EXCLUDED.detected_distribution,
+             detected_version = EXCLUDED.detected_version,
+             detection_json = EXCLUDED.detection_json,
+             last_scan_status = EXCLUDED.last_scan_status,
+             last_seen_ts = EXCLUDED.last_seen_ts
+           RETURNING id"#,
+    )
+    .bind(&id)
+    .bind(game_kind)
+    .bind(canonical_path)
+    .bind(detected_name)
+    .bind(detected_distribution)
+    .bind(detected_version)
+    .bind(detection_json)
+    .bind(scan_status)
+    .bind(now)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_discovery_candidates(
+    pool: &DbPool,
+    game_kind: &str,
+    status_filter: Option<&str>,
+) -> Result<Vec<DiscoveryCandidateRow>, sqlx::Error> {
+    let rows = if let Some(status) = status_filter {
+        sqlx::query(
+            r#"SELECT id, game_kind, canonical_path, detected_name, detected_distribution,
+                      detected_version, detection_json::text, imported_instance_id,
+                      last_scan_status, first_seen_ts, last_seen_ts
+               FROM server_discovery_candidate
+               WHERE game_kind = $1 AND last_scan_status = $2
+               ORDER BY last_seen_ts DESC"#,
+        )
+        .bind(game_kind)
+        .bind(status)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            r#"SELECT id, game_kind, canonical_path, detected_name, detected_distribution,
+                      detected_version, detection_json::text, imported_instance_id,
+                      last_scan_status, first_seen_ts, last_seen_ts
+               FROM server_discovery_candidate
+               WHERE game_kind = $1
+               ORDER BY last_seen_ts DESC"#,
+        )
+        .bind(game_kind)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|r| DiscoveryCandidateRow {
+            id: r.get("id"),
+            game_kind: r.get("game_kind"),
+            canonical_path: r.get("canonical_path"),
+            detected_name: r.get("detected_name"),
+            detected_distribution: r.get("detected_distribution"),
+            detected_version: r.get("detected_version"),
+            detection_json: r.get::<String, _>("detection_json"),
+            imported_instance_id: r.get("imported_instance_id"),
+            last_scan_status: r.get("last_scan_status"),
+            first_seen_ts: r.get("first_seen_ts"),
+            last_seen_ts: r.get("last_seen_ts"),
+        })
+        .collect())
+}
+
+pub async fn mark_discovery_candidate_imported(
+    pool: &DbPool,
+    candidate_id: &str,
+    instance_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        r#"UPDATE server_discovery_candidate
+           SET imported_instance_id = $1, last_scan_status = 'imported'
+           WHERE id = $2"#,
+    )
+    .bind(instance_id)
+    .bind(candidate_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn mark_discovery_candidate_ignored(
+    pool: &DbPool,
+    candidate_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE server_discovery_candidate SET last_scan_status = 'ignored' WHERE id = $1",
+    )
+    .bind(candidate_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn get_discovery_candidate_by_path(
+    pool: &DbPool,
+    canonical_path: &str,
+) -> Result<Option<DiscoveryCandidateRow>, sqlx::Error> {
+    let row = sqlx::query(
+        r#"SELECT id, game_kind, canonical_path, detected_name, detected_distribution,
+                  detected_version, detection_json::text, imported_instance_id,
+                  last_scan_status, first_seen_ts, last_seen_ts
+           FROM server_discovery_candidate
+           WHERE canonical_path = $1"#,
+    )
+    .bind(canonical_path)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| DiscoveryCandidateRow {
+        id: r.get("id"),
+        game_kind: r.get("game_kind"),
+        canonical_path: r.get("canonical_path"),
+        detected_name: r.get("detected_name"),
+        detected_distribution: r.get("detected_distribution"),
+        detected_version: r.get("detected_version"),
+        detection_json: r.get::<String, _>("detection_json"),
+        imported_instance_id: r.get("imported_instance_id"),
+        last_scan_status: r.get("last_scan_status"),
+        first_seen_ts: r.get("first_seen_ts"),
+        last_seen_ts: r.get("last_seen_ts"),
+    }))
+}
+
+// --- Task 3I: Safe delete semantics ---
+
+/// Unregisters a server from the database without deleting host files.
+/// Returns Ok(true) if a row was deleted, Ok(false) if not found.
+pub async fn unregister_minecraft_server(
+    pool: &DbPool,
+    instance_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM server_instance WHERE id = $1 AND game_kind = 'minecraft'",
+    )
+    .bind(instance_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+// --- Task 3J: Backend reconciliation / auto-stop ---
+
+pub async fn list_servers_for_auto_stop(
+    pool: &DbPool,
+) -> Result<Vec<MinecraftServerRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT si.*, mc.*, owner.display_name AS owner_display_name, NULL::text AS role
+           FROM server_instance si
+           JOIN minecraft_server_config mc ON mc.instance_id = si.id
+           JOIN "user" owner ON owner.id = si.owner_user_id
+           WHERE si.game_kind = 'minecraft'
+             AND si.auto_stop_when_empty = true
+             AND si.observed_state = 'running'
+             AND si.current_player_count = 0
+             AND si.auto_stop_idle_minutes IS NOT NULL
+           ORDER BY si.last_ready_ts ASC"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(decode_minecraft_server_row)
+        .collect()
+}
+
+pub async fn list_servers_needing_status_refresh(
+    pool: &DbPool,
+    older_than_seconds: i64,
+) -> Result<Vec<MinecraftServerRow>, sqlx::Error> {
+    let cutoff = chrono::Utc::now().timestamp() - older_than_seconds;
+    let rows = sqlx::query(
+        r#"SELECT si.*, mc.*, owner.display_name AS owner_display_name, NULL::text AS role
+           FROM server_instance si
+           JOIN minecraft_server_config mc ON mc.instance_id = si.id
+           JOIN "user" owner ON owner.id = si.owner_user_id
+           WHERE si.game_kind = 'minecraft'
+             AND si.observed_state IN ('running', 'starting')
+             AND si.updated_ts < $1
+           ORDER BY si.updated_ts ASC
+           LIMIT 50"#,
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(decode_minecraft_server_row)
+        .collect()
+}

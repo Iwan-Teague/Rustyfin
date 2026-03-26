@@ -387,6 +387,9 @@ fn api_router(state: AppState) -> Router<AppState> {
             get(crate::ai_admin::list_ai_audit_events),
         )
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
+        .route("/system/network", get(get_network_topology))
+        .route("/system/smart-home", get(crate::smart_home::get_smart_home_state))
+        .nest("/system/backups", crate::backups::router(state.clone()))
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
         .nest(
@@ -5005,6 +5008,16 @@ async fn get_runtime_diagnostics(
 ) -> Result<Json<crate::runtime_diagnostics::RuntimeDiagnosticsResponse>, AppError> {
     Ok(Json(
         crate::runtime_diagnostics::collect_runtime_diagnostics(&state).await,
+    ))
+}
+
+async fn get_network_topology(
+    auth: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<crate::network_diagnostics::NetworkTopologySnapshot>, AppError> {
+    let is_admin = auth.role == "admin";
+    Ok(Json(
+        crate::network_diagnostics::collect_network_topology_snapshot(&state, is_admin).await,
     ))
 }
 

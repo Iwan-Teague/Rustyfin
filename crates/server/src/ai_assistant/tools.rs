@@ -259,6 +259,10 @@ struct BackupAssistantSummary {
     configured: bool,
     restore_supported: bool,
     last_successful_backup_ts: Option<i64>,
+    policy_count: i64,
+    total_job_count: i64,
+    successful_job_count: i64,
+    failed_job_count: i64,
     message: String,
 }
 
@@ -392,7 +396,7 @@ pub async fn execute_tool(
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
-        AssistantToolName::SystemGetBackupSummary => system_get_backup_summary().await,
+        AssistantToolName::SystemGetBackupSummary => system_get_backup_summary(state).await,
         AssistantToolName::SystemGetServiceHealth => system_get_service_health(state).await,
         AssistantToolName::SystemGetTranscodeSummary => system_get_transcode_summary(state).await,
         AssistantToolName::SystemGetStorageSummary => system_get_storage_summary(state).await,
@@ -1391,13 +1395,55 @@ async fn system_get_host_runtime_summary(
     ))
 }
 
-async fn system_get_backup_summary() -> Result<(String, serde_json::Value), String> {
+async fn system_get_backup_summary(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    // Get policy count
+    let policies = crate::backups::repo::list_backup_policies(&state.db)
+        .await
+        .map_err(|e| format!("failed to list backup policies: {e}"))?;
+
+    // Get recent jobs (last 30)
+    let jobs = crate::backups::repo::list_backup_jobs(&state.db, 30)
+        .await
+        .map_err(|e| format!("failed to list backup jobs: {e}"))?;
+
+    let successful_jobs: Vec<_> = jobs
+        .iter()
+        .filter(|j| j.status == "completed")
+        .collect();
+    let failed_jobs: Vec<_> = jobs.iter().filter(|j| j.status == "failed").collect();
+
+    let last_successful_backup_ts = successful_jobs
+        .iter()
+        .filter_map(|j| j.completed_ts)
+        .max();
+
+    let configured = !policies.is_empty();
+    let message = if configured {
+        if successful_jobs.is_empty() {
+            "Backup policies are configured but no successful backups exist yet.".to_string()
+        } else {
+            format!(
+                "{} backup policies configured. {} successful backups, {} failed.",
+                policies.len(),
+                successful_jobs.len(),
+                failed_jobs.len()
+            )
+        }
+    } else {
+        "No backup policies are configured on this host.".to_string()
+    };
+
     let summary = BackupAssistantSummary {
-        configured: false,
-        restore_supported: false,
-        last_successful_backup_ts: None,
-        message: "Rustyfin backup and restore workflows are not implemented on this host yet."
-            .to_string(),
+        configured,
+        restore_supported: true,
+        last_successful_backup_ts,
+        policy_count: policies.len() as i64,
+        total_job_count: jobs.len() as i64,
+        successful_job_count: successful_jobs.len() as i64,
+        failed_job_count: failed_jobs.len() as i64,
+        message,
     };
 
     Ok((
