@@ -68,8 +68,12 @@ pub async fn connect(target: &str) -> Result<DbPool, sqlx::Error> {
         let _ = ACTIVE_BACKEND.set(backend);
     }
 
+    let max_conns: u32 = std::env::var("RUSTFIN_DB_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(15);
     let pool = PgPoolOptions::new()
-        .max_connections(15)
+        .max_connections(max_conns)
         .connect(&url)
         .await?;
     Ok(pool)

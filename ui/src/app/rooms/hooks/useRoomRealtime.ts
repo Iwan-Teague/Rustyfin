@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readBrowserToken } from '@/lib/browserAuth';
 
 import type {
   WsAudioStateMessage,
@@ -129,9 +130,9 @@ export function useRoomRealtime({
     let activeSocket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
 
-    const token = localStorage.getItem('token');
+    const token = readBrowserToken();
     if (!token) {
-      appendDebug('ws connect aborted: missing auth token in localStorage');
+      appendDebug('ws connect aborted: missing auth token');
       return;
     }
 

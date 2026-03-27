@@ -10,6 +10,7 @@ import VideoPlayerSurface, {
   resolveAutoPlaybackTargetHeight,
 } from '@/app/components/VideoPlayerSurface';
 import { apiFetch, apiJson } from '@/lib/api';
+import { readBrowserToken } from '@/lib/browserAuth';
 import { clientErrorMessage } from '@/lib/errors';
 
 type PlaybackDescriptor = {
@@ -719,7 +720,7 @@ export default function PlayerPage() {
         return;
       }
 
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const token = readBrowserToken();
       const headers = new Headers({ 'Content-Type': 'application/json' });
       if (token) {
         headers.set('Authorization', `Bearer ${token}`);

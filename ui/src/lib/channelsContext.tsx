@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { useAuth } from './auth';
+import { readBrowserToken } from './browserAuth';
 import { uploadVoiceTranscriptionChunk } from './channelsApi';
 import type {
   ChannelEvent,
@@ -302,14 +303,14 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         reconnectTimerRef.current = null;
       }
 
-      const token = localStorage.getItem('token');
+      const token = readBrowserToken();
       if (!token) return;
 
       const ws = new WebSocket(getWsUrl());
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const t = localStorage.getItem('token');
+        const t = readBrowserToken();
         if (t) ws.send(JSON.stringify({ type: 'auth', token: t }));
         reconnectAttemptsRef.current = 0;
       };
