@@ -269,8 +269,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // JWT secret: use env or generate random
-    let jwt_secret =
-        std::env::var("RUSTFIN_JWT_SECRET").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+    let jwt_secret = match std::env::var("RUSTFIN_JWT_SECRET") {
+        Ok(secret) => secret,
+        Err(_) => {
+            warn!(
+                "RUSTFIN_JWT_SECRET is not set; using a random secret — all sessions will be \
+                 invalidated on every restart. Set RUSTFIN_JWT_SECRET to a stable secret for \
+                 persistent sessions."
+            );
+            uuid::Uuid::new_v4().to_string()
+        }
+    };
     let outbound_http = reqwest::Client::builder()
         .user_agent(format!("Rustyfin/{}", env!("CARGO_PKG_VERSION")))
         .pool_idle_timeout(Duration::from_secs(90))
@@ -322,11 +331,23 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
-    let transcode_idle_timeout_secs: u64 = std::env::var("RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|v| *v >= 60)
-        .unwrap_or(30 * 60);
+    let transcode_idle_timeout_secs: u64 = {
+        let raw = std::env::var("RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS").ok();
+        let parsed: Option<u64> = raw.as_deref().and_then(|v| v.parse().ok());
+        match parsed {
+            Some(v) if v >= 60 => v,
+            Some(v) => {
+                warn!(
+                    value = v,
+                    minimum = 60,
+                    "RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS is below the minimum of 60 seconds; \
+                     using default of 1800 seconds (30 minutes)"
+                );
+                30 * 60
+            }
+            None => 30 * 60,
+        }
+    };
     let ffmpeg_path = std::env::var("RUSTFIN_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
     let ffprobe_path =
         std::env::var("RUSTFIN_FFPROBE_PATH").unwrap_or_else(|_| "ffprobe".to_string());

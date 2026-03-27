@@ -15,6 +15,7 @@ import {
   type SetupError,
 } from '@/lib/setupApi';
 import { parseResponseBody } from '@/lib/api';
+import { writeBrowserToken } from '@/lib/browserAuth';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 
@@ -201,7 +202,7 @@ export default function SetupWizard() {
       if (res.ok) {
         const body = await parseResponseBody(res);
         if (body && typeof body === 'object' && typeof (body as { token?: unknown }).token === 'string') {
-          localStorage.setItem('token', (body as { token: string }).token);
+          writeBrowserToken((body as { token: string }).token);
         }
         await refreshMe();
       }
