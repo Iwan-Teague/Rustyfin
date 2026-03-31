@@ -2682,6 +2682,12 @@ export default function AdminPage() {
                           {aiAdminState ? titleCase(aiAdminState.model_dir_source) : '—'}
                         </span>
                       </p>
+                      {aiAdminState && !aiAdminState.model_storage_available && (
+                        <p className="text-xs text-[var(--danger)]">
+                          {aiAdminState.model_storage_error ||
+                            'Rustyfin cannot read the active AI model folder right now.'}
+                        </p>
+                      )}
                     </div>
 
                     <div className="space-y-2">

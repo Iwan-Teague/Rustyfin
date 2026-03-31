@@ -5,7 +5,9 @@ export interface AiAdminState {
   available: boolean;
   model_dir: string;
   default_model_dir: string;
-  model_dir_source: 'database' | 'environment' | 'default';
+  model_dir_source: 'database' | 'environment' | 'default' | 'default_fallback';
+  model_storage_available: boolean;
+  model_storage_error: string | null;
   audit_retention_days: number;
   audit_prune_interval_seconds: number;
   models: AiModel[];

@@ -58,6 +58,8 @@ pub fn ai_router() -> Router<AppState> {
                     "message": "AI is unavailable on this host."
                 },
                 "inference_available": false,
+                "model_storage_available": false,
+                "model_storage_error": "AI is unavailable on this host.",
                 "models": []
             })),
         )

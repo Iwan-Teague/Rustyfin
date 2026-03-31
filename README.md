@@ -66,6 +66,7 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - On unsupported hosts, `auto` can fall back to AI being disabled so the rest of Rustyfin still runs
   - Use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time
   - AI models are resolved from the admin-managed `ai_model_dir` setting, then `RUSTFIN_AI_MODEL_DIR`, then the Rustyfin AI default path `/var/lib/rustyfin/ai/models`
+  - If the default AI model path is not writable for the native runtime user, Rustyfin falls back to `~/.local/share/rustyfin/ai/models` and surfaces the storage warning in Admin `AI`
 - Libraries
   - Movie, TV, and music libraries with recursive scanning
   - TMDB metadata enrichment and artwork sync

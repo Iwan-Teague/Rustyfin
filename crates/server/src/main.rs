@@ -312,15 +312,16 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let (model_dir, model_dir_source) = rustfin_server::ai_storage::resolve_model_dir(&pool)
-        .await
-        .map_err(|error| anyhow::anyhow!(error.0.to_string()))?;
-    if let Err(error) = std::fs::create_dir_all(&model_dir) {
+    let (model_dir, model_dir_source, model_dir_warning) =
+        rustfin_server::ai_storage::resolve_runtime_model_dir(&pool)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.0.to_string()))?;
+    if let Some(message) = model_dir_warning {
         warn!(
             path = %model_dir.display(),
             source = %model_dir_source,
-            error = %error,
-            "failed to create AI model directory during startup; continuing with configured path"
+            detail = %message,
+            "AI model directory required a runtime fallback or remains unavailable"
         );
     }
 

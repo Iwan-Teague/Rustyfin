@@ -29,6 +29,8 @@ pub struct AiModelDirectoryState {
     pub model_dir: String,
     pub default_model_dir: String,
     pub model_dir_source: String,
+    pub model_storage_available: bool,
+    pub model_storage_error: Option<String>,
     pub audit_retention_days: i64,
     pub audit_prune_interval_seconds: u64,
     pub models: Vec<AiModelSummary>,
@@ -62,6 +64,17 @@ pub async fn resolve_model_dir(pool: &rustfin_db::DbPool) -> Result<(PathBuf, St
     Ok((PathBuf::from(DEFAULT_AI_MODEL_DIR), "default".to_string()))
 }
 
+pub async fn resolve_runtime_model_dir(
+    pool: &rustfin_db::DbPool,
+) -> Result<(PathBuf, String, Option<String>), AppError> {
+    let (configured_path, source) = resolve_model_dir(pool).await?;
+    Ok(select_runtime_model_dir(
+        configured_path,
+        source,
+        std::env::var_os("HOME").map(PathBuf::from),
+    ))
+}
+
 pub async fn current_model_dir(state: &AppState) -> PathBuf {
     state.model_dir.read().await.clone()
 }
@@ -76,6 +89,15 @@ pub fn normalize_model_dir_value(value: Option<&str>) -> Option<PathBuf> {
         None
     } else {
         Some(PathBuf::from(trimmed))
+    }
+}
+
+pub fn model_dir_storage_status_from_result(
+    result: Result<Vec<AiModelSummary>, AppError>,
+) -> (Vec<AiModelSummary>, bool, Option<String>) {
+    match result {
+        Ok(models) => (models, true, None),
+        Err(error) => (Vec::new(), false, Some(error.0.to_string())),
     }
 }
 
@@ -96,6 +118,12 @@ pub fn validate_model_dir(path: &Path) -> Result<PathBuf, ApiError> {
 pub async fn list_models_from_state(state: &AppState) -> Result<Vec<AiModelSummary>, AppError> {
     let model_dir = current_model_dir(state).await;
     list_models_in_dir(&model_dir).await.map_err(Into::into)
+}
+
+pub async fn list_models_with_storage_status(
+    state: &AppState,
+) -> (Vec<AiModelSummary>, bool, Option<String>) {
+    model_dir_storage_status_from_result(list_models_from_state(state).await)
 }
 
 pub async fn list_models_in_dir(model_dir: &Path) -> Result<Vec<AiModelSummary>, ApiError> {
@@ -310,4 +338,113 @@ fn derive_download_file_name(url: &reqwest::Url) -> Result<String, ApiError> {
     }
 
     Ok(file_name.to_string())
+}
+
+fn select_runtime_model_dir(
+    configured_path: PathBuf,
+    source: String,
+    home_dir: Option<PathBuf>,
+) -> (PathBuf, String, Option<String>) {
+    match ensure_model_dir_ready(&configured_path) {
+        Ok(path) => (path, source, None),
+        Err(error) if source == "default" => {
+            if let Some(fallback) = fallback_model_dir(home_dir.as_deref()) {
+                match ensure_model_dir_ready(&fallback) {
+                    Ok(path) => (
+                        path,
+                        "default_fallback".to_string(),
+                        Some(format!(
+                            "default model directory {} is not writable ({error}); using fallback {}",
+                            configured_path.display(),
+                            fallback.display()
+                        )),
+                    ),
+                    Err(fallback_error) => (
+                        configured_path.clone(),
+                        source,
+                        Some(format!(
+                            "default model directory {} is not writable ({error}); fallback {} also failed ({fallback_error})",
+                            configured_path.display(),
+                            fallback.display()
+                        )),
+                    ),
+                }
+            } else {
+                (
+                    configured_path.clone(),
+                    source,
+                    Some(format!(
+                        "default model directory {} is not writable ({error}) and no HOME-based fallback is available",
+                        configured_path.display()
+                    )),
+                )
+            }
+        }
+        Err(error) => (
+            configured_path.clone(),
+            source,
+            Some(format!(
+                "configured model directory {} is not writable ({error})",
+                configured_path.display()
+            )),
+        ),
+    }
+}
+
+fn ensure_model_dir_ready(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(path)?;
+    Ok(path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+}
+
+fn fallback_model_dir(home_dir: Option<&Path>) -> Option<PathBuf> {
+    let home_dir = home_dir?;
+    Some(home_dir.join(".local/share/rustyfin/ai/models"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn select_runtime_model_dir_prefers_configured_path_when_writable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let configured = temp.path().join("models");
+        let (path, source, warning) =
+            select_runtime_model_dir(configured.clone(), "default".to_string(), None);
+        let expected = configured
+            .canonicalize()
+            .unwrap_or_else(|_| configured.clone());
+        assert_eq!(path, expected);
+        assert_eq!(source, "default");
+        assert!(warning.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn select_runtime_model_dir_falls_back_for_unwritable_default_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let locked = temp.path().join("locked");
+        std::fs::create_dir_all(&locked).expect("create locked dir");
+        let mut perms = std::fs::metadata(&locked).expect("metadata").permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&locked, perms).expect("set perms");
+
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home dir");
+        let configured = locked.join("models");
+
+        let (path, source, warning) =
+            select_runtime_model_dir(configured, "default".to_string(), Some(home.clone()));
+
+        let expected = home
+            .join(".local/share/rustyfin/ai/models")
+            .canonicalize()
+            .unwrap_or_else(|_| home.join(".local/share/rustyfin/ai/models"));
+        assert_eq!(path, expected);
+        assert_eq!(source, "default_fallback");
+        assert!(warning.is_some());
+    }
 }

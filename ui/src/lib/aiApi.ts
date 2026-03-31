@@ -15,6 +15,9 @@ export interface AiModel {
 export interface ModelsResponse {
   models: AiModel[];
   inference_available: boolean;
+  model_storage_available: boolean;
+  model_storage_error: string | null;
+  service_unavailable: boolean;
 }
 
 export interface ChatHistoryMessage {
@@ -81,14 +84,43 @@ function authHeaders(): Record<string, string> {
 
 export async function fetchModels(): Promise<ModelsResponse> {
   const res = await fetch('/api/v1/ai/models', { headers: authHeaders() });
+  const body = await res
+    .json()
+    .catch(() => null) as
+      | {
+          models?: AiModel[];
+          inference_available?: boolean;
+          model_storage_available?: boolean;
+          model_storage_error?: string | null;
+          error?: { message?: string };
+        }
+      | null;
+
   if (res.status === 503) {
-    return { models: [], inference_available: false };
+    return {
+      models: [],
+      inference_available: false,
+      model_storage_available: false,
+      model_storage_error: body?.error?.message ?? 'AI is unavailable on this host.',
+      service_unavailable: true,
+    };
   }
-  if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
-  const body = await res.json();
+  if (!res.ok) {
+    return {
+      models: [],
+      inference_available: false,
+      model_storage_available: false,
+      model_storage_error:
+        body?.error?.message ?? `Failed to fetch AI models: ${res.status}`,
+      service_unavailable: false,
+    };
+  }
   return {
-    models: body.models ?? [],
-    inference_available: Boolean(body.inference_available),
+    models: body?.models ?? [],
+    inference_available: Boolean(body?.inference_available),
+    model_storage_available: body?.model_storage_available !== false,
+    model_storage_error: body?.model_storage_error ?? null,
+    service_unavailable: false,
   };
 }
 
