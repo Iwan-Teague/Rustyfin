@@ -126,6 +126,16 @@ if [[ "$BUILD" == "true" ]]; then
   command -v npm >/dev/null 2>&1 || die "npm is not installed. Run ./scripts/install_native_debian.sh first."
 fi
 
+user_enable_servers_agent="${RUSTFIN_ENABLE_SERVERS_AGENT-}"
+user_ai_gpu_backend="${RUSTFIN_AI_GPU_BACKEND-}"
+user_transcoder_hw_accel="${RUSTFIN_TRANSCODER_HW_ACCEL-}"
+user_transcoder_require_hw_accel="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL-}"
+user_transcode_idle_timeout_secs="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS-}"
+user_stream_token_ttl_seconds="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS-}"
+user_transcription_gpu_mode="${RUSTFIN_TRANSCRIPTION_GPU_MODE-}"
+user_transcription_require_gpu="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU-}"
+user_transcription_agent_cargo_features="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES-}"
+
 RUSTFIN_RUST_BUILD_PROFILE="${RUSTFIN_RUST_BUILD_PROFILE:-dev}"
 RUSTFIN_ENABLE_SERVERS_AGENT="${RUSTFIN_ENABLE_SERVERS_AGENT:-1}"
 RUSTFIN_AI_GPU_BACKEND="${RUSTFIN_AI_GPU_BACKEND:-auto}"
@@ -168,15 +178,6 @@ user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 user_public_host="${RUSTFIN_PUBLIC_HOST:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
 user_database_url="${RUSTFIN_DATABASE_URL:-}"
-user_ai_gpu_backend="${RUSTFIN_AI_GPU_BACKEND:-}"
-user_transcoder_hw_accel="${RUSTFIN_TRANSCODER_HW_ACCEL:-}"
-user_transcoder_require_hw_accel="${RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL:-}"
-user_transcode_idle_timeout_secs="${RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS:-}"
-user_stream_token_ttl_seconds="${RUSTFIN_STREAM_TOKEN_TTL_SECONDS:-}"
-user_transcription_gpu_mode="${RUSTFIN_TRANSCRIPTION_GPU_MODE:-}"
-user_transcription_require_gpu="${RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:-}"
-user_transcription_agent_cargo_features="${RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:-}"
-
 if [[ -f "$INSTALL_DEFAULTS_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$INSTALL_DEFAULTS_FILE" || true
@@ -191,6 +192,7 @@ if [[ -z "${RUSTFIN_SERVERS_DEFAULT_JAVA:-}" ]] && [[ -x /opt/rustyfin/java/curr
   export RUSTFIN_SERVERS_DEFAULT_JAVA=/opt/rustyfin/java/current/bin/java
 fi
 
+[[ -n "$user_enable_servers_agent" ]] && RUSTFIN_ENABLE_SERVERS_AGENT="$user_enable_servers_agent"
 [[ -n "$user_backend_port" ]] && RUSTFIN_BACKEND_PORT="$user_backend_port"
 [[ -n "$user_calendar_port" ]] && RUSTFIN_CALENDAR_PORT="$user_calendar_port"
 [[ -n "$user_tmdb_port" ]] && RUSTFIN_TMDB_AGENT_PORT="$user_tmdb_port"
