@@ -1414,7 +1414,7 @@ async fn system_get_backup_summary(
     let successful_jobs: Vec<_> = jobs.iter().filter(|j| j.status == "completed").collect();
     let failed_jobs: Vec<_> = jobs.iter().filter(|j| j.status == "failed").collect();
 
-    let last_successful_backup_ts = successful_jobs.iter().filter_map(|j| j.completed_ts).max();
+    let last_successful_backup_ts = successful_jobs.iter().filter_map(|j| j.end_ts).max();
 
     let configured = !policies.is_empty();
     let message = if configured {
