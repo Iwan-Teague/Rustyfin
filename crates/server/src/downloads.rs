@@ -79,7 +79,9 @@ struct DownloadArtifactRow {
     install_steps_json: String,
 }
 
-fn decode_download_artifact_row(row: sqlx::postgres::PgRow) -> Result<DownloadArtifactRow, sqlx::Error> {
+fn decode_download_artifact_row(
+    row: sqlx::postgres::PgRow,
+) -> Result<DownloadArtifactRow, sqlx::Error> {
     Ok(DownloadArtifactRow {
         id: row.try_get("id")?,
         artifact_id: row.try_get("artifact_id")?,
@@ -107,7 +109,7 @@ pub async fn get_download_catalog(
     auth: AuthUser,
 ) -> Result<Response, AppError> {
     let _ = auth;
-    
+
     let rows = sqlx::query(
         "SELECT id, artifact_id, title, summary, detail, platform, architecture, version, channel, filename, file_size, checksum, signature_status, distribution_mode, external_url, availability, requires_sign_in, install_steps_json FROM download_artifact ORDER BY platform, title"
     )
@@ -116,23 +118,25 @@ pub async fn get_download_catalog(
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let mut items = Vec::new();
-    
+
     // Convert DB rows to response items
     for pg_row in rows {
         let row = decode_download_artifact_row(pg_row)
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-        let install_steps: Vec<String> = serde_json::from_str(&row.install_steps_json).unwrap_or_default();
-        let download_path = if row.distribution_mode == "direct" && row.availability == "available" {
-             Some(format!("/api/v1/downloads/items/{}/package", row.id))
+        let install_steps: Vec<String> =
+            serde_json::from_str(&row.install_steps_json).unwrap_or_default();
+        let download_path = if row.distribution_mode == "direct" && row.availability == "available"
+        {
+            Some(format!("/api/v1/downloads/items/{}/package", row.id))
         } else {
             None
         };
 
         // For rustyvault-webext, we might want to override setup_path if it's the specific artifact
         let setup_path = if row.artifact_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID {
-             Some("/vault#vault-devices".to_string())
+            Some("/vault#vault-devices".to_string())
         } else {
-             None // Could be stored in DB if we added a field, or derived
+            None // Could be stored in DB if we added a field, or derived
         };
 
         let install_mode = if row.artifact_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID {
@@ -159,21 +163,21 @@ pub async fn get_download_catalog(
             distribution_mode: row.distribution_mode,
             external_url: row.external_url,
             download_path,
-            install_mode, 
+            install_mode,
             setup_path,
             requires_sign_in: row.requires_sign_in,
             install_steps,
         });
     }
 
-    // Append legacy/virtual artifacts if not present in DB? 
+    // Append legacy/virtual artifacts if not present in DB?
     // For now, we assume the DB is the source of truth as per instructions.
     // If the DB is empty, the catalog is empty.
-    
+
     // Special handling for legacy RustyVault webext if it's NOT in the DB but the feature is enabled?
-    // The instructions say "replace generic placeholders". 
+    // The instructions say "replace generic placeholders".
     // We will assume migration or admin action will populate the DB.
-    
+
     Ok(no_store_json(DownloadCatalogResponse { items }))
 }
 
@@ -190,12 +194,12 @@ pub async fn download_artifact_package(
     let _ = auth;
 
     // Check if it's the legacy path (artifact_id) or new path (item_id)
-    // The route definition decides this. 
+    // The route definition decides this.
     // If we change the route to /items/:id/package, we get the UUID.
     // If we keep /artifacts/:id/package, we get artifact_id.
-    
+
     // We'll support fetching by UUID from DB.
-    
+
     let row = sqlx::query(
         "SELECT id, artifact_id, title, summary, detail, platform, architecture, version, channel, filename, file_size, checksum, signature_status, distribution_mode, external_url, availability, requires_sign_in, install_steps_json FROM download_artifact WHERE id = $1"
     )
@@ -208,12 +212,12 @@ pub async fn download_artifact_package(
         let row = decode_download_artifact_row(pg_row)
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
         if row.distribution_mode != "direct" {
-             return Err(ApiError::BadRequest("Artifact is not a direct download".into()).into());
+            return Err(ApiError::BadRequest("Artifact is not a direct download".into()).into());
         }
         if row.availability != "available" {
-             return Err(ApiError::BadRequest("Artifact is not available".into()).into());
+            return Err(ApiError::BadRequest("Artifact is not available".into()).into());
         }
-        
+
         // Special case for RustyVault WebExt to keep serving the embedded/generated package
         if row.artifact_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID {
             return download_rustyvault_webext_package(&state).await;
@@ -224,23 +228,26 @@ pub async fn download_artifact_package(
         let artifacts_dir = std::env::var("RUSTFIN_ARTIFACTS_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| state.cache_dir.join("artifacts"));
-            
-        let filename = row.filename.ok_or_else(|| ApiError::Internal("Artifact has no filename".into()))?;
+
+        let filename = row
+            .filename
+            .ok_or_else(|| ApiError::Internal("Artifact has no filename".into()))?;
         let file_path = artifacts_dir.join(&filename);
-        
+
         if !file_path.exists() {
-             warn!("Artifact file not found at {}", file_path.display());
-             return Err(ApiError::NotFound("Artifact file missing on host".into()).into());
+            warn!("Artifact file not found at {}", file_path.display());
+            return Err(ApiError::NotFound("Artifact file missing on host".into()).into());
         }
 
         // Stream the file
         // Simple implementation: read entire file (not efficient for large files, use ServeFile for production)
-        // But for "thin shell" clients it might be okay. 
-        // Better: use axum-extra or tower-http ServeFile. 
+        // But for "thin shell" clients it might be okay.
+        // Better: use axum-extra or tower-http ServeFile.
         // Since I can't easily add dependencies, I'll use tokio::fs::read.
         // Actually, axum::body::Body can wrap a file stream.
-        
-        let file_bytes = tokio::fs::read(&file_path).await
+
+        let file_bytes = tokio::fs::read(&file_path)
+            .await
             .map_err(|e| ApiError::Internal(format!("Failed to read artifact: {}", e)))?;
 
         return Response::builder()
@@ -261,10 +268,10 @@ pub async fn download_artifact_package(
 
     // Fallback for legacy calls or not found
     // If the ID passed was "rustyvault-webext" (legacy string ID) instead of UUID?
-    // The new route should use UUID. 
-    // We should probably keep the OLD route for backward compatibility if needed, 
+    // The new route should use UUID.
+    // We should probably keep the OLD route for backward compatibility if needed,
     // but the task says "rewrite".
-    
+
     Err(ApiError::NotFound("download artifact not found".into()).into())
 }
 
@@ -330,7 +337,29 @@ mod tests {
 
     #[test]
     fn planned_catalog_entries_remain_non_downloadable() {
-        let app = planned_rustyfin_app_artifact();
+        let app = DownloadArtifactResponse {
+            id: "planned-client".to_string(),
+            artifact_id: "rustyfin-client".to_string(),
+            title: "Rustyfin Client".to_string(),
+            summary: "Planned desktop client".to_string(),
+            availability: DownloadArtifactAvailability::Planned,
+            detail: "Not shipped yet".to_string(),
+            platform: "linux".to_string(),
+            architecture: "x86_64".to_string(),
+            version: None,
+            channel: "stable".to_string(),
+            package_filename: None,
+            file_size: None,
+            checksum: None,
+            signature_status: "unsigned".to_string(),
+            distribution_mode: "planned".to_string(),
+            external_url: None,
+            download_path: None,
+            install_mode: None,
+            setup_path: None,
+            requires_sign_in: false,
+            install_steps: Vec::new(),
+        };
         assert_eq!(app.availability, DownloadArtifactAvailability::Planned);
         assert!(app.download_path.is_none());
         assert!(app.package_filename.is_none());

@@ -20,7 +20,7 @@ use crate::ai_assistant::{
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
 use crate::ai_storage::{
-    AiModelSummary, current_model_dir, list_models_from_state, model_file_path,
+    AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -50,17 +50,22 @@ pub fn ai_router() -> Router<AppState> {
 struct ModelsResponse {
     models: Vec<AiModelSummary>,
     inference_available: bool,
+    model_storage_available: bool,
+    model_storage_error: Option<String>,
 }
 
 async fn list_models(
     _user: AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ModelsResponse>, AppError> {
-    let models = list_models_from_state(&state).await?;
+    let (models, model_storage_available, model_storage_error) =
+        list_models_with_storage_status(&state).await;
 
     Ok(Json(ModelsResponse {
         models,
         inference_available: true,
+        model_storage_available,
+        model_storage_error,
     }))
 }
 

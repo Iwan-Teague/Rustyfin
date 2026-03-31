@@ -260,9 +260,23 @@ function MessageBubble({ entry }: { entry: ChatEntry }) {
 // ---------------------------------------------------------------------------
 function InferenceUnavailable({
   serviceUnavailable = false,
+  title,
+  description,
+  showRecommendation,
 }: {
   serviceUnavailable?: boolean;
+  title?: string;
+  description?: string;
+  showRecommendation?: boolean;
 }) {
+  const resolvedTitle = title ?? (serviceUnavailable ? 'AI unavailable on this host' : 'No model installed');
+  const resolvedDescription =
+    description ??
+    (serviceUnavailable
+      ? 'This host is running without an enabled AI inference backend, so the assistant is unavailable right now.'
+      : 'No AI models are installed right now. Ask an admin to manage models from Admin > AI.');
+  const shouldShowRecommendation = showRecommendation ?? !serviceUnavailable;
+
   return (
     <div className="flex flex-col items-center justify-center flex-1 gap-5 py-16 text-center px-6">
       <div
@@ -283,16 +297,10 @@ function InferenceUnavailable({
         </svg>
       </div>
       <div className="space-y-1.5">
-        <p className="font-semibold">
-          {serviceUnavailable ? 'AI unavailable on this host' : 'No model installed'}
-        </p>
-        <p className="text-sm muted max-w-xs">
-          {serviceUnavailable
-            ? 'This host is running without an enabled AI inference backend, so the assistant is unavailable right now.'
-            : 'No AI models are installed right now. Ask an admin to manage models from Admin > AI.'}
-        </p>
+        <p className="font-semibold">{resolvedTitle}</p>
+        <p className="text-sm muted max-w-xs">{resolvedDescription}</p>
       </div>
-      {!serviceUnavailable && (
+      {shouldShowRecommendation && (
         <span className="chip chip-accent text-[0.7rem]">
           Recommended: llama3.2:3b (~2 GB)
         </span>
@@ -414,6 +422,9 @@ export default function AiPage() {
 
   const [models, setModels] = useState<AiModel[]>([]);
   const [inferenceAvailable, setInferenceAvailable] = useState<boolean | null>(null);
+  const [serviceUnavailable, setServiceUnavailable] = useState(false);
+  const [modelStorageAvailable, setModelStorageAvailable] = useState(true);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
   const [messages, setMessages] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState('');
@@ -431,6 +442,9 @@ export default function AiPage() {
     fetchModels()
       .then((res) => {
         setInferenceAvailable(res.inference_available);
+        setServiceUnavailable(res.service_unavailable);
+        setModelStorageAvailable(res.model_storage_available);
+        setModelsError(res.model_storage_error);
         setModels(res.models);
         if (res.models.length > 0 && !selectedModel) {
           setSelectedModel(res.models[0].name);
@@ -438,7 +452,12 @@ export default function AiPage() {
           setSelectedModel('');
         }
       })
-      .catch(() => setInferenceAvailable(false));
+      .catch(() => {
+        setInferenceAvailable(false);
+        setServiceUnavailable(false);
+        setModelStorageAvailable(false);
+        setModelsError('Failed to connect to the Rustyfin backend. Check that the native runtime is online.');
+      });
   }, [selectedModel]);
 
   useEffect(() => {
@@ -643,19 +662,46 @@ export default function AiPage() {
 
           {/* Chat area */}
           <div className="flex flex-col flex-1 overflow-hidden">
-            {inferenceAvailable === false && (
-              <InferenceUnavailable serviceUnavailable />
+            {serviceUnavailable && (
+              <InferenceUnavailable
+                serviceUnavailable
+                description={
+                  modelsError ||
+                  'This host is running without an enabled AI inference backend, so the assistant is unavailable right now.'
+                }
+                showRecommendation={false}
+              />
+            )}
+            {!serviceUnavailable && inferenceAvailable === false && (
+              <InferenceUnavailable
+                title="AI needs admin attention"
+                description={
+                  modelsError ||
+                  'Rustyfin could not read local AI models from the configured storage folder. Ask an admin to review Admin > AI.'
+                }
+                showRecommendation={false}
+              />
             )}
             {inferenceAvailable === null && (
               <div className="flex-1 flex items-center justify-center">
                 <p className="text-sm muted">Loading…</p>
               </div>
             )}
+            {inferenceAvailable === true && !modelStorageAvailable && (
+              <InferenceUnavailable
+                title="AI model storage is unavailable"
+                description={
+                  modelsError ||
+                  'Rustyfin cannot read the configured AI model folder. Ask an admin to review Admin > AI.'
+                }
+                showRecommendation={false}
+              />
+            )}
             {inferenceAvailable === true && !selectedModel && (
               <InferenceUnavailable />
             )}
 
-            {inferenceAvailable === true && selectedModel && (
+            {inferenceAvailable === true && modelStorageAvailable && selectedModel && (
               <>
                 <div ref={threadRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
                   {messages.length === 0 && (

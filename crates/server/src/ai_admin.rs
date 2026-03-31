@@ -15,8 +15,8 @@ use tracing::warn;
 use crate::ai_audit::{AiAssistantAuditEventResponse, parse_audit_event_row};
 use crate::ai_storage::{
     AI_MODEL_DIR_SETTING_KEY, AiModelDirectoryState, ModelPullChunk, current_model_dir,
-    delete_model_file, download_model_from_url, list_models_from_state, resolve_model_dir,
-    set_model_dir, validate_model_dir,
+    delete_model_file, download_model_from_url, list_models_with_storage_status, resolve_model_dir,
+    resolve_runtime_model_dir, set_model_dir, validate_model_dir,
 };
 use crate::auth::AdminUser;
 use crate::error::AppError;
@@ -54,7 +54,7 @@ pub async fn update_ai_admin_config(
         let _ = rustfin_db::repo::settings::delete(&state.db, AI_MODEL_DIR_SETTING_KEY)
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-        let (resolved, _) = resolve_model_dir(&state.db).await?;
+        let (resolved, _, _) = resolve_runtime_model_dir(&state.db).await?;
         set_model_dir(&state, resolved).await;
     } else {
         let validated = validate_model_dir(&PathBuf::from(trimmed))?;
@@ -143,15 +143,23 @@ pub async fn list_ai_audit_events(
 }
 
 async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState, AppError> {
-    let (_, source) = resolve_model_dir(&state.db).await?;
+    let (configured_model_dir, configured_source) = resolve_model_dir(&state.db).await?;
     let model_dir = current_model_dir(state).await;
-    let models = list_models_from_state(state).await?;
+    let source = if configured_source == "default" && model_dir != configured_model_dir {
+        "default_fallback".to_string()
+    } else {
+        configured_source
+    };
+    let (models, model_storage_available, model_storage_error) =
+        list_models_with_storage_status(state).await;
 
     Ok(AiModelDirectoryState {
         available: crate::ai::inference_available(),
         model_dir: model_dir.to_string_lossy().to_string(),
         default_model_dir: crate::ai_storage::DEFAULT_AI_MODEL_DIR.to_string(),
         model_dir_source: source,
+        model_storage_available,
+        model_storage_error,
         audit_retention_days: crate::ai_audit::audit_retention_days(),
         audit_prune_interval_seconds: crate::ai_audit::AI_AUDIT_PRUNE_INTERVAL_SECS,
         models,

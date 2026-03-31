@@ -59,3 +59,4 @@ scraper = "0.24"
 [dev-dependencies]
 axum-test = { version = "18", features = ["ws"] }
 rustfin-transcoder = { path = "../transcoder" }
+tempfile = "3"
