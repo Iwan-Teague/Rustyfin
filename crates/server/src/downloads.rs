@@ -109,7 +109,11 @@ pub async fn get_download_catalog(
     auth: AuthUser,
 ) -> Result<Response, AppError> {
     let _ = auth;
+    let catalog = build_download_catalog(&state).await?;
+    Ok(no_store_json(catalog))
+}
 
+pub async fn build_download_catalog(state: &AppState) -> Result<DownloadCatalogResponse, AppError> {
     let rows = sqlx::query(
         "SELECT id, artifact_id, title, summary, detail, platform, architecture, version, channel, filename, file_size, checksum, signature_status, distribution_mode, external_url, availability, requires_sign_in, install_steps_json FROM download_artifact ORDER BY platform, title"
     )
@@ -178,7 +182,7 @@ pub async fn get_download_catalog(
     // The instructions say "replace generic placeholders".
     // We will assume migration or admin action will populate the DB.
 
-    Ok(no_store_json(DownloadCatalogResponse { items }))
+    Ok(DownloadCatalogResponse { items })
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
