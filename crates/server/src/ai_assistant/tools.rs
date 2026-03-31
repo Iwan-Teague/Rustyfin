@@ -591,7 +591,9 @@ async fn downloads_list_available_artifacts(
     call: &PlannedToolCall,
 ) -> Result<(String, serde_json::Value), String> {
     let (query, availability_filter) = downloads_filter_for_call(call);
-    let catalog = crate::downloads::build_download_catalog(state);
+    let catalog = crate::downloads::build_download_catalog(state)
+        .await
+        .map_err(|error| format!("failed to build download catalog: {}", error.0))?;
 
     let filtered_items: Vec<_> = catalog
         .items
@@ -1399,25 +1401,20 @@ async fn system_get_backup_summary(
     state: &AppState,
 ) -> Result<(String, serde_json::Value), String> {
     // Get policy count
-    let policies = crate::backups::repo::list_backup_policies(&state.db)
+    let policies = crate::backups::repo::list_policies(&state.db)
         .await
         .map_err(|e| format!("failed to list backup policies: {e}"))?;
 
     // Get recent jobs (last 30)
-    let jobs = crate::backups::repo::list_backup_jobs(&state.db, 30)
+    let jobs = crate::backups::repo::list_jobs(&state.db)
         .await
         .map_err(|e| format!("failed to list backup jobs: {e}"))?;
+    let jobs: Vec<_> = jobs.into_iter().take(30).collect();
 
-    let successful_jobs: Vec<_> = jobs
-        .iter()
-        .filter(|j| j.status == "completed")
-        .collect();
+    let successful_jobs: Vec<_> = jobs.iter().filter(|j| j.status == "completed").collect();
     let failed_jobs: Vec<_> = jobs.iter().filter(|j| j.status == "failed").collect();
 
-    let last_successful_backup_ts = successful_jobs
-        .iter()
-        .filter_map(|j| j.completed_ts)
-        .max();
+    let last_successful_backup_ts = successful_jobs.iter().filter_map(|j| j.completed_ts).max();
 
     let configured = !policies.is_empty();
     let message = if configured {
