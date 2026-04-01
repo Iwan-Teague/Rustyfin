@@ -124,6 +124,7 @@ Runtime behavior:
   - loads the native env/default layers and drives the native runtime flow
   - consumes `rustfin-installer` for runtime planning, runtime snapshot persistence, native runtime artifact builds, and native runtime launch/health orchestration
   - writes logs and pid files under `.tmp/native-runtime/`
+  - installer-generated edge TLS certificates must cover the detected public host plus `localhost`, `127.0.0.1`, and detected local hostname aliases so browser access through the machine hostname does not fail on an IP-only SAN
   - supports `--build-only` for artifact refreshes without launching
 - `stop-native.sh`, `install_native_systemd.sh`, and `clean_install.sh` are compatibility wrappers around `rustfin-installer` subcommands
 - After the first successful native build on a supported Debian host, use `./scripts/install_native_systemd.sh` so Rustyfin starts automatically after reboot

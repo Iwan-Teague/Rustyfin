@@ -1607,7 +1607,9 @@ fn plan_native_runtime(
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("http://127.0.0.1:{}/pick", options.picker_helper_port));
-    let (edge_tls_cert, edge_tls_key) = ensure_edge_tls_cert(&safe_tmp_dir, &public_host)?;
+    let edge_tls_hosts = resolve_edge_tls_hosts(&public_host);
+    let (edge_tls_cert, edge_tls_key) =
+        ensure_edge_tls_cert(&safe_tmp_dir, &edge_tls_hosts, &public_host)?;
 
     let database_url = resolve_database_url()?;
     validate_postgres_url(&database_url)?;
@@ -2315,12 +2317,77 @@ fn resolve_or_generate_env_secret(key: &str) -> String {
         .unwrap_or_else(generate_secret_hex)
 }
 
-fn ensure_edge_tls_cert(safe_tmp_dir: &Path, host: &str) -> anyhow::Result<(String, String)> {
+fn push_unique_host(target: &mut Vec<String>, value: impl Into<String>) {
+    let value = value.into();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if target
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+    {
+        return;
+    }
+    target.push(trimmed.to_string());
+}
+
+fn detect_local_hostname_candidates() -> Vec<String> {
+    let mut hosts = Vec::new();
+    if let Ok(value) = env::var("HOSTNAME") {
+        push_unique_host(&mut hosts, value);
+    }
+    for args in [["hostname"].as_slice(), ["hostname", "-f"].as_slice()] {
+        let output = Command::new(args[0]).args(&args[1..]).output();
+        let Ok(output) = output else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let value = String::from_utf8_lossy(&output.stdout);
+        push_unique_host(&mut hosts, value.trim());
+    }
+    hosts.retain(|host| !host.eq_ignore_ascii_case("localhost"));
+    hosts
+}
+
+fn resolve_edge_tls_hosts(public_host: &str) -> Vec<String> {
+    let mut hosts = Vec::new();
+    push_unique_host(&mut hosts, "localhost");
+    push_unique_host(&mut hosts, "127.0.0.1");
+    push_unique_host(&mut hosts, public_host);
+    for host in detect_local_hostname_candidates() {
+        push_unique_host(&mut hosts, host);
+    }
+    hosts
+}
+
+fn format_edge_tls_subject_alt_names(hosts: &[String]) -> String {
+    hosts
+        .iter()
+        .map(|host| {
+            if is_ipv4(host) {
+                format!("IP:{host}")
+            } else {
+                format!("DNS:{host}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn ensure_edge_tls_cert(
+    safe_tmp_dir: &Path,
+    hosts: &[String],
+    common_name: &str,
+) -> anyhow::Result<(String, String)> {
     ensure_command_available("openssl")?;
     let cert_dir = safe_tmp_dir.join("edge-tls");
     let cert_path = cert_dir.join("tls.crt");
     let key_path = cert_dir.join("tls.key");
-    let meta_path = cert_dir.join("meta.host");
+    let meta_path = cert_dir.join("meta.hosts");
+    let meta_hosts = hosts.join("\n");
 
     fs::create_dir_all(&cert_dir)
         .with_context(|| format!("failed to create {}", cert_dir.display()))?;
@@ -2328,14 +2395,10 @@ fn ensure_edge_tls_cert(safe_tmp_dir: &Path, host: &str) -> anyhow::Result<(Stri
 
     let needs_regen = !cert_path.exists()
         || !key_path.exists()
-        || fs::read_to_string(&meta_path).ok().as_deref() != Some(host);
+        || fs::read_to_string(&meta_path).ok().as_deref() != Some(meta_hosts.as_str());
 
     if needs_regen {
-        let san = if is_ipv4(host) {
-            format!("DNS:localhost,IP:127.0.0.1,IP:{host}")
-        } else {
-            format!("DNS:localhost,IP:127.0.0.1,DNS:{host}")
-        };
+        let san = format_edge_tls_subject_alt_names(hosts);
         let _ = fs::remove_file(&cert_path);
         let _ = fs::remove_file(&key_path);
         let status = Command::new("openssl")
@@ -2347,7 +2410,7 @@ fn ensure_edge_tls_cert(safe_tmp_dir: &Path, host: &str) -> anyhow::Result<(Stri
             .arg("-out")
             .arg(&cert_path)
             .arg("-subj")
-            .arg(format!("/CN={host}"))
+            .arg(format!("/CN={common_name}"))
             .arg("-addext")
             .arg(format!("subjectAltName={san}"))
             .status()
@@ -2355,7 +2418,7 @@ fn ensure_edge_tls_cert(safe_tmp_dir: &Path, host: &str) -> anyhow::Result<(Stri
         ensure_success("openssl req", status)?;
         let _ = fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o600));
         let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
-        fs::write(&meta_path, host)
+        fs::write(&meta_path, &meta_hosts)
             .with_context(|| format!("failed to write {}", meta_path.display()))?;
         let _ = fs::set_permissions(&meta_path, fs::Permissions::from_mode(0o600));
     }
