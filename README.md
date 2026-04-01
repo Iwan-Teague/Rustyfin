@@ -215,6 +215,7 @@ Detailed native operations guide:
 - Runtime TLS material, service tokens, and the persisted runtime snapshot are now written by:
   - `./scripts/rustfin-installer.sh plan-native-runtime`
   - `./scripts/rustfin-installer.sh write-native-runtime-snapshot`
+- The installer-generated edge TLS certificate now covers the detected public host plus `localhost`, `127.0.0.1`, and detected local hostname aliases such as `server`, so browser access through the host name does not depend on an IP-only certificate SAN
 - Native runtime launch/stop/reset are now emitted by:
   - `./scripts/rustfin-installer.sh launch-native-runtime`
   - `./scripts/rustfin-installer.sh stop-native-runtime`
