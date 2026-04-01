@@ -127,6 +127,7 @@ export interface AiConversationTurn {
   grounding_sources: AiGroundingSource[];
   activity_trace: AiActivityTraceItem[];
   stats?: AiTurnStats | null;
+  pending_action?: AiPendingAction | null;
   created_ts: number;
 }
 
@@ -147,10 +148,69 @@ export interface AiStatusUpdate {
   kind: 'checking' | 'complete' | 'error';
 }
 
+export type AiPendingActionKind = 'calendar_create_event' | 'calendar_create_birthday';
+
+export type AiPendingActionStatus = 'pending' | 'confirmed' | 'expired';
+
+export interface AiPendingAction {
+  token: string;
+  action_kind: AiPendingActionKind;
+  summary: string;
+  expires_ts: number;
+  status: AiPendingActionStatus;
+}
+
+export interface AiConfirmationRequiredEvent {
+  token: string;
+  action_kind: AiPendingActionKind;
+  summary: string;
+  expires_ts: number;
+}
+
+export type AiRuntimePhase =
+  | 'idle'
+  | 'loading_model'
+  | 'planning'
+  | 'grounding'
+  | 'generating';
+
+export interface AiRuntimeResponse {
+  model: {
+    name?: string | null;
+    backend: string;
+    context_length: number;
+    n_threads: number;
+    n_gpu_layers: number;
+    loaded: boolean;
+  };
+  turn: {
+    phase: AiRuntimePhase;
+    queue_depth: number;
+    active_request_count: number;
+  };
+  resources: {
+    process_rss_bytes?: number | null;
+    process_rss_human?: string | null;
+    host_cpu_percent?: number | null;
+    host_ram_used_human?: string | null;
+    host_ram_total_human?: string | null;
+  };
+  gpus: Array<{
+    name: string;
+    utilization_percent?: number | null;
+    vram_used_bytes?: number | null;
+    vram_used_human?: string | null;
+    vram_total_bytes?: number | null;
+    vram_total_human?: string | null;
+    temperature_celsius?: number | null;
+  }>;
+}
+
 export type AiSseEvent =
   | { type: 'phase'; phase: AiPhaseEvent }
   | { type: 'tool'; activity: AiToolActivityEvent }
   | { type: 'status'; update: AiStatusUpdate }
+  | { type: 'confirmation_required'; confirmation: AiConfirmationRequiredEvent }
   | { type: 'token'; text: string }
   | { type: 'stats'; stats: AiTurnStats }
   | { type: 'grounding'; sources: AiGroundingSource[]; followUpContexts: AiFollowUpContext[] }
@@ -192,6 +252,30 @@ function normalizeTurnStats(value: unknown): AiTurnStats | null {
     queue_duration_ms: readNumber(value.queue_duration_ms),
     model_load_duration_ms: readNumber(value.model_load_duration_ms),
     tokens_per_second: readNumber(value.tokens_per_second),
+  };
+}
+
+function normalizePendingAction(value: unknown): AiPendingAction | null {
+  if (!isRecord(value)) return null;
+  const action_kind =
+    value.action_kind === 'calendar_create_birthday'
+      ? 'calendar_create_birthday'
+      : value.action_kind === 'calendar_create_event'
+        ? 'calendar_create_event'
+        : null;
+  if (!action_kind) return null;
+  const status =
+    value.status === 'confirmed'
+      ? 'confirmed'
+      : value.status === 'expired'
+        ? 'expired'
+        : 'pending';
+  return {
+    token: readString(value.token),
+    action_kind,
+    summary: readString(value.summary),
+    expires_ts: readNumber(value.expires_ts),
+    status,
   };
 }
 
@@ -254,6 +338,24 @@ function handleSsePayload(
         started_ts_ms: readNumber(record.started_ts_ms, Date.now()),
         finished_ts_ms:
           typeof record.finished_ts_ms === 'number' ? record.finished_ts_ms : null,
+      },
+    });
+    return;
+  }
+
+  if (eventType === 'confirmation_required') {
+    const record = isRecord(payload) ? payload : {};
+    const action_kind =
+      record.action_kind === 'calendar_create_birthday'
+        ? 'calendar_create_birthday'
+        : 'calendar_create_event';
+    onEvent({
+      type: 'confirmation_required',
+      confirmation: {
+        token: readString(record.token),
+        action_kind,
+        summary: readString(record.summary),
+        expires_ts: readNumber(record.expires_ts),
       },
     });
     return;
@@ -504,12 +606,13 @@ export function streamChat(
   model: string,
   message: string,
   history: ChatHistoryMessage[],
+  confirmationToken: string | undefined,
   onEvent: (event: AiSseEvent) => void,
   onClose: () => void,
 ): () => void {
   return streamAssistantRequest(
     '/ai/chat',
-    { model, message, history },
+    { model, message, history, confirmation_token: confirmationToken },
     onEvent,
     onClose,
   );
@@ -519,13 +622,35 @@ export function streamConversationMessage(
   conversationId: string,
   model: string,
   message: string,
+  confirmationToken: string | undefined,
   onEvent: (event: AiSseEvent) => void,
   onClose: () => void,
 ): () => void {
   return streamAssistantRequest(
     `/ai/conversations/${conversationId}/messages/stream`,
-    { model, message },
+    { model, message, confirmation_token: confirmationToken },
     onEvent,
     onClose,
   );
+}
+
+export async function fetchAiRuntime(): Promise<AiRuntimeResponse> {
+  return apiJson<AiRuntimeResponse>('/ai/runtime');
+}
+
+export async function transcribeAiInput(blob: Blob): Promise<{ text: string }> {
+  const form = new FormData();
+  form.append('file', blob, 'ai-input.webm');
+  const res = await apiFetch('/ai/transcribe', {
+    method: 'POST',
+    body: form,
+  });
+  const body = await parseResponseBody(res);
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(body, `AI transcribe failed: ${res.status}`));
+  }
+  const record = isRecord(body) ? body : {};
+  return {
+    text: readString(record.text),
+  };
 }

@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingSource,
-    AssistantHistoryMessage, AssistantTurnStats,
+    AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus,
+    AssistantTurnStats,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -37,6 +38,8 @@ pub struct UpdateConversationRequest {
 pub struct ConversationMessageRequest {
     pub model: String,
     pub message: String,
+    #[serde(default)]
+    pub confirmation_token: Option<String>,
     #[allow(dead_code)]
     pub client_turn_id: Option<String>,
 }
@@ -73,6 +76,8 @@ pub struct ConversationTurnResponse {
     pub activity_trace: Vec<AssistantActivityTraceItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<AssistantTurnStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_action: Option<AssistantPendingAction>,
     pub created_ts: i64,
 }
 
@@ -285,6 +290,7 @@ pub async fn persist_user_turn(
             grounding_sources_json: "[]",
             activity_trace_json: "[]",
             stats_json: None,
+            pending_action_json: None,
             trace_id: None,
         },
     )
@@ -325,6 +331,7 @@ pub async fn persist_assistant_turn(
     grounding_sources: &[AssistantGroundingSource],
     activity_trace: &[AssistantActivityTraceItem],
     stats: Option<&AssistantTurnStats>,
+    pending_action: Option<&AssistantPendingAction>,
     trace_id: Option<&str>,
 ) -> Result<(), AppError> {
     let grounding_tools_json = serde_json::to_string(grounding_tools)
@@ -336,6 +343,10 @@ pub async fn persist_assistant_turn(
     let activity_trace_json = serde_json::to_string(activity_trace)
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
     let stats_json = stats
+        .map(|value| serde_json::to_string(value))
+        .transpose()
+        .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
+    let pending_action_json = pending_action
         .map(|value| serde_json::to_string(value))
         .transpose()
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
@@ -353,6 +364,7 @@ pub async fn persist_assistant_turn(
             grounding_sources_json: &grounding_sources_json,
             activity_trace_json: &activity_trace_json,
             stats_json: stats_json.as_deref(),
+            pending_action_json: pending_action_json.as_deref(),
             trace_id,
         },
     )
@@ -446,6 +458,20 @@ fn turn_response_from_row(
         .map(serde_json::from_str::<AssistantTurnStats>)
         .transpose()
         .map_err(|e| ApiError::Internal(format!("invalid stored assistant stats: {e}")))?;
+    let pending_action = row
+        .pending_action_json
+        .as_deref()
+        .map(serde_json::from_str::<AssistantPendingAction>)
+        .transpose()
+        .map_err(|e| ApiError::Internal(format!("invalid stored assistant pending action: {e}")))?
+        .map(|mut pending| {
+            if pending.status == AssistantPendingActionStatus::Pending
+                && pending.expires_ts < chrono::Utc::now().timestamp()
+            {
+                pending.status = AssistantPendingActionStatus::Expired;
+            }
+            pending
+        });
 
     Ok(ConversationTurnResponse {
         id: row.id.clone(),
@@ -457,6 +483,7 @@ fn turn_response_from_row(
         grounding_sources,
         activity_trace,
         stats,
+        pending_action,
         created_ts: row.created_ts,
     })
 }

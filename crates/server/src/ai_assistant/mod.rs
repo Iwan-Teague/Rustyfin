@@ -1,3 +1,4 @@
+pub mod confirmation;
 pub mod context;
 pub mod orchestrator;
 pub mod registry;
@@ -12,7 +13,9 @@ pub use orchestrator::{
     status_label_for_tool_call, unsupported_write_response_for_message,
 };
 pub use types::{
-    AssistantActivityTraceItem, AssistantChatRequest, AssistantFollowUpContext, AssistantPhase,
-    AssistantPhaseEvent, AssistantPlannerMode, AssistantStatusEvent, AssistantStatusKind,
+    AssistantActivityTraceItem, AssistantChatRequest, AssistantConfirmationPayload,
+    AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantPendingAction,
+    AssistantPendingActionKind, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
+    AssistantPlannerMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
     AssistantToolActivityEvent, AssistantToolActivityState, AssistantTurnStats,
 };

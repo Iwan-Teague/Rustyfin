@@ -5,6 +5,9 @@ use futures::{StreamExt, future::join_all};
 use rustfin_ai_agent::{ChatChunk, ChatMessage, LlamaEngine, SamplingParams};
 use serde::Deserialize;
 
+use super::confirmation::{
+    is_supported_calendar_create_intent, pending_action_request_for_message,
+};
 use super::context::AssistantContext;
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
@@ -84,6 +87,20 @@ pub async fn prepare_assistant_turn(
     user: &AuthUser,
     request: AssistantChatRequest,
 ) -> PreparedAssistantTurn {
+    if let Some(result) = pending_action_request_for_message(user, &request.message, None) {
+        return PreparedAssistantTurn {
+            messages: Vec::new(),
+            sources: Vec::new(),
+            immediate_response: Some(match result {
+                Ok(parsed) => format!(
+                    "{} Reply with \"Confirm\" to continue.",
+                    parsed.payload.summary
+                ),
+                Err(message) => message,
+            }),
+        };
+    }
+
     if let Some(refusal) = unsupported_write_response_for_message(&request.message) {
         return PreparedAssistantTurn {
             messages: Vec::new(),
@@ -253,6 +270,12 @@ fn planner_tool_inventory(user: &AuthUser) -> String {
 
 fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
     match tool {
+        AssistantToolName::CalendarCreateEvent => {
+            " Args: required title/date/scope; explicit user confirmation is required before the backend will execute it."
+        }
+        AssistantToolName::CalendarCreateBirthday => {
+            " Args: required person/date/year/scope; explicit user confirmation is required before the backend will execute it."
+        }
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
         }
@@ -448,6 +471,7 @@ fn normalize_model_tool_input(
     message: &str,
 ) -> Option<AssistantToolInput> {
     match tool {
+        AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => None,
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
@@ -610,7 +634,7 @@ fn build_system_prompt() -> String {
 Be concise and genuinely helpful. Respond in plain text unless code or markdown lists add real clarity. \
 If authoritative Rustyfin grounding is supplied in another system message, treat it as the source of truth for this turn. \
 Do not invent data that was not grounded. If a grounded tool reports an error or missing data, say so plainly. \
-Do not claim to have created, updated, deleted, or changed anything in Rustyfin because write actions are not enabled through this assistant yet."
+Do not claim to have created, updated, deleted, or changed anything in Rustyfin unless a confirmed server-side write tool actually ran and the backend verified the result."
         .to_string()
 }
 
@@ -620,6 +644,9 @@ pub fn immediate_response_for_message(message: &str) -> Option<String> {
 
 pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
+    if is_supported_calendar_create_intent(&lower) {
+        return None;
+    }
     if !is_unsupported_write_intent(&lower) {
         return None;
     }
@@ -1401,6 +1428,7 @@ fn apply_follow_up_tool_hints(
 
     for tool in recent_tools {
         match tool {
+            AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -3749,6 +3777,12 @@ mod tests {
             AssistantToolInput::WebFetch { .. } => panic!("unexpected web fetch"),
             AssistantToolInput::RoomsFilter { .. } => panic!("unexpected room filter"),
             AssistantToolInput::ServerFilter { .. } => panic!("unexpected server filter"),
+            AssistantToolInput::CalendarCreateEvent { .. } => {
+                panic!("unexpected calendar create event input")
+            }
+            AssistantToolInput::CalendarCreateBirthday { .. } => {
+                panic!("unexpected calendar create birthday input")
+            }
         }
     }
 
@@ -4180,15 +4214,10 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_calendar_writes_return_server_refusal() {
+    fn supported_calendar_create_prompts_skip_server_refusal() {
         let refusal =
             unsupported_write_response_for_message("Add Rachel's birthday to my calendar");
-        assert_eq!(
-            refusal.as_deref(),
-            Some(
-                "I can view your calendar right now, but I can't create or edit calendar entries yet through Rustyfin AI."
-            )
-        );
+        assert_eq!(refusal, None);
     }
 
     #[test]

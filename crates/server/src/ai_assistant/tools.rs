@@ -399,6 +399,10 @@ pub async fn execute_tool(
         AssistantToolName::CalendarGetEventDetails => {
             calendar_get_event_details(state, context, call).await
         }
+        AssistantToolName::CalendarCreateEvent => calendar_create_event(state, context, call).await,
+        AssistantToolName::CalendarCreateBirthday => {
+            calendar_create_birthday(state, context, call).await
+        }
         AssistantToolName::ChannelsListUnreadActivity => {
             channels_list_unread_activity(state, context, call).await
         }
@@ -476,9 +480,17 @@ fn enforce_tool_policy(
 
     match spec.access_mode {
         ToolAccessMode::ReadOnly => {}
-        ToolAccessMode::Write | ToolAccessMode::DestructiveWrite => {
+        ToolAccessMode::Write => {
+            if context.confirmed_write_tool.as_deref() != Some(spec.name) {
+                return Some(format!(
+                    "{} requires explicit confirmation before Rustyfin AI can run it.",
+                    spec.name
+                ));
+            }
+        }
+        ToolAccessMode::DestructiveWrite => {
             return Some(format!(
-                "{} is not available because assistant writes are disabled.",
+                "{} requires a protected confirmation flow that is not available yet.",
                 spec.name
             ));
         }
@@ -486,12 +498,20 @@ fn enforce_tool_policy(
 
     match spec.confirmation {
         ToolConfirmationPolicy::None => None,
-        ToolConfirmationPolicy::ExplicitUserConfirm | ToolConfirmationPolicy::ProtectedAction => {
-            Some(format!(
-                "{} is blocked until the confirmation flow is implemented.",
-                spec.name
-            ))
+        ToolConfirmationPolicy::ExplicitUserConfirm => {
+            if context.confirmed_write_tool.as_deref() == Some(spec.name) {
+                None
+            } else {
+                Some(format!(
+                    "{} requires explicit confirmation before Rustyfin AI can run it.",
+                    spec.name
+                ))
+            }
         }
+        ToolConfirmationPolicy::ProtectedAction => Some(format!(
+            "{} is blocked until the protected confirmation flow is implemented.",
+            spec.name
+        )),
     }
 }
 
@@ -526,6 +546,24 @@ pub fn build_follow_up_context(
         input_hint.calendar_query = block
             .data
             .get("next_event")
+            .and_then(|event| event.get("title"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    } else if matches!(
+        call.tool,
+        AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday
+    ) {
+        input_hint.calendar_label = Some("the created calendar event".to_string());
+        input_hint.calendar_from_date = block
+            .data
+            .get("event")
+            .and_then(|event| event.get("event_date"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        input_hint.calendar_to_date = input_hint.calendar_from_date.clone();
+        input_hint.calendar_query = block
+            .data
+            .get("event")
             .and_then(|event| event.get("title"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
@@ -1275,6 +1313,224 @@ async fn calendar_get_event_details(
     ))
 }
 
+async fn calendar_create_event(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::CalendarCreateEvent {
+        scope,
+        title,
+        description,
+        event_date,
+    } = &call.input
+    else {
+        return Err("missing calendar event payload".to_string());
+    };
+
+    let title = validate_calendar_title(title)?;
+    let event_date = validate_calendar_date(event_date)?;
+    let owner_user_id = calendar_owner_for_scope(context, scope)?;
+
+    let created = rustfin_db::repo::calendar::create_event(
+        &state.db,
+        &rustfin_db::repo::calendar::NewCalendarEvent {
+            scope: scope.clone(),
+            owner_user_id,
+            title,
+            description: normalize_calendar_optional_text(description.as_deref()),
+            event_date: event_date.format("%F").to_string(),
+            event_type: "event".to_string(),
+            recurrence: "none".to_string(),
+            birthday_year: None,
+            created_by_user_id: context.user_id.clone(),
+        },
+    )
+    .await
+    .map_err(|e| format!("failed to create the calendar event: {e}"))?;
+
+    let summary =
+        verify_created_calendar_event(state, context, &created.id, "event", "none", None).await?;
+
+    Ok((
+        format!("Created calendar event \"{}\"", summary.title),
+        json!({
+            "verified": true,
+            "event": summary,
+        }),
+    ))
+}
+
+async fn calendar_create_birthday(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::CalendarCreateBirthday {
+        scope,
+        title,
+        description,
+        event_date,
+        birthday_year,
+    } = &call.input
+    else {
+        return Err("missing calendar birthday payload".to_string());
+    };
+
+    let title = validate_calendar_title(title)?;
+    let event_date = validate_calendar_date(event_date)?;
+    validate_calendar_birthday_year(*birthday_year)?;
+    if event_date.year() != *birthday_year {
+        return Err("birthday event_date must use the same year as birthday_year".to_string());
+    }
+    let owner_user_id = calendar_owner_for_scope(context, scope)?;
+
+    let created = rustfin_db::repo::calendar::create_event(
+        &state.db,
+        &rustfin_db::repo::calendar::NewCalendarEvent {
+            scope: scope.clone(),
+            owner_user_id,
+            title,
+            description: normalize_calendar_optional_text(description.as_deref()),
+            event_date: event_date.format("%F").to_string(),
+            event_type: "birthday".to_string(),
+            recurrence: "yearly".to_string(),
+            birthday_year: Some(*birthday_year),
+            created_by_user_id: context.user_id.clone(),
+        },
+    )
+    .await
+    .map_err(|e| format!("failed to create the calendar birthday: {e}"))?;
+
+    let summary = verify_created_calendar_event(
+        state,
+        context,
+        &created.id,
+        "birthday",
+        "yearly",
+        Some(*birthday_year),
+    )
+    .await?;
+
+    Ok((
+        format!("Created recurring birthday for \"{}\"", summary.title),
+        json!({
+            "verified": true,
+            "event": summary,
+        }),
+    ))
+}
+
+fn validate_calendar_title(raw: &str) -> Result<String, String> {
+    let title = raw.trim();
+    if title.is_empty() {
+        return Err("calendar title cannot be empty".to_string());
+    }
+    if title.chars().count() > 140 {
+        return Err("calendar title must be 140 characters or fewer".to_string());
+    }
+    Ok(title.to_string())
+}
+
+fn normalize_calendar_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn validate_calendar_date(raw: &str) -> Result<chrono::NaiveDate, String> {
+    chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map_err(|_| "calendar event_date must use YYYY-MM-DD".to_string())
+}
+
+fn validate_calendar_birthday_year(year: i32) -> Result<(), String> {
+    let current_year = Utc::now().year();
+    if !(1900..=current_year).contains(&year) {
+        return Err(format!(
+            "birthday_year must be between 1900 and {current_year}"
+        ));
+    }
+    Ok(())
+}
+
+fn calendar_owner_for_scope(
+    context: &AssistantContext,
+    scope: &str,
+) -> Result<Option<String>, String> {
+    match scope {
+        "personal" => Ok(Some(context.user_id.clone())),
+        "global" if context.is_admin => Ok(None),
+        "global" => Err("only admins can create shared calendar entries".to_string()),
+        _ => Err(format!("unsupported calendar scope \"{scope}\"")),
+    }
+}
+
+async fn verify_created_calendar_event(
+    state: &AppState,
+    context: &AssistantContext,
+    event_id: &str,
+    expected_event_type: &str,
+    expected_recurrence: &str,
+    expected_birthday_year: Option<i32>,
+) -> Result<CalendarEventDetailSummary, String> {
+    let event = rustfin_db::repo::calendar::get_event(&state.db, event_id)
+        .await
+        .map_err(|e| format!("failed to reload the created calendar event: {e}"))?
+        .ok_or_else(|| format!("created calendar event {event_id} is missing"))?;
+
+    let visible_events = rustfin_db::repo::calendar::list_visible_events(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &event.event_date,
+        &event.event_date,
+    )
+    .await
+    .map_err(|e| format!("failed to verify the created calendar event: {e}"))?;
+
+    if !visible_events
+        .iter()
+        .any(|candidate| candidate.id == event_id)
+    {
+        return Err(
+            "Rustyfin created the calendar entry, but it could not verify that the entry is visible through the normal calendar read path."
+                .to_string(),
+        );
+    }
+
+    if event.event_type != expected_event_type {
+        return Err(format!(
+            "calendar verification failed because event_type was {} instead of {}",
+            event.event_type, expected_event_type
+        ));
+    }
+    if event.recurrence != expected_recurrence {
+        return Err(format!(
+            "calendar verification failed because recurrence was {} instead of {}",
+            event.recurrence, expected_recurrence
+        ));
+    }
+    if event.birthday_year != expected_birthday_year {
+        return Err("calendar verification failed because birthday_year did not match".to_string());
+    }
+
+    let is_birthday = event.event_type == "birthday";
+    Ok(CalendarEventDetailSummary {
+        id: event.id,
+        title: event.title,
+        description: event.description,
+        event_date: event.event_date.clone(),
+        scope: event.scope,
+        event_type: event.event_type,
+        recurrence: event.recurrence,
+        owner_username: event.owner_username,
+        created_by_username: event.created_by_username,
+        birthday_year: event.birthday_year,
+        month_day_display: is_birthday.then(|| birthday_month_day_display(&event.event_date)),
+        next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&event.event_date)),
+    })
+}
+
 async fn channels_list_unread_activity(
     state: &AppState,
     context: &AssistantContext,
@@ -2000,6 +2256,12 @@ fn calendar_window_for_call(
             label,
             ..
         } => (from_date.clone(), to_date.clone(), label.clone()),
+        AssistantToolInput::CalendarCreateEvent { event_date, .. }
+        | AssistantToolInput::CalendarCreateBirthday { event_date, .. } => (
+            event_date.clone(),
+            event_date.clone(),
+            "the created calendar event".to_string(),
+        ),
         AssistantToolInput::None
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
@@ -2790,6 +3052,18 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             calendar_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::CalendarCreateEvent {
+            event_date, title, ..
+        }
+        | AssistantToolInput::CalendarCreateBirthday {
+            event_date, title, ..
+        } => AssistantFollowUpInputHint {
+            calendar_label: Some("the created calendar event".to_string()),
+            calendar_from_date: Some(event_date.clone()),
+            calendar_to_date: Some(event_date.clone()),
+            calendar_query: Some(title.clone()),
+            ..AssistantFollowUpInputHint::default()
+        },
         AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
             channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -2939,6 +3213,30 @@ fn follow_up_entities(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         }],
+        AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => block
+            .data
+            .get("event")
+            .map(|event| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
+                        "{} ({})",
+                        event
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(&block.label),
+                        event
+                            .get("event_date")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    identifier: event
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                }]
+            })
+            .unwrap_or_default(),
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
         AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
             ordinal: 1,
@@ -3269,6 +3567,7 @@ mod tests {
             username: "tester".to_string(),
             role: role.to_string(),
             is_admin: role == "admin",
+            confirmed_write_tool: None,
         }
     }
 
@@ -3313,7 +3612,7 @@ mod tests {
     }
 
     #[test]
-    fn enforce_tool_policy_denies_write_tools() {
+    fn enforce_tool_policy_requires_explicit_confirmation_for_write_tools() {
         let context = assistant_context("admin");
         let spec = tool_spec(
             ToolAccessMode::Write,
@@ -3321,7 +3620,18 @@ mod tests {
             ToolConfirmationPolicy::None,
         );
         let message = enforce_tool_policy(&context, spec).expect("policy should reject");
-        assert!(message.contains("assistant writes are disabled"));
+        assert!(message.contains("requires explicit confirmation"));
+    }
+
+    #[test]
+    fn enforce_tool_policy_allows_confirmed_write_tools() {
+        let context = assistant_context("admin").with_confirmed_write_tool("test_tool");
+        let spec = tool_spec(
+            ToolAccessMode::Write,
+            ToolRoleRequirement::AdminOnly,
+            ToolConfirmationPolicy::None,
+        );
+        assert_eq!(enforce_tool_policy(&context, spec), None);
     }
 
     #[test]

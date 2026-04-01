@@ -1,14 +1,19 @@
+use serde::{Deserialize, Serialize};
+
 use super::types::{
     AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier, ToolRoleRequirement,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AssistantToolName {
     AccountGetProfileSummary,
     CalendarListEvents,
     CalendarGetNextEvent,
     CalendarUpcomingBirthdays,
     CalendarGetEventDetails,
+    CalendarCreateEvent,
+    CalendarCreateBirthday,
     ChannelsListUnreadActivity,
     ChannelsGetTranscriptSummary,
     DownloadsListAvailableArtifacts,
@@ -42,6 +47,8 @@ impl AssistantToolName {
             Self::CalendarGetNextEvent,
             Self::CalendarUpcomingBirthdays,
             Self::CalendarGetEventDetails,
+            Self::CalendarCreateEvent,
+            Self::CalendarCreateBirthday,
             Self::ChannelsListUnreadActivity,
             Self::ChannelsGetTranscriptSummary,
             Self::DownloadsListAvailableArtifacts,
@@ -75,6 +82,8 @@ impl AssistantToolName {
             "calendar_get_next_event" => Some(Self::CalendarGetNextEvent),
             "calendar_upcoming_birthdays" => Some(Self::CalendarUpcomingBirthdays),
             "calendar_get_event_details" => Some(Self::CalendarGetEventDetails),
+            "calendar_create_event" => Some(Self::CalendarCreateEvent),
+            "calendar_create_birthday" => Some(Self::CalendarCreateBirthday),
             "channels_list_unread_activity" => Some(Self::ChannelsListUnreadActivity),
             "channels_get_transcript_summary" => Some(Self::ChannelsGetTranscriptSummary),
             "downloads_list_available_artifacts" => Some(Self::DownloadsListAvailableArtifacts),
@@ -109,6 +118,8 @@ impl AssistantToolName {
             Self::CalendarGetNextEvent => "calendar_get_next_event",
             Self::CalendarUpcomingBirthdays => "calendar_upcoming_birthdays",
             Self::CalendarGetEventDetails => "calendar_get_event_details",
+            Self::CalendarCreateEvent => "calendar_create_event",
+            Self::CalendarCreateBirthday => "calendar_create_birthday",
             Self::ChannelsListUnreadActivity => "channels_list_unread_activity",
             Self::ChannelsGetTranscriptSummary => "channels_get_transcript_summary",
             Self::DownloadsListAvailableArtifacts => "downloads_list_available_artifacts",
@@ -185,6 +196,26 @@ impl AssistantToolName {
                 required_role: ToolRoleRequirement::AnyAuthenticatedUser,
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::CalendarCreateEvent => AssistantToolSpec {
+                name: "calendar_create_event",
+                summary: "Create a one-off calendar event after explicit user confirmation.",
+                access_mode: ToolAccessMode::Write,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::ExplicitUserConfirm,
+                timeout_ms: 5_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::CalendarCreateBirthday => AssistantToolSpec {
+                name: "calendar_create_birthday",
+                summary: "Create a recurring birthday after explicit user confirmation.",
+                access_mode: ToolAccessMode::Write,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::ExplicitUserConfirm,
+                timeout_ms: 5_000,
                 max_result_bytes: 8 * 1024,
             },
             Self::ChannelsListUnreadActivity => AssistantToolSpec {

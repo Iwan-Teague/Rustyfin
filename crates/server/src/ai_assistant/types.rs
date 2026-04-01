@@ -6,6 +6,8 @@ pub struct AssistantChatRequest {
     pub model: String,
     pub message: String,
     #[serde(default)]
+    pub confirmation_token: Option<String>,
+    #[serde(default)]
     pub history: Vec<AssistantHistoryMessage>,
 }
 
@@ -19,7 +21,8 @@ pub struct AssistantHistoryMessage {
     pub follow_up_contexts: Vec<AssistantFollowUpContext>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssistantToolInput {
     None,
     CalendarWindow {
@@ -27,6 +30,19 @@ pub enum AssistantToolInput {
         to_date: String,
         label: String,
         query: Option<String>,
+    },
+    CalendarCreateEvent {
+        scope: String,
+        title: String,
+        description: Option<String>,
+        event_date: String,
+    },
+    CalendarCreateBirthday {
+        scope: String,
+        title: String,
+        description: Option<String>,
+        event_date: String,
+        birthday_year: i32,
     },
     ChannelsFilter {
         query: Option<String>,
@@ -61,7 +77,7 @@ pub enum AssistantToolInput {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedToolCall {
     pub tool: super::registry::AssistantToolName,
     pub input: AssistantToolInput,
@@ -192,6 +208,66 @@ pub struct AssistantFollowUpContext {
     pub input_hint: AssistantFollowUpInputHint,
     #[serde(default)]
     pub entities: Vec<AssistantFollowUpEntity>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantPendingActionKind {
+    CalendarCreateEvent,
+    CalendarCreateBirthday,
+}
+
+impl AssistantPendingActionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CalendarCreateEvent => "calendar_create_event",
+            Self::CalendarCreateBirthday => "calendar_create_birthday",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantPendingActionStatus {
+    Pending,
+    Confirmed,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantPendingAction {
+    pub token: String,
+    pub action_kind: AssistantPendingActionKind,
+    pub summary: String,
+    pub expires_ts: i64,
+    pub status: AssistantPendingActionStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantConfirmationPayload {
+    pub action_kind: AssistantPendingActionKind,
+    pub call: PlannedToolCall,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantConfirmationRequiredEvent {
+    pub token: String,
+    pub action_kind: AssistantPendingActionKind,
+    pub summary: String,
+    pub expires_ts: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantRuntimePhase {
+    Idle,
+    LoadingModel,
+    Planning,
+    Grounding,
+    Generating,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

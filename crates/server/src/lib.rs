@@ -13,7 +13,11 @@ pub mod ai_audit;
 pub mod ai_conversations;
 #[cfg(feature = "ai")]
 pub mod ai_enabled;
+#[cfg(feature = "ai")]
+pub mod ai_runtime;
 pub mod ai_storage;
+#[cfg(feature = "ai")]
+pub mod ai_transcribe;
 pub mod artwork;
 pub mod audit_log;
 pub mod auth;

@@ -26,6 +26,7 @@ pub struct AiConversationTurnRow {
     pub grounding_sources_json: String,
     pub activity_trace_json: String,
     pub stats_json: Option<String>,
+    pub pending_action_json: Option<String>,
     pub trace_id: Option<String>,
     pub created_ts: i64,
 }
@@ -46,6 +47,7 @@ pub struct CreateAiConversationTurnParams<'a> {
     pub grounding_sources_json: &'a str,
     pub activity_trace_json: &'a str,
     pub stats_json: Option<&'a str>,
+    pub pending_action_json: Option<&'a str>,
     pub trace_id: Option<&'a str>,
 }
 
@@ -99,6 +101,7 @@ fn map_turn_row(
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
         i64,
     ),
 ) -> AiConversationTurnRow {
@@ -115,6 +118,7 @@ fn map_turn_row(
         grounding_sources_json,
         activity_trace_json,
         stats_json,
+        pending_action_json,
         trace_id,
         created_ts,
     ) = row;
@@ -132,6 +136,7 @@ fn map_turn_row(
         grounding_sources_json,
         activity_trace_json,
         stats_json,
+        pending_action_json,
         trace_id,
         created_ts,
     }
@@ -330,11 +335,12 @@ pub async fn list_turns_for_conversation(
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
         i64,
     )> = sqlx::query_as(
         "SELECT t.id, t.conversation_id, t.user_id, t.turn_index, t.role, t.content, t.model_name,
                 t.grounding_tools_json, t.follow_up_contexts_json, t.grounding_sources_json,
-                t.activity_trace_json, t.stats_json, t.trace_id, t.created_ts
+                t.activity_trace_json, t.stats_json, t.pending_action_json, t.trace_id, t.created_ts
          FROM ai_conversation_turn t
          INNER JOIN ai_conversation c ON c.id = t.conversation_id
          WHERE t.conversation_id = $1 AND c.user_id = $2
@@ -369,11 +375,11 @@ pub async fn create_turn(
         "INSERT INTO ai_conversation_turn (
             id, conversation_id, user_id, turn_index, role, content, model_name,
             grounding_tools_json, follow_up_contexts_json, grounding_sources_json,
-            activity_trace_json, stats_json, trace_id, created_ts
+            activity_trace_json, stats_json, pending_action_json, trace_id, created_ts
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10,
-            $11, $12, $13, $14
+            $11, $12, $13, $14, $15
          )",
     )
     .bind(&id)
@@ -388,6 +394,7 @@ pub async fn create_turn(
     .bind(params.grounding_sources_json)
     .bind(params.activity_trace_json)
     .bind(params.stats_json)
+    .bind(params.pending_action_json)
     .bind(params.trace_id)
     .bind(now)
     .execute(&mut *tx)
@@ -408,7 +415,35 @@ pub async fn create_turn(
         grounding_sources_json: params.grounding_sources_json.to_string(),
         activity_trace_json: params.activity_trace_json.to_string(),
         stats_json: params.stats_json.map(str::to_string),
+        pending_action_json: params.pending_action_json.map(str::to_string),
         trace_id: params.trace_id.map(str::to_string),
         created_ts: now,
     })
+}
+
+pub async fn update_pending_action_json_for_token(
+    pool: &DbPool,
+    conversation_id: &str,
+    user_id: &str,
+    token: &str,
+    pending_action_json: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE ai_conversation_turn t
+         SET pending_action_json = $1
+         FROM ai_conversation c
+         WHERE t.conversation_id = c.id
+           AND c.id = $2
+           AND c.user_id = $3
+           AND t.pending_action_json IS NOT NULL
+           AND COALESCE((t.pending_action_json::jsonb ->> 'token'), '') = $4",
+    )
+    .bind(pending_action_json)
+    .bind(conversation_id)
+    .bind(user_id)
+    .bind(token)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
