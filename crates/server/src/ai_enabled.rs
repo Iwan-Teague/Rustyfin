@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::time::Instant;
 
 use async_stream::stream;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -12,11 +12,16 @@ use serde::Serialize;
 use serde_json::json;
 use tracing::{info, warn};
 
+use crate::ai_assistant::confirmation::{
+    CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message,
+};
 use crate::ai_assistant::context::AssistantContext;
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
 use crate::ai_assistant::types::{
-    AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingSource, AssistantPhase,
-    AssistantPhaseEvent, AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
+    AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
+    AssistantFollowUpContext, AssistantGroundingSource, AssistantPendingAction,
+    AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent, AssistantRuntimePhase,
+    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
     AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
 };
 use crate::ai_assistant::{
@@ -36,6 +41,7 @@ use crate::state::AppState;
 pub struct EngineState {
     pub loaded_model: Option<String>,
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
+    pub active_phase: AssistantRuntimePhase,
 }
 
 impl Default for EngineState {
@@ -43,6 +49,7 @@ impl Default for EngineState {
         Self {
             loaded_model: None,
             engine: None,
+            active_phase: AssistantRuntimePhase::Idle,
         }
     }
 }
@@ -55,6 +62,13 @@ struct ConversationPersistence {
 pub fn ai_router() -> Router<AppState> {
     Router::new()
         .route("/models", get(list_models))
+        .route("/runtime", get(crate::ai_runtime::get_ai_runtime))
+        .route(
+            "/transcribe",
+            post(crate::ai_transcribe::transcribe_audio).layer(DefaultBodyLimit::max(
+                crate::ai_transcribe::MAX_AI_TRANSCRIBE_BYTES,
+            )),
+        )
         .route("/chat", post(chat))
         .route(
             "/conversations",
@@ -131,6 +145,7 @@ async fn stream_conversation_message(
         AssistantChatRequest {
             model: req.model,
             message: req.message,
+            confirmation_token: req.confirmation_token,
             history,
         },
         Some(ConversationPersistence { conversation_id }),
@@ -168,6 +183,7 @@ fn stream_chat_response(
         );
 
         let planning_started_ts_ms = now_ts_ms();
+        set_engine_phase(&state, AssistantRuntimePhase::Planning).await;
         start_phase(
             &mut activity_trace,
             AssistantPhase::Planning,
@@ -184,11 +200,12 @@ fn stream_chat_response(
             },
         ));
 
-        if let Some(message) = unsupported_write_response_for_message(&req.message) {
+        if let Some(confirmation_token) = req.confirmation_token.as_deref() {
+            let planning_finished_ts_ms = now_ts_ms();
             finish_phase(
                 &mut activity_trace,
                 AssistantPhase::Planning,
-                now_ts_ms(),
+                planning_finished_ts_ms,
             );
             yield Ok::<Event, Infallible>(sse_json_event(
                 "phase",
@@ -196,7 +213,326 @@ fn stream_chat_response(
                     phase: AssistantPhase::Planning,
                     label: "Thinking...".to_string(),
                     started_ts_ms: planning_started_ts_ms,
-                    finished_ts_ms: Some(now_ts_ms()),
+                    finished_ts_ms: Some(planning_finished_ts_ms),
+                },
+            ));
+
+            let payload = match load_confirmation_payload(&state, &user, confirmation_token).await {
+                Ok(payload) => payload,
+                Err(message) => {
+                    assistant_content = message;
+                    stats = Some(build_turn_stats(
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        turn_started.elapsed().as_millis() as u64,
+                        0,
+                        0,
+                        0.0,
+                    ));
+                    persist_chat_audit_event(
+                        &state,
+                        &user,
+                        &req,
+                        &trace_id,
+                        AiAssistantAuditResponseKind::Clarification,
+                        &[],
+                        &[],
+                        &[],
+                        None,
+                    )
+                    .await;
+                    if let Some(persistence) = &persistence {
+                        let _ = crate::ai_conversations::persist_assistant_turn(
+                            &state,
+                            &user.user_id,
+                            &persistence.conversation_id,
+                            &assistant_content,
+                            &model_name,
+                            &[],
+                            &[],
+                            &[],
+                            &activity_trace,
+                            stats.as_ref(),
+                            None,
+                            Some(&trace_id),
+                        )
+                        .await;
+                    }
+                    chat_metrics.mark_success();
+                    set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+                    yield Ok::<Event, Infallible>(
+                        Event::default()
+                            .event("token")
+                            .data(json!({ "text": assistant_content }).to_string()),
+                    );
+                    yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+                    yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+                    return;
+                }
+            };
+
+            let confirmed_context = AssistantContext::new(&user, trace_id.clone())
+                .with_confirmed_write_tool(payload.call.tool.as_str());
+            let planned_tools = vec![payload.call.clone()];
+            set_engine_phase(&state, AssistantRuntimePhase::Grounding).await;
+            let tool_id = "tool-1".to_string();
+            let running_label = status_label_for_tool_call(&payload.call);
+            let tool_started_ts_ms = now_ts_ms();
+            let running_event = AssistantToolActivityEvent {
+                id: tool_id.clone(),
+                tool: payload.call.tool.as_str().to_string(),
+                label: running_label.clone(),
+                state: AssistantToolActivityState::Running,
+                started_ts_ms: tool_started_ts_ms,
+                finished_ts_ms: None,
+            };
+            start_tool(&mut activity_trace, &running_event);
+            yield Ok::<Event, Infallible>(sse_json_event("tool", &running_event));
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "status",
+                &AssistantStatusEvent {
+                    tool: payload.call.tool.as_str(),
+                    label: running_label,
+                    kind: AssistantStatusKind::Checking,
+                },
+            ));
+
+            let tool_started = Instant::now();
+            let block = execute_tool(&state, &confirmed_context, &payload.call).await;
+            tool_duration_ms = tool_started.elapsed().as_millis() as u64;
+            let source = source_from_block(payload.call.tool, &block);
+            let follow_up_context = build_follow_up_context(&payload.call, &block);
+            grounding_blocks.push(block.clone());
+            grounding_sources.push(source.clone());
+            follow_up_contexts.push(follow_up_context);
+
+            let tool_state = if block.status == "error" {
+                AssistantToolActivityState::Error
+            } else {
+                AssistantToolActivityState::Complete
+            };
+            let finished_ts_ms = now_ts_ms();
+            let finished_event = AssistantToolActivityEvent {
+                id: tool_id,
+                tool: payload.call.tool.as_str().to_string(),
+                label: block.label.clone(),
+                state: tool_state,
+                started_ts_ms: tool_started_ts_ms,
+                finished_ts_ms: Some(finished_ts_ms),
+            };
+            finish_tool(&mut activity_trace, &finished_event);
+            yield Ok::<Event, Infallible>(sse_json_event("tool", &finished_event));
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "status",
+                &AssistantStatusEvent {
+                    tool: payload.call.tool.as_str(),
+                    label: block.label.clone(),
+                    kind: match tool_state {
+                        AssistantToolActivityState::Running => AssistantStatusKind::Checking,
+                        AssistantToolActivityState::Complete => AssistantStatusKind::Complete,
+                        AssistantToolActivityState::Error => AssistantStatusKind::Error,
+                    },
+                },
+            ));
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("grounding")
+                    .data(json!({
+                        "sources": &grounding_sources,
+                        "follow_up_contexts": &follow_up_contexts,
+                    }).to_string()),
+            );
+
+            if block.status == "ok" {
+                if let Err(message) =
+                    consume_confirmation_payload(&state, &user, confirmation_token, &payload).await
+                {
+                    assistant_content = message;
+                } else {
+                    assistant_content = assistant_text_for_confirmed_action(&block);
+                }
+            } else {
+                assistant_content = assistant_text_for_confirmed_action(&block);
+            }
+
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                0,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                0.0,
+            ));
+
+            if let Some(persistence) = &persistence {
+                let grounding_tool_names = planned_tools
+                    .iter()
+                    .map(|call| call.tool.as_str().to_string())
+                    .collect::<Vec<_>>();
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tool_names,
+                    &follow_up_contexts,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(result) = pending_action_request_for_message(
+            &user,
+            &req.message,
+            persistence.as_ref().map(|value| value.conversation_id.as_str()),
+        ) {
+            let planning_finished_ts_ms = now_ts_ms();
+            finish_phase(
+                &mut activity_trace,
+                AssistantPhase::Planning,
+                planning_finished_ts_ms,
+            );
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "phase",
+                &AssistantPhaseEvent {
+                    phase: AssistantPhase::Planning,
+                    label: "Thinking...".to_string(),
+                    started_ts_ms: planning_started_ts_ms,
+                    finished_ts_ms: Some(planning_finished_ts_ms),
+                },
+            ));
+
+            let mut pending_action: Option<AssistantPendingAction> = None;
+            assistant_content = match result {
+                Ok(parsed) => {
+                    let expires_ts = chrono::Utc::now().timestamp() + CONFIRMATION_TOKEN_TTL_SECS;
+                    match store_confirmation_payload(&state, &user, &parsed.payload, expires_ts).await {
+                        Ok(token) => {
+                            let event = AssistantConfirmationRequiredEvent {
+                                token: token.id.clone(),
+                                action_kind: parsed.payload.action_kind,
+                                summary: parsed.payload.summary.clone(),
+                                expires_ts: token.expires_ts,
+                            };
+                            pending_action = Some(AssistantPendingAction {
+                                token: token.id.clone(),
+                                action_kind: parsed.payload.action_kind,
+                                summary: parsed.payload.summary.clone(),
+                                expires_ts: token.expires_ts,
+                                status: AssistantPendingActionStatus::Pending,
+                            });
+                            yield Ok::<Event, Infallible>(sse_json_event(
+                                "confirmation_required",
+                                &event,
+                            ));
+                            format!("{} Reply with \"Confirm\" to continue.", parsed.payload.summary)
+                        }
+                        Err(message) => message,
+                    }
+                }
+                Err(message) => message,
+            };
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                0,
+                0,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                0.0,
+            ));
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Clarification,
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .await;
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &[],
+                    &[],
+                    &[],
+                    &activity_trace,
+                    stats.as_ref(),
+                    pending_action.as_ref(),
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(message) = unsupported_write_response_for_message(&req.message) {
+            let planning_finished_ts_ms = now_ts_ms();
+            finish_phase(
+                &mut activity_trace,
+                AssistantPhase::Planning,
+                planning_finished_ts_ms,
+            );
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "phase",
+                &AssistantPhaseEvent {
+                    phase: AssistantPhase::Planning,
+                    label: "Thinking...".to_string(),
+                    started_ts_ms: planning_started_ts_ms,
+                    finished_ts_ms: Some(planning_finished_ts_ms),
                 },
             ));
             assistant_content = message;
@@ -235,11 +571,13 @@ fn stream_chat_response(
                     &[],
                     &activity_trace,
                     stats.as_ref(),
+                    None,
                     Some(&trace_id),
                 )
                 .await;
             }
             chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
                     .event("token")
@@ -251,10 +589,11 @@ fn stream_chat_response(
         }
 
         if let Some(message) = immediate_response_for_message(&req.message) {
+            let planning_finished_ts_ms = now_ts_ms();
             finish_phase(
                 &mut activity_trace,
                 AssistantPhase::Planning,
-                now_ts_ms(),
+                planning_finished_ts_ms,
             );
             yield Ok::<Event, Infallible>(sse_json_event(
                 "phase",
@@ -262,7 +601,7 @@ fn stream_chat_response(
                     phase: AssistantPhase::Planning,
                     label: "Thinking...".to_string(),
                     started_ts_ms: planning_started_ts_ms,
-                    finished_ts_ms: Some(now_ts_ms()),
+                    finished_ts_ms: Some(planning_finished_ts_ms),
                 },
             ));
             assistant_content = message;
@@ -301,11 +640,13 @@ fn stream_chat_response(
                     &[],
                     &activity_trace,
                     stats.as_ref(),
+                    None,
                     Some(&trace_id),
                 )
                 .await;
             }
             chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
                     .event("token")
@@ -338,6 +679,7 @@ fn stream_chat_response(
                         .event("error")
                         .data(json!({ "message": error_message }).to_string()),
                 );
+                set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 return;
             }
         };
@@ -363,6 +705,7 @@ fn stream_chat_response(
                         .event("error")
                         .data(json!({ "message": error_message }).to_string()),
                 );
+                set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 warn!(
                     trace_id = %trace_id,
                     user_id = %user.user_id,
@@ -410,6 +753,7 @@ fn stream_chat_response(
 
         let context = AssistantContext::new(&user, trace_id.clone());
         if !planned_tools.is_empty() {
+            set_engine_phase(&state, AssistantRuntimePhase::Grounding).await;
             let scheduled_tools = planned_tools
                 .iter()
                 .cloned()
@@ -524,6 +868,7 @@ fn stream_chat_response(
 
         let generation_phase_started_ms = now_ts_ms();
         let generation_started = Instant::now();
+        set_engine_phase(&state, AssistantRuntimePhase::Generating).await;
         start_phase(
             &mut activity_trace,
             AssistantPhase::Generating,
@@ -637,6 +982,7 @@ fn stream_chat_response(
                             &grounding_sources,
                             &activity_trace,
                             stats.as_ref(),
+                            None,
                             Some(&trace_id),
                         )
                         .await;
@@ -655,6 +1001,7 @@ fn stream_chat_response(
                     )
                     .await;
                     chat_metrics.mark_success();
+                    set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                     info!(
                         trace_id = %trace_id,
                         user_id = %user.user_id,
@@ -708,6 +1055,7 @@ fn stream_chat_response(
                             .event("error")
                             .data(json!({ "message": error_message }).to_string()),
                     );
+                    set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 }
             }
         }
@@ -727,6 +1075,7 @@ async fn load_engine_for_chat(
     let mut guard = state.engine.lock().await;
     let queue_duration_ms = queue_started.elapsed().as_millis() as u64;
     let needs_reload = guard.engine.is_none() || guard.loaded_model.as_deref() != Some(model_name);
+    guard.active_phase = AssistantRuntimePhase::LoadingModel;
 
     let load_started = Instant::now();
     if needs_reload {
@@ -744,7 +1093,164 @@ async fn load_engine_for_chat(
         .engine
         .clone()
         .ok_or_else(|| "no inference engine loaded".to_string())?;
+    guard.active_phase = AssistantRuntimePhase::Idle;
     Ok((engine, queue_duration_ms, model_load_duration_ms))
+}
+
+async fn set_engine_phase(state: &AppState, phase: AssistantRuntimePhase) {
+    let mut guard = state.engine.lock().await;
+    guard.active_phase = phase;
+}
+
+async fn store_confirmation_payload(
+    state: &AppState,
+    user: &AuthUser,
+    payload: &AssistantConfirmationPayload,
+    expires_ts: i64,
+) -> Result<rustfin_db::repo::ai_assistant_confirmation::AiAssistantConfirmationTokenRow, String> {
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|e| format!("failed to serialize confirmation payload: {e}"))?;
+    rustfin_db::repo::ai_assistant_confirmation::create_confirmation_token(
+        &state.db,
+        rustfin_db::repo::ai_assistant_confirmation::CreateAiAssistantConfirmationTokenParams {
+            user_id: &user.user_id,
+            action_kind: payload.action_kind.as_str(),
+            payload_json: &payload_json,
+            expires_ts,
+        },
+    )
+    .await
+    .map_err(|e| format!("failed to store confirmation token: {e}"))
+}
+
+async fn load_confirmation_payload(
+    state: &AppState,
+    user: &AuthUser,
+    token: &str,
+) -> Result<AssistantConfirmationPayload, String> {
+    let row = rustfin_db::repo::ai_assistant_confirmation::get_confirmation_token_for_user(
+        &state.db,
+        token,
+        &user.user_id,
+    )
+    .await
+    .map_err(|e| format!("failed to load confirmation token: {e}"))?
+    .ok_or_else(|| "That confirmation token was not found for this account.".to_string())?;
+
+    if row.consumed_ts.is_some() {
+        return Err("That confirmation token was already used.".to_string());
+    }
+    if row.expires_ts < chrono::Utc::now().timestamp() {
+        return Err("That confirmation token has expired. Ask Rustyfin AI to prepare the calendar action again.".to_string());
+    }
+
+    serde_json::from_str::<AssistantConfirmationPayload>(&row.payload_json)
+        .map_err(|e| format!("failed to decode confirmation payload: {e}"))
+}
+
+async fn consume_confirmation_payload(
+    state: &AppState,
+    user: &AuthUser,
+    token: &str,
+    payload: &AssistantConfirmationPayload,
+) -> Result<(), String> {
+    let row = rustfin_db::repo::ai_assistant_confirmation::get_confirmation_token_for_user(
+        &state.db,
+        token,
+        &user.user_id,
+    )
+    .await
+    .map_err(|e| format!("failed to reload confirmation token: {e}"))?
+    .ok_or_else(|| "That confirmation token was not found for this account.".to_string())?;
+
+    if row.consumed_ts.is_some() {
+        return Err("That confirmation token was already used.".to_string());
+    }
+    if row.expires_ts < chrono::Utc::now().timestamp() {
+        return Err("That confirmation token has expired. Ask Rustyfin AI to prepare the calendar action again.".to_string());
+    }
+
+    let consumed = rustfin_db::repo::ai_assistant_confirmation::consume_confirmation_token(
+        &state.db,
+        token,
+        &user.user_id,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(|e| format!("failed to consume confirmation token: {e}"))?;
+    if !consumed {
+        return Err("That confirmation token was already used.".to_string());
+    }
+
+    if let Some(conversation_id) = payload.conversation_id.as_deref() {
+        let pending_action = AssistantPendingAction {
+            token: token.to_string(),
+            action_kind: payload.action_kind,
+            summary: payload.summary.clone(),
+            expires_ts: row.expires_ts,
+            status: AssistantPendingActionStatus::Confirmed,
+        };
+        let pending_action_json = serde_json::to_string(&pending_action)
+            .map_err(|e| format!("failed to serialize confirmed pending action: {e}"))?;
+        let _ = rustfin_db::repo::ai_conversations::update_pending_action_json_for_token(
+            &state.db,
+            conversation_id,
+            &user.user_id,
+            token,
+            &pending_action_json,
+        )
+        .await;
+    }
+
+    Ok(())
+}
+
+fn assistant_text_for_confirmed_action(block: &AssistantToolContextBlock) -> String {
+    if block.status != "ok" {
+        return block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Rustyfin AI could not complete that calendar action.")
+            .to_string();
+    }
+
+    let event = block.data.get("event");
+    let title = event
+        .and_then(|value| value.get("title"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&block.label);
+    let event_date = event
+        .and_then(|value| value.get("event_date"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let scope = event
+        .and_then(|value| value.get("scope"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("personal");
+    let event_type = event
+        .and_then(|value| value.get("event_type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("event");
+
+    let human_date = chrono::NaiveDate::parse_from_str(event_date, "%Y-%m-%d")
+        .map(|date| date.format("%B %-d, %Y").to_string())
+        .unwrap_or_else(|_| event_date.to_string());
+    let scope_label = if scope == "global" {
+        "the shared calendar"
+    } else {
+        "your personal calendar"
+    };
+
+    if event_type == "birthday" {
+        return format!(
+            "I created and verified the recurring birthday \"{title}\" on {human_date} in {scope_label}."
+        );
+    }
+
+    format!(
+        "I created and verified the calendar event \"{title}\" on {human_date} in {scope_label}."
+    )
 }
 
 fn sse_json_event<T: Serialize>(event_type: &str, payload: &T) -> Event {
@@ -858,6 +1364,21 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
         } => format!(
             "calendar:{label}:{from_date}->{to_date}:query={}",
             query.as_deref().unwrap_or("*")
+        ),
+        AssistantToolInput::CalendarCreateEvent {
+            scope,
+            title,
+            event_date,
+            ..
+        } => format!("calendar_create_event:scope={scope}:title={title}:date={event_date}"),
+        AssistantToolInput::CalendarCreateBirthday {
+            scope,
+            title,
+            event_date,
+            birthday_year,
+            ..
+        } => format!(
+            "calendar_create_birthday:scope={scope}:title={title}:date={event_date}:birth_year={birthday_year}"
         ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))

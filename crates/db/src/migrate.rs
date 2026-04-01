@@ -167,6 +167,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "044_ai_conversations",
         include_str!("../migrations_pg/044_ai_conversations.sql"),
     ),
+    (
+        "045_ai_assistant_confirmation",
+        include_str!("../migrations_pg/045_ai_assistant_confirmation.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;

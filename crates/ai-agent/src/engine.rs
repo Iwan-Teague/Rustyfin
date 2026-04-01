@@ -112,6 +112,10 @@ impl LlamaEngine {
             }
         }
     }
+
+    pub fn params(&self) -> &LlamaEngineParams {
+        &self.params
+    }
 }
 
 fn run_decode_loop(

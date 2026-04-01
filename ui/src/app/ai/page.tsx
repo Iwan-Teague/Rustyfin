@@ -13,16 +13,20 @@ import {
   type AiConversationSummary,
   type AiConversationTurn,
   type AiModel,
+  type AiPendingAction,
   type AiPhaseEvent,
+  type AiRuntimeResponse,
   type AiStatusUpdate,
   type AiToolActivityEvent,
   type AiTurnStats,
   createConversation,
   deleteConversation,
   fetchModels,
+  fetchAiRuntime,
   getConversation,
   listConversations,
   streamConversationMessage,
+  transcribeAiInput,
   updateConversation,
 } from '@/lib/aiApi';
 import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
@@ -38,6 +42,46 @@ type UiConversationTurn = AiConversationTurn & {
 type UiConversationDetail = Omit<AiConversationDetail, 'messages'> & {
   messages: UiConversationTurn[];
 };
+
+type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'ready' | 'error';
+
+type BrowserSpeechRecognitionResult = {
+  isFinal: boolean;
+  0: {
+    transcript: string;
+  };
+  length: number;
+};
+
+type BrowserSpeechRecognitionEvent = {
+  results: ArrayLike<BrowserSpeechRecognitionResult>;
+};
+
+type BrowserSpeechRecognitionErrorEvent = {
+  error: string;
+};
+
+type BrowserSpeechRecognition = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
+  }
+}
 
 function uid(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -371,7 +415,161 @@ function StatsBar({ stats }: { stats: AiTurnStats }) {
   );
 }
 
-function MessageBubble({ entry }: { entry: UiConversationTurn }) {
+function runtimePhaseLabel(phase: AiRuntimeResponse['turn']['phase']): string {
+  switch (phase) {
+    case 'loading_model':
+      return 'Loading';
+    case 'planning':
+      return 'Planning';
+    case 'grounding':
+      return 'Grounding';
+    case 'generating':
+      return 'Generating';
+    default:
+      return 'Idle';
+  }
+}
+
+function pendingActionExpired(pendingAction: AiPendingAction): boolean {
+  return (
+    pendingAction.status === 'expired' ||
+    (pendingAction.status === 'pending' && pendingAction.expires_ts * 1000 < Date.now())
+  );
+}
+
+function PendingActionCard({
+  pendingAction,
+  busy,
+  disabled,
+  onConfirm,
+}: {
+  pendingAction: AiPendingAction;
+  busy: boolean;
+  disabled: boolean;
+  onConfirm: (pendingAction: AiPendingAction) => void;
+}) {
+  const expired = pendingActionExpired(pendingAction);
+  const confirmed = pendingAction.status === 'confirmed';
+  const statusLabel = confirmed ? 'Confirmed' : expired ? 'Expired' : 'Confirmation required';
+
+  return (
+    <div
+      className="mt-3 rounded-2xl border px-4 py-3"
+      style={{
+        background: 'rgba(255,145,77,0.08)',
+        borderColor: 'rgba(255,145,77,0.22)',
+      }}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="chip chip-accent text-[0.65rem]">{statusLabel}</span>
+        {!confirmed && !expired ? (
+          <button
+            type="button"
+            onClick={() => onConfirm(pendingAction)}
+            disabled={disabled || busy}
+            className="btn-primary rounded-xl px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? 'Confirming…' : 'Confirm'}
+          </button>
+        ) : null}
+      </div>
+      <p className="text-sm leading-relaxed">{pendingAction.summary}</p>
+    </div>
+  );
+}
+
+function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
+  if (!runtime) return null;
+  const primaryGpu = runtime.gpus[0];
+
+  return (
+    <div className="shrink-0 border-b border-[var(--border)] px-3 py-3 sm:px-5">
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+        <div className="panel-soft rounded-2xl px-3 py-3">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Model</p>
+          <p className="mt-1 text-sm font-semibold">
+            {runtime.model.name ?? 'No model loaded'}
+          </p>
+          <p className="mt-1 text-xs muted">
+            {runtime.model.backend} · ctx {runtime.model.context_length} · {runtime.model.n_threads} threads
+          </p>
+        </div>
+        <div className="panel-soft rounded-2xl px-3 py-3">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Turn</p>
+          <p className="mt-1 text-sm font-semibold">
+            {runtimePhaseLabel(runtime.turn.phase)}
+          </p>
+          <p className="mt-1 text-xs muted">
+            {runtime.turn.active_request_count} active · queue {runtime.turn.queue_depth}
+          </p>
+        </div>
+        <div className="panel-soft rounded-2xl px-3 py-3">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Resources</p>
+          <p className="mt-1 text-sm font-semibold">
+            {runtime.resources.process_rss_human ?? '—'}
+          </p>
+          <p className="mt-1 text-xs muted">
+            CPU {runtime.resources.host_cpu_percent ?? '—'}%
+            {' · '}
+            RAM {runtime.resources.host_ram_used_human ?? '—'}
+          </p>
+        </div>
+        <div className="panel-soft rounded-2xl px-3 py-3">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">GPU</p>
+          <p className="mt-1 text-sm font-semibold">
+            {primaryGpu?.name ?? 'No GPU telemetry'}
+          </p>
+          <p className="mt-1 text-xs muted">
+            {primaryGpu
+              ? `${primaryGpu.utilization_percent ?? '—'}% · ${primaryGpu.vram_used_human ?? '—'} / ${primaryGpu.vram_total_human ?? '—'}`
+              : 'CPU mode or unavailable'}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function collectBrowserTranscript(event: BrowserSpeechRecognitionEvent): string {
+  const transcripts: string[] = [];
+  for (let index = 0; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const transcript = result?.[0]?.transcript?.trim();
+    if (transcript) {
+      transcripts.push(transcript);
+    }
+  }
+  return transcripts.join(' ').trim();
+}
+
+function preferredRecorderMimeType(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return undefined;
+  }
+  for (const mimeType of [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ]) {
+    if (MediaRecorder.isTypeSupported(mimeType)) {
+      return mimeType;
+    }
+  }
+  return undefined;
+}
+
+function MessageBubble({
+  entry,
+  onConfirmPendingAction,
+  confirmingToken,
+  interactionDisabled,
+}: {
+  entry: UiConversationTurn;
+  onConfirmPendingAction: (pendingAction: AiPendingAction) => void;
+  confirmingToken: string | null;
+  interactionDisabled: boolean;
+}) {
   const { thinking, content } = parseContent(entry.content);
 
   if (entry.role === 'user') {
@@ -421,6 +619,15 @@ function MessageBubble({ entry }: { entry: UiConversationTurn }) {
         </div>
 
         {entry.stats ? <StatsBar stats={entry.stats} /> : null}
+
+        {entry.pending_action ? (
+          <PendingActionCard
+            pendingAction={entry.pending_action}
+            busy={confirmingToken === entry.pending_action.token}
+            disabled={interactionDisabled}
+            onConfirm={onConfirmPendingAction}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -636,6 +843,14 @@ export default function AiPage() {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
+  const [confirmingToken, setConfirmingToken] = useState<string | null>(null);
+
+  const [runtime, setRuntime] = useState<AiRuntimeResponse | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -645,6 +860,10 @@ export default function AiPage() {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaChunksRef = useRef<Blob[]>([]);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -706,6 +925,16 @@ export default function AiPage() {
           'Failed to connect to the Rustyfin backend. Check that the native runtime is online.',
         ),
       );
+    }
+  }, []);
+
+  const loadRuntime = useCallback(async () => {
+    try {
+      const nextRuntime = await fetchAiRuntime();
+      setRuntime(nextRuntime);
+      setRuntimeError(null);
+    } catch (error) {
+      setRuntimeError(clientErrorMessage(error, 'Failed to load AI runtime status.'));
     }
   }, []);
 
@@ -771,7 +1000,17 @@ export default function AiPage() {
     if (!me) return;
     void loadModels();
     void loadConversationList();
-  }, [loadConversationList, loadModels, me]);
+    void loadRuntime();
+  }, [loadConversationList, loadModels, loadRuntime, me]);
+
+  useEffect(() => {
+    if (!me || inferenceAvailable !== true || serviceUnavailable) return;
+    const intervalMs = isStreaming ? 2000 : 10000;
+    const intervalId = window.setInterval(() => {
+      void loadRuntime();
+    }, intervalMs);
+    return () => window.clearInterval(intervalId);
+  }, [inferenceAvailable, isStreaming, loadRuntime, me, serviceUnavailable]);
 
   useEffect(() => {
     if (!me || !activeConversationId) return;
@@ -802,6 +1041,11 @@ export default function AiPage() {
   useEffect(() => {
     return () => {
       stopRef.current?.();
+      recognitionRef.current?.abort();
+      if (mediaRecorderRef.current?.state && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -838,8 +1082,41 @@ export default function AiPage() {
     [updateAssistantTurn],
   );
 
+  const applyVoiceTranscript = useCallback(
+    (transcript: string) => {
+      const next = transcript.trim();
+      if (!next) {
+        setVoiceState('error');
+        setVoiceError('Rustyfin could not detect any speech in that recording.');
+        return;
+      }
+      setInput(next);
+      setVoiceState('ready');
+      setVoiceError(null);
+      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
+      requestAnimationFrame(() => {
+        focusComposer();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
+    },
+    [focusComposer],
+  );
+
+  const releaseVoiceCapture = useCallback(() => {
+    mediaRecorderRef.current = null;
+    mediaChunksRef.current = [];
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    mediaStreamRef.current = null;
+  }, []);
+
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(event.target.value);
+    if (voiceState === 'ready') {
+      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
+    }
     event.target.style.height = 'auto';
     event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
   };
@@ -972,8 +1249,134 @@ export default function AiPage() {
     }
   }, [activeConversationId, conversations, deleteTarget]);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  const startVoiceInput = useCallback(async () => {
+    if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
+      return;
+    }
+
+    setVoiceError(null);
+    setVoiceNotice(null);
+
+    const SpeechRecognitionCtor =
+      typeof window !== 'undefined'
+        ? window.SpeechRecognition ?? window.webkitSpeechRecognition
+        : undefined;
+
+    if (SpeechRecognitionCtor) {
+      let latestTranscript = '';
+      const recognition = new SpeechRecognitionCtor();
+      recognitionRef.current = recognition;
+      recognition.lang = 'en-US';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event) => {
+        latestTranscript = collectBrowserTranscript(event);
+        if (latestTranscript) {
+          setInput(latestTranscript);
+          requestAnimationFrame(() => {
+            if (textareaRef.current) {
+              textareaRef.current.style.height = 'auto';
+              textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+            }
+          });
+        }
+      };
+      recognition.onerror = (event) => {
+        recognitionRef.current = null;
+        setVoiceState('error');
+        setVoiceError(
+          event.error === 'not-allowed'
+            ? 'Microphone permission was denied.'
+            : 'Browser voice recognition failed.',
+        );
+      };
+      recognition.onend = () => {
+        recognitionRef.current = null;
+        if (latestTranscript.trim()) {
+          applyVoiceTranscript(latestTranscript);
+          return;
+        }
+        setVoiceState('idle');
+      };
+      setVoiceState('recording');
+      recognition.start();
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceState('error');
+      setVoiceError('This browser does not support AI voice input.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = preferredRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      mediaChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          mediaChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onerror = () => {
+        releaseVoiceCapture();
+        setVoiceState('error');
+        setVoiceError('Audio recording failed.');
+      };
+      recorder.onstop = () => {
+        const chunks = [...mediaChunksRef.current];
+        releaseVoiceCapture();
+        void (async () => {
+          try {
+            setVoiceState('transcribing');
+            const blob = new Blob(chunks, {
+              type: recorder.mimeType || mimeType || 'audio/webm',
+            });
+            const response = await transcribeAiInput(blob);
+            applyVoiceTranscript(response.text);
+          } catch (error) {
+            setVoiceState('error');
+            setVoiceError(
+              clientErrorMessage(error, 'Rustyfin could not transcribe that recording.'),
+            );
+          }
+        })();
+      };
+
+      setVoiceState('recording');
+      recorder.start();
+    } catch (error) {
+      releaseVoiceCapture();
+      setVoiceState('error');
+      setVoiceError(clientErrorMessage(error, 'Failed to access the microphone.'));
+    }
+  }, [applyVoiceTranscript, releaseVoiceCapture, voiceState]);
+
+  const stopVoiceInput = useCallback(() => {
+    if (voiceState !== 'recording') return;
+    setVoiceState('stopping');
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      return;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      return;
+    }
+    setVoiceState('idle');
+  }, [voiceState]);
+
+  const sendMessage = useCallback(async (options?: {
+    text?: string;
+    confirmationToken?: string;
+  }) => {
+    const confirmationToken = options?.confirmationToken;
+    const text = (options?.text ?? input).trim();
     if (!text || !selectedModel || isStreaming) return;
     if (inferenceAvailable !== true || !modelStorageAvailable) return;
     if (activeConversation?.archived) {
@@ -1062,11 +1465,17 @@ export default function AiPage() {
         }),
       );
 
-      setInput('');
-      resetComposerHeight();
+      if (!confirmationToken) {
+        setInput('');
+        resetComposerHeight();
+      }
       setIsStreaming(true);
       setStreamingConversationId(conversationId);
+      setConfirmingToken(confirmationToken ?? null);
       setDrawerOpen(false);
+      setVoiceState('idle');
+      setVoiceError(null);
+      setVoiceNotice(null);
 
       let completed = false;
       let latestAssistantContent = '';
@@ -1075,6 +1484,7 @@ export default function AiPage() {
         conversationId,
         selectedModel,
         text,
+        confirmationToken,
         (event) => {
           if (event.type === 'phase') {
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
@@ -1096,6 +1506,17 @@ export default function AiPage() {
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
               activity_trace: mergeStatusFallback(turn.activity_trace, event.update),
+            }));
+            return;
+          }
+
+          if (event.type === 'confirmation_required') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              pending_action: {
+                ...event.confirmation,
+                status: 'pending',
+              },
             }));
             return;
           }
@@ -1159,7 +1580,9 @@ export default function AiPage() {
           stopRef.current = null;
           setIsStreaming(false);
           setStreamingConversationId(null);
+          setConfirmingToken(null);
           finalizeAssistantTurn(conversationId!, assistantTurnId);
+          void loadRuntime();
 
           if (completed) {
             void loadConversationDetail(conversationId!);
@@ -1181,16 +1604,37 @@ export default function AiPage() {
     input,
     isStreaming,
     loadConversationDetail,
+    loadRuntime,
     modelStorageAvailable,
     resetComposerHeight,
     selectedModel,
     updateAssistantTurn,
   ]);
 
+  const handleConfirmPendingAction = useCallback(
+    async (pendingAction: AiPendingAction) => {
+      if (pendingActionExpired(pendingAction) || pendingAction.status === 'confirmed') {
+        return;
+      }
+      try {
+        await sendMessage({
+          text: 'Confirm',
+          confirmationToken: pendingAction.token,
+        });
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to confirm that calendar action.'),
+        );
+      }
+    },
+    [sendMessage],
+  );
+
   const handleStop = useCallback(() => {
     stopRef.current?.();
     stopRef.current = null;
     setIsStreaming(false);
+    setConfirmingToken(null);
     if (streamingConversationId) {
       setConversationDetails((current) => {
         const conversation = current[streamingConversationId];
@@ -1236,6 +1680,8 @@ export default function AiPage() {
     isStreaming ||
     Boolean(activeConversationId && !activeConversation) ||
     Boolean(activeConversation?.archived);
+  const voiceControlDisabled =
+    composerDisabled || voiceState === 'transcribing' || voiceState === 'stopping';
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
@@ -1381,6 +1827,12 @@ export default function AiPage() {
             </div>
           ) : null}
 
+          {runtimeError ? (
+            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
+              {runtimeError}
+            </div>
+          ) : null}
+
           {streamingElsewhere && streamingConversationId ? (
             <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
               Rustyfin AI is still responding in another chat.
@@ -1392,6 +1844,10 @@ export default function AiPage() {
                 Jump back
               </button>
             </div>
+          ) : null}
+
+          {inferenceAvailable === true && selectedModel ? (
+            <RuntimePanel runtime={runtime} />
           ) : null}
 
           <div className="min-h-0 flex-1 overflow-hidden">
@@ -1439,7 +1895,13 @@ export default function AiPage() {
               >
                 <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
                   {activeConversation.messages.map((message) => (
-                    <MessageBubble key={message.id} entry={message} />
+                    <MessageBubble
+                      key={message.id}
+                      entry={message}
+                      onConfirmPendingAction={handleConfirmPendingAction}
+                      confirmingToken={confirmingToken}
+                      interactionDisabled={isStreaming}
+                    />
                   ))}
                 </div>
               </div>
@@ -1472,26 +1934,73 @@ export default function AiPage() {
                     Stop
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void sendMessage();
-                    }}
-                    className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                    disabled={composerDisabled || !input.trim()}
-                    aria-label="Send message"
-                  >
-                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-                      <path d="M5 12h12" />
-                      <path d="m13 6 6 6-6 6" />
-                    </svg>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (voiceState === 'recording') {
+                          stopVoiceInput();
+                        } else {
+                          void startVoiceInput();
+                        }
+                      }}
+                      className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={voiceControlDisabled}
+                      aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                    >
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 24 24"
+                        fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                        stroke="currentColor"
+                        strokeWidth="1.9"
+                      >
+                        <rect x="9" y="3" width="6" height="12" rx="3" />
+                        <path d="M6 11a6 6 0 0 0 12 0" />
+                        <path d="M12 17v4" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void sendMessage();
+                      }}
+                      className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={composerDisabled || !input.trim()}
+                      aria-label="Send message"
+                    >
+                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                        <path d="M5 12h12" />
+                        <path d="m13 6 6 6-6 6" />
+                      </svg>
+                    </button>
+                  </>
                 )}
               </div>
 
+              {voiceError || voiceNotice || voiceState !== 'idle' ? (
+                <div className="mt-2 px-1 text-xs">
+                  {voiceError ? (
+                    <span className="text-[var(--danger)]">{voiceError}</span>
+                  ) : voiceNotice ? (
+                    <span className="text-[var(--orange-soft)]">{voiceNotice}</span>
+                  ) : (
+                    <span className="muted">
+                      {voiceState === 'recording'
+                        ? 'Listening…'
+                        : voiceState === 'stopping'
+                          ? 'Stopping…'
+                          : voiceState === 'transcribing'
+                            ? 'Transcribing…'
+                            : null}
+                    </span>
+                  )}
+                </div>
+              ) : null}
+
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[0.68rem] muted">
                 <span>
-                  Structured thinking, grounded tools, and persisted chats are enabled on this page.
+                  Structured thinking, grounded tools, confirmed calendar writes, voice input, and persisted chats are enabled on this page.
                 </span>
                 <span>Press Ctrl/Command + Enter to send</span>
               </div>

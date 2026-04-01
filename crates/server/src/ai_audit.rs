@@ -277,6 +277,21 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             "calendar:{label}:{from_date}->{to_date}:query={}",
             query.as_deref().unwrap_or("*")
         ),
+        AssistantToolInput::CalendarCreateEvent {
+            scope,
+            title,
+            event_date,
+            ..
+        } => format!("calendar_create_event:scope={scope}:title={title}:date={event_date}"),
+        AssistantToolInput::CalendarCreateBirthday {
+            scope,
+            title,
+            event_date,
+            birthday_year,
+            ..
+        } => format!(
+            "calendar_create_birthday:scope={scope}:title={title}:date={event_date}:year={birthday_year}"
+        ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))
         }

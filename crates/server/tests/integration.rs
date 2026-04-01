@@ -264,6 +264,23 @@ fn extract_grounding_blocks(messages: &[rustfin_ai_agent::ChatMessage]) -> Vec<V
 }
 
 #[cfg(feature = "ai")]
+fn extract_sse_json_event(body: &str, event_name: &str) -> Value {
+    let mut active_event: Option<&str> = None;
+    for line in body.lines() {
+        if let Some(name) = line.strip_prefix("event: ") {
+            active_event = Some(name.trim());
+            continue;
+        }
+        if active_event == Some(event_name) {
+            if let Some(raw) = line.strip_prefix("data: ") {
+                return serde_json::from_str(raw).expect("SSE JSON event should parse");
+            }
+        }
+    }
+    panic!("missing SSE event {event_name}");
+}
+
+#[cfg(feature = "ai")]
 async fn assistant_grounding_for_message(
     state: &AppState,
     user: &rustfin_server::auth::AuthUser,
@@ -275,6 +292,7 @@ async fn assistant_grounding_for_message(
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: message.to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1283,6 +1301,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What libraries can I access?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1304,6 +1323,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Do I have \"Restricted AI Movie\" in my library?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1318,6 +1338,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Do I have \"Restricted AI Movie\" in my library?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1391,6 +1412,7 @@ async fn ai_assistant_grounding_only_lists_public_rooms() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What rooms are active right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1538,6 +1560,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What events are coming up this week?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1560,6 +1583,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Who has a birthday coming up soon?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1585,6 +1609,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "When is Rachel's birthday?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1612,6 +1637,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What events are coming up this week?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1681,6 +1707,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What Minecraft servers do I have access to?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1705,6 +1732,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Is the Minecraft server called Hidden AI Server online?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1726,6 +1754,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What Minecraft servers do I have access to?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1770,6 +1799,7 @@ async fn ai_assistant_grounding_lists_authenticated_downloads_catalog() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What downloads are there right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1836,6 +1866,7 @@ async fn ai_assistant_grounding_requires_admin_for_host_runtime_stats() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "How much RAM is the server using right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1855,6 +1886,7 @@ async fn ai_assistant_grounding_requires_admin_for_host_runtime_stats() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "How much RAM is the server using right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1910,6 +1942,7 @@ async fn ai_assistant_grounding_lists_recently_added_accessible_items() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What was recently added to my library?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -1990,6 +2023,7 @@ async fn ai_assistant_grounding_lists_joinable_rooms() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What rooms can I join right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -2046,6 +2080,7 @@ async fn ai_assistant_grounding_requires_admin_for_service_health() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What services are down right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -2061,6 +2096,7 @@ async fn ai_assistant_grounding_requires_admin_for_service_health() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What services are down right now?".to_string(),
+            confirmation_token: None,
             history: vec![],
         },
     )
@@ -2713,6 +2749,7 @@ async fn ai_conversation_repo_orders_conversations_and_turns() {
             role: "user",
             content: "Hello there",
             model_name: None,
+            pending_action_json: None,
             grounding_tools_json: "[]",
             follow_up_contexts_json: "[]",
             grounding_sources_json: "[]",
@@ -2731,6 +2768,7 @@ async fn ai_conversation_repo_orders_conversations_and_turns() {
             role: "assistant",
             content: "Hi",
             model_name: Some("qwen"),
+            pending_action_json: None,
             grounding_tools_json: "[]",
             follow_up_contexts_json: "[]",
             grounding_sources_json: "[]",
@@ -2758,12 +2796,12 @@ async fn ai_conversation_repo_orders_conversations_and_turns() {
 
 #[cfg(feature = "ai")]
 #[tokio::test]
-async fn ai_conversation_stream_persists_user_and_server_refusal_turns() {
-    let (server, _state) = test_app_with_state().await;
+async fn ai_conversation_stream_confirms_and_persists_birthday_writes() {
+    let (server, state) = test_app_with_state().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;
     let admin_hdr = auth_hdr(&admin_token);
 
-    create_user_with_libraries(
+    let user_id = create_user_with_libraries(
         &server,
         &admin_hdr,
         "ai_conversation_stream_user",
@@ -2799,13 +2837,27 @@ async fn ai_conversation_stream_persists_user_and_server_refusal_turns() {
         .add_header(user_hdr.0.clone(), user_hdr.1.clone())
         .json(&json!({
             "model": "missing-model.gguf",
-            "message": "Add Rachel's birthday to my calendar"
+            "message": "Add Rachel's birthday on 2003-06-09 to my calendar"
         }))
         .await;
     stream_resp.assert_status_ok();
     let body = String::from_utf8(stream_resp.as_bytes().to_vec()).unwrap();
-    assert!(body.contains("event: token"));
-    assert!(body.contains("I can view your calendar right now"));
+    assert!(body.contains("event: confirmation_required"));
+    let confirmation = extract_sse_json_event(&body, "confirmation_required");
+    let confirmation_token = confirmation["token"]
+        .as_str()
+        .expect("confirmation token")
+        .to_string();
+    assert_eq!(
+        confirmation["action_kind"].as_str(),
+        Some("calendar_create_birthday")
+    );
+    assert!(
+        confirmation["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Rachel")
+    );
     assert!(body.contains("event: stats"));
     assert!(body.contains("event: done"));
 
@@ -2822,16 +2874,79 @@ async fn ai_conversation_stream_persists_user_and_server_refusal_turns() {
     assert_eq!(messages[0]["role"].as_str(), Some("user"));
     assert_eq!(
         messages[0]["content"].as_str(),
-        Some("Add Rachel's birthday to my calendar")
+        Some("Add Rachel's birthday on 2003-06-09 to my calendar")
     );
     assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
     assert!(
         messages[1]["content"]
             .as_str()
             .unwrap_or_default()
-            .contains("I can view your calendar right now")
+            .contains("Reply with \"Confirm\"")
     );
     assert!(messages[1]["stats"].is_object());
+    assert_eq!(
+        messages[1]["pending_action"]["status"].as_str(),
+        Some("pending")
+    );
+
+    let confirm_resp = server
+        .post(&format!(
+            "/api/v1/ai/conversations/{conversation_id}/messages/stream"
+        ))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .json(&json!({
+            "model": "missing-model.gguf",
+            "message": "Confirm",
+            "confirmation_token": confirmation_token,
+        }))
+        .await;
+    confirm_resp.assert_status_ok();
+    let confirm_body = String::from_utf8(confirm_resp.as_bytes().to_vec()).unwrap();
+    assert!(confirm_body.contains("event: tool"));
+    assert!(confirm_body.contains("event: grounding"));
+    assert!(confirm_body.contains("event: done"));
+    assert!(confirm_body.contains("created and verified the recurring birthday"));
+
+    let conversation_resp = server
+        .get(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .await;
+    conversation_resp.assert_status_ok();
+    let conversation_body: Value = conversation_resp.json();
+    let messages = conversation_body["conversation"]["messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[2]["role"].as_str(), Some("user"));
+    assert_eq!(messages[2]["content"].as_str(), Some("Confirm"));
+    assert_eq!(messages[3]["role"].as_str(), Some("assistant"));
+    assert!(
+        messages[3]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("created and verified the recurring birthday")
+    );
+    assert_eq!(
+        messages[1]["pending_action"]["status"].as_str(),
+        Some("confirmed")
+    );
+
+    let visible_events = rustfin_db::repo::calendar::list_visible_events(
+        &state.db,
+        &user_id,
+        false,
+        "2003-06-09",
+        "2003-06-09",
+    )
+    .await
+    .unwrap();
+    let birthday = visible_events
+        .iter()
+        .find(|event| event.title == "Rachel birthday")
+        .expect("birthday should be visible after confirmation");
+    assert_eq!(birthday.event_type, "birthday");
+    assert_eq!(birthday.recurrence, "yearly");
+    assert_eq!(birthday.birthday_year, Some(2003));
 }
 
 #[cfg(feature = "ai")]

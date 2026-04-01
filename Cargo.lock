@@ -3425,6 +3425,7 @@ dependencies = [
  "async-stream",
  "axum",
  "axum-test",
+ "base64",
  "chess",
  "chrono",
  "chrono-tz",
