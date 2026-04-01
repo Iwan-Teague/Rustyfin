@@ -159,6 +159,18 @@ struct CalendarEventDetailSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct NextCalendarEventSummary {
+    id: String,
+    title: String,
+    event_date: String,
+    event_type: String,
+    scope: String,
+    owner_username: Option<String>,
+    recurrence: String,
+    next_occurs_on: String,
+}
+
+#[derive(Debug, Serialize)]
 struct ChannelActivityMessageSummary {
     username: String,
     content_preview: String,
@@ -235,6 +247,8 @@ struct JoinableRoomSummary {
 struct HostRuntimeAssistantSummary {
     host: crate::runtime_diagnostics::HostRuntimeSnapshot,
     rustyfin: HostRuntimeRustyfinSummary,
+    memory: Option<HostRuntimeMemorySummary>,
+    swap: Option<HostRuntimeSwapSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +260,28 @@ struct HostRuntimeRustyfinSummary {
     active_watch_party_websockets: u64,
     ai_chat_requests_in_flight: u64,
     ai_tool_calls_in_flight: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct HostRuntimeMemorySummary {
+    used_memory_bytes: u64,
+    total_memory_bytes: u64,
+    used_memory_gib: f64,
+    total_memory_gib: f64,
+    used_memory_human: String,
+    total_memory_human: String,
+    memory_summary: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HostRuntimeSwapSummary {
+    used_swap_bytes: u64,
+    total_swap_bytes: u64,
+    used_swap_gib: f64,
+    total_swap_gib: f64,
+    used_swap_human: String,
+    total_swap_human: String,
+    swap_summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -356,6 +392,7 @@ pub async fn execute_tool(
             account_get_profile_summary(state, context).await
         }
         AssistantToolName::CalendarListEvents => calendar_list_events(state, context, call).await,
+        AssistantToolName::CalendarGetNextEvent => calendar_get_next_event(state, context).await,
         AssistantToolName::CalendarUpcomingBirthdays => {
             calendar_upcoming_birthdays(state, context, call).await
         }
@@ -464,11 +501,11 @@ pub fn source_from_block(
 ) -> AssistantGroundingSource {
     let spec = tool.spec();
     AssistantGroundingSource {
-        tool: spec.name,
+        tool: spec.name.to_string(),
         label: block.label.clone(),
         access_mode: spec.access_mode,
         risk_tier: spec.risk_tier,
-        status: block.status,
+        status: block.status.to_string(),
     }
 }
 
@@ -476,10 +513,28 @@ pub fn build_follow_up_context(
     call: &PlannedToolCall,
     block: &AssistantToolContextBlock,
 ) -> AssistantFollowUpContext {
+    let mut input_hint = follow_up_input_hint(call);
+    if call.tool == AssistantToolName::CalendarGetNextEvent {
+        input_hint.calendar_label = Some("your next calendar event".to_string());
+        input_hint.calendar_from_date = block
+            .data
+            .get("next_event")
+            .and_then(|event| event.get("next_occurs_on"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        input_hint.calendar_to_date = input_hint.calendar_from_date.clone();
+        input_hint.calendar_query = block
+            .data
+            .get("next_event")
+            .and_then(|event| event.get("title"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    }
+
     AssistantFollowUpContext {
         tool: call.tool.as_str().to_string(),
         label: block.label.clone(),
-        input_hint: follow_up_input_hint(call),
+        input_hint,
         entities: follow_up_entities(call.tool, block),
     }
 }
@@ -1130,6 +1185,38 @@ async fn calendar_list_events(
     ))
 }
 
+async fn calendar_get_next_event(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<(String, serde_json::Value), String> {
+    let next_event = rustfin_db::repo::calendar::find_next_visible_event(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+    )
+    .await
+    .map_err(|e| format!("failed to load the next visible calendar event: {e}"))?;
+
+    let next_event = next_event.map(|row| NextCalendarEventSummary {
+        id: row.event.id,
+        title: row.event.title,
+        event_date: row.event.event_date,
+        event_type: row.event.event_type,
+        scope: row.event.scope,
+        owner_username: row.event.owner_username,
+        recurrence: row.event.recurrence,
+        next_occurs_on: row.next_occurs_on,
+    });
+
+    Ok((
+        "Next visible calendar event".to_string(),
+        json!({
+            "label": "Next visible calendar event",
+            "next_event": next_event,
+        }),
+    ))
+}
+
 async fn calendar_get_event_details(
     state: &AppState,
     context: &AssistantContext,
@@ -1379,6 +1466,44 @@ async fn system_get_host_runtime_summary(
 ) -> Result<(String, serde_json::Value), String> {
     let diagnostics = crate::runtime_diagnostics::collect_runtime_diagnostics(state).await;
     let summary = HostRuntimeAssistantSummary {
+        memory: diagnostics
+            .host
+            .used_memory_bytes
+            .zip(diagnostics.host.total_memory_bytes)
+            .map(
+                |(used_memory_bytes, total_memory_bytes)| HostRuntimeMemorySummary {
+                    used_memory_bytes,
+                    total_memory_bytes,
+                    used_memory_gib: bytes_to_gib(used_memory_bytes),
+                    total_memory_gib: bytes_to_gib(total_memory_bytes),
+                    used_memory_human: humanize_binary_bytes(used_memory_bytes),
+                    total_memory_human: humanize_binary_bytes(total_memory_bytes),
+                    memory_summary: format!(
+                        "The server is currently using {} of RAM out of {}.",
+                        humanize_binary_bytes(used_memory_bytes),
+                        humanize_binary_bytes(total_memory_bytes)
+                    ),
+                },
+            ),
+        swap: diagnostics
+            .host
+            .used_swap_bytes
+            .zip(diagnostics.host.total_swap_bytes)
+            .map(
+                |(used_swap_bytes, total_swap_bytes)| HostRuntimeSwapSummary {
+                    used_swap_bytes,
+                    total_swap_bytes,
+                    used_swap_gib: bytes_to_gib(used_swap_bytes),
+                    total_swap_gib: bytes_to_gib(total_swap_bytes),
+                    used_swap_human: humanize_binary_bytes(used_swap_bytes),
+                    total_swap_human: humanize_binary_bytes(total_swap_bytes),
+                    swap_summary: format!(
+                        "The server is currently using {} of swap out of {}.",
+                        humanize_binary_bytes(used_swap_bytes),
+                        humanize_binary_bytes(total_swap_bytes)
+                    ),
+                },
+            ),
         host: diagnostics.host,
         rustyfin: HostRuntimeRustyfinSummary {
             uptime_seconds: diagnostics.runtime.uptime_seconds,
@@ -1395,6 +1520,27 @@ async fn system_get_host_runtime_summary(
         "Rustyfin host runtime summary".to_string(),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
+}
+
+fn bytes_to_gib(bytes: u64) -> f64 {
+    ((bytes as f64 / 1024.0_f64.powi(3)) * 10.0).round() / 10.0
+}
+
+fn humanize_binary_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+    let mut value = bytes as f64;
+    let mut unit_index = 0_usize;
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+
+    if unit_index == 0 {
+        format!("{} {}", bytes, UNITS[unit_index])
+    } else {
+        format!("{value:.1} {}", UNITS[unit_index])
+    }
 }
 
 async fn system_get_backup_summary(
@@ -2722,6 +2868,31 @@ fn follow_up_entities(
                         })
                     })
                     .collect()
+            })
+            .unwrap_or_default(),
+        AssistantToolName::CalendarGetNextEvent => block
+            .data
+            .get("next_event")
+            .map(|event| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
+                        "{} ({})",
+                        event
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(&block.label),
+                        event
+                            .get("next_occurs_on")
+                            .or_else(|| event.get("event_date"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                    identifier: event
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                }]
             })
             .unwrap_or_default(),
         AssistantToolName::CalendarUpcomingBirthdays => block

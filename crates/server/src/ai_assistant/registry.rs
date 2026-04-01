@@ -6,6 +6,7 @@ use super::types::{
 pub enum AssistantToolName {
     AccountGetProfileSummary,
     CalendarListEvents,
+    CalendarGetNextEvent,
     CalendarUpcomingBirthdays,
     CalendarGetEventDetails,
     ChannelsListUnreadActivity,
@@ -38,6 +39,7 @@ impl AssistantToolName {
         &[
             Self::AccountGetProfileSummary,
             Self::CalendarListEvents,
+            Self::CalendarGetNextEvent,
             Self::CalendarUpcomingBirthdays,
             Self::CalendarGetEventDetails,
             Self::ChannelsListUnreadActivity,
@@ -70,6 +72,7 @@ impl AssistantToolName {
         match value {
             "account_get_profile_summary" => Some(Self::AccountGetProfileSummary),
             "calendar_list_events" => Some(Self::CalendarListEvents),
+            "calendar_get_next_event" => Some(Self::CalendarGetNextEvent),
             "calendar_upcoming_birthdays" => Some(Self::CalendarUpcomingBirthdays),
             "calendar_get_event_details" => Some(Self::CalendarGetEventDetails),
             "channels_list_unread_activity" => Some(Self::ChannelsListUnreadActivity),
@@ -103,6 +106,7 @@ impl AssistantToolName {
         match self {
             Self::AccountGetProfileSummary => "account_get_profile_summary",
             Self::CalendarListEvents => "calendar_list_events",
+            Self::CalendarGetNextEvent => "calendar_get_next_event",
             Self::CalendarUpcomingBirthdays => "calendar_upcoming_birthdays",
             Self::CalendarGetEventDetails => "calendar_get_event_details",
             Self::ChannelsListUnreadActivity => "channels_list_unread_activity",
@@ -146,6 +150,16 @@ impl AssistantToolName {
             Self::CalendarListEvents => AssistantToolSpec {
                 name: "calendar_list_events",
                 summary: "List visible upcoming calendar events for a short time window.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Low,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::CalendarGetNextEvent => AssistantToolSpec {
+                name: "calendar_get_next_event",
+                summary: "Load the next visible calendar event using deterministic server-side ordering.",
                 access_mode: ToolAccessMode::ReadOnly,
                 risk_tier: ToolRiskTier::Low,
                 required_role: ToolRoleRequirement::AnyAuthenticatedUser,
