@@ -1,4 +1,5 @@
 use crate::DbPool;
+use chrono::{Datelike, NaiveDate, Utc};
 
 #[derive(Debug, Clone)]
 pub struct CalendarEventRow {
@@ -41,6 +42,60 @@ pub struct UpdateCalendarEvent {
     pub event_type: String,
     pub recurrence: String,
     pub birthday_year: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NextVisibleCalendarEventRow {
+    pub event: CalendarEventRow,
+    pub next_occurs_on: String,
+}
+
+fn invalid_calendar_date_error(raw: &str) -> sqlx::Error {
+    sqlx::Error::Decode(Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("calendar event_date {raw} is not valid YYYY-MM-DD"),
+    )))
+}
+
+fn parse_calendar_date(raw: &str) -> Result<NaiveDate, sqlx::Error> {
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d").map_err(|_| invalid_calendar_date_error(raw))
+}
+
+fn with_year_safe(date: NaiveDate, year: i32) -> Option<NaiveDate> {
+    if let Some(updated) = date.with_year(year) {
+        return Some(updated);
+    }
+    if date.month() == 2 && date.day() == 29 {
+        return NaiveDate::from_ymd_opt(year, 2, 28);
+    }
+    None
+}
+
+fn next_occurrence_on_or_after(
+    row: &CalendarEventRow,
+    on_or_after: NaiveDate,
+) -> Result<Option<NaiveDate>, sqlx::Error> {
+    let source_date = parse_calendar_date(&row.event_date)?;
+    if row.recurrence != "yearly" {
+        return Ok((source_date >= on_or_after).then_some(source_date));
+    }
+
+    let current_year = on_or_after.year();
+    let current_year_occurrence = with_year_safe(source_date, current_year);
+    if let Some(candidate) = current_year_occurrence {
+        if candidate >= on_or_after {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(with_year_safe(source_date, current_year + 1))
+}
+
+fn next_event_scope_rank(scope: &str) -> u8 {
+    match scope {
+        "personal" => 0,
+        "global" => 1,
+        _ => 2,
+    }
 }
 
 fn map_row(
@@ -300,9 +355,47 @@ pub async fn list_personal_events(
     rows.into_iter().map(map_row).collect()
 }
 
+pub async fn find_next_visible_event(
+    pool: &DbPool,
+    user_id: &str,
+    is_admin: bool,
+) -> Result<Option<NextVisibleCalendarEventRow>, sqlx::Error> {
+    let today = Utc::now().date_naive();
+    let from_date = today.format("%F").to_string();
+    let events = list_visible_events(pool, user_id, is_admin, &from_date, "9999-12-31").await?;
+
+    let mut candidates = events
+        .into_iter()
+        .filter_map(|event| {
+            next_occurrence_on_or_after(&event, today)
+                .transpose()
+                .map(|next_occurs_on| {
+                    next_occurs_on.map(|next_occurs_on| NextVisibleCalendarEventRow {
+                        next_occurs_on: next_occurs_on.format("%F").to_string(),
+                        event,
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    candidates.sort_by(|left, right| {
+        left.next_occurs_on
+            .cmp(&right.next_occurs_on)
+            .then_with(|| {
+                next_event_scope_rank(&left.event.scope)
+                    .cmp(&next_event_scope_rank(&right.event.scope))
+            })
+            .then_with(|| left.event.title.cmp(&right.event.title))
+            .then_with(|| left.event.id.cmp(&right.event.id))
+    });
+
+    Ok(candidates.into_iter().next())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::map_row;
+    use super::{map_row, next_occurrence_on_or_after};
+    use chrono::NaiveDate;
 
     #[test]
     fn map_row_accepts_bigint_birthday_year() {
@@ -348,5 +441,69 @@ mod tests {
         .expect_err("out-of-range birthday year should fail");
 
         assert!(matches!(err, sqlx::Error::Decode(_)));
+    }
+
+    #[test]
+    fn next_occurrence_uses_next_year_for_past_yearly_event() {
+        let row = map_row((
+            "event-1".to_string(),
+            "personal".to_string(),
+            Some("user-1".to_string()),
+            Some("alpha".to_string()),
+            "Birthday".to_string(),
+            None,
+            "2020-03-12".to_string(),
+            "birthday".to_string(),
+            "yearly".to_string(),
+            Some(1990_i64),
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect("calendar row should decode");
+
+        let next = next_occurrence_on_or_after(
+            &row,
+            NaiveDate::from_ymd_opt(2026, 4, 1).expect("valid date"),
+        )
+        .expect("next occurrence should compute");
+
+        assert_eq!(
+            next,
+            Some(NaiveDate::from_ymd_opt(2027, 3, 12).expect("valid date"))
+        );
+    }
+
+    #[test]
+    fn next_occurrence_keeps_future_one_off_event() {
+        let row = map_row((
+            "event-2".to_string(),
+            "global".to_string(),
+            None,
+            None,
+            "Trip".to_string(),
+            None,
+            "2026-06-09".to_string(),
+            "event".to_string(),
+            "none".to_string(),
+            None,
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect("calendar row should decode");
+
+        let next = next_occurrence_on_or_after(
+            &row,
+            NaiveDate::from_ymd_opt(2026, 4, 1).expect("valid date"),
+        )
+        .expect("next occurrence should compute");
+
+        assert_eq!(
+            next,
+            Some(NaiveDate::from_ymd_opt(2026, 6, 9).expect("valid date"))
+        );
     }
 }

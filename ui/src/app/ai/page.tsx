@@ -1,48 +1,134 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+
+import ConfirmModal from '@/app/components/ConfirmModal';
+import AiAssistantActivity from '@/features/ai-assistant/components/AiAssistantActivity';
+import AiConversationRail from '@/features/ai-assistant/components/AiConversationRail';
 import { useAuth } from '@/lib/auth';
 import {
-  type AiFollowUpContext,
-  fetchModels,
-  streamChat,
+  type AiActivityTraceItem,
+  type AiConversationDetail,
+  type AiConversationSummary,
+  type AiConversationTurn,
   type AiModel,
-  type AiGroundingSource,
+  type AiPhaseEvent,
   type AiStatusUpdate,
-  type ChatHistoryMessage,
+  type AiToolActivityEvent,
+  type AiTurnStats,
+  createConversation,
+  deleteConversation,
+  fetchModels,
+  getConversation,
+  listConversations,
+  streamConversationMessage,
+  updateConversation,
 } from '@/lib/aiApi';
+import { findDataDeleteTarget, playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
+import { clientErrorMessage } from '@/lib/errors';
 
-// ---------------------------------------------------------------------------
-// Chat types
-// ---------------------------------------------------------------------------
-interface MessageStats {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_duration_ms: number;
-  tokens_per_second: number;
-}
+const DEFAULT_CONVERSATION_TITLE = 'New chat';
 
-interface ChatEntry {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
+type UiConversationTurn = AiConversationTurn & {
   isStreaming: boolean;
-  stats: MessageStats | null;
-  error: string | null;
-  groundingSources: AiGroundingSource[];
-  followUpContexts: AiFollowUpContext[];
-  statusUpdates: AiStatusUpdate[];
+  errorMessage: string | null;
+};
+
+type UiConversationDetail = Omit<AiConversationDetail, 'messages'> & {
+  messages: UiConversationTurn[];
+};
+
+function uid(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-function uid(): string {
-  return Math.random().toString(36).slice(2, 10);
+function nowTsSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function normalizePreview(message: string): string {
+  const normalized = message
+    .split(/\s+/)
+    .join(' ')
+    .trim();
+  if (!normalized) return '(empty message)';
+  if (normalized.length <= 280) return normalized;
+  return `${normalized.slice(0, 280)}...`;
+}
+
+function suggestedConversationTitle(message: string): string {
+  const preview = normalizePreview(message);
+  if (preview.length <= 80) return preview;
+  return `${preview.slice(0, 80)}...`;
+}
+
+function sortConversationSummaries(
+  conversations: AiConversationSummary[],
+): AiConversationSummary[] {
+  return [...conversations].sort((left, right) => {
+    if (right.updated_ts !== left.updated_ts) {
+      return right.updated_ts - left.updated_ts;
+    }
+    return right.id.localeCompare(left.id);
+  });
+}
+
+function chooseConversationId(
+  conversations: AiConversationSummary[],
+  preferredId: string | null,
+): string | null {
+  if (preferredId && conversations.some((conversation) => conversation.id === preferredId)) {
+    return preferredId;
+  }
+  const preferredVisible = conversations.find((conversation) => !conversation.archived);
+  return preferredVisible?.id ?? conversations[0]?.id ?? null;
+}
+
+function buildConversationSummary(
+  detail: Pick<
+    UiConversationDetail,
+    'id' | 'title' | 'archived' | 'last_message_preview' | 'last_model_name' | 'updated_ts'
+  >,
+): AiConversationSummary {
+  return {
+    id: detail.id,
+    title: detail.title,
+    last_message_preview: detail.last_message_preview ?? null,
+    last_model_name: detail.last_model_name ?? null,
+    updated_ts: detail.updated_ts,
+    archived: detail.archived,
+  };
+}
+
+function upsertConversationSummary(
+  conversations: AiConversationSummary[],
+  summary: AiConversationSummary,
+): AiConversationSummary[] {
+  const remaining = conversations.filter((conversation) => conversation.id !== summary.id);
+  return sortConversationSummaries([summary, ...remaining]);
+}
+
+function toUiTurn(turn: AiConversationTurn): UiConversationTurn {
+  return {
+    ...turn,
+    isStreaming: false,
+    errorMessage: null,
+  };
+}
+
+function toUiConversation(detail: AiConversationDetail): UiConversationDetail {
+  return {
+    ...detail,
+    messages: detail.messages.map(toUiTurn),
+  };
 }
 
 function formatMs(ms: number): string {
+  if (ms <= 0) return '0ms';
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -50,7 +136,6 @@ function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
 }
 
-// Detect and strip <think>…</think> from content
 function parseContent(raw: string): { thinking: string | null; content: string } {
   if (!raw.startsWith('<think>')) return { thinking: null, content: raw };
   const closeIdx = raw.indexOf('</think>');
@@ -65,133 +150,235 @@ function modelDisplayName(name: string): string {
   return name.replace(':', ' · ');
 }
 
-// ---------------------------------------------------------------------------
-// Small reusable pieces
-// ---------------------------------------------------------------------------
+function mergePhaseEvent(
+  activityTrace: AiActivityTraceItem[],
+  event: AiPhaseEvent,
+): AiActivityTraceItem[] {
+  const next = [...activityTrace];
+  const item: AiActivityTraceItem = {
+    kind: 'phase',
+    ...event,
+  };
+  const index = next.findIndex(
+    (entry) =>
+      entry.kind === 'phase' &&
+      entry.phase === event.phase &&
+      entry.started_ts_ms === event.started_ts_ms,
+  );
+  if (index >= 0) {
+    next[index] = item;
+  } else {
+    next.push(item);
+  }
+  return next;
+}
+
+function mergeToolEvent(
+  activityTrace: AiActivityTraceItem[],
+  event: AiToolActivityEvent,
+): AiActivityTraceItem[] {
+  const next = [...activityTrace];
+  const item: AiActivityTraceItem = {
+    kind: 'tool',
+    ...event,
+  };
+  const index = next.findIndex(
+    (entry) => entry.kind === 'tool' && entry.id === event.id,
+  );
+  if (index >= 0) {
+    next[index] = item;
+  } else {
+    next.push(item);
+  }
+  return next;
+}
+
+function mergeStatusFallback(
+  activityTrace: AiActivityTraceItem[],
+  update: AiStatusUpdate,
+): AiActivityTraceItem[] {
+  if (activityTrace.some((entry) => entry.kind === 'tool' && entry.tool === update.tool)) {
+    return activityTrace;
+  }
+
+  const now = Date.now();
+  const state =
+    update.kind === 'complete' || update.kind === 'error'
+      ? update.kind
+      : 'running';
+  const id = `legacy-${update.tool}`;
+  const next = [...activityTrace];
+  const index = next.findIndex(
+    (entry) => entry.kind === 'tool' && entry.id === id,
+  );
+  const existing =
+    index >= 0 && next[index].kind === 'tool' ? next[index] : null;
+  const item: AiActivityTraceItem = {
+    kind: 'tool',
+    id,
+    tool: update.tool,
+    label: update.label,
+    state,
+    started_ts_ms: existing?.started_ts_ms ?? now,
+    finished_ts_ms: state === 'running' ? null : now,
+  };
+  if (index >= 0) {
+    next[index] = item;
+  } else {
+    next.push(item);
+  }
+  return next;
+}
 
 function StreamingDots() {
   return (
     <span className="inline-flex items-center gap-1 ml-0.5">
-      {[0, 1, 2].map((i) => (
+      {[0, 1, 2].map((index) => (
         <span
-          key={i}
-          className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]"
-          style={{ animation: `bounce-dot 1.2s ease-in-out ${i * 0.2}s infinite` }}
+          key={index}
+          className="ai-streaming-dot"
+          style={{ animationDelay: `${index * 0.2}s` }}
         />
       ))}
     </span>
   );
 }
 
-function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
-  const [open, setOpen] = useState(false);
+function FallbackThinkingBlock({
+  text,
+  live,
+}: {
+  text: string;
+  live: boolean;
+}) {
+  const [open, setOpen] = useState(live);
+
+  useEffect(() => {
+    if (live) {
+      setOpen(true);
+    }
+  }, [live]);
+
   return (
     <div className="mb-3">
       <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 text-xs muted hover:text-[var(--text-main)] transition-colors"
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex items-center gap-2 text-xs muted transition-colors hover:text-[var(--text-main)]"
       >
         <span
-          className="w-3 h-3 rounded-full border border-[var(--purple)] flex-shrink-0"
+          className="h-3 w-3 rounded-full border border-[var(--purple)]"
           style={{
             background: live ? 'var(--purple)' : 'transparent',
-            animation: live ? 'pulse 1.3s ease-in-out infinite' : 'none',
             opacity: live ? 1 : 0.6,
           }}
         />
-        <span className="font-medium">{live ? 'Thinking…' : open ? 'Hide thinking' : 'Show thinking'}</span>
-        {!live && (
-          <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} viewBox="0 0 16 16" fill="currentColor">
+        <span className="font-medium">
+          {live ? 'Thinking...' : open ? 'Hide fallback note' : 'Show fallback note'}
+        </span>
+        {!live ? (
+          <svg
+            className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+            viewBox="0 0 16 16"
+            fill="currentColor"
+          >
             <path d="M8 11L2 5h12z" />
           </svg>
-        )}
+        ) : null}
       </button>
-      {(open || live) && (
+      {open ? (
         <div
-          className="mt-2 px-3 py-2.5 text-xs muted leading-relaxed rounded-xl font-mono whitespace-pre-wrap"
-          style={{ background: 'rgba(177,140,255,0.07)', border: '1px solid rgba(177,140,255,0.2)' }}
+          className="mt-2 rounded-xl px-3 py-2.5 font-mono text-xs leading-relaxed muted whitespace-pre-wrap"
+          style={{
+            background: 'rgba(177,140,255,0.07)',
+            border: '1px solid rgba(177,140,255,0.2)',
+          }}
         >
           {text}
-          {live && <span className="ai-cursor" />}
+          {live ? <span className="ai-cursor" /> : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
 
-function StatsBar({ stats }: { stats: MessageStats }) {
-  return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2.5 pt-2.5 border-t border-[var(--border)] text-[0.7rem]">
-      <span className="flex gap-1"><span className="muted">Prompt</span><span className="font-semibold tabular-nums muted">{stats.prompt_tokens} tok</span></span>
-      <span className="flex gap-1"><span className="muted">Output</span><span className="font-semibold tabular-nums muted">{stats.completion_tokens} tok</span></span>
-      <span className="flex gap-1"><span className="muted">Speed</span><span className="font-semibold tabular-nums text-[var(--orange-soft)]">{formatTps(stats.tokens_per_second)}</span></span>
-      <span className="flex gap-1"><span className="muted">Time</span><span className="font-semibold tabular-nums muted">{formatMs(stats.total_duration_ms)}</span></span>
-    </div>
-  );
-}
-
-function StatusList({ updates }: { updates: AiStatusUpdate[] }) {
-  if (updates.length === 0) return null;
+function StatsBar({ stats }: { stats: AiTurnStats }) {
+  const turnDuration = stats.end_to_end_duration_ms || stats.total_duration_ms;
+  const hasQueue = stats.queue_duration_ms > 0;
+  const hasLoad = stats.model_load_duration_ms > 0;
 
   return (
-    <div className="mb-2.5 space-y-1.5">
-      {updates.map((update) => {
-        const isChecking = update.kind === 'checking';
-        const isError = update.kind === 'error';
-        return (
-          <div
-            key={`${update.tool}-${update.kind}-${update.label}`}
-            className="flex items-center gap-2 text-[0.72rem] muted"
-          >
-            <span
-              className="inline-flex items-center justify-center w-4 h-4 rounded-full border flex-shrink-0"
-              style={{
-                borderColor: isError
-                  ? 'rgba(255,117,136,0.35)'
-                  : isChecking
-                    ? 'rgba(255,145,77,0.3)'
-                    : 'rgba(91,214,136,0.3)',
-                background: isError
-                  ? 'rgba(255,117,136,0.12)'
-                  : isChecking
-                    ? 'rgba(255,145,77,0.12)'
-                    : 'rgba(91,214,136,0.12)',
-              }}
-            >
-              {isChecking ? (
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full"
-                  style={{
-                    background: 'var(--orange-soft)',
-                    animation: 'pulse 1.2s ease-in-out infinite',
-                  }}
-                />
-              ) : isError ? (
-                <span className="text-[var(--danger)] leading-none">!</span>
-              ) : (
-                <span className="text-[var(--ok)] leading-none">✓</span>
-              )}
-            </span>
-            <span>{update.label}</span>
-          </div>
-        );
-      })}
+    <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 border-t border-[var(--border)] pt-2.5 text-[0.7rem]">
+      <span className="flex gap-1">
+        <span className="muted">Turn</span>
+        <span className="font-semibold tabular-nums muted">
+          {formatMs(turnDuration)}
+        </span>
+      </span>
+      <span className="flex gap-1">
+        <span className="muted">Plan</span>
+        <span className="font-semibold tabular-nums muted">
+          {formatMs(stats.planner_duration_ms)}
+        </span>
+      </span>
+      <span className="flex gap-1">
+        <span className="muted">Tools</span>
+        <span className="font-semibold tabular-nums muted">
+          {formatMs(stats.tool_duration_ms)}
+        </span>
+      </span>
+      <span className="flex gap-1">
+        <span className="muted">Generate</span>
+        <span className="font-semibold tabular-nums muted">
+          {formatMs(stats.generation_duration_ms)}
+        </span>
+      </span>
+      {hasQueue ? (
+        <span className="flex gap-1">
+          <span className="muted">Queue</span>
+          <span className="font-semibold tabular-nums muted">
+            {formatMs(stats.queue_duration_ms)}
+          </span>
+        </span>
+      ) : null}
+      {hasLoad ? (
+        <span className="flex gap-1">
+          <span className="muted">Load</span>
+          <span className="font-semibold tabular-nums muted">
+            {formatMs(stats.model_load_duration_ms)}
+          </span>
+        </span>
+      ) : null}
+      <span className="flex gap-1">
+        <span className="muted">Prompt</span>
+        <span className="font-semibold tabular-nums muted">
+          {stats.prompt_tokens} tok
+        </span>
+      </span>
+      <span className="flex gap-1">
+        <span className="muted">Output</span>
+        <span className="font-semibold tabular-nums muted">
+          {stats.completion_tokens} tok
+        </span>
+      </span>
+      <span className="flex gap-1">
+        <span className="muted">Speed</span>
+        <span className="font-semibold tabular-nums text-[var(--orange-soft)]">
+          {formatTps(stats.tokens_per_second)}
+        </span>
+      </span>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Message bubble
-// ---------------------------------------------------------------------------
-function MessageBubble({ entry }: { entry: ChatEntry }) {
-  const isUser = entry.role === 'user';
+function MessageBubble({ entry }: { entry: UiConversationTurn }) {
   const { thinking, content } = parseContent(entry.content);
 
-  if (isUser) {
+  if (entry.role === 'user') {
     return (
       <div className="flex justify-end">
         <div
-          className="max-w-[78%] px-4 py-2.5 rounded-2xl rounded-br-sm text-sm leading-relaxed whitespace-pre-wrap"
+          className="max-w-[78%] rounded-2xl rounded-br-sm px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap"
           style={{
             background: 'linear-gradient(135deg, rgba(255,145,77,0.16), rgba(157,116,255,0.16))',
             border: '1px solid rgba(255,145,77,0.26)',
@@ -203,61 +390,42 @@ function MessageBubble({ entry }: { entry: ChatEntry }) {
     );
   }
 
+  const showFallbackThinking =
+    Boolean(thinking) && entry.activity_trace.length === 0;
+
   return (
     <div className="flex justify-start">
       <div className="max-w-[84%] w-full">
-        {entry.groundingSources.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-2">
-            {entry.groundingSources.map((source) => (
-              <span
-                key={`${entry.id}-${source.tool}-${source.label}`}
-                className="chip text-[0.68rem]"
-                style={{
-                  borderColor:
-                    source.status === 'error'
-                      ? 'rgba(255,120,120,0.32)'
-                      : 'rgba(255,145,77,0.24)',
-                  background:
-                    source.status === 'error'
-                      ? 'rgba(255,120,120,0.08)'
-                      : 'rgba(255,145,77,0.08)',
-                }}
-              >
-                {source.label}
-              </span>
-            ))}
-          </div>
-        )}
+        <AiAssistantActivity
+          activityTrace={entry.activity_trace}
+          isStreaming={entry.isStreaming}
+        />
 
-        {entry.isStreaming && entry.statusUpdates.length > 0 && (
-          <StatusList updates={entry.statusUpdates} />
-        )}
+        {showFallbackThinking && thinking ? (
+          <FallbackThinkingBlock
+            text={thinking}
+            live={entry.isStreaming && content.length === 0}
+          />
+        ) : null}
 
-        {thinking !== null && (
-          <ThinkingBlock text={thinking} live={entry.isStreaming && content === ''} />
-        )}
-
-        <div className="panel-soft px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed">
-          {entry.error ? (
-            <span className="text-[var(--danger)]">{entry.error}</span>
+        <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+          {entry.errorMessage ? (
+            <span className="text-[var(--danger)]">{entry.errorMessage}</span>
           ) : content ? (
             <span className="whitespace-pre-wrap">{content}</span>
           ) : entry.isStreaming ? (
             <StreamingDots />
           ) : null}
 
-          {entry.isStreaming && content && <span className="ai-cursor" />}
+          {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
         </div>
 
-        {entry.stats && !entry.isStreaming && <StatsBar stats={entry.stats} />}
+        {entry.stats ? <StatsBar stats={entry.stats} /> : null}
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// No-model state
-// ---------------------------------------------------------------------------
 function InferenceUnavailable({
   serviceUnavailable = false,
   title,
@@ -269,7 +437,8 @@ function InferenceUnavailable({
   description?: string;
   showRecommendation?: boolean;
 }) {
-  const resolvedTitle = title ?? (serviceUnavailable ? 'AI unavailable on this host' : 'No model installed');
+  const resolvedTitle =
+    title ?? (serviceUnavailable ? 'AI unavailable on this host' : 'No model installed');
   const resolvedDescription =
     description ??
     (serviceUnavailable
@@ -278,16 +447,16 @@ function InferenceUnavailable({
   const shouldShowRecommendation = showRecommendation ?? !serviceUnavailable;
 
   return (
-    <div className="flex flex-col items-center justify-center flex-1 gap-5 py-16 text-center px-6">
+    <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 py-16 text-center">
       <div
-        className="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0"
+        className="flex h-14 w-14 items-center justify-center rounded-2xl"
         style={{
           background: 'rgba(157,116,255,0.12)',
           border: '1px solid rgba(157,116,255,0.22)',
         }}
       >
         <svg
-          className="w-7 h-7 text-[var(--purple)]"
+          className="h-7 w-7 text-[var(--purple)]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -298,59 +467,63 @@ function InferenceUnavailable({
       </div>
       <div className="space-y-1.5">
         <p className="font-semibold">{resolvedTitle}</p>
-        <p className="text-sm muted max-w-xs">{resolvedDescription}</p>
+        <p className="max-w-xs text-sm muted">{resolvedDescription}</p>
       </div>
-      {shouldShowRecommendation && (
+      {shouldShowRecommendation ? (
         <span className="chip chip-accent text-[0.7rem]">
-          Recommended: llama3.2:3b (~2 GB)
+          Starter installs use Qwen2.5 1.5B (~1 GB)
         </span>
-      )}
+      ) : null}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Empty / suggestions state
-// ---------------------------------------------------------------------------
 function EmptyState({
   model,
   isAdmin,
+  hasConversation,
+  onNewChat,
   onSuggest,
 }: {
   model: string;
   isAdmin: boolean;
-  onSuggest: (s: string) => void;
+  hasConversation: boolean;
+  onNewChat: () => void;
+  onSuggest: (value: string) => void;
 }) {
   const suggestions = [
-    'Do I have "Interstellar" in my library?',
-    "What was recently added to my library?",
-    "Who has a birthday coming up?",
+    'How much RAM is the server using right now?',
+    'What is that in gigabytes?',
+    "What's my next event?",
     'What events are coming up this week?',
-    "What was the last call about?",
-    "What rooms can I join right now?",
-    "Any unread activity in general chat?",
-    "What is the temperature in Dublin right now?",
-    "Are any YouTube rooms active right now?",
-    "What network interfaces are active right now?",
-    "What Minecraft servers are online?",
-    "What downloads are available right now?",
+    'Who has a birthday coming up?',
+    'What was the last call about?',
+    'What rooms can I join right now?',
+    'Any unread activity in general chat?',
+    'What downloads are available right now?',
   ];
+
   if (isAdmin) {
-    suggestions.push('How much RAM is the server using right now?');
-    suggestions.push("What services are down right now?");
+    suggestions.push('What services are down right now?');
   }
 
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-6 py-8 text-center px-4">
+    <div className="flex h-full flex-col items-center justify-center gap-6 px-4 py-8 text-center">
       <div>
         <div
-          className="w-12 h-12 rounded-2xl mx-auto mb-4 flex items-center justify-center"
+          className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl"
           style={{
             background: 'linear-gradient(135deg, rgba(255,145,77,0.18), rgba(157,116,255,0.18))',
             border: '1px solid rgba(177,140,255,0.22)',
           }}
         >
-          <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <svg
+            className="h-6 w-6"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+          >
             <defs>
               <linearGradient id="ai-icon-grad" x1="0" y1="0" x2="1" y2="1">
                 <stop offset="0%" stopColor="var(--orange)" />
@@ -364,23 +537,42 @@ function EmptyState({
         <p className="font-semibold text-base">
           Ask <span className="accent-logo">{modelDisplayName(model)}</span> anything
         </p>
-        <p className="text-sm muted mt-1 max-w-xs">
-          I can currently search your libraries and check calendar, rooms, downloads, server status, and account context.
-          {isAdmin ? ' Admins can also ask for host runtime stats like RAM, CPU, load, and uptime.' : ''}
+        <p className="mt-1 max-w-md text-sm muted">
+          {hasConversation
+            ? 'This conversation is ready. Ask for grounded calendar, library, room, network, runtime, or download details.'
+            : 'Create a stored conversation, then ask grounded questions about your calendar, libraries, rooms, downloads, or host state.'}
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
-        {suggestions.map((s) => (
+      {!hasConversation ? (
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="btn-primary rounded-xl px-5 py-3 text-sm"
+        >
+          Start a new chat
+        </button>
+      ) : null}
+
+      <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
+        {suggestions.map((suggestion) => (
           <button
-            key={s}
-            onClick={() => onSuggest(s)}
-            className="text-left px-3.5 py-2.5 text-sm rounded-xl transition-all duration-150"
-            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-strong)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+            key={suggestion}
+            type="button"
+            onClick={() => onSuggest(suggestion)}
+            className="rounded-xl px-3.5 py-2.5 text-left text-sm transition-all duration-150"
+            style={{
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid var(--border)',
+            }}
+            onMouseEnter={(event) => {
+              event.currentTarget.style.borderColor = 'var(--border-strong)';
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.borderColor = 'var(--border)';
+            }}
           >
-            {s}
+            {suggestion}
           </button>
         ))}
       </div>
@@ -388,34 +580,40 @@ function EmptyState({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Model selector dropdown
-// ---------------------------------------------------------------------------
-function ModelSelector({ models, selected, onChange }: { models: AiModel[]; selected: string; onChange: (n: string) => void }) {
+function ModelSelector({
+  models,
+  selected,
+  onChange,
+}: {
+  models: AiModel[];
+  selected: string;
+  onChange: (value: string) => void;
+}) {
   return (
     <div className="relative">
       <select
         value={selected}
-        onChange={(e) => onChange(e.target.value)}
-        className="appearance-none cursor-pointer pl-3 pr-8 py-1.5 text-sm rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-main)] focus:outline-none focus:border-[var(--purple)] transition-colors"
+        onChange={(event) => onChange(event.target.value)}
+        className="appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors focus:border-[var(--purple)] focus:outline-none"
       >
-        {models.map((m) => (
-          <option key={m.name} value={m.name}>
-            {modelDisplayName(m.name)}
-            {m.parameter_size ? ` (${m.parameter_size})` : ''}
+        {models.map((model) => (
+          <option key={model.name} value={model.name}>
+            {modelDisplayName(model.name)}
+            {model.parameter_size ? ` (${model.parameter_size})` : ''}
           </option>
         ))}
       </select>
-      <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 muted" viewBox="0 0 16 16" fill="currentColor">
+      <svg
+        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+      >
         <path d="M8 11L2 5h12z" />
       </svg>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
 export default function AiPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -426,171 +624,598 @@ export default function AiPage() {
   const [modelStorageAvailable, setModelStorageAvailable] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
-  const [messages, setMessages] = useState<ChatEntry[]>([]);
+
+  const [conversations, setConversations] = useState<AiConversationSummary[]>([]);
+  const [conversationDetails, setConversationDetails] = useState<Record<string, UiConversationDetail>>({});
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [conversationError, setConversationError] = useState('');
+  const [conversationsLoading, setConversationsLoading] = useState(false);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
+
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
 
-  const threadRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
+  const [modalBusy, setModalBusy] = useState(false);
+
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    if (!authLoading && !me) router.replace('/login');
-  }, [authLoading, me, router]);
+  const activeConversation = activeConversationId
+    ? conversationDetails[activeConversationId] ?? null
+    : null;
+  const lastActiveMessageContent =
+    activeConversation && activeConversation.messages.length > 0
+      ? activeConversation.messages[activeConversation.messages.length - 1].content
+      : '';
+  const archivedConversations = conversations.filter((conversation) => conversation.archived);
+  const liveConversations = conversations.filter((conversation) => !conversation.archived);
+  const streamingElsewhere =
+    Boolean(streamingConversationId) && streamingConversationId !== activeConversationId;
 
-  const loadModels = useCallback(() => {
-    fetchModels()
-      .then((res) => {
-        setInferenceAvailable(res.inference_available);
-        setServiceUnavailable(res.service_unavailable);
-        setModelStorageAvailable(res.model_storage_available);
-        setModelsError(res.model_storage_error);
-        setModels(res.models);
-        if (res.models.length > 0 && !selectedModel) {
-          setSelectedModel(res.models[0].name);
-        } else if (res.models.length === 0) {
-          setSelectedModel('');
+  const resetComposerHeight = useCallback(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, []);
+
+  const focusComposer = useCallback(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  const storeConversationDetail = useCallback((detail: AiConversationDetail) => {
+    const nextConversation = toUiConversation(detail);
+    setConversationDetails((current) => ({
+      ...current,
+      [nextConversation.id]: nextConversation,
+    }));
+    setConversations((current) =>
+      upsertConversationSummary(current, buildConversationSummary(nextConversation)),
+    );
+  }, []);
+
+  const loadModels = useCallback(async () => {
+    try {
+      const response = await fetchModels();
+      setInferenceAvailable(response.inference_available);
+      setServiceUnavailable(response.service_unavailable);
+      setModelStorageAvailable(response.model_storage_available);
+      setModelsError(response.model_storage_error);
+      setModels(response.models);
+      setSelectedModel((current) => {
+        if (response.models.length === 0) return '';
+        if (current && response.models.some((model) => model.name === current)) {
+          return current;
         }
-      })
-      .catch(() => {
-        setInferenceAvailable(false);
-        setServiceUnavailable(false);
-        setModelStorageAvailable(false);
-        setModelsError('Failed to connect to the Rustyfin backend. Check that the native runtime is online.');
+        return response.models[0].name;
       });
-  }, [selectedModel]);
+    } catch (error) {
+      setInferenceAvailable(false);
+      setServiceUnavailable(false);
+      setModelStorageAvailable(false);
+      setModels([]);
+      setSelectedModel('');
+      setModelsError(
+        clientErrorMessage(
+          error,
+          'Failed to connect to the Rustyfin backend. Check that the native runtime is online.',
+        ),
+      );
+    }
+  }, []);
+
+  const loadConversationList = useCallback(
+    async (preferredConversationId?: string | null) => {
+      setConversationsLoading(true);
+      try {
+        const nextConversations = sortConversationSummaries(
+          await listConversations(true),
+        );
+        setConversationError('');
+        setConversations(nextConversations);
+        setActiveConversationId((current) =>
+          chooseConversationId(nextConversations, preferredConversationId ?? current),
+        );
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to load AI conversations.'),
+        );
+      } finally {
+        setConversationsLoading(false);
+      }
+    },
+    [],
+  );
+
+  const loadConversationDetail = useCallback(
+    async (conversationId: string) => {
+      setLoadingConversationId(conversationId);
+      try {
+        const detail = await getConversation(conversationId);
+        setConversationError('');
+        storeConversationDetail(detail);
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to load this conversation.'),
+        );
+      } finally {
+        setLoadingConversationId((current) =>
+          current === conversationId ? null : current,
+        );
+      }
+    },
+    [storeConversationDetail],
+  );
+
+  const createConversationRecord = useCallback(async () => {
+    const detail = await createConversation();
+    storeConversationDetail(detail);
+    setConversationError('');
+    setActiveConversationId(detail.id);
+    setDrawerOpen(false);
+    return detail;
+  }, [storeConversationDetail]);
+
+  useEffect(() => {
+    if (!authLoading && !me) {
+      router.replace('/login');
+    }
+  }, [authLoading, me, router]);
 
   useEffect(() => {
     if (!me) return;
-    loadModels();
-  }, [me]); // eslint-disable-line react-hooks/exhaustive-deps
+    void loadModels();
+    void loadConversationList();
+  }, [loadConversationList, loadModels, me]);
 
   useEffect(() => {
-    const el = threadRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+    if (!me || !activeConversationId) return;
+    void loadConversationDetail(activeConversationId);
+  }, [activeConversationId, loadConversationDetail, me]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-    e.target.style.height = 'auto';
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+  useEffect(() => {
+    const node = threadRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+  }, [
+    activeConversationId,
+    activeConversation?.messages.length,
+    lastActiveMessageContent,
+  ]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    return () => {
+      stopRef.current?.();
+    };
+  }, []);
+
+  const updateAssistantTurn = useCallback(
+    (
+      conversationId: string,
+      assistantTurnId: string,
+      updater: (turn: UiConversationTurn) => UiConversationTurn,
+    ) => {
+      setConversationDetails((current) => {
+        const conversation = current[conversationId];
+        if (!conversation) return current;
+        return {
+          ...current,
+          [conversationId]: {
+            ...conversation,
+            messages: conversation.messages.map((turn) =>
+              turn.id === assistantTurnId ? updater(turn) : turn,
+            ),
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const finalizeAssistantTurn = useCallback(
+    (conversationId: string, assistantTurnId: string) => {
+      updateAssistantTurn(conversationId, assistantTurnId, (turn) => ({
+        ...turn,
+        isStreaming: false,
+      }));
+    },
+    [updateAssistantTurn],
+  );
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(event.target.value);
+    event.target.style.height = 'auto';
+    event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
   };
 
-  const handleNewChat = useCallback(() => {
-    if (isStreaming && stopRef.current) stopRef.current();
-    setMessages([]);
-    setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.focus();
-    }
-  }, [isStreaming]);
+  const handleSuggestion = useCallback(
+    (value: string) => {
+      setInput(value);
+      requestAnimationFrame(() => {
+        focusComposer();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
+    },
+    [focusComposer],
+  );
 
-  const sendMessage = useCallback(() => {
+  const handleSelectConversation = useCallback(
+    (conversationId: string) => {
+      setConversationError('');
+      setActiveConversationId(conversationId);
+      setDrawerOpen(false);
+      setInput('');
+      resetComposerHeight();
+    },
+    [resetComposerHeight],
+  );
+
+  const handleNewChat = useCallback(async () => {
+    try {
+      setConversationError('');
+      setInput('');
+      resetComposerHeight();
+      await createConversationRecord();
+      requestAnimationFrame(() => focusComposer());
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to create a new conversation.'),
+      );
+    }
+  }, [createConversationRecord, focusComposer, resetComposerHeight]);
+
+  const handleArchiveToggle = useCallback(
+    async (conversation: AiConversationSummary) => {
+      try {
+        setConversationError('');
+        const detail = await updateConversation(conversation.id, {
+          archived: !conversation.archived,
+        });
+        storeConversationDetail(detail);
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to update this conversation.'),
+        );
+      }
+    },
+    [storeConversationDetail],
+  );
+
+  const handleRenameConversation = useCallback((conversation: AiConversationSummary) => {
+    setRenameTarget(conversation);
+    setRenameValue(conversation.title);
+  }, []);
+
+  const confirmRenameConversation = useCallback(async () => {
+    if (!renameTarget) return;
+    const title = renameValue.trim();
+    if (!title) {
+      setConversationError('Conversation title cannot be empty.');
+      return;
+    }
+
+    setModalBusy(true);
+    try {
+      setConversationError('');
+      const detail = await updateConversation(renameTarget.id, { title });
+      storeConversationDetail(detail);
+      setRenameTarget(null);
+      setRenameValue('');
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to rename this conversation.'),
+      );
+    } finally {
+      setModalBusy(false);
+    }
+  }, [renameTarget, renameValue, storeConversationDetail]);
+
+  const handleDeleteConversation = useCallback((conversation: AiConversationSummary) => {
+    if (isStreaming && streamingConversationId === conversation.id) {
+      setConversationError('Stop the active response before deleting this conversation.');
+      return;
+    }
+    setDeleteTarget(conversation);
+  }, [isStreaming, streamingConversationId]);
+
+  const confirmDeleteConversation = useCallback(async () => {
+    if (!deleteTarget) return;
+
+    setModalBusy(true);
+    try {
+      setConversationError('');
+      const targetElement = findDataDeleteTarget(
+        'data-ai-conversation-row-id',
+        deleteTarget.id,
+      );
+      await playTelegramDeleteAnimation(targetElement);
+      await deleteConversation(deleteTarget.id);
+
+      const remainingConversations = conversations.filter(
+        (conversation) => conversation.id !== deleteTarget.id,
+      );
+      const nextActiveId = chooseConversationId(remainingConversations, activeConversationId === deleteTarget.id ? null : activeConversationId);
+
+      setConversations(remainingConversations);
+      setConversationDetails((current) => {
+        const next = { ...current };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      setActiveConversationId(nextActiveId);
+      setDeleteTarget(null);
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to delete this conversation.'),
+      );
+    } finally {
+      setModalBusy(false);
+    }
+  }, [activeConversationId, conversations, deleteTarget]);
+
+  const sendMessage = useCallback(async () => {
     const text = input.trim();
     if (!text || !selectedModel || isStreaming) return;
+    if (inferenceAvailable !== true || !modelStorageAvailable) return;
+    if (activeConversation?.archived) {
+      setConversationError('Restore this archived conversation before sending a new message.');
+      return;
+    }
 
-    const userEntry: ChatEntry = {
-      id: uid(), role: 'user', content: text,
-      isStreaming: false, stats: null, error: null, groundingSources: [], followUpContexts: [], statusUpdates: [],
-    };
-    const assistantId = uid();
-    const assistantEntry: ChatEntry = {
-      id: assistantId, role: 'assistant', content: '',
-      isStreaming: true, stats: null, error: null, groundingSources: [], followUpContexts: [], statusUpdates: [],
-    };
+    let conversationId = activeConversationId;
+    let conversationTitle = activeConversation?.title ?? DEFAULT_CONVERSATION_TITLE;
 
-    setMessages((prev) => [...prev, userEntry, assistantEntry]);
-    setInput('');
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    setIsStreaming(true);
+    try {
+      setConversationError('');
+      if (!conversationId) {
+        const detail = await createConversationRecord();
+        conversationId = detail.id;
+        conversationTitle = detail.title;
+      }
 
-    const history: ChatHistoryMessage[] = messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      grounding_tools:
-        m.role === 'assistant' && m.groundingSources.length > 0
-          ? m.groundingSources.map((source) => source.tool)
-          : undefined,
-      follow_up_contexts:
-        m.role === 'assistant' && m.followUpContexts.length > 0
-          ? m.followUpContexts
-          : undefined,
-    }));
+      if (!conversationId) {
+        throw new Error('No conversation is available for this message.');
+      }
 
-    stopRef.current = streamChat(
-      selectedModel, text, history,
-      (event) => {
-        if (event.type === 'status') {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== assistantId) return m;
-              const nextUpdates = [...m.statusUpdates];
-              const existingIndex = nextUpdates.findIndex((update) => update.tool === event.update.tool);
-              if (existingIndex >= 0) {
-                nextUpdates[existingIndex] = event.update;
-              } else {
-                nextUpdates.push(event.update);
-              }
-              return { ...m, statusUpdates: nextUpdates };
-            }),
-          );
-        } else if (event.type === 'token') {
-          setMessages((prev) =>
-            prev.map((m) => m.id === assistantId ? { ...m, content: m.content + event.text } : m),
-          );
-        } else if (event.type === 'grounding') {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    groundingSources: event.sources,
-                    followUpContexts: event.followUpContexts,
-                  }
-                : m,
+      const sentTs = nowTsSeconds();
+      const userTurnId = uid('local-user');
+      const assistantTurnId = uid('local-assistant');
+      const preview = normalizePreview(text);
+      const nextTitle =
+        conversationTitle === DEFAULT_CONVERSATION_TITLE
+          ? suggestedConversationTitle(text)
+          : conversationTitle;
+
+      const userTurn: UiConversationTurn = {
+        id: userTurnId,
+        role: 'user',
+        content: text,
+        model_name: null,
+        grounding_tools: [],
+        follow_up_contexts: [],
+        grounding_sources: [],
+        activity_trace: [],
+        stats: null,
+        created_ts: sentTs,
+        isStreaming: false,
+        errorMessage: null,
+      };
+
+      const assistantTurn: UiConversationTurn = {
+        id: assistantTurnId,
+        role: 'assistant',
+        content: '',
+        model_name: selectedModel,
+        grounding_tools: [],
+        follow_up_contexts: [],
+        grounding_sources: [],
+        activity_trace: [],
+        stats: null,
+        created_ts: sentTs,
+        isStreaming: true,
+        errorMessage: null,
+      };
+
+      setConversationDetails((current) => {
+        const conversation = current[conversationId!];
+        if (!conversation) return current;
+        return {
+          ...current,
+          [conversationId!]: {
+            ...conversation,
+            title: nextTitle,
+            archived: false,
+            last_message_preview: preview,
+            last_model_name: selectedModel,
+            updated_ts: sentTs,
+            messages: [...conversation.messages, userTurn, assistantTurn],
+          },
+        };
+      });
+      setConversations((current) =>
+        upsertConversationSummary(current, {
+          id: conversationId!,
+          title: nextTitle,
+          last_message_preview: preview,
+          last_model_name: selectedModel,
+          updated_ts: sentTs,
+          archived: false,
+        }),
+      );
+
+      setInput('');
+      resetComposerHeight();
+      setIsStreaming(true);
+      setStreamingConversationId(conversationId);
+      setDrawerOpen(false);
+
+      let completed = false;
+      let latestAssistantContent = '';
+
+      stopRef.current = streamConversationMessage(
+        conversationId,
+        selectedModel,
+        text,
+        (event) => {
+          if (event.type === 'phase') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              activity_trace: mergePhaseEvent(turn.activity_trace, event.phase),
+            }));
+            return;
+          }
+
+          if (event.type === 'tool') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              activity_trace: mergeToolEvent(turn.activity_trace, event.activity),
+            }));
+            return;
+          }
+
+          if (event.type === 'status') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              activity_trace: mergeStatusFallback(turn.activity_trace, event.update),
+            }));
+            return;
+          }
+
+          if (event.type === 'token') {
+            latestAssistantContent += event.text;
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              content: turn.content + event.text,
+              errorMessage: null,
+            }));
+            return;
+          }
+
+          if (event.type === 'grounding') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              grounding_sources: event.sources,
+              follow_up_contexts: event.followUpContexts,
+              grounding_tools: event.sources.map((source) => source.tool),
+            }));
+            return;
+          }
+
+          if (event.type === 'stats') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              stats: event.stats,
+            }));
+            return;
+          }
+
+          if (event.type === 'error') {
+            updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
+              ...turn,
+              isStreaming: false,
+              errorMessage: event.message,
+            }));
+            return;
+          }
+
+          if (event.type === 'done') {
+            completed = true;
+            finalizeAssistantTurn(conversationId!, assistantTurnId);
+            if (latestAssistantContent.trim()) {
+              const finishedTs = nowTsSeconds();
+              setConversations((current) =>
+                upsertConversationSummary(current, {
+                  id: conversationId!,
+                  title: nextTitle,
+                  last_message_preview: normalizePreview(latestAssistantContent),
+                  last_model_name: selectedModel,
+                  updated_ts: finishedTs,
+                  archived: false,
+                }),
+              );
+            }
+          }
+        },
+        () => {
+          stopRef.current = null;
+          setIsStreaming(false);
+          setStreamingConversationId(null);
+          finalizeAssistantTurn(conversationId!, assistantTurnId);
+
+          if (completed) {
+            void loadConversationDetail(conversationId!);
+          }
+        },
+      );
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to send this message.'),
+      );
+    }
+  }, [
+    activeConversation?.archived,
+    activeConversation?.title,
+    activeConversationId,
+    createConversationRecord,
+    finalizeAssistantTurn,
+    inferenceAvailable,
+    input,
+    isStreaming,
+    loadConversationDetail,
+    modelStorageAvailable,
+    resetComposerHeight,
+    selectedModel,
+    updateAssistantTurn,
+  ]);
+
+  const handleStop = useCallback(() => {
+    stopRef.current?.();
+    stopRef.current = null;
+    setIsStreaming(false);
+    if (streamingConversationId) {
+      setConversationDetails((current) => {
+        const conversation = current[streamingConversationId];
+        if (!conversation) return current;
+        return {
+          ...current,
+          [streamingConversationId]: {
+            ...conversation,
+            messages: conversation.messages.map((turn) =>
+              turn.isStreaming ? { ...turn, isStreaming: false } : turn,
             ),
-          );
-        } else if (event.type === 'stats') {
-          setMessages((prev) =>
-            prev.map((m) => m.id === assistantId ? { ...m, stats: { ...event } } : m),
-          );
-        } else if (event.type === 'error') {
-          setMessages((prev) =>
-            prev.map((m) => m.id === assistantId ? { ...m, error: event.message, isStreaming: false } : m),
-          );
-          setIsStreaming(false);
-        } else if (event.type === 'done') {
-          setMessages((prev) =>
-            prev.map((m) => m.id === assistantId ? { ...m, isStreaming: false } : m),
-          );
-          setIsStreaming(false);
-        }
-      },
-      () => {
-        setMessages((prev) =>
-          prev.map((m) => m.id === assistantId ? { ...m, isStreaming: false } : m),
-        );
-        setIsStreaming(false);
-      },
-    );
-  }, [input, selectedModel, isStreaming, messages]);
+          },
+        };
+      });
+    }
+    setStreamingConversationId(null);
+  }, [streamingConversationId]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      sendMessage();
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void sendMessage();
     }
   };
 
-  const handleStop = () => {
-    if (stopRef.current) stopRef.current();
-    setMessages((prev) => prev.map((m) => m.isStreaming ? { ...m, isStreaming: false } : m));
-    setIsStreaming(false);
-  };
-
-  // ---------------------------------------------------------------------------
   if (authLoading) {
     return (
       <div className="panel-soft animate-rise px-5 py-4">
@@ -598,177 +1223,331 @@ export default function AiPage() {
       </div>
     );
   }
-  if (!me) return null;
+
+  if (!me) {
+    return null;
+  }
+
+  const composerDisabled =
+    serviceUnavailable ||
+    inferenceAvailable !== true ||
+    !modelStorageAvailable ||
+    !selectedModel ||
+    isStreaming ||
+    Boolean(activeConversationId && !activeConversation) ||
+    Boolean(activeConversation?.archived);
+
+  const placeholder = activeConversation?.archived
+    ? 'Restore this conversation to keep chatting.'
+    : !selectedModel
+      ? 'No model available.'
+      : streamingElsewhere
+        ? 'Rustyfin AI is still working in another chat.'
+        : 'Ask Rustyfin AI something grounded in your server state…';
 
   return (
     <>
-      <style>{`
-        @keyframes bounce-dot {
-          0%,80%,100%{transform:translateY(0);opacity:.4}
-          40%{transform:translateY(-5px);opacity:1}
-        }
-        @keyframes pulse {
-          0%,100%{opacity:.5;transform:scale(.85)}
-          50%{opacity:1;transform:scale(1.1)}
-        }
-        .ai-cursor{
-          display:inline-block;width:2px;height:1em;
-          background:var(--orange-soft);border-radius:1px;
-          margin-left:1px;vertical-align:text-bottom;
-          animation:ai-blink 900ms step-end infinite;
-        }
-        @keyframes ai-blink{0%,100%{opacity:1}50%{opacity:0}}
-      `}</style>
+      <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)] animate-rise">
+        <div className="hidden h-full shrink-0 sm:flex">
+          <AiConversationRail
+            conversations={liveConversations}
+            archivedConversations={archivedConversations}
+            activeConversationId={activeConversationId}
+            disabled={conversationsLoading}
+            onSelect={handleSelectConversation}
+            onNewChat={() => {
+              void handleNewChat();
+            }}
+            onRename={handleRenameConversation}
+            onArchiveToggle={(conversation) => {
+              void handleArchiveToggle(conversation);
+            }}
+            onDelete={handleDeleteConversation}
+          />
+        </div>
 
-      <div className="flex flex-col animate-rise" style={{ height: 'calc(100dvh - 8.5rem)' }}>
+        {drawerOpen ? (
+          <div
+            className="fixed inset-0 z-40 bg-black/60 sm:hidden"
+            onClick={() => setDrawerOpen(false)}
+          />
+        ) : null}
 
-        {/* ── Header ────────────────────────────────────────────────────── */}
-        <div className="flex-shrink-0 flex items-center justify-between gap-3 mb-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <h1 className="text-xl font-semibold tracking-tight flex-shrink-0">
-              <span className="accent-logo">AI</span>
-              <span className="text-[var(--text-muted)] font-normal ml-2 text-base">Assistant</span>
-            </h1>
-
-            {inferenceAvailable && models.length > 0 && (
-              <ModelSelector models={models} selected={selectedModel} onChange={setSelectedModel} />
-            )}
-
-            {inferenceAvailable === true && (
-              <span className="chip chip-accent text-[0.65rem] flex-shrink-0">
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ background: selectedModel ? 'var(--ok)' : 'var(--text-muted)' }}
-                />
-                {selectedModel ? 'ready' : 'no model'}
-              </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {messages.length > 0 && (
-              <button
-                onClick={handleNewChat}
-                className="px-3 py-1.5 text-xs rounded-xl border border-[var(--border)] muted hover:text-[var(--text-main)] transition-colors"
-              >
-                New chat
-              </button>
-            )}
+        <div
+          className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 sm:hidden ${
+            drawerOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <div className="relative h-full">
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(false)}
+              className="btn-ghost absolute right-3 top-3 z-10 h-9 w-9 rounded-full p-0 text-lg"
+              aria-label="Close conversations"
+            >
+              ×
+            </button>
+            <AiConversationRail
+              conversations={liveConversations}
+              archivedConversations={archivedConversations}
+              activeConversationId={activeConversationId}
+              disabled={conversationsLoading}
+              onSelect={handleSelectConversation}
+              onNewChat={() => {
+                void handleNewChat();
+              }}
+              onRename={handleRenameConversation}
+              onArchiveToggle={(conversation) => {
+                void handleArchiveToggle(conversation);
+              }}
+              onDelete={handleDeleteConversation}
+            />
           </div>
         </div>
 
-        {/* ── Body row ───────────────────────────────────────────────────── */}
-        <div className="panel flex-1 flex overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-3 sm:px-5">
+            <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none sm:hidden"
+                onClick={() => setDrawerOpen(true)}
+                aria-label="Open conversations"
+              >
+                ☰
+              </button>
+              <div className="min-w-0">
+                <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+                  <span className="accent-logo">AI</span>
+                  <span className="text-base font-normal text-[var(--text-muted)]">
+                    Assistant
+                  </span>
+                </h1>
+                <p className="truncate text-xs muted">
+                  {activeConversation?.title ??
+                    liveConversations[0]?.title ??
+                    'Conversation history'}
+                </p>
+              </div>
+              {activeConversation?.archived ? (
+                <span className="chip text-[0.65rem]">Archived</span>
+              ) : null}
+              {streamingElsewhere ? (
+                <span className="chip chip-accent text-[0.65rem]">Active response elsewhere</span>
+              ) : null}
+            </div>
 
-          {/* Chat area */}
-          <div className="flex flex-col flex-1 overflow-hidden">
-            {serviceUnavailable && (
+            <div className="flex items-center gap-2">
+              {inferenceAvailable === true && models.length > 0 ? (
+                <ModelSelector
+                  models={models}
+                  selected={selectedModel}
+                  onChange={setSelectedModel}
+                />
+              ) : null}
+              {inferenceAvailable === true ? (
+                <span className="chip chip-accent hidden text-[0.65rem] sm:inline-flex">
+                  Grounded mode
+                </span>
+              ) : null}
+              {activeConversation?.archived ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const summary = conversations.find(
+                      (conversation) => conversation.id === activeConversation.id,
+                    );
+                    if (summary) {
+                      void handleArchiveToggle(summary);
+                    }
+                  }}
+                  className="btn-primary hidden px-4 py-2 text-sm sm:inline-flex"
+                >
+                  Restore
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {modelsError ? (
+            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
+              {modelsError}
+            </div>
+          ) : null}
+
+          {conversationError ? (
+            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)] px-4 py-2 text-sm text-[var(--danger)]">
+              {conversationError}
+            </div>
+          ) : null}
+
+          {streamingElsewhere && streamingConversationId ? (
+            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
+              Rustyfin AI is still responding in another chat.
+              <button
+                type="button"
+                onClick={() => handleSelectConversation(streamingConversationId)}
+                className="ml-3 font-medium text-[var(--text-main)] underline underline-offset-4"
+              >
+                Jump back
+              </button>
+            </div>
+          ) : null}
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {serviceUnavailable ? (
               <InferenceUnavailable
                 serviceUnavailable
-                description={
-                  modelsError ||
-                  'This host is running without an enabled AI inference backend, so the assistant is unavailable right now.'
-                }
                 showRecommendation={false}
               />
-            )}
-            {!serviceUnavailable && inferenceAvailable === false && (
+            ) : inferenceAvailable === false ? (
               <InferenceUnavailable
-                title="AI needs admin attention"
-                description={
-                  modelsError ||
-                  'Rustyfin could not read local AI models from the configured storage folder. Ask an admin to review Admin > AI.'
-                }
+                title="AI unavailable on this host"
+                description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
                 showRecommendation={false}
               />
-            )}
-            {inferenceAvailable === null && (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-sm muted">Loading…</p>
+            ) : inferenceAvailable === null ? (
+              <div className="flex h-full items-center justify-center">
+                <span className="muted">Loading AI models…</span>
               </div>
-            )}
-            {inferenceAvailable === true && !modelStorageAvailable && (
+            ) : !modelStorageAvailable ? (
               <InferenceUnavailable
                 title="AI model storage is unavailable"
-                description={
-                  modelsError ||
-                  'Rustyfin cannot read the configured AI model folder. Ask an admin to review Admin > AI.'
-                }
+                description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
                 showRecommendation={false}
               />
-            )}
-            {inferenceAvailable === true && !selectedModel && (
+            ) : !selectedModel ? (
               <InferenceUnavailable />
-            )}
-
-            {inferenceAvailable === true && modelStorageAvailable && selectedModel && (
-              <>
-                <div ref={threadRef} className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
-                  {messages.length === 0 && (
-                    <EmptyState
-                      model={selectedModel}
-                      isAdmin={me?.role === 'admin'}
-                      onSuggest={(s) => setInput(s)}
-                    />
-                  )}
-                  {messages.map((entry) => (
-                    <MessageBubble key={entry.id} entry={entry} />
+            ) : activeConversationId && loadingConversationId === activeConversationId && !activeConversation ? (
+              <div className="flex h-full items-center justify-center">
+                <span className="muted">Loading conversation…</span>
+              </div>
+            ) : !activeConversation || activeConversation.messages.length === 0 ? (
+              <EmptyState
+                model={selectedModel}
+                isAdmin={me.role === 'admin'}
+                hasConversation={Boolean(activeConversation)}
+                onNewChat={() => {
+                  void handleNewChat();
+                }}
+                onSuggest={handleSuggestion}
+              />
+            ) : (
+              <div
+                ref={threadRef}
+                className="h-full overflow-y-auto px-3 py-4 sm:px-5 sm:py-5"
+              >
+                <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+                  {activeConversation.messages.map((message) => (
+                    <MessageBubble key={message.id} entry={message} />
                   ))}
                 </div>
-
-                {/* Input bar */}
-                <div className="flex-shrink-0 px-4 pb-4 pt-2 border-t border-[var(--border)]">
-                  <div
-                    className="flex items-end gap-2 rounded-2xl px-3 py-2"
-                    style={{
-                      background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid var(--border-strong)',
-                    }}
-                  >
-                    <textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={handleInputChange}
-                      onKeyDown={handleKeyDown}
-                      placeholder="Message… (Ctrl+Enter to send)"
-                      rows={1}
-                      disabled={isStreaming}
-                      className="flex-1 bg-transparent text-sm text-[var(--text-main)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none py-1 leading-relaxed disabled:opacity-50"
-                      style={{ maxHeight: '160px', minHeight: '1.5rem' }}
-                    />
-                    {isStreaming ? (
-                      <button
-                        onClick={handleStop}
-                        className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-xl transition-colors"
-                        style={{ background: 'rgba(255,117,136,0.16)', border: '1px solid rgba(255,117,136,0.32)' }}
-                        title="Stop generation"
-                      >
-                        <svg className="w-3.5 h-3.5 text-[var(--danger)]" viewBox="0 0 16 16" fill="currentColor">
-                          <rect x="3" y="3" width="10" height="10" rx="1.5" />
-                        </svg>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={sendMessage}
-                        disabled={!input.trim() || !selectedModel}
-                        className="btn-primary flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
-                        title="Send (Ctrl+Enter)"
-                      >
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
-                          <path d="M2 13.5L14 8 2 2.5V6.5l8 1.5-8 1.5z" />
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                  <p className="text-[0.65rem] muted mt-1.5 ml-1">
-                    {selectedModel ? `${modelDisplayName(selectedModel)} · Ctrl+Enter to send` : 'Select a model above'}
-                  </p>
-                </div>
-              </>
+              </div>
             )}
+          </div>
+
+          <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(13,17,28,0.92)] px-3 py-3 sm:px-5">
+            <div className="mx-auto w-full max-w-4xl">
+              <div
+                className="panel-soft flex items-end gap-3 rounded-2xl border border-[var(--border)] px-3 py-3"
+                style={{ background: 'rgba(19,24,38,0.9)' }}
+              >
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  placeholder={placeholder}
+                  className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                  disabled={composerDisabled}
+                  rows={1}
+                />
+
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={handleStop}
+                    className="btn-secondary h-10 px-4 text-sm"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void sendMessage();
+                    }}
+                    className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={composerDisabled || !input.trim()}
+                    aria-label="Send message"
+                  >
+                    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                      <path d="M5 12h12" />
+                      <path d="m13 6 6 6-6 6" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[0.68rem] muted">
+                <span>
+                  Structured thinking, grounded tools, and persisted chats are enabled on this page.
+                </span>
+                <span>Press Ctrl/Command + Enter to send</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+
+      <ConfirmModal
+        open={Boolean(renameTarget)}
+        title="Rename conversation"
+        description="Choose a clearer title for this stored chat."
+        confirmLabel="Save"
+        onConfirm={() => {
+          void confirmRenameConversation();
+        }}
+        onCancel={() => {
+          if (!modalBusy) {
+            setRenameTarget(null);
+            setRenameValue('');
+          }
+        }}
+        confirmDisabled={modalBusy || !renameValue.trim()}
+        cancelDisabled={modalBusy}
+      >
+        <input
+          value={renameValue}
+          onChange={(event) => setRenameValue(event.target.value)}
+          className="panel w-full rounded-xl px-3 py-2 text-sm"
+          placeholder="Conversation title"
+          maxLength={80}
+          autoFocus
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title="Delete conversation"
+        description={
+          deleteTarget
+            ? `Delete "${deleteTarget.title}" and its saved turns from your AI history? Admin audit history is not affected.`
+            : undefined
+        }
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => {
+          void confirmDeleteConversation();
+        }}
+        onCancel={() => {
+          if (!modalBusy) {
+            setDeleteTarget(null);
+          }
+        }}
+        confirmDisabled={modalBusy}
+        cancelDisabled={modalBusy}
+      />
     </>
   );
 }

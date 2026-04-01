@@ -157,6 +157,7 @@ pub async fn run_audit_maintenance_loop(
 #[derive(Debug, Clone, Copy)]
 pub enum AiAssistantAuditResponseKind {
     Clarification,
+    UnsupportedWriteRefusal,
     Completed,
     ModelPathError,
     ModelLoadError,
@@ -169,6 +170,7 @@ impl AiAssistantAuditResponseKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Clarification => "clarification",
+            Self::UnsupportedWriteRefusal => "unsupported_write_refusal",
             Self::Completed => "completed",
             Self::ModelPathError => "model_path_error",
             Self::ModelLoadError => "model_load_error",

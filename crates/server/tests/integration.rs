@@ -2431,6 +2431,411 @@ async fn ai_assistant_grounding_requires_admin_for_remaining_system_summaries() 
 
 #[cfg(feature = "ai")]
 #[tokio::test]
+async fn ai_assistant_grounding_returns_next_visible_calendar_event() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_next_event_user",
+        "ai_next_event_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+
+    let user = rustfin_server::auth::AuthUser {
+        user_id: user_id.clone(),
+        username: "ai_next_event_user".to_string(),
+        role: "user".to_string(),
+    };
+
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let today = chrono::Utc::now().date_naive();
+    let next_date = (today + chrono::Duration::days(2))
+        .format("%Y-%m-%d")
+        .to_string();
+    let later_date = (today + chrono::Duration::days(5))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    create_calendar_event(
+        &state.db,
+        "global",
+        None,
+        "Shared Movie Night",
+        &next_date,
+        "event",
+        "none",
+        &admin_user_id,
+    )
+    .await;
+    create_calendar_event(
+        &state.db,
+        "personal",
+        Some(&user_id),
+        "Dentist Appointment",
+        &next_date,
+        "event",
+        "none",
+        &user_id,
+    )
+    .await;
+    create_calendar_event(
+        &state.db,
+        "personal",
+        Some(&user_id),
+        "Later Check-In",
+        &later_date,
+        "event",
+        "none",
+        &user_id,
+    )
+    .await;
+
+    let blocks = assistant_grounding_for_message(&state, &user, "What's my next event?").await;
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["tool"], "calendar_get_next_event");
+    assert_eq!(blocks[0]["status"], "ok");
+    assert_eq!(
+        blocks[0]["data"]["next_event"]["title"].as_str(),
+        Some("Dentist Appointment")
+    );
+    assert_eq!(
+        blocks[0]["data"]["next_event"]["scope"].as_str(),
+        Some("personal")
+    );
+    assert_eq!(
+        blocks[0]["data"]["next_event"]["next_occurs_on"].as_str(),
+        Some(next_date.as_str())
+    );
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_conversation_routes_enforce_ownership_and_hide_archived_by_default() {
+    let (server, _state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_conversation_owner",
+        "ai_conversation_owner_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_conversation_other",
+        "ai_conversation_other_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+
+    let owner_token = login(
+        &server,
+        "ai_conversation_owner",
+        "ai_conversation_owner_pass_123",
+    )
+    .await;
+    let owner_hdr = auth_hdr(&owner_token);
+    let other_token = login(
+        &server,
+        "ai_conversation_other",
+        "ai_conversation_other_pass_123",
+    )
+    .await;
+    let other_hdr = auth_hdr(&other_token);
+
+    let create_resp = server
+        .post("/api/v1/ai/conversations")
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .json(&json!({}))
+        .await;
+    create_resp.assert_status(axum::http::StatusCode::CREATED);
+    let created_body: Value = create_resp.json();
+    let conversation_id = created_body["conversation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        created_body["conversation"]["title"].as_str(),
+        Some("New chat")
+    );
+
+    let list_resp = server
+        .get("/api/v1/ai/conversations")
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .await;
+    list_resp.assert_status_ok();
+    let list_body: Value = list_resp.json();
+    assert_eq!(list_body["conversations"].as_array().unwrap().len(), 1);
+
+    let other_get = server
+        .get(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(other_hdr.0.clone(), other_hdr.1.clone())
+        .await;
+    other_get.assert_status(axum::http::StatusCode::NOT_FOUND);
+
+    let patch_resp = server
+        .patch(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .json(&json!({
+            "title": "Server checks",
+            "archived": true
+        }))
+        .await;
+    patch_resp.assert_status_ok();
+    let patch_body: Value = patch_resp.json();
+    assert_eq!(
+        patch_body["conversation"]["title"].as_str(),
+        Some("Server checks")
+    );
+    assert_eq!(patch_body["conversation"]["archived"].as_bool(), Some(true));
+
+    let hidden_list_resp = server
+        .get("/api/v1/ai/conversations")
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .await;
+    hidden_list_resp.assert_status_ok();
+    let hidden_list_body: Value = hidden_list_resp.json();
+    assert!(
+        hidden_list_body["conversations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let archived_list_resp = server
+        .get("/api/v1/ai/conversations?include_archived=true")
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .await;
+    archived_list_resp.assert_status_ok();
+    let archived_list_body: Value = archived_list_resp.json();
+    assert_eq!(
+        archived_list_body["conversations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let other_delete = server
+        .delete(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(other_hdr.0.clone(), other_hdr.1.clone())
+        .await;
+    other_delete.assert_status(axum::http::StatusCode::NOT_FOUND);
+
+    let delete_resp = server
+        .delete(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .await;
+    delete_resp.assert_status(axum::http::StatusCode::NO_CONTENT);
+
+    let missing_resp = server
+        .get(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(owner_hdr.0.clone(), owner_hdr.1.clone())
+        .await;
+    missing_resp.assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_conversation_repo_orders_conversations_and_turns() {
+    let (_server, state) = test_app_with_state().await;
+    let admin_user_id = rustfin_db::repo::users::find_by_username(&state.db, "admin")
+        .await
+        .unwrap()
+        .expect("admin user should exist")
+        .id;
+
+    let first = rustfin_db::repo::ai_conversations::create_conversation(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationParams {
+            user_id: &admin_user_id,
+            title: "First",
+        },
+    )
+    .await
+    .unwrap();
+    let second = rustfin_db::repo::ai_conversations::create_conversation(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationParams {
+            user_id: &admin_user_id,
+            title: "Second",
+        },
+    )
+    .await
+    .unwrap();
+
+    sqlx::query("UPDATE ai_conversation SET updated_ts = $1 WHERE id = $2")
+        .bind(200_i64)
+        .bind(&first.id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE ai_conversation SET updated_ts = $1 WHERE id = $2")
+        .bind(100_i64)
+        .bind(&second.id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let ordered = rustfin_db::repo::ai_conversations::list_conversations_for_user(
+        &state.db,
+        &admin_user_id,
+        true,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(ordered.len(), 2);
+    assert_eq!(ordered[0].id, first.id);
+    assert_eq!(ordered[1].id, second.id);
+
+    let first_turn = rustfin_db::repo::ai_conversations::create_turn(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationTurnParams {
+            conversation_id: &first.id,
+            user_id: &admin_user_id,
+            role: "user",
+            content: "Hello there",
+            model_name: None,
+            grounding_tools_json: "[]",
+            follow_up_contexts_json: "[]",
+            grounding_sources_json: "[]",
+            activity_trace_json: "[]",
+            stats_json: None,
+            trace_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let second_turn = rustfin_db::repo::ai_conversations::create_turn(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationTurnParams {
+            conversation_id: &first.id,
+            user_id: &admin_user_id,
+            role: "assistant",
+            content: "Hi",
+            model_name: Some("qwen"),
+            grounding_tools_json: "[]",
+            follow_up_contexts_json: "[]",
+            grounding_sources_json: "[]",
+            activity_trace_json: "[]",
+            stats_json: None,
+            trace_id: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let turns = rustfin_db::repo::ai_conversations::list_turns_for_conversation(
+        &state.db,
+        &first.id,
+        &admin_user_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].id, first_turn.id);
+    assert_eq!(turns[0].turn_index, 0);
+    assert_eq!(turns[1].id, second_turn.id);
+    assert_eq!(turns[1].turn_index, 1);
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_conversation_stream_persists_user_and_server_refusal_turns() {
+    let (server, _state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_conversation_stream_user",
+        "ai_conversation_stream_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let user_token = login(
+        &server,
+        "ai_conversation_stream_user",
+        "ai_conversation_stream_user_pass_123",
+    )
+    .await;
+    let user_hdr = auth_hdr(&user_token);
+
+    let create_resp = server
+        .post("/api/v1/ai/conversations")
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .json(&json!({}))
+        .await;
+    create_resp.assert_status(axum::http::StatusCode::CREATED);
+    let created_body: Value = create_resp.json();
+    let conversation_id = created_body["conversation"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let stream_resp = server
+        .post(&format!(
+            "/api/v1/ai/conversations/{conversation_id}/messages/stream"
+        ))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .json(&json!({
+            "model": "missing-model.gguf",
+            "message": "Add Rachel's birthday to my calendar"
+        }))
+        .await;
+    stream_resp.assert_status_ok();
+    let body = String::from_utf8(stream_resp.as_bytes().to_vec()).unwrap();
+    assert!(body.contains("event: token"));
+    assert!(body.contains("I can view your calendar right now"));
+    assert!(body.contains("event: stats"));
+    assert!(body.contains("event: done"));
+
+    let conversation_resp = server
+        .get(&format!("/api/v1/ai/conversations/{conversation_id}"))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .await;
+    conversation_resp.assert_status_ok();
+    let conversation_body: Value = conversation_resp.json();
+    let messages = conversation_body["conversation"]["messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"].as_str(), Some("user"));
+    assert_eq!(
+        messages[0]["content"].as_str(),
+        Some("Add Rachel's birthday to my calendar")
+    );
+    assert_eq!(messages[1]["role"].as_str(), Some("assistant"));
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("I can view your calendar right now")
+    );
+    assert!(messages[1]["stats"].is_object());
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
 async fn ai_assistant_network_grounding_hides_trusted_proxy_details_from_non_admins() {
     let (server, state) = test_app_with_state().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;

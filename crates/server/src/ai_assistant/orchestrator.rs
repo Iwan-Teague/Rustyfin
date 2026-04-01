@@ -84,6 +84,14 @@ pub async fn prepare_assistant_turn(
     user: &AuthUser,
     request: AssistantChatRequest,
 ) -> PreparedAssistantTurn {
+    if let Some(refusal) = unsupported_write_response_for_message(&request.message) {
+        return PreparedAssistantTurn {
+            messages: Vec::new(),
+            sources: Vec::new(),
+            immediate_response: Some(refusal),
+        };
+    }
+
     if let Some(clarification) = immediate_response_for_message(&request.message) {
         return PreparedAssistantTurn {
             messages: Vec::new(),
@@ -182,6 +190,7 @@ Rules:\n\
 - Use library_search_titles for searching by title.\n\
 - Use libraries_get_recently_added for recently added or newest library items.\n\
 - Use calendar_upcoming_birthdays only for birthday requests, including named questions like \"When is Rachel's birthday?\".\n\
+- Use calendar_get_next_event when the user asks for the next or nearest upcoming calendar event.\n\
 - Use calendar_get_event_details when the user wants more detail about one specific calendar event.\n\
 - Use channels_list_unread_activity for recent visible channel activity; exact unread counts are not available.\n\
 - Use channels_get_transcript_summary when the user asks what a transcribed voice call was about or wants a transcript-based call summary.\n\
@@ -247,6 +256,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
         }
+        AssistantToolName::CalendarGetNextEvent => " Args: none.",
         AssistantToolName::CalendarUpcomingBirthdays => {
             " Args: optional query; the backend derives the birthday time window from the message and can narrow results to a named person."
         }
@@ -441,6 +451,7 @@ fn normalize_model_tool_input(
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::CalendarGetNextEvent
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
@@ -607,9 +618,47 @@ pub fn immediate_response_for_message(message: &str) -> Option<String> {
     clarification_for_message(message)
 }
 
+pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !is_unsupported_write_intent(&lower) {
+        return None;
+    }
+
+    if has_any(
+        &lower,
+        &["calendar", "event", "events", "birthday", "birthdays"],
+    ) {
+        return Some(
+            "I can view your calendar right now, but I can't create or edit calendar entries yet through Rustyfin AI.".to_string(),
+        );
+    }
+    if has_any(&lower, &["room", "rooms"]) {
+        return Some(
+            "I can inspect Rustyfin rooms right now, but I can't create, rename, or delete rooms yet through Rustyfin AI.".to_string(),
+        );
+    }
+    if has_any(&lower, &["server", "servers", "minecraft"]) {
+        return Some(
+            "I can read Minecraft server state right now, but I can't change server records or runtime state yet through Rustyfin AI.".to_string(),
+        );
+    }
+    if has_any(&lower, &["channel", "channels"]) {
+        return Some(
+            "I can read channel activity right now, but I can't create, rename, or delete channels yet through Rustyfin AI.".to_string(),
+        );
+    }
+
+    Some(
+        "I can read Rustyfin data right now, but I can't create, edit, or delete data yet through Rustyfin AI.".to_string(),
+    )
+}
+
 fn clarification_for_message(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
-    if is_non_birthday_calendar_query(&lower) && !calendar_query_has_explicit_window(&lower) {
+    if is_non_birthday_calendar_query(&lower)
+        && !is_next_calendar_event_query(&lower)
+        && !calendar_query_has_explicit_window(&lower)
+    {
         return Some(
             "What time window should I check for your calendar? Try today, tomorrow, this week, next week, this month, or a specific date like 2026-03-22.".to_string(),
         );
@@ -625,6 +674,63 @@ fn clarification_for_message(message: &str) -> Option<String> {
         );
     }
     None
+}
+
+fn is_unsupported_write_intent(message_lower: &str) -> bool {
+    if has_any(
+        message_lower,
+        &[
+            "how do i ",
+            "how can i ",
+            "can i ",
+            "is it possible to ",
+            "do you support ",
+            "does rustyfin ai support ",
+        ],
+    ) {
+        return false;
+    }
+
+    has_any(
+        message_lower,
+        &[
+            "add ",
+            "create ",
+            "make ",
+            "save ",
+            "schedule ",
+            "update ",
+            "edit ",
+            "change ",
+            "modify ",
+            "rename ",
+            "delete ",
+            "remove ",
+            "archive ",
+            "unarchive ",
+            "restore ",
+            "cancel ",
+        ],
+    ) && has_any(
+        message_lower,
+        &[
+            "calendar",
+            "event",
+            "events",
+            "birthday",
+            "birthdays",
+            "room",
+            "rooms",
+            "server",
+            "servers",
+            "channel",
+            "channels",
+            "library",
+            "libraries",
+            "download",
+            "downloads",
+        ],
+    )
 }
 
 fn is_non_birthday_calendar_query(message_lower: &str) -> bool {
@@ -720,6 +826,13 @@ pub fn plan_tool_calls_with_history(
             &mut seen,
             AssistantToolName::CalendarUpcomingBirthdays,
             calendar_input,
+        );
+    } else if is_next_calendar_event_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::CalendarGetNextEvent,
+            AssistantToolInput::None,
         );
     } else if let Some(query) = extract_calendar_event_detail_query(message) {
         let calendar_input = extract_calendar_window(message, 30, Some(query));
@@ -1046,6 +1159,9 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
             AssistantToolInput::CalendarWindow { label, .. },
         ) => format!("Checking calendar events for {label}"),
         (AssistantToolName::CalendarListEvents, _) => "Checking calendar events".to_string(),
+        (AssistantToolName::CalendarGetNextEvent, _) => {
+            "Checking your next calendar event".to_string()
+        }
         (
             AssistantToolName::CalendarUpcomingBirthdays,
             AssistantToolInput::CalendarWindow {
@@ -1299,6 +1415,30 @@ fn apply_follow_up_tool_hints(
                         seen,
                         AssistantToolName::CalendarListEvents,
                         extract_calendar_window(message, 7, None),
+                    );
+                }
+            }
+            AssistantToolName::CalendarGetNextEvent => {
+                if let Some(query) = extract_calendar_event_detail_query(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetEventDetails,
+                        extract_calendar_window(message, 30, Some(query)),
+                    );
+                } else if message_has_calendar_follow_up_hint(message) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarListEvents,
+                        extract_calendar_window(message, 7, None),
+                    );
+                } else if is_next_calendar_event_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::CalendarGetNextEvent,
+                        AssistantToolInput::None,
                     );
                 }
             }
@@ -1559,7 +1699,7 @@ fn apply_follow_up_entity_reference(
     };
 
     match context.tool.as_str() {
-        "calendar_list_events" | "calendar_get_event_details" => {
+        "calendar_list_events" | "calendar_get_next_event" | "calendar_get_event_details" => {
             push_tool(
                 planned,
                 seen,
@@ -1703,7 +1843,10 @@ fn recent_follow_up_contexts(
 fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     match context.tool.as_str() {
-        "calendar_list_events" | "calendar_upcoming_birthdays" | "calendar_get_event_details" => {
+        "calendar_list_events"
+        | "calendar_get_next_event"
+        | "calendar_upcoming_birthdays"
+        | "calendar_get_event_details" => {
             message_has_calendar_follow_up_hint(message)
                 || extract_calendar_event_detail_query(message).is_some()
                 || extract_birthday_query(message).is_some()
@@ -1866,6 +2009,23 @@ fn message_has_calendar_follow_up_hint(message: &str) -> bool {
         )
 }
 
+fn is_next_calendar_event_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "next event",
+            "next calendar event",
+            "coming up next on my calendar",
+            "what is my next event",
+            "what's my next event",
+            "whats my next event",
+            "what is the next event",
+            "what's the next event",
+            "whats the next event",
+        ],
+    ) && !has_any(message_lower, &["birthday", "birthdays"])
+}
+
 fn message_has_channel_follow_up_hint(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     is_channel_activity_query(&lower)
@@ -1918,6 +2078,16 @@ fn message_has_host_runtime_follow_up_hint(message: &str) -> bool {
             "host",
             "system",
             "runtime",
+            "gigabyte",
+            "gigabytes",
+            "gib",
+            "gb",
+            "megabyte",
+            "megabytes",
+            "mib",
+            "mb",
+            "byte",
+            "bytes",
         ],
     )
 }
@@ -3460,7 +3630,7 @@ mod tests {
     use super::{
         AssistantToolName, ModelPlannerResponse, clarification_for_message, normalize_model_plan,
         parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
-        status_label_for_tool_call,
+        status_label_for_tool_call, unsupported_write_response_for_message,
     };
     use crate::ai_assistant::types::{
         AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
@@ -3999,6 +4169,26 @@ mod tests {
             AssistantToolName::SystemGetHostRuntimeSummary
         );
         assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_next_event_queries_to_deterministic_tool() {
+        let tools = plan_tool_calls("What's my next event?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextEvent);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn unsupported_calendar_writes_return_server_refusal() {
+        let refusal =
+            unsupported_write_response_for_message("Add Rachel's birthday to my calendar");
+        assert_eq!(
+            refusal.as_deref(),
+            Some(
+                "I can view your calendar right now, but I can't create or edit calendar entries yet through Rustyfin AI."
+            )
+        );
     }
 
     #[test]

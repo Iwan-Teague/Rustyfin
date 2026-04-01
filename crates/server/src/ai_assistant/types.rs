@@ -90,7 +90,7 @@ pub struct PlannedToolSet {
     pub calls: Vec<PlannedToolCall>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAccessMode {
     ReadOnly,
@@ -98,7 +98,7 @@ pub enum ToolAccessMode {
     DestructiveWrite,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRiskTier {
     Low,
@@ -134,13 +134,27 @@ pub struct AssistantToolSpec {
     pub max_result_bytes: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantGroundingSource {
-    pub tool: &'static str,
+    pub tool: String,
     pub label: String,
     pub access_mode: ToolAccessMode,
     pub risk_tier: ToolRiskTier,
-    pub status: &'static str,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantTurnStats {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_duration_ms: u64,
+    pub generation_duration_ms: u64,
+    pub planner_duration_ms: u64,
+    pub tool_duration_ms: u64,
+    pub end_to_end_duration_ms: u64,
+    pub queue_duration_ms: u64,
+    pub model_load_duration_ms: u64,
+    pub tokens_per_second: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +207,62 @@ pub struct AssistantStatusEvent {
     pub tool: &'static str,
     pub label: String,
     pub kind: AssistantStatusKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantPhase {
+    Planning,
+    Generating,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantPhaseEvent {
+    pub phase: AssistantPhase,
+    pub label: String,
+    pub started_ts_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_ts_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolActivityState {
+    Running,
+    Complete,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantToolActivityEvent {
+    pub id: String,
+    pub tool: String,
+    pub label: String,
+    pub state: AssistantToolActivityState,
+    pub started_ts_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_ts_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AssistantActivityTraceItem {
+    Phase {
+        phase: AssistantPhase,
+        label: String,
+        started_ts_ms: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finished_ts_ms: Option<i64>,
+    },
+    Tool {
+        id: String,
+        tool: String,
+        label: String,
+        state: AssistantToolActivityState,
+        started_ts_ms: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finished_ts_ms: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
