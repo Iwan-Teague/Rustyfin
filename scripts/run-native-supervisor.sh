@@ -81,7 +81,12 @@ while true; do
   for service in "${required_services[@]}"; do
     pidfile="$PID_DIR/${service}.pid"
     if [[ ! -f "$pidfile" ]]; then
-      die "Missing pid file for ${service}: ${pidfile}"
+      replacement_pid="$(find_service_pid "$service" || true)"
+      if [[ -n "$replacement_pid" ]]; then
+        printf '%s' "$replacement_pid" > "$pidfile"
+      else
+        die "Missing pid file for ${service}: ${pidfile}"
+      fi
     fi
     pid="$(cat "$pidfile" 2>/dev/null || true)"
     if ! pid_matches_service "$service" "$pid"; then
