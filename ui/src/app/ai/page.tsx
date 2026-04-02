@@ -1951,9 +1951,9 @@ export default function AiPage() {
       <div className="animate-rise relative left-1/2 right-1/2 w-screen -translate-x-1/2">
         <div className="px-[var(--page-pad-inline)]">
           <div
-            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-8.5rem)] md:min-h-[40rem] ${desktopGridClass}`}
+            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-11rem)] md:max-h-[calc(100dvh-11rem)] md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
           >
-            <div className="hidden md:flex md:min-h-0 md:flex-col md:border-r md:border-[var(--border)]">
+            <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
                   <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
@@ -1982,7 +1982,7 @@ export default function AiPage() {
               </div>
             </div>
 
-            <div className="flex min-w-0 flex-col">
+            <div className="flex min-w-0 flex-col md:min-h-0 md:overflow-hidden">
               <div
                 className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 md:hidden ${
                   drawerOpen ? 'translate-x-0' : '-translate-x-full'
@@ -2052,7 +2052,7 @@ export default function AiPage() {
                 </div>
               </div>
 
-              <section className="flex min-h-[calc(100dvh-8.5rem)] min-w-0 flex-1 flex-col md:min-h-0 md:h-full">
+              <section className="flex min-h-[calc(100dvh-8.5rem)] min-w-0 flex-1 flex-col md:min-h-0 md:h-full md:overflow-hidden">
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
                   <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
                     <div className="flex min-w-0 items-center gap-3">
@@ -2154,7 +2154,7 @@ export default function AiPage() {
                   </div>
                 ) : null}
 
-                <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8">
                   <div className="mx-auto w-full max-w-4xl">
                     {serviceUnavailable ? (
                       <div className="flex min-h-[48vh] items-center justify-center">
@@ -2355,7 +2355,7 @@ export default function AiPage() {
             </div>
 
             {showRuntimePanel ? (
-              <aside className="hidden md:flex md:min-h-0 md:flex-col md:border-l md:border-[var(--border)]">
+              <aside className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-l md:border-[var(--border)]">
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
