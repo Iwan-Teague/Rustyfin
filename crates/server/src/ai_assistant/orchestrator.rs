@@ -67,10 +67,10 @@ pub async fn plan_tool_calls_with_model_assist(
     let model_calls = raw_response
         .as_deref()
         .and_then(parse_model_planner_response)
-        .map(|response| normalize_model_plan(&response, user, message))
+        .map(|response| normalize_model_plan(&response, user, message, history))
         .unwrap_or_default();
 
-    if should_prefer_deterministic_weather_plan(&deterministic) {
+    if should_prefer_deterministic_plan(&deterministic) {
         return PlannedToolSet {
             mode: AssistantPlannerMode::DeterministicFallback,
             calls: deterministic,
@@ -90,7 +90,7 @@ pub async fn plan_tool_calls_with_model_assist(
     }
 }
 
-fn should_prefer_deterministic_weather_plan(calls: &[PlannedToolCall]) -> bool {
+fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
     !calls.is_empty()
         && calls.iter().all(|call| {
             matches!(
@@ -98,6 +98,7 @@ fn should_prefer_deterministic_weather_plan(calls: &[PlannedToolCall]) -> bool {
                 AssistantToolName::WeatherGetCurrent
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
+                    | AssistantToolName::SystemGetCurrentDateTime
             )
         })
 }
@@ -455,6 +456,7 @@ fn normalize_model_plan(
     response: &ModelPlannerResponse,
     user: &AuthUser,
     message: &str,
+    history: &[AssistantHistoryMessage],
 ) -> Vec<PlannedToolCall> {
     if response.mode.as_deref() == Some("none") {
         return Vec::new();
@@ -475,6 +477,9 @@ fn normalize_model_plan(
                 | AssistantToolName::WeatherGetForecast
                 | AssistantToolName::WeatherGetHistory
         ) {
+            if !message_allows_weather_tool(message, history) {
+                continue;
+            }
             let Some(location) = normalize_optional_query(tool.query.clone())
                 .or_else(|| extract_weather_location(message))
             else {
@@ -495,6 +500,20 @@ fn normalize_model_plan(
     }
 
     planned
+}
+
+fn message_allows_weather_tool(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if is_current_datetime_query(&lower) || message_has_current_datetime_follow_up_hint(message) {
+        return false;
+    }
+
+    let has_recent_weather = recent_weather_hint(history).is_some();
+    is_weather_query(&lower)
+        || extract_weather_location(message).is_some()
+        || (has_recent_weather
+            && (extract_standalone_weather_location(message).is_some()
+                || message_has_weather_follow_up_hint(&lower)))
 }
 
 fn tool_visible_to_user(tool: AssistantToolName, user: &AuthUser) -> bool {
@@ -1706,7 +1725,9 @@ fn apply_follow_up_tool_hints(
                 }
             }
             AssistantToolName::SystemGetCurrentDateTime => {
-                if is_current_datetime_query(&message.to_ascii_lowercase()) {
+                if is_current_datetime_query(&message.to_ascii_lowercase())
+                    || message_has_current_datetime_tool_follow_up_hint(message)
+                {
                     push_tool(
                         planned,
                         seen,
@@ -2002,27 +2023,20 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             ],
         ),
         "weather_get_current" | "weather_get_forecast" | "weather_get_history" => {
-            is_weather_query(&lower)
-                || extract_weather_location(message).is_some()
-                || extract_standalone_weather_location(message).is_some()
-                || has_any(
-                    &lower,
-                    &[
-                        "yesterday",
-                        "today",
-                        "tomorrow",
-                        "weekend",
-                        "this week",
-                        "next week",
-                        "rain",
-                        "wind",
-                        "temperature",
-                    ],
-                )
+            !is_current_datetime_query(&lower)
+                && !message_has_current_datetime_follow_up_hint(message)
+                && (is_weather_query(&lower)
+                    || extract_weather_location(message).is_some()
+                    || extract_standalone_weather_location(message).is_some()
+                    || message_has_weather_follow_up_hint(&lower))
         }
         "web_search_public_web" | "web_fetch_public_page_summary" => {
             extract_public_web_url(message).is_some()
                 || extract_public_web_search_query(message).is_some()
+        }
+        "system_get_current_datetime" => {
+            is_current_datetime_query(&lower)
+                || message_has_current_datetime_tool_follow_up_hint(message)
         }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
         "system_get_backup_summary" => is_backup_query(&lower),
@@ -2633,33 +2647,16 @@ fn extract_weather_follow_up_call(
     history: &[AssistantHistoryMessage],
 ) -> Option<(AssistantToolName, AssistantToolInput)> {
     let lower = message.to_ascii_lowercase();
+    if is_current_datetime_query(&lower) || message_has_current_datetime_follow_up_hint(message) {
+        return None;
+    }
     let hint = recent_weather_hint(history)?;
     let explicit_location = extract_weather_location(message);
     let standalone_location = extract_standalone_weather_location(message);
     let has_hint = is_weather_query(&lower)
         || explicit_location.is_some()
         || standalone_location.is_some()
-        || has_any(
-            &lower,
-            &[
-                "yesterday",
-                "today",
-                "tomorrow",
-                "weekend",
-                "this week",
-                "next week",
-                "weather",
-                "forecast",
-                "temperature",
-                "rain",
-                "wind",
-                "humidity",
-                "hot",
-                "cold",
-                "sunny",
-                "cloudy",
-            ],
-        );
+        || message_has_weather_follow_up_hint(&lower);
     if !has_hint {
         return None;
     }
@@ -2705,6 +2702,31 @@ fn extract_weather_follow_up_call(
         )),
         _ => None,
     }
+}
+
+fn message_has_weather_follow_up_hint(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "yesterday",
+            "today",
+            "tomorrow",
+            "weekend",
+            "this week",
+            "next week",
+            "weather",
+            "forecast",
+            "temperature",
+            "rain",
+            "wind",
+            "humidity",
+            "hot",
+            "cold",
+            "sunny",
+            "cloudy",
+            "storm",
+        ],
+    )
 }
 
 fn recent_weather_hint(history: &[AssistantHistoryMessage]) -> Option<RecentWeatherHint> {
@@ -3420,7 +3442,7 @@ fn is_storage_query(message_lower: &str) -> bool {
 }
 
 fn is_current_datetime_query(message_lower: &str) -> bool {
-    has_any(
+    let simple_current_datetime = has_any(
         message_lower,
         &[
             "what date is it",
@@ -3439,23 +3461,198 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "time right now",
             "date right now",
         ],
-    ) || ((message_lower.contains("what date is next ")
-        || message_lower.contains("what day is next ")
-        || message_lower.contains("when is next ")
-        || message_lower.contains("what date is this ")
-        || message_lower.contains("what day is this "))
+    );
+    if simple_current_datetime {
+        return true;
+    }
+
+    if has_any(
+        message_lower,
+        &["calendar", "event", "events", "birthday", "birthdays"],
+    ) {
+        return false;
+    }
+
+    contains_weekday_name(message_lower)
         && has_any(
             message_lower,
             &[
-                "monday",
-                "tuesday",
-                "wednesday",
-                "thursday",
-                "friday",
-                "saturday",
-                "sunday",
+                "what date",
+                "what day",
+                "which date",
+                "which day",
+                "when is",
+                "when would",
+                "what date would",
+                "what day would",
+                "what date does",
+                "what day does",
+                "would be",
+                "falls on",
+                "fall on",
+                "lands on",
+                "land on",
+                "calendar date",
             ],
-        ))
+        )
+}
+
+fn contains_weekday_name(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ],
+    )
+}
+
+fn message_has_current_datetime_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    extract_single_calendar_date(message, assistant_local_today())
+        .map(|(_, matched_text)| {
+            !matches!(
+                matched_text.to_ascii_lowercase().as_str(),
+                "today" | "tomorrow" | "day after tomorrow"
+            )
+        })
+        .unwrap_or(false)
+        || contains_weekday_name(&lower)
+        || contains_day_of_month_reference(&lower)
+        || has_any(
+            &lower,
+            &[
+                "surely",
+                "that would",
+                "it would",
+                "so that would",
+                "so it would",
+                "isn't it",
+                "isnt it",
+                "correct date",
+                "correct day",
+                "wrong date",
+                "wrong day",
+            ],
+        )
+}
+
+fn message_has_current_datetime_tool_follow_up_hint(message: &str) -> bool {
+    message_has_current_datetime_follow_up_hint(message)
+        || extract_single_calendar_date(message, assistant_local_today()).is_some()
+}
+
+fn contains_day_of_month_reference(message_lower: &str) -> bool {
+    message_lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            let suffix = if token.len() > 2 {
+                &token[token.len() - 2..]
+            } else {
+                ""
+            };
+            matches!(suffix, "st" | "nd" | "rd" | "th")
+                && token[..token.len().saturating_sub(2)]
+                    .parse::<u32>()
+                    .ok()
+                    .is_some_and(|day| (1..=31).contains(&day))
+        })
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedCurrentDateTimeSummary {
+    local_date: String,
+    local_time: String,
+    timezone_offset: String,
+}
+
+pub fn deterministic_current_datetime_reply(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    if grounding_blocks.len() != 1 {
+        return None;
+    }
+    let block = grounding_blocks.first()?;
+    if block.tool != "system_get_current_datetime" {
+        return None;
+    }
+    if block.status != "ok" {
+        return Some("I couldn't load the current Rustyfin host date and time.".to_string());
+    }
+
+    let summary =
+        serde_json::from_value::<GroundedCurrentDateTimeSummary>(block.data.clone()).ok()?;
+    let today = NaiveDate::parse_from_str(&summary.local_date, "%Y-%m-%d").ok()?;
+    if let Some((resolved_date, phrase)) =
+        resolve_current_datetime_reference(message, history, today)
+    {
+        return Some(format!(
+            "From Rustyfin's current local date, {}, {} is {}.",
+            format_with_weekday(today),
+            phrase,
+            format_with_weekday(resolved_date),
+        ));
+    }
+
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("time") && !lower.contains("date") && !lower.contains("day") {
+        return Some(format!(
+            "The current Rustyfin host local time is {} on {} (UTC{}).",
+            summary.local_time,
+            format_without_weekday(today),
+            summary.timezone_offset,
+        ));
+    }
+
+    Some(format!(
+        "Today is {}. The current Rustyfin host local time is {} (UTC{}).",
+        format_with_weekday(today),
+        summary.local_time,
+        summary.timezone_offset,
+    ))
+}
+
+fn resolve_current_datetime_reference(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+    today: NaiveDate,
+) -> Option<(NaiveDate, String)> {
+    extract_single_calendar_date(message, today)
+        .or_else(|| recent_current_datetime_reference(history, today))
+}
+
+fn recent_current_datetime_reference(
+    history: &[AssistantHistoryMessage],
+    today: NaiveDate,
+) -> Option<(NaiveDate, String)> {
+    history.iter().rev().find_map(|message| {
+        if !message.role.eq_ignore_ascii_case("user") {
+            return None;
+        }
+
+        let lower = message.content.to_ascii_lowercase();
+        if !is_current_datetime_query(&lower) {
+            return None;
+        }
+
+        extract_single_calendar_date(&message.content, today)
+    })
+}
+
+fn format_with_weekday(date: NaiveDate) -> String {
+    date.format("%A, %B %-d, %Y").to_string()
+}
+
+fn format_without_weekday(date: NaiveDate) -> String {
+    date.format("%B %-d, %Y").to_string()
 }
 
 fn is_recent_errors_query(message_lower: &str) -> bool {
@@ -3954,14 +4151,15 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantToolName, ModelPlannerResponse, clarification_for_message, normalize_model_plan,
+        AssistantToolName, ModelPlannerResponse, clarification_for_message,
+        deterministic_current_datetime_reply, normalize_model_plan,
         parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
         status_label_for_tool_call, unsupported_write_response_for_message,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
         AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-        AssistantHistoryMessage, AssistantToolInput,
+        AssistantHistoryMessage, AssistantToolContextBlock, AssistantToolInput,
     };
     use crate::auth::AuthUser;
 
@@ -4006,6 +4204,22 @@ mod tests {
                     .collect(),
             }],
         }]
+    }
+
+    fn grounded_datetime_block(local_date: &str, weekday: &str) -> AssistantToolContextBlock {
+        AssistantToolContextBlock {
+            tool: "system_get_current_datetime",
+            label: format!("Rustyfin host local date and time: {local_date} ({weekday})"),
+            status: "ok",
+            data: serde_json::json!({
+                "local_timestamp": format!("{local_date} 12:00:00 +00:00"),
+                "local_date": local_date,
+                "local_time": "12:00:00",
+                "weekday": weekday,
+                "timezone_offset": "+00:00",
+                "unix_timestamp": 1775121600_i64,
+            }),
+        }
     }
 
     #[test]
@@ -4257,7 +4471,7 @@ mod tests {
             "{\"mode\":\"none\",\"tools\":[{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
         )
         .expect("expected planner response");
-        let tools = normalize_model_plan(&response, &auth_user("admin"), "Do I have Dune?");
+        let tools = normalize_model_plan(&response, &auth_user("admin"), "Do I have Dune?", &[]);
         assert!(tools.is_empty());
     }
 
@@ -4271,6 +4485,7 @@ mod tests {
             &response,
             &auth_user("user"),
             "How much RAM is the server using and do I have Dune?",
+            &[],
         );
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::LibrarySearchTitles);
@@ -4286,6 +4501,7 @@ mod tests {
             &response,
             &auth_user("admin"),
             "Is the Minecraft server called Survival online?",
+            &[],
         );
         assert_eq!(tools.len(), 1);
         match &tools[0].input {
@@ -4306,8 +4522,12 @@ mod tests {
             "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"}]}",
         )
         .expect("expected planner response");
-        let tools =
-            normalize_model_plan(&response, &auth_user("user"), "What events are this week?");
+        let tools = normalize_model_plan(
+            &response,
+            &auth_user("user"),
+            "What events are this week?",
+            &[],
+        );
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
     }
@@ -4318,7 +4538,22 @@ mod tests {
             "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\"},{\"tool\":\"weather_get_current\"}]}",
         )
         .expect("expected planner response");
-        let tools = normalize_model_plan(&response, &auth_user("user"), "Hello there");
+        let tools = normalize_model_plan(&response, &auth_user("user"), "Hello there", &[]);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn model_planner_rejects_weather_for_current_datetime_question() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"weather_get_forecast\",\"query\":\"London\"}]}",
+        )
+        .expect("expected planner response");
+        let tools = normalize_model_plan(
+            &response,
+            &auth_user("user"),
+            "What day next Tuesday would be?",
+            &[],
+        );
         assert!(tools.is_empty());
     }
 
@@ -4356,6 +4591,54 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_natural_language_current_datetime_queries() {
+        let tools = plan_tool_calls("What day next Tuesday would be?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_datetime_follow_up_corrections() {
+        let history = grounded_history(&["system_get_current_datetime"]);
+        let tools = plan_tool_calls_with_history("Surely it would be the 7th", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn deterministic_current_datetime_reply_uses_grounded_relative_date() {
+        let reply = deterministic_current_datetime_reply(
+            "What day next Tuesday would be?",
+            &[],
+            &[grounded_datetime_block("2026-04-02", "Thursday")],
+        )
+        .expect("expected deterministic reply");
+        assert!(reply.contains("Thursday, April 2, 2026"));
+        assert!(reply.contains("next Tuesday"));
+        assert!(reply.contains("Tuesday, April 7, 2026"));
+    }
+
+    #[test]
+    fn deterministic_current_datetime_reply_uses_recent_datetime_question_for_corrections() {
+        let history = vec![AssistantHistoryMessage {
+            role: "user".to_string(),
+            content: "What day next Tuesday would be?".to_string(),
+            grounding_tools: Vec::new(),
+            follow_up_contexts: Vec::new(),
+        }];
+        let reply = deterministic_current_datetime_reply(
+            "Surely it would be the 7th",
+            &history,
+            &[grounded_datetime_block("2026-04-02", "Thursday")],
+        )
+        .expect("expected deterministic reply");
+        assert!(reply.contains("next Tuesday"));
+        assert!(reply.contains("Tuesday, April 7, 2026"));
     }
 
     #[test]
