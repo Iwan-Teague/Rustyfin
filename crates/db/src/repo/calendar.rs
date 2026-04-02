@@ -1,5 +1,5 @@
 use crate::DbPool;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 
 #[derive(Debug, Clone)]
 pub struct CalendarEventRow {
@@ -359,15 +359,15 @@ pub async fn find_next_visible_event(
     pool: &DbPool,
     user_id: &str,
     is_admin: bool,
+    on_or_after: NaiveDate,
 ) -> Result<Option<NextVisibleCalendarEventRow>, sqlx::Error> {
-    let today = Utc::now().date_naive();
-    let from_date = today.format("%F").to_string();
+    let from_date = on_or_after.format("%F").to_string();
     let events = list_visible_events(pool, user_id, is_admin, &from_date, "9999-12-31").await?;
 
     let mut candidates = events
         .into_iter()
         .filter_map(|event| {
-            next_occurrence_on_or_after(&event, today)
+            next_occurrence_on_or_after(&event, on_or_after)
                 .transpose()
                 .map(|next_occurs_on| {
                     next_occurs_on.map(|next_occurs_on| NextVisibleCalendarEventRow {

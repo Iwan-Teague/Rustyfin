@@ -7,13 +7,13 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures::{future::join_all, StreamExt};
+use futures::{StreamExt, future::join_all};
 use serde::Serialize;
 use serde_json::json;
 use tracing::{info, warn};
 
 use crate::ai_assistant::confirmation::{
-    pending_action_request_for_message, CONFIRMATION_TOKEN_TTL_SECS,
+    CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message_with_state,
 };
 use crate::ai_assistant::context::AssistantContext;
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
@@ -26,14 +26,15 @@ use crate::ai_assistant::types::{
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
-    build_assistant_messages, deterministic_current_datetime_reply, immediate_response_for_message,
+    AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
+    deterministic_current_datetime_reply, immediate_response_for_message,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
-    unsupported_write_response_for_message, AssistantChatRequest,
+    unsupported_write_response_for_message,
 };
-use crate::ai_audit::{persist_chat_audit_event, AiAssistantAuditResponseKind};
+use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
 use crate::ai_conversations::ConversationMessageRequest;
 use crate::ai_storage::{
-    current_model_dir, list_models_with_storage_status, model_file_path, AiModelSummary,
+    AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -417,11 +418,14 @@ fn stream_chat_response(
             return;
         }
 
-        if let Some(result) = pending_action_request_for_message(
+        if let Some(result) = pending_action_request_for_message_with_state(
+            &state,
             &user,
             &req.message,
             persistence.as_ref().map(|value| value.conversation_id.as_str()),
-        ) {
+        )
+        .await
+        {
             let planning_finished_ts_ms = now_ts_ms();
             finish_phase(
                 &mut activity_trace,
@@ -871,6 +875,64 @@ fn stream_chat_response(
             deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
         {
             assistant_content = datetime_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            let grounding_tools = planned_tools
+                .iter()
+                .map(|call| call.tool.as_str().to_string())
+                .collect::<Vec<_>>();
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        } else if let Some(calendar_reply) =
+            deterministic_calendar_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = calendar_reply;
             stats = Some(build_turn_stats(
                 0,
                 0,
@@ -1502,6 +1564,17 @@ fn assistant_text_for_confirmed_action(block: &AssistantToolContextBlock) -> Str
         "your personal calendar"
     };
 
+    if block.tool == "calendar_delete_event" {
+        if event_type == "birthday" {
+            return format!(
+                "I deleted and verified the recurring birthday \"{title}\" from {scope_label}."
+            );
+        }
+        return format!(
+            "I deleted and verified the calendar event \"{title}\" on {human_date} from {scope_label}."
+        );
+    }
+
     if event_type == "birthday" {
         return format!(
             "I created and verified the recurring birthday \"{title}\" on {human_date} in {scope_label}."
@@ -1639,6 +1712,16 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             ..
         } => format!(
             "calendar_create_birthday:scope={scope}:title={title}:date={event_date}:birth_year={birthday_year}"
+        ),
+        AssistantToolInput::CalendarDeleteEvent {
+            event_id,
+            title,
+            event_date,
+            scope,
+            event_type,
+            ..
+        } => format!(
+            "calendar_delete_event:id={event_id}:scope={scope}:title={title}:date={event_date}:type={event_type}"
         ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))

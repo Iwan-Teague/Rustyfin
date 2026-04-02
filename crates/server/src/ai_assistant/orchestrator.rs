@@ -6,7 +6,8 @@ use rustfin_ai_agent::{ChatChunk, ChatMessage, LlamaEngine, SamplingParams};
 use serde::Deserialize;
 
 use super::confirmation::{
-    is_supported_calendar_create_intent, pending_action_request_for_message,
+    is_supported_calendar_create_intent, is_supported_calendar_delete_intent,
+    pending_action_request_for_message_with_state,
 };
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
@@ -99,6 +100,8 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::SystemGetCurrentDateTime
+                    | AssistantToolName::CalendarGetNextEvent
+                    | AssistantToolName::CalendarUpcomingBirthdays
             )
         })
 }
@@ -108,7 +111,9 @@ pub async fn prepare_assistant_turn(
     user: &AuthUser,
     request: AssistantChatRequest,
 ) -> PreparedAssistantTurn {
-    if let Some(result) = pending_action_request_for_message(user, &request.message, None) {
+    if let Some(result) =
+        pending_action_request_for_message_with_state(state, user, &request.message, None).await
+    {
         return PreparedAssistantTurn {
             messages: Vec::new(),
             sources: Vec::new(),
@@ -300,6 +305,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         }
         AssistantToolName::CalendarCreateBirthday => {
             " Args: required person/date/year/scope; explicit user confirmation is required before the backend will execute it."
+        }
+        AssistantToolName::CalendarDeleteEvent => {
+            " Args: required event id/title/date metadata; explicit user confirmation is required before the backend will execute it."
         }
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
@@ -537,7 +545,9 @@ fn normalize_model_tool_input(
     message: &str,
 ) -> Option<AssistantToolInput> {
     match tool {
-        AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => None,
+        AssistantToolName::CalendarCreateEvent
+        | AssistantToolName::CalendarCreateBirthday
+        | AssistantToolName::CalendarDeleteEvent => None,
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
@@ -706,7 +716,7 @@ pub fn immediate_response_for_message(message: &str) -> Option<String> {
 
 pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
-    if is_supported_calendar_create_intent(&lower) {
+    if is_supported_calendar_create_intent(&lower) || is_supported_calendar_delete_intent(&lower) {
         return None;
     }
     if !is_unsupported_write_intent(&lower) {
@@ -1287,6 +1297,13 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
             "Loading calendar event details".to_string()
         }
         (
+            AssistantToolName::CalendarDeleteEvent,
+            AssistantToolInput::CalendarDeleteEvent {
+                title, event_date, ..
+            },
+        ) => format!("Deleting calendar event \"{title}\" on {event_date}"),
+        (AssistantToolName::CalendarDeleteEvent, _) => "Deleting a calendar event".to_string(),
+        (
             AssistantToolName::ChannelsListUnreadActivity,
             AssistantToolInput::ChannelsFilter { query: Some(query) },
         ) => format!("Checking recent channel activity in \"{query}\""),
@@ -1510,7 +1527,9 @@ fn apply_follow_up_tool_hints(
 
     for tool in recent_tools {
         match tool {
-            AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => {}
+            AssistantToolName::CalendarCreateEvent
+            | AssistantToolName::CalendarCreateBirthday
+            | AssistantToolName::CalendarDeleteEvent => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -2134,6 +2153,10 @@ fn is_next_calendar_event_query(message_lower: &str) -> bool {
         &[
             "next event",
             "next calendar event",
+            "next upcoming event",
+            "next thing on my calendar",
+            "next thing coming up",
+            "coming up next in my calendar",
             "coming up next on my calendar",
             "what is my next event",
             "what's my next event",
@@ -2141,6 +2164,9 @@ fn is_next_calendar_event_query(message_lower: &str) -> bool {
             "what is the next event",
             "what's the next event",
             "whats the next event",
+            "what is the next thing coming up in my calendar",
+            "what's the next thing coming up in my calendar",
+            "whats the next thing coming up in my calendar",
         ],
     ) && !has_any(message_lower, &["birthday", "birthdays"])
 }
@@ -3448,10 +3474,15 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "what date is it",
             "what day is it",
             "what time is it",
+            "what is the date",
+            "what is the day",
+            "what is the time",
             "what's the date",
             "whats the date",
             "what's the time",
             "whats the time",
+            "what's today's date",
+            "whats today's date",
             "today's date",
             "todays date",
             "current date",
@@ -3460,6 +3491,10 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "date today",
             "time right now",
             "date right now",
+            "server time",
+            "host time",
+            "fetch the time",
+            "get the time",
         ],
     );
     if simple_current_datetime {
@@ -4152,9 +4187,9 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 mod tests {
     use super::{
         AssistantToolName, ModelPlannerResponse, clarification_for_message,
-        deterministic_current_datetime_reply, normalize_model_plan,
-        parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
-        status_label_for_tool_call, unsupported_write_response_for_message,
+        deterministic_current_datetime_reply, normalize_model_plan, parse_model_planner_response,
+        plan_tool_calls, plan_tool_calls_with_history, status_label_for_tool_call,
+        unsupported_write_response_for_message,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
@@ -4304,6 +4339,9 @@ mod tests {
             }
             AssistantToolInput::CalendarCreateBirthday { .. } => {
                 panic!("unexpected calendar create birthday input")
+            }
+            AssistantToolInput::CalendarDeleteEvent { .. } => {
+                panic!("unexpected calendar delete event input")
             }
         }
     }
@@ -4588,6 +4626,14 @@ mod tests {
     #[test]
     fn planner_routes_current_datetime_queries() {
         let tools = plan_tool_calls("What date is next Tuesday?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_fetch_time_queries() {
+        let tools = plan_tool_calls("Fetch the time on the Rustyfin host");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
@@ -4900,9 +4946,25 @@ mod tests {
     }
 
     #[test]
+    fn planner_routes_next_thing_coming_up_queries_to_deterministic_tool() {
+        let tools = plan_tool_calls("What is the next thing coming up in my calendar?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetNextEvent);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
     fn supported_calendar_create_prompts_skip_server_refusal() {
         let refusal =
             unsupported_write_response_for_message("Add Rachel's birthday to my calendar");
+        assert_eq!(refusal, None);
+    }
+
+    #[test]
+    fn supported_calendar_delete_prompts_skip_server_refusal() {
+        let refusal = unsupported_write_response_for_message(
+            "Delete dentist appointment on 2026-06-09 from my calendar",
+        );
         assert_eq!(refusal, None);
     }
 
