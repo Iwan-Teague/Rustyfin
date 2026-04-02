@@ -18,6 +18,8 @@ use crate::backend::shared_backend;
 use crate::error::AiError;
 use crate::types::{ChatChunk, ChatMessage};
 
+const MAX_PROMPT_DECODE_BATCH_TOKENS: usize = 512;
+
 #[derive(Debug, Clone)]
 pub struct LlamaEngineParams {
     pub n_gpu_layers: i32,
@@ -278,22 +280,31 @@ fn run_decode_loop(
         )));
     }
 
-    let mut prompt_batch = LlamaBatch::new(prompt_tokens.len().max(1), 1);
-    for (index, token) in prompt_tokens.iter().enumerate() {
-        let position = i32::try_from(index).map_err(|_| {
-            AiError::ContextError("prompt too large to fit decode positions".to_string())
-        })?;
-        let is_last = index + 1 == prompt_tokens.len();
-        prompt_batch
-            .add(*token, position, &[0], is_last)
-            .map_err(|error| {
-                AiError::ContextError(format!("failed to build prompt batch: {error}"))
-            })?;
-    }
+    let prompt_batch_capacity = prompt_decode_batch_capacity(prompt_tokens.len());
+    let mut prompt_tokens_decoded = 0_usize;
+    let mut last_batch_tokens = 0;
 
-    ctx.decode(&mut prompt_batch).map_err(|error| {
-        AiError::InferenceError(format!("llama decode failed on prompt: {error}"))
-    })?;
+    for chunk in prompt_tokens.chunks(prompt_batch_capacity) {
+        let mut prompt_batch = LlamaBatch::new(chunk.len().max(1), 1);
+        for (chunk_index, token) in chunk.iter().enumerate() {
+            let index = prompt_tokens_decoded + chunk_index;
+            let position = i32::try_from(index).map_err(|_| {
+                AiError::ContextError("prompt too large to fit decode positions".to_string())
+            })?;
+            let is_last = index + 1 == prompt_tokens.len();
+            prompt_batch
+                .add(*token, position, &[0], is_last)
+                .map_err(|error| {
+                    AiError::ContextError(format!("failed to build prompt batch: {error}"))
+                })?;
+        }
+
+        ctx.decode(&mut prompt_batch).map_err(|error| {
+            AiError::InferenceError(format!("llama decode failed on prompt: {error}"))
+        })?;
+        last_batch_tokens = prompt_batch.n_tokens();
+        prompt_tokens_decoded += chunk.len();
+    }
 
     let temperature = if sampling.temperature.is_finite() {
         sampling.temperature.max(0.0)
@@ -324,7 +335,6 @@ fn run_decode_loop(
     let started = Instant::now();
     let prompt_token_count = prompt_tokens.len() as u64;
     let mut completion_tokens = 0_u64;
-    let mut last_batch_tokens = prompt_batch.n_tokens();
     let mut next_position = i32::try_from(prompt_tokens.len()).unwrap_or(i32::MAX);
     let mut token_decoder = encoding_rs::UTF_8.new_decoder();
     let mut decode_batch = LlamaBatch::new(1, 1);
@@ -380,9 +390,16 @@ fn run_decode_loop(
     Ok(())
 }
 
+fn prompt_decode_batch_capacity(prompt_token_count: usize) -> usize {
+    prompt_token_count.clamp(1, MAX_PROMPT_DECODE_BATCH_TOKENS)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LlamaGpuSplitMode, normalize_device_indices};
+    use super::{
+        LlamaGpuSplitMode, MAX_PROMPT_DECODE_BATCH_TOKENS, normalize_device_indices,
+        prompt_decode_batch_capacity,
+    };
 
     #[test]
     fn normalize_device_indices_keeps_all_unique_devices_for_split_modes() {
@@ -413,6 +430,17 @@ mod tests {
         assert_eq!(
             normalize_device_indices(vec![], LlamaGpuSplitMode::None, Some(1)),
             vec![1]
+        );
+    }
+
+    #[test]
+    fn prompt_decode_batch_capacity_clamps_to_safe_prefill_chunks() {
+        assert_eq!(prompt_decode_batch_capacity(0), 1);
+        assert_eq!(prompt_decode_batch_capacity(1), 1);
+        assert_eq!(prompt_decode_batch_capacity(128), 128);
+        assert_eq!(
+            prompt_decode_batch_capacity(MAX_PROMPT_DECODE_BATCH_TOKENS + 900),
+            MAX_PROMPT_DECODE_BATCH_TOKENS
         );
     }
 }
