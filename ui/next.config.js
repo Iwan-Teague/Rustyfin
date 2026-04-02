@@ -1,5 +1,8 @@
-const apiBaseUrl = process.env.RUSTYFIN_API_BASE_URL || 'http://localhost:8096';
-const calendarApiBaseUrl = process.env.RUSTYFIN_CALENDAR_API_BASE_URL || 'http://localhost:8099';
+const backendPort = process.env.RUSTFIN_BACKEND_PORT || '8097';
+const calendarPort = process.env.RUSTFIN_CALENDAR_PORT || '8099';
+const apiBaseUrl = process.env.RUSTYFIN_API_BASE_URL || `http://127.0.0.1:${backendPort}`;
+const calendarApiBaseUrl =
+  process.env.RUSTYFIN_CALENDAR_API_BASE_URL || `http://127.0.0.1:${calendarPort}`;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
