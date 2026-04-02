@@ -317,6 +317,14 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
                 .map(|days| days.to_string())
                 .unwrap_or_else(|| "current".to_string())
         ),
+        AssistantToolInput::WeatherHistory {
+            location,
+            start_date,
+            end_date,
+            label,
+        } => format!(
+            "weather_history:location={location}:label={label}:range={start_date}->{end_date}"
+        ),
         AssistantToolInput::WebSearch { query } => format!("web_search:{query}"),
         AssistantToolInput::WebFetch { url } => format!("web_fetch:{url}"),
         AssistantToolInput::RoomsFilter { room_mode, query } => format!(

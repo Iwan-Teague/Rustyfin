@@ -70,6 +70,13 @@ pub async fn plan_tool_calls_with_model_assist(
         .map(|response| normalize_model_plan(&response, user, message))
         .unwrap_or_default();
 
+    if should_prefer_deterministic_weather_plan(&deterministic) {
+        return PlannedToolSet {
+            mode: AssistantPlannerMode::DeterministicFallback,
+            calls: deterministic,
+        };
+    }
+
     if !model_calls.is_empty() || (raw_response.is_some() && deterministic.is_empty()) {
         return PlannedToolSet {
             mode: AssistantPlannerMode::ModelStructured,
@@ -81,6 +88,18 @@ pub async fn plan_tool_calls_with_model_assist(
         mode: AssistantPlannerMode::DeterministicFallback,
         calls: deterministic,
     }
+}
+
+fn should_prefer_deterministic_weather_plan(calls: &[PlannedToolCall]) -> bool {
+    !calls.is_empty()
+        && calls.iter().all(|call| {
+            matches!(
+                call.tool,
+                AssistantToolName::WeatherGetCurrent
+                    | AssistantToolName::WeatherGetForecast
+                    | AssistantToolName::WeatherGetHistory
+            )
+        })
 }
 
 pub async fn prepare_assistant_turn(
@@ -215,7 +234,8 @@ Rules:\n\
 - Use channels_get_transcript_summary when the user asks what a transcribed voice call was about or wants a transcript-based call summary.\n\
 - Use network_get_topology_summary for Rustyfin network, interface, IP address, hostname, remote-access, proxy, or topology questions.\n\
 - Use weather_get_current for current weather, temperature, wind, or conditions right now.\n\
-- Use weather_get_forecast for forecast, tomorrow, weekend, next few days, rain chance, or weather planning questions.\n\
+- Use weather_get_forecast for forecast, tomorrow, weekend, this week, next few days, rain chance, or weather planning questions.\n\
+- Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
 - Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
@@ -306,6 +326,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::WeatherGetCurrent => " Args: required location.",
         AssistantToolName::WeatherGetForecast => {
             " Args: required location; the backend derives a short forecast window from the message."
+        }
+        AssistantToolName::WeatherGetHistory => {
+            " Args: required location; the backend derives the recent history date window from the message."
         }
         AssistantToolName::WebSearchPublicWeb => " Args: required query.",
         AssistantToolName::WebFetchPublicPageSummary => " Args: required url.",
@@ -446,6 +469,25 @@ fn normalize_model_plan(
         if !tool_visible_to_user(parsed_tool, user) {
             continue;
         }
+        if matches!(
+            parsed_tool,
+            AssistantToolName::WeatherGetCurrent
+                | AssistantToolName::WeatherGetForecast
+                | AssistantToolName::WeatherGetHistory
+        ) {
+            let Some(location) = normalize_optional_query(tool.query.clone())
+                .or_else(|| extract_weather_location(message))
+            else {
+                continue;
+            };
+            let Some((weather_tool, weather_input)) =
+                weather_tool_call_for_location(message, location)
+            else {
+                continue;
+            };
+            push_tool(&mut planned, &mut seen, weather_tool, weather_input);
+            continue;
+        }
         let Some(input) = normalize_model_tool_input(parsed_tool, tool, message) else {
             continue;
         };
@@ -535,16 +577,11 @@ fn normalize_model_tool_input(
             query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_recent_library_query(message)),
         }),
-        AssistantToolName::WeatherGetCurrent => Some(AssistantToolInput::Weather {
-            location: normalize_optional_query(response.query.clone())
-                .or_else(|| extract_weather_location(message))?,
-            forecast_days: None,
-        }),
-        AssistantToolName::WeatherGetForecast => Some(AssistantToolInput::Weather {
-            location: normalize_optional_query(response.query.clone())
-                .or_else(|| extract_weather_location(message))?,
-            forecast_days: Some(extract_weather_forecast_days(message)),
-        }),
+        AssistantToolName::WeatherGetCurrent
+        | AssistantToolName::WeatherGetForecast
+        | AssistantToolName::WeatherGetHistory => normalize_optional_query(response.query.clone())
+            .or_else(|| extract_weather_location(message))
+            .and_then(|location| weather_tool_input_for_location(message, location)),
         AssistantToolName::WebSearchPublicWeb => Some(AssistantToolInput::WebSearch {
             query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_public_web_search_query(message))?,
@@ -966,18 +1003,11 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if let Some(weather_input) = extract_weather_input(message) {
-        let weather_tool = match weather_input {
-            AssistantToolInput::Weather {
-                forecast_days: Some(_),
-                ..
-            } => AssistantToolName::WeatherGetForecast,
-            AssistantToolInput::Weather {
-                forecast_days: None,
-                ..
-            } => AssistantToolName::WeatherGetCurrent,
-            _ => AssistantToolName::WeatherGetCurrent,
-        };
+    if is_weather_query(&lower)
+        && let Some(location) = extract_weather_location(message)
+        && let Some((weather_tool, weather_input)) =
+            weather_tool_call_for_location(message, location)
+    {
         push_tool(&mut planned, &mut seen, weather_tool, weather_input);
     }
 
@@ -1291,6 +1321,12 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::WeatherGetForecast, AssistantToolInput::Weather { location, .. }) => {
             format!("Checking weather forecast for \"{location}\"")
         }
+        (
+            AssistantToolName::WeatherGetHistory,
+            AssistantToolInput::WeatherHistory {
+                location, label, ..
+            },
+        ) => format!("Checking recent weather history for {label} in \"{location}\""),
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
         }
@@ -1633,7 +1669,9 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
-            AssistantToolName::WeatherGetCurrent | AssistantToolName::WeatherGetForecast => {
+            AssistantToolName::WeatherGetCurrent
+            | AssistantToolName::WeatherGetForecast
+            | AssistantToolName::WeatherGetHistory => {
                 if let Some((tool, input)) = extract_weather_follow_up_call(message, history) {
                     push_tool(planned, seen, tool, input);
                 }
@@ -1963,12 +2001,14 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
                 "companion",
             ],
         ),
-        "weather_get_current" | "weather_get_forecast" => {
+        "weather_get_current" | "weather_get_forecast" | "weather_get_history" => {
             is_weather_query(&lower)
                 || extract_weather_location(message).is_some()
+                || extract_standalone_weather_location(message).is_some()
                 || has_any(
                     &lower,
                     &[
+                        "yesterday",
                         "today",
                         "tomorrow",
                         "weekend",
@@ -2496,22 +2536,96 @@ fn extract_transcript_channel_query(message: &str) -> Option<String> {
     extract_channel_query(message)
 }
 
-fn extract_weather_input(message: &str) -> Option<AssistantToolInput> {
+#[derive(Debug, Clone)]
+struct RecentWeatherHint {
+    tool: AssistantToolName,
+    location: String,
+    forecast_days: Option<u8>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    label: Option<String>,
+}
+
+fn weather_tool_input_for_location(message: &str, location: String) -> Option<AssistantToolInput> {
+    weather_tool_call_for_location(message, location).map(|(_, input)| input)
+}
+
+fn weather_tool_call_for_location(
+    message: &str,
+    location: String,
+) -> Option<(AssistantToolName, AssistantToolInput)> {
     let lower = message.to_ascii_lowercase();
-    if !is_weather_query(&lower) {
-        return None;
+    let today = assistant_local_today();
+
+    if let Some((start_date, end_date, label)) = extract_weather_history_window(message, today) {
+        return Some((
+            AssistantToolName::WeatherGetHistory,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: start_date.format("%F").to_string(),
+                end_date: end_date.format("%F").to_string(),
+                label,
+            },
+        ));
     }
 
-    let location = extract_weather_location(message)?;
-    let forecast_days = if weather_prefers_forecast(&lower) {
-        Some(extract_weather_forecast_days(message))
-    } else {
-        None
-    };
-    Some(AssistantToolInput::Weather {
-        location,
-        forecast_days,
-    })
+    if weather_prefers_current(&lower) {
+        return Some((
+            AssistantToolName::WeatherGetCurrent,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: None,
+            },
+        ));
+    }
+
+    if weather_prefers_forecast(&lower) {
+        return Some((
+            AssistantToolName::WeatherGetForecast,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: Some(extract_weather_forecast_days(message)),
+            },
+        ));
+    }
+
+    if let Some((date, label)) = extract_single_calendar_date(message, today) {
+        if date < today {
+            return Some((
+                AssistantToolName::WeatherGetHistory,
+                AssistantToolInput::WeatherHistory {
+                    location,
+                    start_date: date.format("%F").to_string(),
+                    end_date: date.format("%F").to_string(),
+                    label,
+                },
+            ));
+        }
+        if date == today {
+            return Some((
+                AssistantToolName::WeatherGetCurrent,
+                AssistantToolInput::Weather {
+                    location,
+                    forecast_days: None,
+                },
+            ));
+        }
+        return Some((
+            AssistantToolName::WeatherGetForecast,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: Some(((date - today).num_days() + 1).clamp(1, 7) as u8),
+            },
+        ));
+    }
+
+    Some((
+        AssistantToolName::WeatherGetCurrent,
+        AssistantToolInput::Weather {
+            location,
+            forecast_days: None,
+        },
+    ))
 }
 
 fn extract_weather_follow_up_call(
@@ -2519,12 +2633,16 @@ fn extract_weather_follow_up_call(
     history: &[AssistantHistoryMessage],
 ) -> Option<(AssistantToolName, AssistantToolInput)> {
     let lower = message.to_ascii_lowercase();
-    let (default_tool, fallback_location, fallback_days) = recent_weather_hint(history)?;
+    let hint = recent_weather_hint(history)?;
+    let explicit_location = extract_weather_location(message);
+    let standalone_location = extract_standalone_weather_location(message);
     let has_hint = is_weather_query(&lower)
-        || extract_weather_location(message).is_some()
+        || explicit_location.is_some()
+        || standalone_location.is_some()
         || has_any(
             &lower,
             &[
+                "yesterday",
                 "today",
                 "tomorrow",
                 "weekend",
@@ -2546,40 +2664,66 @@ fn extract_weather_follow_up_call(
         return None;
     }
 
-    let location = extract_weather_location(message).unwrap_or(fallback_location);
-    let tool = weather_follow_up_tool(&lower, default_tool);
-    let explicit_forecast_days = if weather_prefers_forecast(&lower) {
-        Some(extract_weather_forecast_days(message))
-    } else {
-        None
-    };
-    let forecast_days = match tool {
-        AssistantToolName::WeatherGetForecast => {
-            explicit_forecast_days.or(fallback_days).or(Some(3))
-        }
-        _ => None,
-    };
+    let location = explicit_location
+        .or(standalone_location)
+        .unwrap_or_else(|| hint.location.clone());
+    if is_weather_query(&lower)
+        || lower.contains("today")
+        || lower.contains("tomorrow")
+        || lower.contains("yesterday")
+        || lower.contains("week")
+        || lower.contains("weekend")
+    {
+        return weather_tool_call_for_location(message, location);
+    }
 
-    Some((
-        tool,
-        AssistantToolInput::Weather {
-            location,
-            forecast_days,
-        },
-    ))
+    match hint.tool {
+        AssistantToolName::WeatherGetCurrent => Some((
+            AssistantToolName::WeatherGetCurrent,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: None,
+            },
+        )),
+        AssistantToolName::WeatherGetForecast => Some((
+            AssistantToolName::WeatherGetForecast,
+            AssistantToolInput::Weather {
+                location,
+                forecast_days: hint.forecast_days.or(Some(3)),
+            },
+        )),
+        AssistantToolName::WeatherGetHistory => Some((
+            AssistantToolName::WeatherGetHistory,
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date: hint.start_date?,
+                end_date: hint.end_date?,
+                label: hint
+                    .label
+                    .unwrap_or_else(|| "the same recent weather window".to_string()),
+            },
+        )),
+        _ => None,
+    }
 }
 
-fn recent_weather_hint(
-    history: &[AssistantHistoryMessage],
-) -> Option<(AssistantToolName, String, Option<u8>)> {
+fn recent_weather_hint(history: &[AssistantHistoryMessage]) -> Option<RecentWeatherHint> {
     for context in recent_follow_up_contexts(history) {
         let tool = match context.tool.as_str() {
             "weather_get_current" => AssistantToolName::WeatherGetCurrent,
             "weather_get_forecast" => AssistantToolName::WeatherGetForecast,
+            "weather_get_history" => AssistantToolName::WeatherGetHistory,
             _ => continue,
         };
         let location = context.input_hint.weather_location.clone()?;
-        return Some((tool, location, context.input_hint.weather_days));
+        return Some(RecentWeatherHint {
+            tool,
+            location,
+            forecast_days: context.input_hint.weather_days,
+            start_date: context.input_hint.weather_start_date.clone(),
+            end_date: context.input_hint.weather_end_date.clone(),
+            label: context.input_hint.weather_label.clone(),
+        });
     }
     None
 }
@@ -2599,19 +2743,6 @@ fn recent_transcript_query_hint(history: &[AssistantHistoryMessage]) -> Option<S
     None
 }
 
-fn weather_follow_up_tool(
-    message_lower: &str,
-    default_tool: AssistantToolName,
-) -> AssistantToolName {
-    if weather_prefers_forecast(message_lower) {
-        AssistantToolName::WeatherGetForecast
-    } else if weather_prefers_current(message_lower) {
-        AssistantToolName::WeatherGetCurrent
-    } else {
-        default_tool
-    }
-}
-
 fn is_weather_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -2621,6 +2752,7 @@ fn is_weather_query(message_lower: &str) -> bool {
             "temperature",
             "rain",
             "raining",
+            "precipitation",
             "wind",
             "windy",
             "humidity",
@@ -2648,6 +2780,14 @@ fn weather_prefers_current(message_lower: &str) -> bool {
             "how warm",
         ],
     ) && !weather_prefers_forecast(message_lower)
+        && !weather_prefers_history(message_lower)
+}
+
+fn weather_prefers_history(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &["yesterday", "last night", "last week", "earlier today"],
+    )
 }
 
 fn weather_prefers_forecast(message_lower: &str) -> bool {
@@ -2670,6 +2810,12 @@ fn weather_prefers_forecast(message_lower: &str) -> bool {
 
 fn extract_weather_forecast_days(message: &str) -> u8 {
     let lower = message.to_ascii_lowercase();
+    let today = assistant_local_today();
+    if let Some((date, _label)) = extract_single_calendar_date(message, today)
+        && date >= today
+    {
+        return ((date - today).num_days() + 1).clamp(1, 7) as u8;
+    }
     if lower.contains("tomorrow") {
         2
     } else if lower.contains("today") {
@@ -2709,6 +2855,8 @@ fn extract_weather_location(message: &str) -> Option<String> {
         "humid for ",
         "hot in ",
         "cold in ",
+        " for ",
+        " in ",
     ] {
         if let Some(candidate) = extract_location_after_marker(message, &lower, marker) {
             return Some(candidate);
@@ -2736,10 +2884,13 @@ fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
         " currently",
         " today",
         " tomorrow",
+        " yesterday",
         " this week",
         " next week",
         " this weekend",
         " weekend",
+        " last week",
+        " last night",
         " next few days",
         " in the next ",
         " over the next ",
@@ -2760,6 +2911,61 @@ fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
         return None;
     }
     Some(candidate.to_string())
+}
+
+fn extract_standalone_weather_location(message: &str) -> Option<String> {
+    let candidate = normalize_weather_location_candidate(message)?;
+    let lower = candidate.to_ascii_lowercase();
+    if has_any(
+        &lower,
+        &[
+            "weather",
+            "forecast",
+            "temperature",
+            "rain",
+            "wind",
+            "humidity",
+            "today",
+            "tomorrow",
+            "yesterday",
+            "weekend",
+            "this week",
+            "next week",
+        ],
+    ) || [
+        "what ", "when ", "where ", "why ", "how ", "will ", "did ", "does ", "is ", "are ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+    {
+        return None;
+    }
+    candidate
+        .chars()
+        .any(|ch| ch.is_ascii_alphabetic())
+        .then_some(candidate)
+}
+
+fn extract_weather_history_window(
+    message: &str,
+    today: NaiveDate,
+) -> Option<(NaiveDate, NaiveDate, String)> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("yesterday") || lower.contains("last night") {
+        let date = today - Duration::days(1);
+        return Some((date, date, "yesterday".to_string()));
+    }
+    if lower.contains("last week") {
+        let start = today - Duration::days(7);
+        let end = today - Duration::days(1);
+        return Some((start, end, "last week".to_string()));
+    }
+    if let Some((date, label)) = extract_single_calendar_date(message, today)
+        && date < today
+    {
+        return Some((date, date, label));
+    }
+    None
 }
 
 fn extract_public_web_url(message: &str) -> Option<String> {
@@ -3752,6 +3958,7 @@ mod tests {
         parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
         status_label_for_tool_call, unsupported_write_response_for_message,
     };
+    use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
         AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
         AssistantHistoryMessage, AssistantToolInput,
@@ -3871,6 +4078,9 @@ mod tests {
             AssistantToolInput::DownloadsFilter { .. } => panic!("unexpected downloads filter"),
             AssistantToolInput::LibraryRecent { .. } => panic!("unexpected recent library input"),
             AssistantToolInput::Weather { .. } => panic!("unexpected weather input"),
+            AssistantToolInput::WeatherHistory { .. } => {
+                panic!("unexpected weather history input")
+            }
             AssistantToolInput::WebSearch { .. } => panic!("unexpected web search"),
             AssistantToolInput::WebFetch { .. } => panic!("unexpected web fetch"),
             AssistantToolInput::RoomsFilter { .. } => panic!("unexpected room filter"),
@@ -3954,6 +4164,49 @@ mod tests {
                 assert_eq!(*forecast_days, Some(2));
             }
             _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn planner_detects_weather_history_query() {
+        let tools = plan_tool_calls("Did it rain yesterday in Galway?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetHistory);
+        match &tools[0].input {
+            AssistantToolInput::WeatherHistory {
+                location,
+                start_date,
+                end_date,
+                label,
+            } => {
+                let expected = (assistant_local_today() - chrono::Duration::days(1))
+                    .format("%F")
+                    .to_string();
+                assert_eq!(location, "Galway");
+                assert_eq!(start_date, &expected);
+                assert_eq!(end_date, &expected);
+                assert_eq!(label, "yesterday");
+            }
+            _ => panic!("expected weather history input"),
+        }
+    }
+
+    #[test]
+    fn planner_extracts_weather_location_with_county_phrase() {
+        let tools = plan_tool_calls(
+            "What is the weather going to be like this week for Campile in County Wexford?",
+        );
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Campile in County Wexford");
+                assert_eq!(*forecast_days, Some(7));
+            }
+            _ => panic!("expected weather forecast input"),
         }
     }
 
@@ -4314,6 +4567,32 @@ mod tests {
                 assert_eq!(*forecast_days, Some(2));
             }
             _ => panic!("expected weather input"),
+        }
+    }
+
+    #[test]
+    fn planner_uses_weather_follow_up_history_for_bare_location() {
+        let history = history_with_follow_up_context(
+            "weather_get_forecast",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Dublin".to_string()),
+                weather_days: Some(7),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("Campile, County Wexford, Ireland", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Campile, County Wexford, Ireland");
+                assert_eq!(*forecast_days, Some(7));
+            }
+            _ => panic!("expected weather forecast input"),
         }
     }
 

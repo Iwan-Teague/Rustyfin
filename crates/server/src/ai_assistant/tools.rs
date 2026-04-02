@@ -4,7 +4,7 @@ use std::ffi::CString;
 #[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 
-use chrono::{Datelike, Duration, Utc};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde::Serialize;
 use serde_json::json;
 
@@ -16,7 +16,9 @@ use super::types::{
     AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
     ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
 };
-use super::weather::{fetch_public_weather_current, fetch_public_weather_forecast};
+use super::weather::{
+    fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
+};
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
 use crate::state::AppState;
 
@@ -475,6 +477,7 @@ pub async fn execute_tool(
         }
         AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
         AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
+        AssistantToolName::WeatherGetHistory => weather_get_history(state, context, call).await,
         AssistantToolName::WebSearchPublicWeb => web_search_public_web(state, context, call).await,
         AssistantToolName::WebFetchPublicPageSummary => {
             web_fetch_public_page_summary(state, context, call).await
@@ -817,6 +820,31 @@ async fn weather_get_forecast(
             forecast.resolved_location
         ),
         serde_json::to_value(forecast).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn weather_get_history(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::WeatherHistory {
+        location,
+        start_date,
+        end_date,
+        ..
+    } = &call.input
+    else {
+        return Err("missing public weather history input".to_string());
+    };
+    let start_date = NaiveDate::parse_from_str(start_date, "%F")
+        .map_err(|error| format!("invalid public weather history start date: {error}"))?;
+    let end_date = NaiveDate::parse_from_str(end_date, "%F")
+        .map_err(|error| format!("invalid public weather history end date: {error}"))?;
+    let history = fetch_public_weather_history(location, start_date, end_date).await?;
+    Ok((
+        format!("Recent weather history for {}", history.resolved_location),
+        serde_json::to_value(history).unwrap_or_else(|_| json!({})),
     ))
 }
 
@@ -2337,6 +2365,7 @@ fn calendar_window_for_call(
         | AssistantToolInput::LibrarySearch { .. }
         | AssistantToolInput::LibraryRecent { .. }
         | AssistantToolInput::Weather { .. }
+        | AssistantToolInput::WeatherHistory { .. }
         | AssistantToolInput::WebSearch { .. }
         | AssistantToolInput::WebFetch { .. }
         | AssistantToolInput::RoomsFilter { .. }
@@ -3371,6 +3400,22 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
         } => AssistantFollowUpInputHint {
             weather_location: Some(location.clone()),
             weather_days: *forecast_days,
+            weather_start_date: None,
+            weather_end_date: None,
+            weather_label: None,
+            ..AssistantFollowUpInputHint::default()
+        },
+        AssistantToolInput::WeatherHistory {
+            location,
+            start_date,
+            end_date,
+            label,
+        } => AssistantFollowUpInputHint {
+            weather_location: Some(location.clone()),
+            weather_days: None,
+            weather_start_date: Some(start_date.clone()),
+            weather_end_date: Some(end_date.clone()),
+            weather_label: Some(label.clone()),
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::WebSearch { query } => AssistantFollowUpInputHint {
@@ -3745,6 +3790,7 @@ fn follow_up_entities(
         }],
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
+        | AssistantToolName::WeatherGetHistory
         | AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
