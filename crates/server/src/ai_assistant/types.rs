@@ -61,6 +61,12 @@ pub enum AssistantToolInput {
         location: String,
         forecast_days: Option<u8>,
     },
+    WeatherHistory {
+        location: String,
+        start_date: String,
+        end_date: String,
+        label: String,
+    },
     WebSearch {
         query: String,
     },
@@ -196,6 +202,9 @@ pub struct AssistantFollowUpInputHint {
     pub library_query: Option<String>,
     pub weather_location: Option<String>,
     pub weather_days: Option<u8>,
+    pub weather_start_date: Option<String>,
+    pub weather_end_date: Option<String>,
+    pub weather_label: Option<String>,
     pub web_search_query: Option<String>,
     pub web_url: Option<String>,
 }

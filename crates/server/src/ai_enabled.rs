@@ -24,6 +24,7 @@ use crate::ai_assistant::types::{
     AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
     AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
 };
+use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, immediate_response_for_message,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
@@ -866,6 +867,64 @@ fn stream_chat_response(
             }
         }
 
+        if let Some(weather_reply) = deterministic_weather_reply(&req.message, &grounding_blocks) {
+            assistant_content = weather_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            let grounding_tools = planned_tools
+                .iter()
+                .map(|call| call.tool.as_str().to_string())
+                .collect::<Vec<_>>();
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
         let generation_phase_started_ms = now_ts_ms();
         let generation_started = Instant::now();
         set_engine_phase(&state, AssistantRuntimePhase::Generating).await;
@@ -1545,6 +1604,14 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             forecast_days
                 .map(|days| days.to_string())
                 .unwrap_or_else(|| "current".to_string())
+        ),
+        AssistantToolInput::WeatherHistory {
+            location,
+            start_date,
+            end_date,
+            label,
+        } => format!(
+            "weather_history:location={location}:label={label}:range={start_date}->{end_date}"
         ),
         AssistantToolInput::WebSearch { query } => format!("web_search:{query}"),
         AssistantToolInput::WebFetch { url } => format!("web_fetch:{url}"),
