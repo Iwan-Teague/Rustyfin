@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react';
+
 import { type AiConversationSummary } from '@/lib/aiApi';
 
 function formatUpdated(updatedTs: number): string {
@@ -34,63 +36,89 @@ function ConversationRow({
   onArchive: () => void;
   onDelete: () => void;
 }) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [menuOpen]);
+
+  const runAction = (callback: () => void) => {
+    setMenuOpen(false);
+    callback();
+  };
+
   return (
     <div
       data-ai-conversation-row-id={conversation.id}
-      className="rounded-2xl border transition-colors"
+      className="relative border-b transition-colors last:border-b-0"
       style={{
-        borderColor: active ? 'rgba(255,145,77,0.28)' : 'var(--border)',
+        borderColor: 'var(--border)',
         background: active
-          ? 'linear-gradient(135deg, rgba(255,145,77,0.11), rgba(157,116,255,0.12))'
-          : 'rgba(255,255,255,0.03)',
+          ? 'linear-gradient(135deg, rgba(255,145,77,0.08), rgba(157,116,255,0.08))'
+          : 'transparent',
       }}
     >
-      <button
-        type="button"
-        onClick={onSelect}
-        disabled={disabled}
-        className="w-full text-left px-3.5 py-3 disabled:opacity-60"
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-[var(--text-main)]">
+      <div className="flex items-start gap-2 px-3.5 py-3">
+        <button
+          type="button"
+          onClick={onSelect}
+          disabled={disabled}
+          className="min-w-0 flex-1 text-left disabled:opacity-60"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 truncate text-sm font-medium text-[var(--text-main)]">
               {conversation.title}
             </div>
-            <div className="mt-1 truncate text-[0.72rem] muted">
-              {conversation.last_message_preview ?? 'No messages yet'}
-            </div>
+            <span className="shrink-0 pt-0.5 text-[0.64rem] muted">
+              {formatUpdated(conversation.updated_ts)}
+            </span>
           </div>
-          <span className="shrink-0 text-[0.64rem] muted">
-            {formatUpdated(conversation.updated_ts)}
-          </span>
-        </div>
-      </button>
+        </button>
 
-      <div className="flex items-center gap-2 px-3.5 pb-3">
-        <button
-          type="button"
-          onClick={onRename}
-          disabled={disabled}
-          className="text-[0.64rem] muted hover:text-[var(--text-main)] disabled:opacity-40"
-        >
-          Rename
-        </button>
-        <button
-          type="button"
-          onClick={onArchive}
-          disabled={disabled}
-          className="text-[0.64rem] muted hover:text-[var(--text-main)] disabled:opacity-40"
-        >
-          {archiveLabel}
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          disabled={disabled}
-          className="text-[0.64rem] text-[var(--danger)] disabled:opacity-40"
-        >
-          Delete
-        </button>
+        <div ref={menuRef} className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((current) => !current)}
+            disabled={disabled}
+            className="btn-ghost flex h-8 w-8 items-center justify-center rounded-full p-0 text-lg leading-none disabled:opacity-40"
+            aria-label="Conversation actions"
+          >
+            ⋯
+          </button>
+          {menuOpen ? (
+            <div className="absolute right-0 top-[calc(100%+0.35rem)] z-20 min-w-[9rem] overflow-hidden rounded-xl border border-[var(--border)] bg-[rgba(16,20,31,0.98)] shadow-[0_18px_44px_rgba(0,0,0,0.34)]">
+              <button
+                type="button"
+                onClick={() => runAction(onRename)}
+                className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                onClick={() => runAction(onArchive)}
+                className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+              >
+                {archiveLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => runAction(onDelete)}
+                className="block w-full px-3 py-2 text-left text-xs text-[var(--danger)] transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+              >
+                Delete
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -121,9 +149,9 @@ export default function AiConversationRail({
 }) {
   return (
     <aside
-      className={`flex min-h-0 w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.84)] backdrop-blur-xl sm:w-[19rem] ${className}`}
+      className={`flex min-h-0 w-[min(19rem,88vw)] flex-col bg-transparent sm:w-[19rem] ${className}`}
     >
-      <div className="border-b border-[var(--border)] px-4 py-4">
+      <div className="shrink-0 border-b border-[var(--border)] px-4 py-4">
         <button
           type="button"
           onClick={onNewChat}
@@ -140,7 +168,7 @@ export default function AiConversationRail({
             Recent
           </div>
           {conversations.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-[var(--border)] px-4 py-6 text-center text-[0.75rem] muted">
+            <div className="border border-dashed border-[var(--border)] px-4 py-6 text-center text-[0.75rem] muted">
               No saved chats yet
             </div>
           ) : (
