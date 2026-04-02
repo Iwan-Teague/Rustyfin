@@ -1195,6 +1195,8 @@ export default function AiPage() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
   const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [composerShellHeight, setComposerShellHeight] = useState(176);
+  const [desktopViewport, setDesktopViewport] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -1204,6 +1206,7 @@ export default function AiPage() {
   const queuedPromptsRef = useRef<QueuedPromptMap>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const composerShellRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const composerMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1433,6 +1436,19 @@ export default function AiPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const media = window.matchMedia('(min-width: 768px)');
+    const update = () => setDesktopViewport(media.matches);
+    update();
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', update);
+      return () => media.removeEventListener('change', update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
+
+  useEffect(() => {
     if (!autoStickToBottomRef.current) return;
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom('auto');
@@ -1464,6 +1480,17 @@ export default function AiPage() {
   }, [drawerOpen, runtimeDrawerOpen]);
 
   useEffect(() => {
+    if (typeof document === 'undefined' || (!drawerOpen && !runtimeDrawerOpen)) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [drawerOpen, runtimeDrawerOpen]);
+
+  useEffect(() => {
     if (!composerMenuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
       if (!composerMenuRef.current?.contains(event.target as Node)) {
@@ -1479,6 +1506,30 @@ export default function AiPage() {
     setRuntimeDrawerOpen(false);
     setDesktopRuntimeOpen(false);
   }, [inferenceAvailable, selectedModel]);
+
+  useEffect(() => {
+    const node = composerShellRef.current;
+    if (!node) return;
+
+    const updateHeight = () => {
+      setComposerShellHeight(node.getBoundingClientRect().height);
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => updateHeight());
+      observer.observe(node);
+      window.addEventListener('resize', updateHeight);
+      return () => {
+        observer.disconnect();
+        window.removeEventListener('resize', updateHeight);
+      };
+    }
+
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -2296,22 +2347,107 @@ export default function AiPage() {
   const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
   const desktopRailWidth = desktopRailOpen ? 'clamp(15rem, 18vw, 18rem)' : '0px';
   const desktopRuntimeWidth = showDesktopRuntimePanel ? 'clamp(16rem, 19vw, 20rem)' : '0px';
+  const messageScrollPaddingBottom = desktopViewport
+    ? Math.max(composerShellHeight + 16, 48)
+    : Math.max(composerShellHeight + 20, 176);
 
   return (
     <>
-      {drawerOpen ? (
+      <div
+        className={`fixed inset-0 z-[70] md:hidden ${drawerOpen ? '' : 'pointer-events-none'}`}
+        aria-hidden={drawerOpen ? 'false' : 'true'}
+      >
         <div
-          className="fixed inset-0 z-40 bg-black/60 md:hidden"
+          className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${
+            drawerOpen ? 'opacity-100' : 'opacity-0'
+          }`}
           onClick={() => setDrawerOpen(false)}
         />
-      ) : null}
-
-      {runtimeDrawerOpen ? (
         <div
-          className="fixed inset-0 z-40 bg-black/60 md:hidden"
+          className={`absolute inset-y-0 left-0 flex w-[min(19rem,75vw)] max-w-[75vw] flex-col border-r border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl backdrop-blur-xl transition-transform duration-200 ${
+            drawerOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+            <div>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                Conversations
+              </p>
+              <p className="mt-1 text-xs muted">Saved chats and history</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(false)}
+              className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+              aria-label="Close conversations"
+            >
+              ×
+            </button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <AiConversationRail
+              conversations={liveConversations}
+              archivedConversations={archivedConversations}
+              activeConversationId={activeConversationId}
+              disabled={conversationsLoading}
+              className="h-full border-r-0 sm:w-full"
+              onSelect={handleSelectConversation}
+              onNewChat={() => {
+                void handleNewChat();
+              }}
+              onRename={handleRenameConversation}
+              onArchiveToggle={(conversation) => {
+                void handleArchiveToggle(conversation);
+              }}
+              onDelete={handleDeleteConversation}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div
+        className={`fixed inset-0 z-[70] md:hidden ${runtimeDrawerOpen ? '' : 'pointer-events-none'}`}
+        aria-hidden={runtimeDrawerOpen ? 'false' : 'true'}
+      >
+        <div
+          className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${
+            runtimeDrawerOpen ? 'opacity-100' : 'opacity-0'
+          }`}
           onClick={() => setRuntimeDrawerOpen(false)}
         />
-      ) : null}
+        <div
+          className={`absolute inset-y-0 right-0 flex w-[min(20rem,75vw)] max-w-[75vw] flex-col border-l border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl backdrop-blur-xl transition-transform duration-200 ${
+            runtimeDrawerOpen ? 'translate-x-0' : 'translate-x-full'
+          }`}
+        >
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+            <div>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                AI Runtime
+              </p>
+              <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRuntimeDrawerOpen(false)}
+              className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+              aria-label="Close runtime panel"
+            >
+              ×
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <RuntimePanel
+              runtime={runtime}
+              conversationStats={activeConversationStats}
+              showDetails={showPromptDetails}
+              onToggleDetails={() => setShowPromptDetails((current) => !current)}
+              className="space-y-0"
+              stacked
+            />
+          </div>
+        </div>
+      </div>
 
       <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
         <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
@@ -2345,85 +2481,9 @@ export default function AiPage() {
             </aside>
 
             <div className="flex min-w-0 flex-col md:min-h-0 md:overflow-hidden">
-              <div
-                className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 md:hidden ${
-                  drawerOpen ? 'translate-x-0' : '-translate-x-full'
-                }`}
-              >
-                <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl">
-                  <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                    <div>
-                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                        Conversations
-                      </p>
-                      <p className="mt-1 text-xs muted">Saved chats and history</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDrawerOpen(false)}
-                      className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                      aria-label="Close conversations"
-                    >
-                      ×
-                    </button>
-                  </div>
-                  <div className="min-h-0 flex-1">
-                    <AiConversationRail
-                      conversations={liveConversations}
-                      archivedConversations={archivedConversations}
-                      activeConversationId={activeConversationId}
-                      disabled={conversationsLoading}
-                      className="h-full border-r-0 sm:w-full"
-                      onSelect={handleSelectConversation}
-                      onNewChat={() => {
-                        void handleNewChat();
-                      }}
-                      onRename={handleRenameConversation}
-                      onArchiveToggle={(conversation) => {
-                        void handleArchiveToggle(conversation);
-                      }}
-                      onDelete={handleDeleteConversation}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div
-                className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden border-t border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl transition-transform duration-200 md:hidden ${
-                  runtimeDrawerOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'
-                }`}
-              >
-                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                  <div>
-                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                      AI Runtime
-                    </p>
-                    <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setRuntimeDrawerOpen(false)}
-                    className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                    aria-label="Close runtime panel"
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="overflow-y-auto p-4">
-                  <RuntimePanel
-                    runtime={runtime}
-                    conversationStats={activeConversationStats}
-                    showDetails={showPromptDetails}
-                    onToggleDetails={() => setShowPromptDetails((current) => !current)}
-                    className="space-y-0"
-                    stacked
-                  />
-                </div>
-              </div>
-
               <section className="flex min-h-0 min-w-0 flex-1 flex-col md:h-full md:overflow-hidden">
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
-                  <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex items-start justify-between gap-3 px-3 py-3 sm:px-5 sm:py-4 md:items-center">
                     <div className="flex min-w-0 items-center gap-3">
                       <button
                         type="button"
@@ -2432,6 +2492,7 @@ export default function AiPage() {
                           if (typeof window !== 'undefined' && window.innerWidth >= 768) {
                             setDesktopRailOpen((current) => !current);
                           } else {
+                            setRuntimeDrawerOpen(false);
                             setDrawerOpen(true);
                           }
                         }}
@@ -2457,7 +2518,7 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+                    <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
                       {showRuntimePanel ? (
                         <button
                           type="button"
@@ -2465,6 +2526,7 @@ export default function AiPage() {
                             if (typeof window !== 'undefined' && window.innerWidth >= 768) {
                               setDesktopRuntimeOpen((current) => !current);
                             } else {
+                              setDrawerOpen(false);
                               setRuntimeDrawerOpen(true);
                             }
                           }}
@@ -2535,7 +2597,8 @@ export default function AiPage() {
                 <div
                   ref={messageScrollRef}
                   onScroll={handleMessageScroll}
-                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-44 pt-5 sm:px-5 sm:pb-36 sm:pt-6 md:pb-8"
+                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
+                  style={{ paddingBottom: `${messageScrollPaddingBottom}px` }}
                 >
                   <div className="mx-auto w-full max-w-4xl">
                     {serviceUnavailable ? (
@@ -2605,7 +2668,10 @@ export default function AiPage() {
                   </div>
                 </div>
 
-                <div className="sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)] bg-transparent">
+                <div
+                  ref={composerShellRef}
+                  className="sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)] bg-transparent"
+                >
                   <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-wrap items-center gap-2">
