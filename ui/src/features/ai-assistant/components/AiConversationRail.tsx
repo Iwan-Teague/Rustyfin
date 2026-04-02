@@ -101,6 +101,7 @@ export default function AiConversationRail({
   archivedConversations,
   activeConversationId,
   disabled,
+  className = '',
   onSelect,
   onNewChat,
   onRename,
@@ -111,6 +112,7 @@ export default function AiConversationRail({
   archivedConversations: AiConversationSummary[];
   activeConversationId: string | null;
   disabled: boolean;
+  className?: string;
   onSelect: (conversationId: string) => void;
   onNewChat: () => void;
   onRename: (conversation: AiConversationSummary) => void;
@@ -118,7 +120,9 @@ export default function AiConversationRail({
   onDelete: (conversation: AiConversationSummary) => void;
 }) {
   return (
-    <aside className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(0,0,0,0.2)] sm:w-[19rem]">
+    <aside
+      className={`flex min-h-0 w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.84)] backdrop-blur-xl sm:w-[19rem] ${className}`}
+    >
       <div className="border-b border-[var(--border)] px-4 py-4">
         <button
           type="button"
