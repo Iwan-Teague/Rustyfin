@@ -199,6 +199,30 @@ textarea:focus-visible {
   padding-block: clamp(1rem, 2.1vw, 2rem);
 }
 
+@media (min-width: 768px) {
+  html[data-rf-page="ai"],
+  body[data-rf-page="ai"] {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  body[data-rf-page="ai"] .app-shell {
+    display: flex;
+    min-height: 100dvh;
+    height: 100dvh;
+    flex-direction: column;
+    padding-bottom: 0;
+  }
+
+  body[data-rf-page="ai"] .app-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+}
+
 .panel {
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.06), rgba(20, 24, 36, 0.92));
   border: 1px solid rgba(215, 223, 255, 0.17);
