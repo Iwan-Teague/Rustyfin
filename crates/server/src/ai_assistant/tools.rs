@@ -5,6 +5,7 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono_tz::Tz;
 use futures::{StreamExt, future::join_all};
 use rustfin_ai_agent::{ChatChunk, ChatMessage, SamplingParams};
 use serde::Serialize;
@@ -22,6 +23,7 @@ use super::types::{
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
+    resolve_public_location_timezone,
 };
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
 use crate::ai_generated_artifacts::artifact_download_path;
@@ -315,6 +317,9 @@ struct CurrentDateTimeAssistantSummary {
     local_time: String,
     weekday: String,
     timezone_offset: String,
+    timezone_name: Option<String>,
+    resolved_location: Option<String>,
+    location_query: Option<String>,
     unix_timestamp: i64,
 }
 
@@ -506,7 +511,7 @@ pub async fn execute_tool(
         AssistantToolName::RoomsListActive => rooms_list_active(state, context, call).await,
         AssistantToolName::RoomsListJoinable => rooms_list_joinable(state, context, call).await,
         AssistantToolName::RoomsGetRoomSummary => room_get_room_summary(state, context, call).await,
-        AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime().await,
+        AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime(call).await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
@@ -2332,22 +2337,59 @@ async fn system_get_host_runtime_summary(
     ))
 }
 
-async fn system_get_current_datetime() -> Result<(String, serde_json::Value), String> {
-    let now = assistant_local_now();
-    let summary = CurrentDateTimeAssistantSummary {
-        local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        local_date: now.format("%F").to_string(),
-        local_time: now.format("%H:%M:%S").to_string(),
-        weekday: now.format("%A").to_string(),
-        timezone_offset: now.format("%:z").to_string(),
-        unix_timestamp: now.timestamp(),
+async fn system_get_current_datetime(
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let requested_location = match &call.input {
+        AssistantToolInput::CurrentDateTime { location } => location.clone(),
+        AssistantToolInput::None => None,
+        _ => None,
+    };
+
+    let (label, summary) = if let Some(location) = requested_location {
+        let resolved = resolve_public_location_timezone(&location).await?;
+        let timezone = resolved.timezone.parse::<Tz>().map_err(|error| {
+            format!("failed to parse public timezone for \"{location}\": {error}")
+        })?;
+        let now = Utc::now().with_timezone(&timezone);
+        (
+            format!("Current date and time for {}", resolved.resolved_location),
+            CurrentDateTimeAssistantSummary {
+                local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+                local_date: now.format("%F").to_string(),
+                local_time: now.format("%H:%M:%S").to_string(),
+                weekday: now.format("%A").to_string(),
+                timezone_offset: now.format("%:z").to_string(),
+                timezone_name: Some(resolved.timezone),
+                resolved_location: Some(resolved.resolved_location),
+                location_query: Some(resolved.location_query),
+                unix_timestamp: now.timestamp(),
+            },
+        )
+    } else {
+        let now = assistant_local_now();
+        (
+            format!(
+                "Rustyfin host local date and time: {} ({})",
+                now.format("%F"),
+                now.format("%A")
+            ),
+            CurrentDateTimeAssistantSummary {
+                local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+                local_date: now.format("%F").to_string(),
+                local_time: now.format("%H:%M:%S").to_string(),
+                weekday: now.format("%A").to_string(),
+                timezone_offset: now.format("%:z").to_string(),
+                timezone_name: None,
+                resolved_location: None,
+                location_query: None,
+                unix_timestamp: now.timestamp(),
+            },
+        )
     };
 
     Ok((
-        format!(
-            "Rustyfin host local date and time: {} ({})",
-            summary.local_date, summary.weekday
-        ),
+        label,
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
 }
@@ -2838,6 +2880,7 @@ fn calendar_window_for_call(
             "the calendar event".to_string(),
         ),
         AssistantToolInput::None
+        | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
         | AssistantToolInput::DocumentCreateDownload { .. }
@@ -3907,6 +3950,10 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
         },
         AssistantToolInput::WebFetch { url } => AssistantFollowUpInputHint {
             web_url: Some(url.clone()),
+            ..AssistantFollowUpInputHint::default()
+        },
+        AssistantToolInput::CurrentDateTime { location } => AssistantFollowUpInputHint {
+            current_datetime_location: location.clone(),
             ..AssistantFollowUpInputHint::default()
         },
         AssistantToolInput::RoomsFilter { room_mode, query } => AssistantFollowUpInputHint {

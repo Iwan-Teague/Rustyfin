@@ -268,6 +268,10 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
 
     match input {
         AssistantToolInput::None => "none".to_string(),
+        AssistantToolInput::CurrentDateTime { location } => format!(
+            "current_datetime:location={}",
+            location.as_deref().unwrap_or("host")
+        ),
         AssistantToolInput::CalendarWindow {
             from_date,
             to_date,

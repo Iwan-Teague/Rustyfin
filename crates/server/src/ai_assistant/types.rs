@@ -88,6 +88,9 @@ pub enum AssistantToolInput {
     WebFetch {
         url: String,
     },
+    CurrentDateTime {
+        location: Option<String>,
+    },
     RoomsFilter {
         room_mode: Option<String>,
         query: Option<String>,
@@ -228,6 +231,7 @@ pub struct AssistantFollowUpInputHint {
     pub weather_start_date: Option<String>,
     pub weather_end_date: Option<String>,
     pub weather_label: Option<String>,
+    pub current_datetime_location: Option<String>,
     pub web_search_query: Option<String>,
     pub web_url: Option<String>,
 }

@@ -250,7 +250,7 @@ Rules:\n\
 - Use weather_get_forecast for forecast, tomorrow, weekend, this week, next few days, rain chance, or weather planning questions.\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
-- Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
+- Use system_get_current_datetime for current date/time questions, including named locations like Italy or France, or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
@@ -354,7 +354,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::RoomsListActive => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
-        AssistantToolName::SystemGetCurrentDateTime => " Args: none.",
+        AssistantToolName::SystemGetCurrentDateTime => {
+            " Args: optional location; the backend resolves named places to a timezone when needed."
+        }
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
         }
@@ -563,13 +565,15 @@ fn normalize_model_tool_input(
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::CalendarGetNextEvent
-        | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => Some(AssistantToolInput::None),
+        AssistantToolName::SystemGetCurrentDateTime => {
+            Some(extract_current_datetime_input(message))
+        }
         AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7, None)),
         AssistantToolName::CalendarUpcomingBirthdays => Some(extract_calendar_window(
             message,
@@ -1086,7 +1090,7 @@ pub fn plan_tool_calls_with_history(
             &mut planned,
             &mut seen,
             AssistantToolName::SystemGetCurrentDateTime,
-            AssistantToolInput::None,
+            extract_current_datetime_input(message),
         );
     }
 
@@ -1389,6 +1393,12 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
         }
+        (
+            AssistantToolName::SystemGetCurrentDateTime,
+            AssistantToolInput::CurrentDateTime {
+                location: Some(location),
+            },
+        ) => format!("Checking the current local time for \"{location}\""),
         (AssistantToolName::SystemGetCurrentDateTime, _) => {
             "Checking the Rustyfin host date and time".to_string()
         }
@@ -1775,7 +1785,7 @@ fn apply_follow_up_tool_hints(
                         planned,
                         seen,
                         AssistantToolName::SystemGetCurrentDateTime,
-                        AssistantToolInput::None,
+                        extract_current_datetime_input(message),
                     );
                 }
             }
@@ -2080,6 +2090,8 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         "system_get_current_datetime" => {
             is_current_datetime_query(&lower)
                 || message_has_current_datetime_tool_follow_up_hint(message)
+                || (context.input_hint.current_datetime_location.is_some()
+                    && extract_current_datetime_location(message).is_some())
         }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
         "system_get_backup_summary" => is_backup_query(&lower),
@@ -3519,6 +3531,16 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "host time",
             "fetch the time",
             "get the time",
+            "time in ",
+            "time for ",
+            "time is it in ",
+            "date in ",
+            "date for ",
+            "date is it in ",
+            "day in ",
+            "day for ",
+            "local time in ",
+            "local time for ",
         ],
     );
     if simple_current_datetime {
@@ -3554,6 +3576,78 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
                 "calendar date",
             ],
         )
+}
+
+fn extract_current_datetime_input(message: &str) -> AssistantToolInput {
+    AssistantToolInput::CurrentDateTime {
+        location: extract_current_datetime_location(message),
+    }
+}
+
+fn extract_current_datetime_location(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if !has_any(
+        &lower,
+        &[
+            "time",
+            "date",
+            "day",
+            "right now",
+            "currently",
+            "local time",
+            "clock",
+        ],
+    ) {
+        return None;
+    }
+
+    for marker in [
+        "time in ",
+        "time for ",
+        "time is it in ",
+        "date in ",
+        "date for ",
+        "date is it in ",
+        "day in ",
+        "day for ",
+        "local time in ",
+        "local time for ",
+        "clock in ",
+        "right now in ",
+        "currently in ",
+    ] {
+        let Some(index) = lower.find(marker) else {
+            continue;
+        };
+        let raw = message[index + marker.len()..].trim();
+        let candidate =
+            raw.trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch));
+        if candidate.is_empty() {
+            continue;
+        }
+        let lowered_candidate = candidate.to_ascii_lowercase();
+        let mut end = candidate.len();
+        for suffix in [
+            " right now",
+            " currently",
+            " today",
+            " tomorrow",
+            " yesterday",
+            " please",
+        ] {
+            if let Some(found) = lowered_candidate.find(suffix) {
+                end = end.min(found);
+            }
+        }
+        let normalized = candidate[..end]
+            .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+            .trim();
+        if !normalized.is_empty() {
+            return Some(normalized.to_string());
+        }
+    }
+
+    None
 }
 
 fn contains_weekday_name(message_lower: &str) -> bool {
@@ -3629,6 +3723,10 @@ struct GroundedCurrentDateTimeSummary {
     local_date: String,
     local_time: String,
     timezone_offset: String,
+    #[serde(default)]
+    timezone_name: Option<String>,
+    #[serde(default)]
+    resolved_location: Option<String>,
 }
 
 pub fn deterministic_current_datetime_reply(
@@ -3653,15 +3751,54 @@ pub fn deterministic_current_datetime_reply(
     if let Some((resolved_date, phrase)) =
         resolve_current_datetime_reference(message, history, today)
     {
-        return Some(format!(
-            "From Rustyfin's current local date, {}, {} is {}.",
-            format_with_weekday(today),
-            phrase,
-            format_with_weekday(resolved_date),
-        ));
+        return Some(
+            summary
+                .resolved_location
+                .as_deref()
+                .map(|location| {
+                    format!(
+                        "From the current local date in {}, {}, {} is {}.",
+                        location,
+                        format_with_weekday(today),
+                        phrase,
+                        format_with_weekday(resolved_date),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "From Rustyfin's current local date, {}, {} is {}.",
+                        format_with_weekday(today),
+                        phrase,
+                        format_with_weekday(resolved_date),
+                    )
+                }),
+        );
     }
 
     let lower = message.to_ascii_lowercase();
+    if let Some(location) = summary.resolved_location.as_deref() {
+        let timezone = summary
+            .timezone_name
+            .as_deref()
+            .map(|name| format!("{name} (UTC{})", summary.timezone_offset))
+            .unwrap_or_else(|| format!("UTC{}", summary.timezone_offset));
+        if lower.contains("time") && !lower.contains("date") && !lower.contains("day") {
+            return Some(format!(
+                "The current local time in {} is {} on {} ({timezone}).",
+                location,
+                summary.local_time,
+                format_without_weekday(today),
+            ));
+        }
+
+        return Some(format!(
+            "In {}, today is {}. The current local time there is {} ({timezone}).",
+            location,
+            format_with_weekday(today),
+            summary.local_time,
+        ));
+    }
+
     if lower.contains("time") && !lower.contains("date") && !lower.contains("day") {
         return Some(format!(
             "The current Rustyfin host local time is {} on {} (UTC{}).",
@@ -4383,6 +4520,9 @@ mod tests {
             AssistantToolInput::CalendarDeleteEvent { .. } => {
                 panic!("unexpected calendar delete event input")
             }
+            AssistantToolInput::CurrentDateTime { .. } => {
+                panic!("unexpected current datetime input")
+            }
             AssistantToolInput::DocumentCreateDownload { .. } => {
                 panic!("unexpected document create download input")
             }
@@ -4681,7 +4821,10 @@ mod tests {
         let tools = plan_tool_calls("What date is next Tuesday?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CurrentDateTime { location: None }
+        ));
     }
 
     #[test]
@@ -4689,7 +4832,10 @@ mod tests {
         let tools = plan_tool_calls("Fetch the time on the Rustyfin host");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CurrentDateTime { location: None }
+        ));
     }
 
     #[test]
@@ -4697,7 +4843,23 @@ mod tests {
         let tools = plan_tool_calls("What day next Tuesday would be?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CurrentDateTime { location: None }
+        ));
+    }
+
+    #[test]
+    fn planner_routes_location_current_datetime_queries() {
+        let tools = plan_tool_calls("What is the time in Italy right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        match &tools[0].input {
+            AssistantToolInput::CurrentDateTime { location } => {
+                assert_eq!(location.as_deref(), Some("Italy"));
+            }
+            _ => panic!("expected current datetime input"),
+        }
     }
 
     #[test]
@@ -4706,7 +4868,31 @@ mod tests {
         let tools = plan_tool_calls_with_history("Surely it would be the 7th", &history);
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
+        assert!(matches!(
+            tools[0].input,
+            AssistantToolInput::CurrentDateTime { location: None }
+        ));
+    }
+
+    #[test]
+    fn planner_prefers_datetime_over_weather_follow_up_for_location_time_query() {
+        let history = history_with_follow_up_context(
+            "weather_get_current",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Campile, County Wexford, Ireland".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("and the time in france?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        match &tools[0].input {
+            AssistantToolInput::CurrentDateTime { location } => {
+                assert_eq!(location.as_deref(), Some("france"));
+            }
+            _ => panic!("expected current datetime input"),
+        }
     }
 
     #[test]
@@ -4738,6 +4924,34 @@ mod tests {
         .expect("expected deterministic reply");
         assert!(reply.contains("next Tuesday"));
         assert!(reply.contains("Tuesday, April 7, 2026"));
+    }
+
+    #[test]
+    fn deterministic_current_datetime_reply_formats_location_time() {
+        let reply = deterministic_current_datetime_reply(
+            "and the time in france?",
+            &[],
+            &[AssistantToolContextBlock {
+                tool: "system_get_current_datetime",
+                label: "Current date and time for France".to_string(),
+                status: "ok",
+                data: serde_json::json!({
+                    "local_timestamp": "2026-04-02 22:53:06 +02:00",
+                    "local_date": "2026-04-02",
+                    "local_time": "22:53:06",
+                    "weekday": "Thursday",
+                    "timezone_offset": "+02:00",
+                    "timezone_name": "Europe/Paris",
+                    "location_query": "france",
+                    "resolved_location": "France",
+                    "unix_timestamp": 1775163186_i64,
+                }),
+            }],
+        )
+        .expect("expected deterministic reply");
+        assert!(reply.contains("France"));
+        assert!(reply.contains("22:53:06"));
+        assert!(reply.contains("Europe/Paris"));
     }
 
     #[test]
