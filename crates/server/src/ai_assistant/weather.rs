@@ -65,6 +65,14 @@ pub struct PublicWeatherHistorySummary {
     pub history_days: Vec<PublicWeatherForecastDay>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicLocationTimezoneSummary {
+    pub source: String,
+    pub location_query: String,
+    pub resolved_location: String,
+    pub timezone: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct GeocodingResponse {
     #[serde(default)]
@@ -76,6 +84,8 @@ struct GeocodingResult {
     name: String,
     latitude: f64,
     longitude: f64,
+    #[serde(default)]
+    timezone: Option<String>,
     country: Option<String>,
     admin1: Option<String>,
     #[serde(default)]
@@ -174,6 +184,25 @@ pub async fn fetch_public_weather_history(
         FORECAST_URL,
     )
     .await
+}
+
+pub async fn resolve_public_location_timezone(
+    location_query: &str,
+) -> Result<PublicLocationTimezoneSummary, String> {
+    let client = weather_client()?;
+    let query = normalize_location_query(location_query)?;
+    let resolved = geocode_location_from_base(&client, &query, GEOCODING_URL).await?;
+    let timezone = resolved
+        .timezone
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("no public timezone matched \"{query}\""))?;
+    Ok(PublicLocationTimezoneSummary {
+        source: "open_meteo".to_string(),
+        location_query: query,
+        resolved_location: format_resolved_location(&resolved),
+        timezone,
+    })
 }
 
 async fn fetch_public_weather_current_with_endpoints(
@@ -957,6 +986,7 @@ mod tests {
             name: "Dublin".to_string(),
             latitude: 0.0,
             longitude: 0.0,
+            timezone: None,
             country: Some("Ireland".to_string()),
             admin1: Some("Leinster".to_string()),
             admin2: None,
@@ -1020,6 +1050,7 @@ mod tests {
                     name: "Campile".to_string(),
                     latitude: 0.0,
                     longitude: 0.0,
+                    timezone: None,
                     country: Some("Ireland".to_string()),
                     admin1: Some("Leinster".to_string()),
                     admin2: Some("Wexford".to_string()),
@@ -1030,6 +1061,7 @@ mod tests {
                     name: "Campile".to_string(),
                     latitude: 1.0,
                     longitude: 1.0,
+                    timezone: None,
                     country: Some("Ireland".to_string()),
                     admin1: Some("Munster".to_string()),
                     admin2: Some("Cork".to_string()),
