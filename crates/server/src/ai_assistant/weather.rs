@@ -288,7 +288,7 @@ async fn geocode_location_from_base(
             .json::<GeocodingResponse>()
             .await
             .map_err(|error| format!("failed to parse weather geocoding response: {error}"))?;
-        if let Some(result) = select_best_geocoding_result(&candidate, payload.results) {
+        if let Some(result) = select_best_geocoding_result(query, payload.results) {
             return Ok(result);
         }
     }
@@ -470,6 +470,16 @@ fn geocoding_query_variants(query: &str) -> Vec<String> {
             "",
         ),
     );
+    if let Some(core_name) = query
+        .split(',')
+        .next()
+        .map(str::trim)
+        .and_then(|segment| segment.split(" in ").next())
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+    {
+        push_unique_variant(&mut variants, core_name);
+    }
     variants
 }
 
@@ -998,6 +1008,7 @@ mod tests {
         assert!(variants.contains(&"Campile in County Wexford, Ireland".to_string()));
         assert!(variants.contains(&"Campile, County Wexford, Ireland".to_string()));
         assert!(variants.contains(&"Campile, Wexford, Ireland".to_string()));
+        assert!(variants.contains(&"Campile".to_string()));
     }
 
     #[test]
