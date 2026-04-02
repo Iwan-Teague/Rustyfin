@@ -52,6 +52,13 @@ pub enum AssistantToolInput {
         event_type: String,
         recurrence: String,
     },
+    DocumentCreateDownload {
+        title: String,
+        file_name: String,
+        format: String,
+        request_prompt: String,
+        model_name: String,
+    },
     ChannelsFilter {
         query: Option<String>,
     },
@@ -120,7 +127,7 @@ pub struct PlannedToolSet {
     pub calls: Vec<PlannedToolCall>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAccessMode {
     ReadOnly,
@@ -171,6 +178,14 @@ pub struct AssistantGroundingSource {
     pub access_mode: ToolAccessMode,
     pub risk_tier: ToolRiskTier,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_media_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -233,6 +248,7 @@ pub enum AssistantPendingActionKind {
     CalendarCreateEvent,
     CalendarCreateBirthday,
     CalendarDeleteEvent,
+    DocumentCreateDownload,
 }
 
 impl AssistantPendingActionKind {
@@ -241,6 +257,7 @@ impl AssistantPendingActionKind {
             Self::CalendarCreateEvent => "calendar_create_event",
             Self::CalendarCreateBirthday => "calendar_create_birthday",
             Self::CalendarDeleteEvent => "calendar_delete_event",
+            Self::DocumentCreateDownload => "document_create_download",
         }
     }
 }

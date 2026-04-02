@@ -33,6 +33,10 @@ export interface AiGroundingSource {
   access_mode: 'read_only' | 'write' | 'destructive_write';
   risk_tier: 'low' | 'moderate' | 'high' | 'critical';
   status: string;
+  download_url?: string | null;
+  download_file_name?: string | null;
+  download_media_type?: string | null;
+  download_size_bytes?: number | null;
 }
 
 export interface AiFollowUpEntity {
@@ -151,7 +155,8 @@ export interface AiStatusUpdate {
 export type AiPendingActionKind =
   | 'calendar_create_event'
   | 'calendar_create_birthday'
-  | 'calendar_delete_event';
+  | 'calendar_delete_event'
+  | 'document_create_download';
 
 export type AiPendingActionStatus = 'pending' | 'confirmed' | 'expired';
 
@@ -273,6 +278,8 @@ function normalizePendingAction(value: unknown): AiPendingAction | null {
         ? 'calendar_create_event'
         : value.action_kind === 'calendar_delete_event'
           ? 'calendar_delete_event'
+        : value.action_kind === 'document_create_download'
+          ? 'document_create_download'
         : null;
   if (!action_kind) return null;
   const status =
@@ -361,6 +368,8 @@ function handleSsePayload(
         ? 'calendar_create_birthday'
         : record.action_kind === 'calendar_delete_event'
           ? 'calendar_delete_event'
+        : record.action_kind === 'document_create_download'
+          ? 'document_create_download'
           : 'calendar_create_event';
     onEvent({
       type: 'confirmation_required',

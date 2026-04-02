@@ -35,6 +35,40 @@ struct GroundedBirthdaySummary {
     birthday_year: Option<i32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GroundedNetworkEnvelope {
+    host_label: Option<String>,
+    public_host: Option<String>,
+    remote_access_enabled: bool,
+    access: GroundedNetworkAccess,
+    nodes: Vec<GroundedNetworkNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedNetworkAccess {
+    ui_port: u16,
+    backend_port: u16,
+    calendar_port: u16,
+    preferred_local_ipv4: Option<String>,
+    preferred_local_url: Option<String>,
+    login_url: Option<String>,
+    ai_url: Option<String>,
+    public_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedNetworkNode {
+    name: String,
+    status: String,
+    addresses: Vec<GroundedNetworkAddress>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedNetworkAddress {
+    family: String,
+    address: String,
+}
+
 pub fn deterministic_calendar_reply(
     _message: &str,
     grounding_blocks: &[AssistantToolContextBlock],
@@ -61,6 +95,33 @@ pub fn deterministic_calendar_reply(
         }),
         _ => None,
     }
+}
+
+pub fn deterministic_network_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    if grounding_blocks.len() != 1 {
+        return None;
+    }
+    let block = grounding_blocks.first()?;
+    if block.tool != "network_get_topology_summary" {
+        return None;
+    }
+
+    Some(if block.status == "ok" {
+        format_network_reply(
+            message,
+            serde_json::from_value::<GroundedNetworkEnvelope>(block.data.clone()).ok()?,
+        )
+    } else {
+        block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load the Rustyfin network details. {message}"))
+            .unwrap_or_else(|| "I couldn't load the Rustyfin network details.".to_string())
+    })
 }
 
 fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
@@ -134,6 +195,106 @@ fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
     lines.join("\n")
 }
 
+fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> String {
+    let lower = message.to_ascii_lowercase();
+    let local_connect_question = lower.contains("local network")
+        || lower.contains("lan")
+        || (lower.contains("connect") && lower.contains("rustyfin"))
+        || lower.contains("what ip would i use")
+        || lower.contains("which ip would i use");
+
+    let preferred_local_url = envelope
+        .access
+        .preferred_local_url
+        .clone()
+        .or_else(|| envelope.access.public_url.clone());
+    let preferred_local_ip = envelope
+        .access
+        .preferred_local_ipv4
+        .clone()
+        .or_else(|| envelope.public_host.clone());
+
+    if local_connect_question {
+        let mut parts = Vec::new();
+        if let Some(url) = preferred_local_url {
+            parts.push(format!("On your local network, open Rustyfin at {url}."));
+        } else {
+            parts.push(format!(
+                "Rustyfin is listening on HTTPS port {} on this host.",
+                envelope.access.ui_port
+            ));
+        }
+        if let Some(ip) = preferred_local_ip {
+            parts.push(format!("The preferred local IP is {ip}."));
+        }
+        if let Some(login_url) = envelope.access.login_url {
+            parts.push(format!("Login page: {login_url}."));
+        }
+        if let Some(ai_url) = envelope.access.ai_url {
+            parts.push(format!("AI page: {ai_url}."));
+        }
+        parts.push(format!(
+            "The Rustyfin edge/UI port is {}. Internal backend services use {} for the main API and {} for calendar on the host.",
+            envelope.access.ui_port, envelope.access.backend_port, envelope.access.calendar_port
+        ));
+        parts.push(if envelope.remote_access_enabled {
+            "Remote access is enabled.".to_string()
+        } else {
+            "Remote access is currently disabled.".to_string()
+        });
+        return parts.join(" ");
+    }
+
+    let interface_summary = envelope
+        .nodes
+        .iter()
+        .filter(|node| node.status == "online")
+        .take(3)
+        .map(|node| {
+            let addresses = node
+                .addresses
+                .iter()
+                .filter(|address| address.family == "inet")
+                .map(|address| address.address.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if addresses.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{} ({})", node.name, addresses)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let host_label = envelope
+        .host_label
+        .as_deref()
+        .unwrap_or("this Rustyfin host");
+    let mut parts = vec![format!("Rustyfin network summary for {host_label}.")];
+    if let Some(url) = envelope.access.preferred_local_url {
+        parts.push(format!("Preferred local URL: {url}."));
+    }
+    if let Some(public_url) = envelope.access.public_url {
+        parts.push(format!("Configured public host URL: {public_url}."));
+    }
+    parts.push(format!(
+        "Edge/UI port {}. Internal API port {}. Internal calendar port {}.",
+        envelope.access.ui_port, envelope.access.backend_port, envelope.access.calendar_port
+    ));
+    parts.push(if envelope.remote_access_enabled {
+        "Remote access is enabled.".to_string()
+    } else {
+        "Remote access is disabled.".to_string()
+    });
+    if !interface_summary.is_empty() {
+        parts.push(format!(
+            "Online interfaces: {}.",
+            interface_summary.join(", ")
+        ));
+    }
+    parts.join(" ")
+}
+
 fn birthday_display_name(title: &str) -> String {
     let lower = title.to_ascii_lowercase();
     if lower.ends_with(" birthday") {
@@ -188,7 +349,7 @@ fn format_calendar_error(block: &AssistantToolContextBlock, fallback: &str) -> S
 
 #[cfg(test)]
 mod tests {
-    use super::deterministic_calendar_reply;
+    use super::{deterministic_calendar_reply, deterministic_network_reply};
     use crate::ai_assistant::types::AssistantToolContextBlock;
     use serde_json::json;
 
@@ -248,5 +409,47 @@ mod tests {
         assert!(reply.contains("Tuesday, April 7, 2026"));
         assert!(reply.contains("turns 23"));
         assert!(reply.contains("Sam"));
+    }
+
+    #[test]
+    fn deterministic_network_reply_prefers_local_connect_url() {
+        let reply = deterministic_network_reply(
+            "If I was on the local network, what IP would I use to connect to Rustyfin?",
+            &[AssistantToolContextBlock {
+                tool: "network_get_topology_summary",
+                label: "Rustyfin network topology summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "host_label": "server",
+                    "public_host": "192.168.0.36",
+                    "remote_access_enabled": true,
+                    "access": {
+                        "ui_port": 3008,
+                        "backend_port": 8097,
+                        "calendar_port": 8099,
+                        "preferred_local_ipv4": "192.168.0.36",
+                        "preferred_local_url": "https://192.168.0.36:3008",
+                        "login_url": "https://192.168.0.36:3008/login",
+                        "ai_url": "https://192.168.0.36:3008/ai",
+                        "public_url": "https://192.168.0.36:3008"
+                    },
+                    "nodes": [
+                        {
+                            "name": "enp3s0",
+                            "status": "online",
+                            "addresses": [
+                                { "family": "inet", "address": "192.168.0.36" }
+                            ]
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic network reply");
+
+        assert!(reply.contains("https://192.168.0.36:3008"));
+        assert!(reply.contains("preferred local IP is 192.168.0.36"));
+        assert!(reply.contains("port is 3008"));
+        assert!(reply.contains("8097"));
     }
 }

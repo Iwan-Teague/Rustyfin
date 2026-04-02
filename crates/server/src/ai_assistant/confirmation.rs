@@ -15,6 +15,8 @@ use crate::auth::AuthUser;
 use crate::state::AppState;
 
 pub const CONFIRMATION_TOKEN_TTL_SECS: i64 = 15 * 60;
+const MAX_DOCUMENT_TITLE_CHARS: usize = 80;
+const MAX_DOCUMENT_FILE_NAME_CHARS: usize = 96;
 
 #[derive(Debug, Clone)]
 pub struct ParsedPendingActionRequest {
@@ -43,12 +45,16 @@ pub async fn pending_action_request_for_message_with_state(
     user: &AuthUser,
     message: &str,
     conversation_id: Option<&str>,
+    model_name: &str,
 ) -> Option<Result<ParsedPendingActionRequest, String>> {
     if let Some(result) = pending_action_request_for_message(user, message, conversation_id) {
         return Some(result);
     }
 
     let lower = message.to_ascii_lowercase();
+    if is_supported_document_create_intent(&lower) {
+        return Some(parse_document_request(message, conversation_id, model_name));
+    }
     if !is_supported_calendar_delete_intent(&lower) {
         return None;
     }
@@ -93,6 +99,43 @@ pub fn is_supported_calendar_delete_intent(message_lower: &str) -> bool {
                 "does rustyfin ai support ",
             ],
         )
+}
+
+pub fn is_supported_document_create_intent(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "create ",
+            "make ",
+            "write ",
+            "generate ",
+            "prepare ",
+            "save ",
+            "export ",
+        ],
+    ) && has_any(
+        message_lower,
+        &[
+            "document",
+            "markdown",
+            "plain text",
+            "text file",
+            "txt file",
+            "report",
+            "notes",
+            "note file",
+        ],
+    ) && !has_any(
+        message_lower,
+        &[
+            "how do i ",
+            "how can i ",
+            "can i ",
+            "is it possible to ",
+            "do you support ",
+            "does rustyfin ai support ",
+        ],
+    )
 }
 
 fn parse_birthday_request(
@@ -200,6 +243,57 @@ fn parse_event_request_for(
                     title,
                     description: None,
                     event_date: event_date.format("%F").to_string(),
+                },
+            },
+            summary,
+            conversation_id: conversation_id.map(str::to_string),
+        },
+    })
+}
+
+fn parse_document_request(
+    message: &str,
+    conversation_id: Option<&str>,
+    model_name: &str,
+) -> Result<ParsedPendingActionRequest, String> {
+    let lower = message.to_ascii_lowercase();
+    let format = detect_document_format(&lower)?;
+    let meaningful_tokens = meaningful_document_request_tokens(message);
+    let only_pronoun_reference = meaningful_tokens
+        .iter()
+        .all(|token| matches!(token.as_str(), "that" | "this" | "it"));
+    if meaningful_tokens.is_empty() || (only_pronoun_reference && conversation_id.is_none()) {
+        return Err(
+            "I can create a downloadable markdown or plain-text document, but I need to know what it should contain. Try \"Create a markdown document summarizing my next event\"."
+                .to_string(),
+        );
+    }
+
+    let title = extract_document_title(message)
+        .unwrap_or_else(|| default_document_title(&meaningful_tokens))
+        .chars()
+        .take(MAX_DOCUMENT_TITLE_CHARS)
+        .collect::<String>();
+    let file_name = extract_document_file_name(message, format.extension())
+        .unwrap_or_else(|| default_document_file_name(&title, format.extension()));
+
+    let summary = format!(
+        "Create downloadable {} document \"{}\"",
+        format.label(),
+        file_name,
+    );
+
+    Ok(ParsedPendingActionRequest {
+        payload: AssistantConfirmationPayload {
+            action_kind: AssistantPendingActionKind::DocumentCreateDownload,
+            call: PlannedToolCall {
+                tool: AssistantToolName::DocumentCreateDownload,
+                input: AssistantToolInput::DocumentCreateDownload {
+                    title,
+                    file_name,
+                    format: format.as_str().to_string(),
+                    request_prompt: message.trim().to_string(),
+                    model_name: model_name.trim().to_string(),
                 },
             },
             summary,
@@ -517,6 +611,216 @@ fn extract_year_hint(message: &str) -> Option<i32> {
         .and_then(|value| value.as_str().parse::<i32>().ok())
 }
 
+#[derive(Clone, Copy)]
+enum GeneratedDocumentFormat {
+    Markdown,
+    Text,
+}
+
+impl GeneratedDocumentFormat {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Text => "text",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Text => "plain-text",
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Text => "txt",
+        }
+    }
+}
+
+fn detect_document_format(message_lower: &str) -> Result<GeneratedDocumentFormat, String> {
+    if has_any(
+        message_lower,
+        &[
+            "pdf",
+            "docx",
+            "word document",
+            "spreadsheet",
+            "csv",
+            "json",
+            "html",
+        ],
+    ) {
+        return Err(
+            "Rustyfin AI can currently create downloadable markdown or plain-text documents only."
+                .to_string(),
+        );
+    }
+    if has_any(
+        message_lower,
+        &["plain text", "text file", "txt file", ".txt", "plain-text"],
+    ) {
+        Ok(GeneratedDocumentFormat::Text)
+    } else {
+        Ok(GeneratedDocumentFormat::Markdown)
+    }
+}
+
+fn meaningful_document_request_tokens(message: &str) -> Vec<String> {
+    message
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '\'' {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .filter(|token| {
+            !matches!(
+                *token,
+                "a" | "an"
+                    | "the"
+                    | "please"
+                    | "create"
+                    | "make"
+                    | "write"
+                    | "generate"
+                    | "prepare"
+                    | "save"
+                    | "export"
+                    | "me"
+                    | "my"
+                    | "downloadable"
+                    | "markdown"
+                    | "plain"
+                    | "text"
+                    | "file"
+                    | "document"
+                    | "report"
+                    | "note"
+                    | "notes"
+                    | "called"
+                    | "named"
+                    | "as"
+                    | "into"
+                    | "to"
+            )
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn extract_document_title(message: &str) -> Option<String> {
+    let quoted = extract_quoted_phrase(message)?;
+    let trimmed = quoted.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_extension = trimmed
+        .strip_suffix(".md")
+        .or_else(|| trimmed.strip_suffix(".txt"))
+        .unwrap_or(trimmed)
+        .trim();
+    (!without_extension.is_empty()).then_some(without_extension.to_string())
+}
+
+fn extract_document_file_name(message: &str, default_extension: &str) -> Option<String> {
+    let quoted = extract_quoted_phrase(message)?;
+    normalize_document_file_name(quoted.trim(), default_extension)
+}
+
+fn extract_quoted_phrase(message: &str) -> Option<&str> {
+    let start = message.find('"').or_else(|| message.find('\''))?;
+    let quote = message[start..].chars().next()?;
+    let rest = &message[start + quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    Some(&rest[..end])
+}
+
+fn default_document_title(tokens: &[String]) -> String {
+    if tokens.is_empty() {
+        return "Rustyfin note".to_string();
+    }
+    tokens
+        .iter()
+        .take(6)
+        .map(|token| {
+            let mut chars = token.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn default_document_file_name(title: &str, extension: &str) -> String {
+    let stem = title
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let stem = if stem.is_empty() {
+        "rustyfin-note".to_string()
+    } else {
+        stem
+    };
+    format!(
+        "{}.{}",
+        stem.chars()
+            .take(MAX_DOCUMENT_FILE_NAME_CHARS.saturating_sub(extension.len() + 1))
+            .collect::<String>(),
+        extension
+    )
+}
+
+fn normalize_document_file_name(raw: &str, default_extension: &str) -> Option<String> {
+    let mut normalized = raw
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else if ch.is_whitespace() {
+                '-'
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if !normalized.ends_with(".md") && !normalized.ends_with(".txt") {
+        normalized.push('.');
+        normalized.push_str(default_extension);
+    }
+
+    let file_name = normalized
+        .chars()
+        .take(MAX_DOCUMENT_FILE_NAME_CHARS)
+        .collect::<String>();
+    (!file_name.is_empty()).then_some(file_name)
+}
+
 fn validate_birthday_year(year: i32) -> Result<(), String> {
     let current_year = assistant_local_year();
     if !(1900..=current_year).contains(&year) {
@@ -735,8 +1039,9 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::{
-        AssistantPendingActionKind, calendar_event_matches_query_for_delete,
-        extract_delete_event_query, parse_birthday_request_for, parse_event_request_for,
+        AssistantPendingActionKind, AssistantToolInput, calendar_event_matches_query_for_delete,
+        extract_delete_event_query, is_supported_document_create_intent,
+        parse_birthday_request_for, parse_document_request, parse_event_request_for,
         pending_action_request_for_message, select_delete_target,
     };
     use crate::auth::AuthUser;
@@ -846,6 +1151,68 @@ mod tests {
             parsed.payload.summary,
             "Create recurring birthday for Rachel on April 7, 2003 in your personal calendar"
         );
+    }
+
+    #[test]
+    fn detects_supported_document_create_intent() {
+        assert!(is_supported_document_create_intent(
+            "create a markdown document about my next event"
+        ));
+    }
+
+    #[test]
+    fn parses_document_request_with_title_and_filename() {
+        let parsed = parse_document_request(
+            "Create a markdown document called \"LAN setup note\" explaining the local Rustyfin IP and login URL",
+            Some("conversation-1"),
+            "assistant-model.gguf",
+        )
+        .expect("document intent should parse");
+
+        assert_eq!(
+            parsed.payload.action_kind,
+            AssistantPendingActionKind::DocumentCreateDownload
+        );
+        assert_eq!(
+            parsed.payload.summary,
+            "Create downloadable markdown document \"LAN-setup-note.md\""
+        );
+        match parsed.payload.call.input {
+            AssistantToolInput::DocumentCreateDownload {
+                title,
+                file_name,
+                format,
+                model_name,
+                ..
+            } => {
+                assert_eq!(title, "LAN setup note");
+                assert_eq!(file_name, "LAN-setup-note.md");
+                assert_eq!(format, "markdown");
+                assert_eq!(model_name, "assistant-model.gguf");
+            }
+            other => panic!("unexpected tool input: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn document_request_rejects_unsupported_format() {
+        let error = parse_document_request(
+            "Create a PDF report about my next Rustyfin event",
+            None,
+            "assistant-model.gguf",
+        )
+        .expect_err("pdf output should be rejected");
+
+        assert!(error.contains("markdown or plain-text"));
+    }
+
+    #[test]
+    fn document_request_requires_meaningful_content_request() {
+        let error =
+            parse_document_request("Create a markdown document", None, "assistant-model.gguf")
+                .expect_err("empty document request should be rejected");
+
+        assert!(error.contains("need to know what it should contain"));
     }
 
     fn sample_event(

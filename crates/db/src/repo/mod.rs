@@ -1,6 +1,7 @@
 pub mod ai_assistant_audit;
 pub mod ai_assistant_confirmation;
 pub mod ai_conversations;
+pub mod ai_generated_artifacts;
 pub mod calendar;
 pub mod channel_transcripts;
 pub mod channels;

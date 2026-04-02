@@ -27,8 +27,8 @@ use crate::ai_assistant::types::{
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
-    deterministic_current_datetime_reply, immediate_response_for_message,
-    plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    deterministic_current_datetime_reply, deterministic_network_reply,
+    immediate_response_for_message, plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
@@ -72,6 +72,10 @@ pub fn ai_router() -> Router<AppState> {
             )),
         )
         .route("/chat", post(chat))
+        .route(
+            "/artifacts/{id}/download",
+            get(crate::ai_generated_artifacts::download_generated_artifact),
+        )
         .route(
             "/conversations",
             get(crate::ai_conversations::list_conversations)
@@ -277,6 +281,7 @@ fn stream_chat_response(
             };
 
             let confirmed_context = AssistantContext::new(&user, trace_id.clone())
+                .with_conversation_id(payload.conversation_id.as_deref())
                 .with_confirmed_write_tool(payload.call.tool.as_str());
             let planned_tools = vec![payload.call.clone()];
             set_engine_phase(&state, AssistantRuntimePhase::Grounding).await;
@@ -423,6 +428,7 @@ fn stream_chat_response(
             &user,
             &req.message,
             persistence.as_ref().map(|value| value.conversation_id.as_str()),
+            &req.model,
         )
         .await
         {
@@ -756,7 +762,9 @@ fn stream_chat_response(
             },
         ));
 
-        let context = AssistantContext::new(&user, trace_id.clone());
+        let context = AssistantContext::new(&user, trace_id.clone()).with_conversation_id(
+            persistence.as_ref().map(|value| value.conversation_id.as_str()),
+        );
         if !planned_tools.is_empty() {
             set_engine_phase(&state, AssistantRuntimePhase::Grounding).await;
             let scheduled_tools = planned_tools
@@ -933,6 +941,64 @@ fn stream_chat_response(
             deterministic_calendar_reply(&req.message, &grounding_blocks)
         {
             assistant_content = calendar_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            let grounding_tools = planned_tools
+                .iter()
+                .map(|call| call.tool.as_str().to_string())
+                .collect::<Vec<_>>();
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        } else if let Some(network_reply) =
+            deterministic_network_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = network_reply;
             stats = Some(build_turn_stats(
                 0,
                 0,
@@ -1247,7 +1313,7 @@ fn stream_chat_response(
         .into_response()
 }
 
-async fn load_engine_for_chat(
+pub(crate) async fn load_engine_for_chat(
     state: &AppState,
     model_name: &str,
     gguf_path: &std::path::Path,
@@ -1533,8 +1599,28 @@ fn assistant_text_for_confirmed_action(block: &AssistantToolContextBlock) -> Str
             .data
             .get("message")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("Rustyfin AI could not complete that calendar action.")
+            .unwrap_or("Rustyfin AI could not complete that action.")
             .to_string();
+    }
+
+    if block.tool == "document_create_download" {
+        let artifact = block.data.get("artifact");
+        let file_name = artifact
+            .and_then(|value| value.get("file_name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&block.label);
+        let media_type = artifact
+            .and_then(|value| value.get("media_type"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("text/plain; charset=utf-8");
+        let format_label = if media_type.starts_with("text/markdown") {
+            "markdown"
+        } else {
+            "plain-text"
+        };
+        return format!(
+            "I created the downloadable {format_label} document \"{file_name}\". Use the download link below."
+        );
     }
 
     let event = block.data.get("event");
@@ -1722,6 +1808,14 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             ..
         } => format!(
             "calendar_delete_event:id={event_id}:scope={scope}:title={title}:date={event_date}:type={event_type}"
+        ),
+        AssistantToolInput::DocumentCreateDownload {
+            file_name,
+            format,
+            model_name,
+            ..
+        } => format!(
+            "document_create_download:file_name={file_name}:format={format}:model={model_name}"
         ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))

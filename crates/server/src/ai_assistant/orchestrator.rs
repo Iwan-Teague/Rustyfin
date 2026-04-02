@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use super::confirmation::{
     is_supported_calendar_create_intent, is_supported_calendar_delete_intent,
-    pending_action_request_for_message_with_state,
+    is_supported_document_create_intent, pending_action_request_for_message_with_state,
 };
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
@@ -100,6 +100,7 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::SystemGetCurrentDateTime
+                    | AssistantToolName::NetworkGetTopologySummary
                     | AssistantToolName::CalendarGetNextEvent
                     | AssistantToolName::CalendarUpcomingBirthdays
             )
@@ -111,8 +112,14 @@ pub async fn prepare_assistant_turn(
     user: &AuthUser,
     request: AssistantChatRequest,
 ) -> PreparedAssistantTurn {
-    if let Some(result) =
-        pending_action_request_for_message_with_state(state, user, &request.message, None).await
+    if let Some(result) = pending_action_request_for_message_with_state(
+        state,
+        user,
+        &request.message,
+        None,
+        &request.model,
+    )
+    .await
     {
         return PreparedAssistantTurn {
             messages: Vec::new(),
@@ -308,6 +315,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         }
         AssistantToolName::CalendarDeleteEvent => {
             " Args: required event id/title/date metadata; explicit user confirmation is required before the backend will execute it."
+        }
+        AssistantToolName::DocumentCreateDownload => {
+            " Args: required title/file name/format/content request; explicit user confirmation is required before the backend will execute it."
         }
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
@@ -547,7 +557,8 @@ fn normalize_model_tool_input(
     match tool {
         AssistantToolName::CalendarCreateEvent
         | AssistantToolName::CalendarCreateBirthday
-        | AssistantToolName::CalendarDeleteEvent => None,
+        | AssistantToolName::CalendarDeleteEvent
+        | AssistantToolName::DocumentCreateDownload => None,
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
@@ -716,7 +727,10 @@ pub fn immediate_response_for_message(message: &str) -> Option<String> {
 
 pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
-    if is_supported_calendar_create_intent(&lower) || is_supported_calendar_delete_intent(&lower) {
+    if is_supported_calendar_create_intent(&lower)
+        || is_supported_calendar_delete_intent(&lower)
+        || is_supported_document_create_intent(&lower)
+    {
         return None;
     }
     if !is_unsupported_write_intent(&lower) {
@@ -1304,6 +1318,15 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         ) => format!("Deleting calendar event \"{title}\" on {event_date}"),
         (AssistantToolName::CalendarDeleteEvent, _) => "Deleting a calendar event".to_string(),
         (
+            AssistantToolName::DocumentCreateDownload,
+            AssistantToolInput::DocumentCreateDownload {
+                file_name, format, ..
+            },
+        ) => format!("Generating downloadable {format} document \"{file_name}\""),
+        (AssistantToolName::DocumentCreateDownload, _) => {
+            "Generating a downloadable document".to_string()
+        }
+        (
             AssistantToolName::ChannelsListUnreadActivity,
             AssistantToolInput::ChannelsFilter { query: Some(query) },
         ) => format!("Checking recent channel activity in \"{query}\""),
@@ -1529,7 +1552,8 @@ fn apply_follow_up_tool_hints(
         match tool {
             AssistantToolName::CalendarCreateEvent
             | AssistantToolName::CalendarCreateBirthday
-            | AssistantToolName::CalendarDeleteEvent => {}
+            | AssistantToolName::CalendarDeleteEvent
+            | AssistantToolName::DocumentCreateDownload => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -3725,10 +3749,19 @@ fn is_network_query(message_lower: &str) -> bool {
             "local ip",
             "ip address",
             "ip addresses",
+            "local network",
+            "connect to rustyfin",
+            "open rustyfin",
+            "which ip would i use",
+            "what ip would i use",
+            "what url should i use",
+            "which url should i use",
+            "what port should i use",
+            "which port should i use",
             "what network",
             "what interfaces",
         ],
-    ) || (has_any(
+    ) || ((has_any(
         message_lower,
         &[
             "network",
@@ -3739,6 +3772,13 @@ fn is_network_query(message_lower: &str) -> bool {
             "proxies",
         ],
     ) && !message_lower.contains("internet"))
+        || ((message_lower.contains("connect") || message_lower.contains("open"))
+            && message_lower.contains("rustyfin"))
+        || (message_lower.contains("local network") && message_lower.contains("rustyfin"))
+        || ((message_lower.contains("ip")
+            || message_lower.contains("url")
+            || message_lower.contains("port"))
+            && message_lower.contains("rustyfin")))
 }
 
 fn extract_server_query(message: &str) -> Option<String> {
@@ -4343,6 +4383,9 @@ mod tests {
             AssistantToolInput::CalendarDeleteEvent { .. } => {
                 panic!("unexpected calendar delete event input")
             }
+            AssistantToolInput::DocumentCreateDownload { .. } => {
+                panic!("unexpected document create download input")
+            }
         }
     }
 
@@ -4380,6 +4423,16 @@ mod tests {
     #[test]
     fn planner_detects_network_query() {
         let tools = plan_tool_calls("What network interfaces are active right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_local_network_connect_query() {
+        let tools = plan_tool_calls(
+            "If I was on the local network, what IP would I use to connect to Rustyfin?",
+        );
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
@@ -4964,6 +5017,14 @@ mod tests {
     fn supported_calendar_delete_prompts_skip_server_refusal() {
         let refusal = unsupported_write_response_for_message(
             "Delete dentist appointment on 2026-06-09 from my calendar",
+        );
+        assert_eq!(refusal, None);
+    }
+
+    #[test]
+    fn supported_document_create_prompts_skip_server_refusal() {
+        let refusal = unsupported_write_response_for_message(
+            "Create a markdown document summarizing the local Rustyfin IP and login URL",
         );
         assert_eq!(refusal, None);
     }

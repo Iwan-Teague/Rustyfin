@@ -302,6 +302,14 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
         } => format!(
             "calendar_delete_event:id={event_id}:scope={scope}:title={title}:date={event_date}:type={event_type}"
         ),
+        AssistantToolInput::DocumentCreateDownload {
+            file_name,
+            format,
+            model_name,
+            ..
+        } => format!(
+            "document_create_download:file_name={file_name}:format={format}:model={model_name}"
+        ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))
         }
