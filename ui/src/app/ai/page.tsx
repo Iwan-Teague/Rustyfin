@@ -2670,9 +2670,9 @@ export default function AiPage() {
 
                 <div
                   ref={composerShellRef}
-                  className="sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)] bg-transparent"
+                  className="ai-composer-shell sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
                 >
-                  <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
+                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <div ref={composerMenuRef} className="relative">
