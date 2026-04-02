@@ -12,6 +12,7 @@ import {
   type AiConversationDetail,
   type AiConversationSummary,
   type AiConversationTurn,
+  type AiGroundingSource,
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
@@ -178,6 +179,22 @@ function formatMs(ms: number): string {
 
 function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
+}
+
+function formatBytes(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return 'Unknown size';
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function parseContent(raw: string): { thinking: string | null; content: string } {
@@ -485,6 +502,10 @@ function PendingActionCard({
   const expired = pendingActionExpired(pendingAction);
   const confirmed = pendingAction.status === 'confirmed';
   const statusLabel = confirmed ? 'Confirmed' : expired ? 'Expired' : 'Confirmation required';
+  const helperText =
+    pendingAction.action_kind === 'document_create_download'
+      ? 'This document will be generated and attached as a download after you confirm.'
+      : 'Rustyfin AI needs explicit confirmation before it changes data.';
 
   return (
     <div
@@ -499,7 +520,7 @@ function PendingActionCard({
           <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-[var(--orange-soft)]">
             {statusLabel}
           </p>
-          <p className="mt-1 text-xs muted">Calendar action requires an explicit confirmation.</p>
+          <p className="mt-1 text-xs muted">{helperText}</p>
         </div>
         {!confirmed && !expired ? (
           <button
@@ -513,6 +534,47 @@ function PendingActionCard({
         ) : null}
       </div>
       <p className="text-sm leading-relaxed">{pendingAction.summary}</p>
+    </div>
+  );
+}
+
+function DownloadLinks({
+  sources,
+}: {
+  sources: AiGroundingSource[];
+}) {
+  const downloads = sources.filter(
+    (source) => source.download_url && source.download_file_name,
+  );
+  if (downloads.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      {downloads.map((source, index) => (
+        <a
+          key={`${source.tool}-${source.download_url}-${index}`}
+          href={source.download_url ?? '#'}
+          download={source.download_file_name ?? undefined}
+          className="panel-soft flex items-center justify-between gap-3 rounded-2xl px-4 py-3 transition-colors hover:border-[rgba(255,145,77,0.28)]"
+          style={{ border: '1px solid rgba(255,255,255,0.08)' }}
+        >
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-[var(--text-main)]">
+              {source.download_file_name}
+            </p>
+            <p className="mt-1 text-xs muted">
+              Downloadable {source.download_media_type?.startsWith('text/markdown') ? 'markdown' : 'text'} file
+              {' · '}
+              {formatBytes(source.download_size_bytes)}
+            </p>
+          </div>
+          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--orange-soft)]">
+            Download
+          </span>
+        </a>
+      ))}
     </div>
   );
 }
@@ -700,6 +762,7 @@ function MessageBubble({
         </div>
 
         {entry.stats ? <StatsBar stats={entry.stats} /> : null}
+        <DownloadLinks sources={entry.grounding_sources} />
 
         {entry.pending_action ? (
           <PendingActionCard

@@ -5,21 +5,28 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, NaiveDate, Utc};
+use futures::{StreamExt, future::join_all};
+use rustfin_ai_agent::{ChatChunk, ChatMessage, SamplingParams};
 use serde::Serialize;
 use serde_json::json;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
+use super::orchestrator::plan_tool_calls_with_model_assist;
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-    AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
-    ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
+    AssistantGroundingSource, AssistantHistoryMessage, AssistantToolContextBlock,
+    AssistantToolInput, PlannedToolCall, ToolAccessMode, ToolConfirmationPolicy,
+    ToolRoleRequirement,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
 };
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
+use crate::ai_generated_artifacts::artifact_download_path;
+use crate::ai_storage::{current_model_dir, model_file_path};
+use crate::auth::AuthUser;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -48,6 +55,16 @@ struct DownloadArtifactSummary {
     install_mode: Option<String>,
     summary: String,
     detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratedDocumentArtifactSummary {
+    id: String,
+    title: String,
+    file_name: String,
+    media_type: String,
+    byte_size: i64,
+    download_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -454,6 +471,9 @@ pub async fn execute_tool(
             calendar_create_birthday(state, context, call).await
         }
         AssistantToolName::CalendarDeleteEvent => calendar_delete_event(state, context, call).await,
+        AssistantToolName::DocumentCreateDownload => {
+            document_create_download(state, context, call).await
+        }
         AssistantToolName::ChannelsListUnreadActivity => {
             channels_list_unread_activity(state, context, call).await
         }
@@ -579,6 +599,29 @@ pub fn source_from_block(
         access_mode: spec.access_mode,
         risk_tier: spec.risk_tier,
         status: block.status.to_string(),
+        download_url: block
+            .data
+            .get("artifact")
+            .and_then(|artifact| artifact.get("download_path"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_file_name: block
+            .data
+            .get("artifact")
+            .and_then(|artifact| artifact.get("file_name"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_media_type: block
+            .data
+            .get("artifact")
+            .and_then(|artifact| artifact.get("media_type"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_size_bytes: block
+            .data
+            .get("artifact")
+            .and_then(|artifact| artifact.get("byte_size"))
+            .and_then(serde_json::Value::as_i64),
     }
 }
 
@@ -1558,6 +1601,317 @@ async fn calendar_delete_event(
     ))
 }
 
+async fn document_create_download(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::DocumentCreateDownload {
+        title,
+        file_name,
+        format,
+        request_prompt,
+        model_name,
+    } = &call.input
+    else {
+        return Err("missing downloadable document payload".to_string());
+    };
+
+    let format = GeneratedDocumentOutputFormat::parse(format)?;
+    let title = validate_document_title(title)?;
+    let file_name = validate_document_file_name(file_name, format)?;
+    let request_prompt = validate_document_request_prompt(request_prompt)?;
+    let model_name = validate_document_model_name(model_name)?;
+    let history = load_document_generation_history(state, context).await?;
+
+    let model_dir = current_model_dir(state).await;
+    let gguf_path = model_file_path(&model_dir, &model_name)
+        .map_err(|error| format!("invalid AI model selection for document generation: {error}"))?;
+    if !gguf_path.exists() {
+        return Err(format!(
+            "The selected AI model \"{model_name}\" is not installed on this host."
+        ));
+    }
+
+    let (engine, _, _) =
+        crate::ai_enabled::load_engine_for_chat(state, &model_name, &gguf_path).await?;
+    let auth_user = AuthUser {
+        user_id: context.user_id.clone(),
+        username: context.username.clone(),
+        role: context.role.clone(),
+    };
+    let planned =
+        plan_tool_calls_with_model_assist(&engine, &auth_user, &request_prompt, &history).await;
+    let planned = planned
+        .calls
+        .into_iter()
+        .filter(|planned| planned.tool.spec().access_mode == ToolAccessMode::ReadOnly)
+        .collect::<Vec<_>>();
+
+    let nested_context =
+        AssistantContext::new(&auth_user, format!("{}:document", context.trace_id))
+            .with_conversation_id(context.conversation_id.as_deref());
+    let grounding_blocks = join_all(planned.iter().cloned().map(|nested_call| {
+        let nested_context = nested_context.clone();
+        async move { execute_tool(state, &nested_context, &nested_call).await }
+    }))
+    .await;
+
+    let messages =
+        build_document_generation_messages(format, &request_prompt, &history, &grounding_blocks);
+    let content = collect_generated_document_text(&engine, messages)
+        .await
+        .and_then(|content| finalize_generated_document_content(&content))?;
+    let byte_size = i64::try_from(content.as_bytes().len())
+        .map_err(|_| "generated document is too large to store".to_string())?;
+
+    let artifact = rustfin_db::repo::ai_generated_artifacts::create_artifact(
+        &state.db,
+        rustfin_db::repo::ai_generated_artifacts::CreateAiGeneratedArtifactParams {
+            user_id: &context.user_id,
+            conversation_id: context.conversation_id.as_deref(),
+            title: &title,
+            file_name: &file_name,
+            media_type: format.media_type(),
+            content_text: &content,
+            byte_size,
+            trace_id: Some(context.trace_id.as_str()),
+        },
+    )
+    .await
+    .map_err(|error| format!("failed to store generated document: {error}"))?;
+
+    let artifact = GeneratedDocumentArtifactSummary {
+        id: artifact.id.clone(),
+        title: artifact.title,
+        file_name: artifact.file_name,
+        media_type: artifact.media_type,
+        byte_size: artifact.byte_size,
+        download_path: artifact_download_path(&artifact.id),
+    };
+
+    Ok((
+        format!(
+            "Created downloadable {} document \"{}\"",
+            format.label(),
+            file_name
+        ),
+        json!({
+            "verified": true,
+            "artifact": artifact,
+        }),
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum GeneratedDocumentOutputFormat {
+    Markdown,
+    Text,
+}
+
+impl GeneratedDocumentOutputFormat {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "markdown" => Ok(Self::Markdown),
+            "text" => Ok(Self::Text),
+            other => Err(format!(
+                "unsupported document format \"{other}\"; only markdown and text are available"
+            )),
+        }
+    }
+
+    const fn media_type(self) -> &'static str {
+        match self {
+            Self::Markdown => "text/markdown; charset=utf-8",
+            Self::Text => "text/plain; charset=utf-8",
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Text => "txt",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => "markdown",
+            Self::Text => "plain-text",
+        }
+    }
+}
+
+fn validate_document_title(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("generated document title is required".to_string());
+    }
+    Ok(trimmed.chars().take(80).collect())
+}
+
+fn validate_document_file_name(
+    raw: &str,
+    format: GeneratedDocumentOutputFormat,
+) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("generated document file name is required".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("generated document file name must not contain path separators".to_string());
+    }
+
+    let mut normalized = trimmed.to_string();
+    if !normalized.ends_with(".md") && !normalized.ends_with(".txt") {
+        normalized.push('.');
+        normalized.push_str(format.extension());
+    }
+    Ok(normalized.chars().take(96).collect())
+}
+
+fn validate_document_request_prompt(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("generated document prompt is required".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_document_model_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("generated document model name is required".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn load_document_generation_history(
+    state: &AppState,
+    context: &AssistantContext,
+) -> Result<Vec<AssistantHistoryMessage>, String> {
+    let Some(conversation_id) = context.conversation_id.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let (_, _, history) = crate::ai_conversations::load_conversation_request_context(
+        state,
+        &context.user_id,
+        conversation_id,
+    )
+    .await
+    .map_err(|error| {
+        format!("failed to load conversation history for document generation: {error:?}")
+    })?;
+    Ok(trim_document_generation_history(&history))
+}
+
+fn trim_document_generation_history(
+    history: &[AssistantHistoryMessage],
+) -> Vec<AssistantHistoryMessage> {
+    let len = history.len();
+    let start = len.saturating_sub(8);
+    history[start..].to_vec()
+}
+
+fn build_document_generation_messages(
+    format: GeneratedDocumentOutputFormat,
+    request_prompt: &str,
+    history: &[AssistantHistoryMessage],
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Vec<ChatMessage> {
+    let mut messages = vec![ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "You generate downloadable Rustyfin user documents. Return only the document body with no surrounding commentary, no markdown code fences, and no explanation about downloads. Produce a {} document.",
+            format.label()
+        ),
+    }];
+
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "Current Rustyfin host local date/time for this document: {}.",
+            assistant_local_now().format("%Y-%m-%d %H:%M:%S %:z (%A)")
+        ),
+    });
+
+    if !grounding_blocks.is_empty() {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Authoritative Rustyfin grounding for this document:\n{}",
+                serde_json::to_string(grounding_blocks).unwrap_or_else(|_| "[]".to_string())
+            ),
+        });
+    }
+
+    for history_message in history {
+        messages.push(ChatMessage {
+            role: history_message.role.clone(),
+            content: history_message.content.clone(),
+        });
+    }
+
+    let format_instruction = match format {
+        GeneratedDocumentOutputFormat::Markdown => {
+            "Write a clean markdown document with useful headings and concise detail."
+        }
+        GeneratedDocumentOutputFormat::Text => {
+            "Write a clean plain-text document with readable section breaks."
+        }
+    };
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: format!(
+            "{format_instruction}\nUser request for the downloadable document:\n{}",
+            request_prompt.trim()
+        ),
+    });
+
+    messages
+}
+
+async fn collect_generated_document_text(
+    engine: &rustfin_ai_agent::LlamaEngine,
+    messages: Vec<ChatMessage>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    let stream = engine.chat_stream(
+        messages,
+        SamplingParams {
+            temperature: 0.2,
+            top_p: 0.9,
+            top_k: 30,
+            repeat_penalty: 1.05,
+            max_tokens: 1200,
+        },
+    );
+    futures::pin_mut!(stream);
+
+    while let Some(chunk) = stream.next().await {
+        match chunk.map_err(|error| format!("document generation failed: {error}"))? {
+            ChatChunk::Token(text) => output.push_str(&text),
+            ChatChunk::Done => break,
+            ChatChunk::Stats { .. } => {}
+        }
+    }
+
+    Ok(output)
+}
+
+fn finalize_generated_document_content(content: &str) -> Result<String, String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err("the AI generated an empty document".to_string());
+    }
+
+    let normalized = trimmed.replace("\r\n", "\n");
+    if normalized.len() > 64_000 {
+        return Err("the generated document exceeded the maximum allowed size".to_string());
+    }
+    Ok(normalized)
+}
+
 fn validate_calendar_title(raw: &str) -> Result<String, String> {
     let title = raw.trim();
     if title.is_empty() {
@@ -2486,6 +2840,7 @@ fn calendar_window_for_call(
         AssistantToolInput::None
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
+        | AssistantToolInput::DocumentCreateDownload { .. }
         | AssistantToolInput::LibrarySearch { .. }
         | AssistantToolInput::LibraryRecent { .. }
         | AssistantToolInput::Weather { .. }
@@ -3498,7 +3853,10 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             calendar_query: Some(title.clone()),
             ..AssistantFollowUpInputHint::default()
         },
-        AssistantToolInput::CalendarDeleteEvent { .. } => AssistantFollowUpInputHint::default(),
+        AssistantToolInput::CalendarDeleteEvent { .. }
+        | AssistantToolInput::DocumentCreateDownload { .. } => {
+            AssistantFollowUpInputHint::default()
+        }
         AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
             channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -3688,7 +4046,9 @@ fn follow_up_entities(
                 }]
             })
             .unwrap_or_default(),
-        AssistantToolName::CalendarDeleteEvent => Vec::new(),
+        AssistantToolName::CalendarDeleteEvent | AssistantToolName::DocumentCreateDownload => {
+            Vec::new()
+        }
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
         AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
             ordinal: 1,
@@ -4027,6 +4387,7 @@ mod tests {
             role: role.to_string(),
             is_admin: role == "admin",
             confirmed_write_tool: None,
+            conversation_id: None,
         }
     }
 

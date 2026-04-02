@@ -164,12 +164,24 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations_pg/041_ai_assistant_audit.sql"),
     ),
     (
+        "042_downloads_artifacts",
+        include_str!("../migrations_pg/042_downloads_artifacts.sql"),
+    ),
+    (
+        "043_backups",
+        include_str!("../migrations_pg/043_backups.sql"),
+    ),
+    (
         "044_ai_conversations",
         include_str!("../migrations_pg/044_ai_conversations.sql"),
     ),
     (
         "045_ai_assistant_confirmation",
         include_str!("../migrations_pg/045_ai_assistant_confirmation.sql"),
+    ),
+    (
+        "046_ai_generated_artifacts",
+        include_str!("../migrations_pg/046_ai_generated_artifacts.sql"),
     ),
 ];
 

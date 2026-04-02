@@ -14,6 +14,8 @@ pub mod ai_conversations;
 #[cfg(feature = "ai")]
 pub mod ai_enabled;
 #[cfg(feature = "ai")]
+pub mod ai_generated_artifacts;
+#[cfg(feature = "ai")]
 pub mod ai_runtime;
 pub mod ai_storage;
 #[cfg(feature = "ai")]

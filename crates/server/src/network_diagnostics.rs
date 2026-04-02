@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 #[cfg(target_os = "linux")]
@@ -22,11 +23,24 @@ pub struct NetworkNodeSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct RustyfinNetworkAccess {
+    pub ui_port: u16,
+    pub backend_port: u16,
+    pub calendar_port: u16,
+    pub preferred_local_ipv4: Option<String>,
+    pub preferred_local_url: Option<String>,
+    pub login_url: Option<String>,
+    pub ai_url: Option<String>,
+    pub public_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct NetworkTopologySnapshot {
     pub available: bool,
     pub reason: Option<String>,
     pub host_label: Option<String>,
     pub public_host: Option<String>,
+    pub access: RustyfinNetworkAccess,
     pub remote_access_enabled: bool,
     pub trusted_proxy_count: usize,
     pub trusted_proxies: Option<Vec<String>>,
@@ -41,6 +55,7 @@ impl NetworkTopologySnapshot {
         reason: impl Into<String>,
         host_label: Option<String>,
         public_host: Option<String>,
+        access: RustyfinNetworkAccess,
         remote_access_enabled: bool,
         trusted_proxies: Vec<String>,
         include_admin_details: bool,
@@ -50,6 +65,7 @@ impl NetworkTopologySnapshot {
             reason: Some(reason.into()),
             host_label,
             public_host,
+            access,
             remote_access_enabled,
             trusted_proxy_count: trusted_proxies.len(),
             trusted_proxies: include_admin_details.then_some(trusted_proxies),
@@ -86,6 +102,9 @@ pub async fn collect_network_topology_snapshot(
     state: &AppState,
     include_admin_details: bool,
 ) -> NetworkTopologySnapshot {
+    let ui_port = env_u16("RUSTFIN_UI_PORT", 3000);
+    let backend_port = env_u16("RUSTFIN_BACKEND_PORT", 8096);
+    let calendar_port = env_u16("RUSTFIN_CALENDAR_PORT", 8099);
     let remote_access_enabled = rustfin_db::repo::settings::get(&state.db, "allow_remote_access")
         .await
         .ok()
@@ -108,6 +127,13 @@ pub async fn collect_network_topology_snapshot(
     {
         match collect_linux_network_nodes().await {
             Ok(nodes) => {
+                let access = build_rustyfin_network_access(
+                    &nodes,
+                    public_host.as_deref(),
+                    ui_port,
+                    backend_port,
+                    calendar_port,
+                );
                 let online_node_count = nodes.iter().filter(|node| node.status == "online").count();
                 let offline_node_count =
                     nodes.iter().filter(|node| node.status == "offline").count();
@@ -120,6 +146,7 @@ pub async fn collect_network_topology_snapshot(
                     reason: None,
                     host_label,
                     public_host,
+                    access,
                     remote_access_enabled,
                     trusted_proxy_count: trusted_proxies.len(),
                     trusted_proxies: include_admin_details.then_some(trusted_proxies),
@@ -129,23 +156,41 @@ pub async fn collect_network_topology_snapshot(
                     nodes,
                 }
             }
-            Err(error) => NetworkTopologySnapshot::unavailable(
-                error,
-                host_label,
-                public_host,
-                remote_access_enabled,
-                trusted_proxies,
-                include_admin_details,
-            ),
+            Err(error) => {
+                let access = build_rustyfin_network_access(
+                    &[],
+                    public_host.as_deref(),
+                    ui_port,
+                    backend_port,
+                    calendar_port,
+                );
+                NetworkTopologySnapshot::unavailable(
+                    error,
+                    host_label,
+                    public_host,
+                    access,
+                    remote_access_enabled,
+                    trusted_proxies,
+                    include_admin_details,
+                )
+            }
         }
     }
 
     #[cfg(not(target_os = "linux"))]
     {
+        let access = build_rustyfin_network_access(
+            &[],
+            public_host.as_deref(),
+            ui_port,
+            backend_port,
+            calendar_port,
+        );
         NetworkTopologySnapshot::unavailable(
             "Host network topology is only available on Linux hosts.",
             host_label,
             public_host,
+            access,
             remote_access_enabled,
             trusted_proxies,
             include_admin_details,
@@ -166,6 +211,71 @@ fn detect_host_label() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn env_u16(name: &str, default: u16) -> u16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .unwrap_or(default)
+}
+
+fn build_rustyfin_network_access(
+    nodes: &[NetworkNodeSummary],
+    public_host: Option<&str>,
+    ui_port: u16,
+    backend_port: u16,
+    calendar_port: u16,
+) -> RustyfinNetworkAccess {
+    let preferred_local_ipv4 = preferred_local_ipv4(nodes);
+    let preferred_local_url = preferred_local_ipv4
+        .as_deref()
+        .map(|ip| format!("https://{ip}:{ui_port}"));
+    let login_url = preferred_local_url
+        .as_deref()
+        .map(|base| format!("{base}/login"));
+    let ai_url = preferred_local_url
+        .as_deref()
+        .map(|base| format!("{base}/ai"));
+    let public_url = public_host.map(|host| format!("https://{host}:{ui_port}"));
+
+    RustyfinNetworkAccess {
+        ui_port,
+        backend_port,
+        calendar_port,
+        preferred_local_ipv4,
+        preferred_local_url,
+        login_url,
+        ai_url,
+        public_url,
+    }
+}
+
+fn preferred_local_ipv4(nodes: &[NetworkNodeSummary]) -> Option<String> {
+    let mut fallback = None;
+
+    for node in nodes
+        .iter()
+        .filter(|node| node.status == "online" && !node.is_loopback)
+    {
+        for address in node
+            .addresses
+            .iter()
+            .filter(|address| address.family == "inet")
+        {
+            let Ok(ip) = address.address.parse::<Ipv4Addr>() else {
+                continue;
+            };
+            if ip.is_private() {
+                return Some(ip.to_string());
+            }
+            if !ip.is_loopback() && fallback.is_none() {
+                fallback = Some(ip.to_string());
+            }
+        }
+    }
+
+    fallback
 }
 
 #[cfg(target_os = "linux")]
@@ -285,11 +395,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::{
         IpAddressShowRow, classify_network_node_status, is_loopback_address,
-        parse_linux_network_rows, status_rank,
+        parse_linux_network_rows, preferred_local_ipv4, status_rank,
     };
-
-    #[cfg(target_os = "linux")]
-    use crate::network_diagnostics::NetworkAddressSummary;
 
     #[test]
     fn unavailable_snapshot_hides_trusted_proxies_for_non_admins() {
@@ -297,6 +404,7 @@ mod tests {
             "network diagnostics unavailable",
             Some("rustyfin-host".to_string()),
             Some("rustyfin.example".to_string()),
+            super::build_rustyfin_network_access(&[], Some("rustyfin.example"), 3008, 8097, 8099),
             true,
             vec!["10.0.0.10".to_string(), "10.0.0.11".to_string()],
             false,
@@ -316,6 +424,7 @@ mod tests {
             "network diagnostics unavailable",
             Some("rustyfin-host".to_string()),
             Some("rustyfin.example".to_string()),
+            super::build_rustyfin_network_access(&[], Some("rustyfin.example"), 3008, 8097, 8099),
             true,
             vec!["10.0.0.10".to_string(), "10.0.0.11".to_string()],
             true,
@@ -379,5 +488,33 @@ mod tests {
         let error =
             parse_linux_network_rows(br#"{"not":"an array"}"#).expect_err("expected parse failure");
         assert!(error.contains("failed to parse host network interface data"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn preferred_local_ipv4_prefers_private_online_address() {
+        let ip = preferred_local_ipv4(&[
+            NetworkNodeSummary {
+                name: "eth0".to_string(),
+                status: "online".to_string(),
+                is_loopback: false,
+                addresses: vec![NetworkAddressSummary {
+                    family: "inet".to_string(),
+                    address: "203.0.113.44".to_string(),
+                    scope: Some("global".to_string()),
+                }],
+            },
+            NetworkNodeSummary {
+                name: "enp3s0".to_string(),
+                status: "online".to_string(),
+                is_loopback: false,
+                addresses: vec![NetworkAddressSummary {
+                    family: "inet".to_string(),
+                    address: "192.168.0.36".to_string(),
+                    scope: Some("global".to_string()),
+                }],
+            },
+        ]);
+        assert_eq!(ip.as_deref(), Some("192.168.0.36"));
     }
 }

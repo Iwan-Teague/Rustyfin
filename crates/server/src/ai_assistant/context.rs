@@ -8,6 +8,7 @@ pub struct AssistantContext {
     pub role: String,
     pub is_admin: bool,
     pub confirmed_write_tool: Option<String>,
+    pub conversation_id: Option<String>,
 }
 
 impl AssistantContext {
@@ -19,11 +20,17 @@ impl AssistantContext {
             role: user.role.clone(),
             is_admin: user.role == "admin",
             confirmed_write_tool: None,
+            conversation_id: None,
         }
     }
 
     pub fn with_confirmed_write_tool(mut self, tool_name: &str) -> Self {
         self.confirmed_write_tool = Some(tool_name.to_string());
+        self
+    }
+
+    pub fn with_conversation_id(mut self, conversation_id: Option<&str>) -> Self {
+        self.conversation_id = conversation_id.map(str::to_string);
         self
     }
 }
