@@ -141,7 +141,8 @@ Runtime behavior:
 - `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
   - the supervisor keeps the native child-process set under `systemd` observation
   - keep supervisor child matching exact-binary-aware so `rustfin-servers-agent` can never be mistaken for `rustfin-server`
-  - keep supervisor backend/edge health checks active so a dead API process cannot leave `/login` and `/ai` serving UI shells against a broken upstream
+  - keep supervisor backend/edge health checks active with consecutive-failure tolerance so a dead API process cannot leave `/login` and `/ai` serving UI shells against a broken upstream, but brief AI/runtime stalls do not trigger needless restarts
+  - native runtime planning should persist a stable `RUSTFIN_JWT_SECRET` when one is not already configured so routine restarts do not invalidate every session cookie
   - if a core child process dies, the service exits and `systemd` restarts the stack
 - `rustyfin-post-healthcheck.service` is installed alongside the native runtime
   - it verifies backend/UI/agent readiness after startup
