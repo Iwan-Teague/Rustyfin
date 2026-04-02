@@ -122,7 +122,7 @@ pub async fn get_ai_runtime(
     Ok(Json(AiRuntimeResponse {
         model: AiRuntimeModelSummary {
             name: loaded_model,
-            backend: inferred_backend(&gpus),
+            backend: inferred_backend(loaded, n_gpu_layers, &device_indices, &gpus),
             context_length,
             n_threads,
             n_gpu_layers,
@@ -149,14 +149,74 @@ pub async fn get_ai_runtime(
     }))
 }
 
-fn inferred_backend(gpus: &[AiRuntimeGpuSummary]) -> String {
-    let requested = std::env::var("RUSTFIN_AI_GPU_BACKEND")
+fn inferred_backend(
+    loaded: bool,
+    n_gpu_layers: i32,
+    device_indices: &[usize],
+    gpus: &[AiRuntimeGpuSummary],
+) -> String {
+    let requested = configured_backend_request();
+    resolve_backend_label(
+        &requested,
+        compiled_backend_label(),
+        loaded,
+        n_gpu_layers,
+        device_indices,
+        gpus.len(),
+    )
+}
+
+fn configured_backend_request() -> String {
+    std::env::var("RUSTFIN_AI_GPU_BACKEND")
         .unwrap_or_else(|_| "auto".to_string())
         .trim()
-        .to_ascii_lowercase();
-    match requested.as_str() {
-        "auto" => {
-            if !gpus.is_empty() {
+        .to_ascii_lowercase()
+}
+
+fn compiled_backend_label() -> Option<&'static str> {
+    if cfg!(feature = "ai-cuda") {
+        Some("cuda")
+    } else if cfg!(feature = "ai-rocm") {
+        Some("rocm")
+    } else if cfg!(feature = "ai-vulkan") {
+        Some("vulkan")
+    } else if cfg!(feature = "ai-cpu") || cfg!(feature = "ai") {
+        Some("cpu")
+    } else {
+        None
+    }
+}
+
+fn resolve_backend_label(
+    requested: &str,
+    compiled_backend: Option<&str>,
+    loaded: bool,
+    n_gpu_layers: i32,
+    device_indices: &[usize],
+    gpu_metric_count: usize,
+) -> String {
+    match requested {
+        "disabled" | "none" | "off" => "disabled".to_string(),
+        "cpu" => "cpu".to_string(),
+        "cuda" | "rocm" | "vulkan" => requested.to_string(),
+        "auto" | "" => {
+            if let Some(label) = compiled_backend {
+                if label == "cpu" {
+                    return "cpu".to_string();
+                }
+                if loaded && n_gpu_layers == 0 && device_indices.is_empty() {
+                    return "cpu".to_string();
+                }
+                return label.to_string();
+            }
+            if loaded && (n_gpu_layers > 0 || !device_indices.is_empty()) {
+                return if gpu_metric_count > 0 {
+                    "cuda".to_string()
+                } else {
+                    "cpu".to_string()
+                };
+            }
+            if gpu_metric_count > 0 {
                 "cuda".to_string()
             } else {
                 "cpu".to_string()
@@ -370,5 +430,41 @@ mod tests {
         assert_eq!(human_bytes(999), "999 B");
         assert_eq!(human_bytes(1024), "1.0 KiB");
         assert_eq!(human_bytes(1024 * 1024), "1.0 MiB");
+    }
+
+    #[test]
+    fn resolve_backend_label_prefers_explicit_request() {
+        assert_eq!(
+            resolve_backend_label("rocm", Some("cpu"), false, 0, &[], 0),
+            "rocm"
+        );
+        assert_eq!(
+            resolve_backend_label("disabled", Some("cuda"), true, 99, &[0], 1),
+            "disabled"
+        );
+    }
+
+    #[test]
+    fn resolve_backend_label_reports_cpu_when_auto_falls_back_to_cpu() {
+        assert_eq!(
+            resolve_backend_label("auto", Some("cuda"), true, 0, &[], 1),
+            "cpu"
+        );
+        assert_eq!(
+            resolve_backend_label("auto", Some("cpu"), false, 0, &[], 0),
+            "cpu"
+        );
+    }
+
+    #[test]
+    fn resolve_backend_label_uses_compiled_gpu_backend_for_auto() {
+        assert_eq!(
+            resolve_backend_label("auto", Some("vulkan"), true, 32, &[0, 1], 0),
+            "vulkan"
+        );
+        assert_eq!(
+            resolve_backend_label("auto", Some("rocm"), false, 0, &[], 0),
+            "rocm"
+        );
     }
 }
