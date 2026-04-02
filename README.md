@@ -66,11 +66,12 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - Safer fixed-provider public data tools can be exposed to all authenticated users without opening generic browsing; the current implementation ships authenticated weather lookup through Open-Meteo while keeping generic public-web search/fetch admin-only
   - Calendar writes now require explicit confirmation tokens, server-side execution, and read-after-write verification before the assistant reports success; other unsupported create/edit/delete prompts still return server-authored refusals instead of model-written faux success
   - `/api/v1/ai/transcribe` now provides authenticated speech-to-text fallback for `/ai`, with browser-native recognition preferred in supported browsers and server transcription handling size/duration-limited uploads when the browser path is unavailable
-  - `/api/v1/ai/runtime` now exposes a curated authenticated AI runtime summary with active model/backend, current turn phase, queue depth, process/host memory, host CPU, and graceful GPU telemetry when the host can provide it
+  - `/api/v1/ai/runtime` now exposes a curated authenticated AI runtime summary with active model/backend, current turn phase, queue depth, process/host memory, accurate host RAM totals/usage, host CPU, selected multi-GPU split metadata, and graceful per-GPU telemetry when the host can provide it
   - `/ai` now includes a microphone workflow with transcript preview/editing before send plus a live runtime panel that surfaces the curated AI runtime summary during and between turns
   - Native host builds now select a host-safe AI backend automatically instead of assuming CUDA is present
   - On unsupported hosts, `auto` can fall back to AI being disabled so the rest of Rustyfin still runs
   - Use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time
+  - When GPU split mode allows it, Rustyfin now defaults to using all visible llama backend GPU devices for model loading; override with `RUSTFIN_AI_GPU_SPLIT_MODE`, `RUSTFIN_AI_GPU_MAIN_DEVICE`, and `RUSTFIN_AI_GPU_DEVICES`
   - AI models are resolved from the admin-managed `ai_model_dir` setting, then `RUSTFIN_AI_MODEL_DIR`, then the Rustyfin AI default path `/var/lib/rustyfin/ai/models`
   - First-time native installs now seed a starter GGUF model into the active AI model directory when AI is enabled and no models are present, so `/ai` is usable immediately after setup
   - If the default AI model path is not writable for the native runtime user, Rustyfin falls back to `~/.local/share/rustyfin/ai/models` and surfaces the storage warning in Admin `AI`
@@ -286,6 +287,9 @@ Playback and transcoding:
 - `RUSTFIN_TRANSCODE_IDLE_TIMEOUT_SECS`
 - `RUSTFIN_STREAM_TOKEN_TTL_SECONDS`
 - `RUSTFIN_AI_GPU_BACKEND` - native AI inference backend selection for host builds (`auto|disabled|cpu|cuda|rocm|vulkan`)
+- `RUSTFIN_AI_GPU_SPLIT_MODE` - llama multi-GPU split mode for model loading (`layer|row|none`)
+- `RUSTFIN_AI_GPU_MAIN_DEVICE` - preferred single-GPU backend device index when split mode is `none`
+- `RUSTFIN_AI_GPU_DEVICES` - comma-separated llama backend device indices to use for model loading (empty or `all` uses all visible GPU devices)
 
 TMDB:
 
