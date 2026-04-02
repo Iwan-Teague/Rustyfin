@@ -100,6 +100,16 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+.ai-composer-textarea,
+.ai-composer-textarea:focus,
+.ai-composer-textarea:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .app-nav {
   position: relative;
   top: 0;
