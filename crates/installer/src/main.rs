@@ -1625,6 +1625,7 @@ fn plan_native_runtime(
     let youtube_agent_token = resolve_or_generate_env_secret("RUSTFIN_YOUTUBE_AGENT_TOKEN");
     let transcription_agent_token =
         resolve_or_generate_env_secret("RUSTFIN_TRANSCRIPTION_AGENT_TOKEN");
+    let jwt_secret = resolve_or_generate_env_secret("RUSTFIN_JWT_SECRET");
     let servers_agent_token = if enable_servers_agent {
         resolve_or_generate_env_secret("RUSTFIN_SERVERS_AGENT_TOKEN")
     } else {
@@ -1672,6 +1673,7 @@ fn plan_native_runtime(
         ),
         ("RUSTFIN_DATABASE_URL", database_url.clone()),
         ("RUSTFIN_DATABASE_TARGET_LOG", database_target_log),
+        ("RUSTFIN_JWT_SECRET", jwt_secret),
         ("RUSTFIN_BIND", format!("127.0.0.1:{backend_port}")),
         (
             "RUSTFIN_CALENDAR_BIND",
@@ -1932,6 +1934,10 @@ fn write_runtime_snapshot_to_path(output: &Path) -> anyhow::Result<()> {
             env::var("RUSTFIN_DIRECTORY_PICKER_HELPER_URL").unwrap_or_default(),
         ),
         ("RUSTFIN_DATABASE_URL", database_url),
+        (
+            "RUSTFIN_JWT_SECRET",
+            env::var("RUSTFIN_JWT_SECRET").unwrap_or_default(),
+        ),
         (
             "RUSTFIN_TMDB_AGENT_TOKEN",
             env::var("RUSTFIN_TMDB_AGENT_TOKEN").unwrap_or_default(),

@@ -8,6 +8,7 @@ RESET='\033[0m'
 
 info()    { echo -e "${CYAN}[run-native-supervisor]${RESET} $*"; }
 success() { echo -e "${GREEN}[run-native-supervisor]${RESET} $*"; }
+warn()    { echo -e "${CYAN}[run-native-supervisor]${RESET} $*"; }
 die()     { echo -e "${RED}[run-native-supervisor] ERROR:${RESET} $*" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +27,9 @@ fi
 
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-8096}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-3000}"
+BACKEND_FAILURE_THRESHOLD="${RUSTFIN_SUPERVISOR_BACKEND_FAILURE_THRESHOLD:-30}"
+EDGE_FAILURE_THRESHOLD="${RUSTFIN_SUPERVISOR_EDGE_FAILURE_THRESHOLD:-10}"
+HEALTH_CHECK_INTERVAL_SECONDS="${RUSTFIN_SUPERVISOR_HEALTH_INTERVAL_SECONDS:-2}"
 
 cleanup() {
   "$REPO_ROOT/scripts/stop-native.sh" >/dev/null 2>&1 || true
@@ -77,11 +81,11 @@ cmdline_has_executable() {
 }
 
 backend_health_ok() {
-  curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1
+  curl -fsS --connect-timeout 2 --max-time 5 "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1
 }
 
 edge_health_ok() {
-  curl -kfsS "https://127.0.0.1:${UI_EDGE_PORT}/health" >/dev/null 2>&1
+  curl -kfsS --connect-timeout 2 --max-time 5 "https://127.0.0.1:${UI_EDGE_PORT}/runtime-config" >/dev/null 2>&1
 }
 
 find_service_pid() {
@@ -123,6 +127,8 @@ if [[ -f "$RUNTIME_ENV_FILE" ]]; then
 fi
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-$BACKEND_PORT}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-$UI_EDGE_PORT}"
+backend_failure_count=0
+edge_failure_count=0
 
 while true; do
   for service in "${required_services[@]}"; do
@@ -148,10 +154,22 @@ while true; do
     fi
   done
   if ! backend_health_ok; then
-    die "Backend health check failed on http://127.0.0.1:${BACKEND_PORT}/health"
+    backend_failure_count=$((backend_failure_count + 1))
+    warn "Backend health probe failed (${backend_failure_count}/${BACKEND_FAILURE_THRESHOLD}) on http://127.0.0.1:${BACKEND_PORT}/health"
+    if (( backend_failure_count >= BACKEND_FAILURE_THRESHOLD )); then
+      die "Backend health check failed ${backend_failure_count} times in a row on http://127.0.0.1:${BACKEND_PORT}/health"
+    fi
+  else
+    backend_failure_count=0
   fi
   if ! edge_health_ok; then
-    die "Edge health check failed on https://127.0.0.1:${UI_EDGE_PORT}/health"
+    edge_failure_count=$((edge_failure_count + 1))
+    warn "Edge health probe failed (${edge_failure_count}/${EDGE_FAILURE_THRESHOLD}) on https://127.0.0.1:${UI_EDGE_PORT}/runtime-config"
+    if (( edge_failure_count >= EDGE_FAILURE_THRESHOLD )); then
+      die "Edge health check failed ${edge_failure_count} times in a row on https://127.0.0.1:${UI_EDGE_PORT}/runtime-config"
+    fi
+  else
+    edge_failure_count=0
   fi
-  sleep 2
+  sleep "$HEALTH_CHECK_INTERVAL_SECONDS"
 done

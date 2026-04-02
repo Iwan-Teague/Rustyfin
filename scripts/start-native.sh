@@ -35,6 +35,7 @@ Environment:
   RUSTFIN_UI_INTERNAL_PORT              Internal Next standalone port (default: 3001)
   RUSTFIN_UI_PORT                       HTTPS edge port (default: 3000)
   RUSTFIN_DATABASE_URL                  PostgreSQL URL (default: postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin)
+  RUSTFIN_JWT_SECRET                    Stable JWT signing secret for persistent sessions
   RUSTFIN_MEDIA_PATH                    Host media root (default: $HOME)
   RUSTFIN_ENABLE_SERVERS_AGENT          Start rustfin-servers-agent (default: 1)
   RUSTFIN_AI_GPU_BACKEND                AI inference backend: auto|disabled|cpu|cuda|rocm|vulkan (default: auto)
@@ -178,6 +179,7 @@ user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 user_public_host="${RUSTFIN_PUBLIC_HOST:-}"
 user_media_path="${RUSTFIN_MEDIA_PATH:-}"
 user_database_url="${RUSTFIN_DATABASE_URL:-}"
+user_jwt_secret="${RUSTFIN_JWT_SECRET:-}"
 if [[ -f "$INSTALL_DEFAULTS_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$INSTALL_DEFAULTS_FILE" || true
@@ -206,6 +208,7 @@ fi
 [[ -n "$user_public_host" ]] && RUSTFIN_PUBLIC_HOST="$user_public_host"
 [[ -n "$user_media_path" ]] && RUSTFIN_MEDIA_PATH="$user_media_path"
 [[ -n "$user_database_url" ]] && RUSTFIN_DATABASE_URL="$user_database_url"
+[[ -n "$user_jwt_secret" ]] && RUSTFIN_JWT_SECRET="$user_jwt_secret"
 [[ -n "$user_ai_gpu_backend" ]] && RUSTFIN_AI_GPU_BACKEND="$user_ai_gpu_backend"
 [[ -n "$user_transcoder_hw_accel" ]] && RUSTFIN_TRANSCODER_HW_ACCEL="$user_transcoder_hw_accel"
 [[ -n "$user_transcoder_require_hw_accel" ]] && RUSTFIN_TRANSCODER_REQUIRE_HW_ACCEL="$user_transcoder_require_hw_accel"
@@ -232,6 +235,7 @@ export RUSTFIN_WS_ALLOWED_ORIGINS="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 export RUSTFIN_MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-}"
 export RUSTFIN_DIRECTORY_PICKER_HELPER_URL="${RUSTFIN_DIRECTORY_PICKER_HELPER_URL:-}"
 export RUSTFIN_DATABASE_URL="${RUSTFIN_DATABASE_URL:-}"
+export RUSTFIN_JWT_SECRET="${RUSTFIN_JWT_SECRET:-}"
 export RUSTFIN_PG_USER="${RUSTFIN_PG_USER:-}"
 export RUSTFIN_PG_PASSWORD="${RUSTFIN_PG_PASSWORD:-}"
 export RUSTFIN_PG_DB="${RUSTFIN_PG_DB:-}"
