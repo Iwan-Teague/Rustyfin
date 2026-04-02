@@ -1008,10 +1008,6 @@ export default function AiPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
   const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false);
-  const [compactViewport, setCompactViewport] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
-  );
-  const [workspaceHeight, setWorkspaceHeight] = useState<number | null>(null);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -1040,7 +1036,6 @@ export default function AiPage() {
   const queuedPromptsRef = useRef<QueuedPromptMap>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
-  const workspaceRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -1077,20 +1072,6 @@ export default function AiPage() {
 
   const focusComposer = useCallback(() => {
     textareaRef.current?.focus();
-  }, []);
-
-  const measureWorkspace = useCallback(() => {
-    if (typeof window === 'undefined') return;
-    const isCompact = window.innerWidth < 768;
-    setCompactViewport(isCompact);
-    const node = workspaceRef.current;
-    if (!node) return;
-    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-    const nextHeight = Math.max(
-      isCompact ? 480 : 608,
-      Math.round(viewportHeight - node.getBoundingClientRect().top),
-    );
-    setWorkspaceHeight((current) => (current === nextHeight ? current : nextHeight));
   }, []);
 
   const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -1271,22 +1252,14 @@ export default function AiPage() {
   }, [activeConversationId, loadConversationDetail, me]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const handleViewportChange = () => {
-      window.requestAnimationFrame(measureWorkspace);
-    };
-    handleViewportChange();
-    window.addEventListener('resize', handleViewportChange);
-    window.addEventListener('orientationchange', handleViewportChange);
-    window.visualViewport?.addEventListener('resize', handleViewportChange);
-    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+    if (typeof document === 'undefined') return;
+    document.documentElement.dataset.rfPage = 'ai';
+    document.body.dataset.rfPage = 'ai';
     return () => {
-      window.removeEventListener('resize', handleViewportChange);
-      window.removeEventListener('orientationchange', handleViewportChange);
-      window.visualViewport?.removeEventListener('resize', handleViewportChange);
-      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
     };
-  }, [measureWorkspace]);
+  }, []);
 
   useEffect(() => {
     if (!autoStickToBottomRef.current) return;
@@ -2102,16 +2075,6 @@ export default function AiPage() {
   const desktopGridClass = showDesktopRuntimePanel
     ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
     : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
-  const workspaceShellHeight = workspaceHeight
-    ? `${workspaceHeight}px`
-    : 'calc(100dvh - 8.5rem)';
-  const workspaceShellStyle = compactViewport
-    ? { minHeight: workspaceShellHeight }
-    : {
-        minHeight: workspaceShellHeight,
-        height: workspaceShellHeight,
-        maxHeight: workspaceShellHeight,
-      };
 
   return (
     <>
@@ -2129,15 +2092,9 @@ export default function AiPage() {
         />
       ) : null}
 
-      <div
-        ref={workspaceRef}
-        className="animate-rise relative left-1/2 right-1/2 -mb-[var(--page-pad-bottom)] w-screen -translate-x-1/2"
-      >
-        <div className="px-[var(--page-pad-inline)]">
-          <div
-            className={`grid md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
-            style={workspaceShellStyle}
-          >
+      <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
+        <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
+          <div className={`grid min-h-0 flex-1 md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}>
             <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="min-h-0 flex-1">
@@ -2242,16 +2199,14 @@ export default function AiPage() {
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
                   <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
                     <div className="flex min-w-0 items-center gap-3">
-                      {compactViewport ? (
-                        <button
-                          type="button"
-                          className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none"
-                          onClick={() => setDrawerOpen(true)}
-                          aria-label="Open conversations"
-                        >
-                          ☰
-                        </button>
-                      ) : null}
+                      <button
+                        type="button"
+                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none md:hidden"
+                        onClick={() => setDrawerOpen(true)}
+                        aria-label="Open conversations"
+                      >
+                        ☰
+                      </button>
                       <div className="min-w-0">
                         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
                           <span className="accent-logo">AI</span>
@@ -2420,8 +2375,8 @@ export default function AiPage() {
                   </div>
                 </div>
 
-                <div className="sticky bottom-0 z-10 shrink-0 border-t border-[var(--border)] bg-[linear-gradient(180deg,rgba(36,43,60,0)_0%,rgba(36,43,60,0.7)_18%,rgba(36,43,60,0.94)_100%)] backdrop-blur-sm">
-                  <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-4 sm:px-5">
+                <div className="sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)] bg-transparent">
+                  <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
                     <div className="flex min-h-[3.25rem] items-center gap-3">
                       <textarea
                         ref={textareaRef}
@@ -2434,7 +2389,7 @@ export default function AiPage() {
                         rows={1}
                       />
 
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div className="flex shrink-0 -translate-y-0.5 items-center gap-2">
                         {isStreaming ? (
                           <>
                             {canQueueActiveConversation ? (
