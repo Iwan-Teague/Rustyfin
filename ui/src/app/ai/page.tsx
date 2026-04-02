@@ -215,6 +215,66 @@ function modelDisplayName(name: string): string {
   return name.replace(':', ' · ');
 }
 
+const STARTER_SUGGESTIONS = [
+  'How much RAM is the server using right now?',
+  "What's my next event?",
+  'What events are coming up this week?',
+  'Who has a birthday coming up?',
+  'What was the last call about?',
+  'What rooms can I join right now?',
+  'Any unread activity in general chat?',
+  'What downloads are available right now?',
+  'What IP should I use on the local network to open Rustyfin?',
+  'What time is it in Italy right now?',
+  "What's the weather like in Galway today?",
+  'Did it rain yesterday in Galway?',
+  'What was recently added to my libraries?',
+  'Search my libraries for Star Trek',
+  'What public rooms are active right now?',
+  'Which invites can I use right now?',
+  'What is the next thing coming up in my calendar?',
+  'Show me the details for my next calendar event',
+  'Which birthdays are coming up this month?',
+  'What is the weather this week in Campile, County Wexford?',
+  'What temperature is it in Dublin right now?',
+  'What rooms can I join with video?',
+  'Summarize my most recent voice call',
+  'What channels were active recently?',
+  'Which library items were added most recently?',
+  'What is the current date and time on this Rustyfin host?',
+  "When is my next birthday event?",
+  "What's the weather tomorrow in Cork?",
+  'Show me joinable rooms I can enter right now',
+  'Which network address should I use from another device on this LAN?',
+  'What open rooms are running right now?',
+  'Show my visible calendar events for the next seven days.',
+] as const;
+
+const ADMIN_STARTER_SUGGESTIONS = [
+  'What services are down right now?',
+  'How much storage is free on the NAS?',
+  'How much VRAM are the GPUs using right now?',
+  'What model is currently loaded?',
+  'What is the AI runtime status right now?',
+  'What recent backup errors should I know about?',
+  'How many active AI requests are running right now?',
+  'What recent host errors should I check?',
+] as const;
+
+function pickStarterSuggestions(isAdmin: boolean, limit = 10): string[] {
+  const pool = [
+    ...STARTER_SUGGESTIONS,
+    ...(isAdmin ? ADMIN_STARTER_SUGGESTIONS : []),
+  ];
+
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+
+  return pool.slice(0, Math.min(limit, pool.length));
+}
+
 function formatPercent(value: number | null | undefined, digits = 0): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return '—';
@@ -858,30 +918,24 @@ function EmptyState({
   model,
   isAdmin,
   hasConversation,
+  suggestionKey,
   onNewChat,
   onSuggest,
 }: {
   model: string;
   isAdmin: boolean;
   hasConversation: boolean;
+  suggestionKey: string;
   onNewChat: () => void;
   onSuggest: (value: string) => void;
 }) {
-  const suggestions = [
-    'How much RAM is the server using right now?',
-    'What is that in gigabytes?',
-    "What's my next event?",
-    'What events are coming up this week?',
-    'Who has a birthday coming up?',
-    'What was the last call about?',
-    'What rooms can I join right now?',
-    'Any unread activity in general chat?',
-    'What downloads are available right now?',
-  ];
+  const [suggestions, setSuggestions] = useState<string[]>(() =>
+    pickStarterSuggestions(isAdmin),
+  );
 
-  if (isAdmin) {
-    suggestions.push('What services are down right now?');
-  }
+  useEffect(() => {
+    setSuggestions(pickStarterSuggestions(isAdmin));
+  }, [isAdmin, suggestionKey]);
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 px-4 py-8 text-center">
@@ -1008,6 +1062,7 @@ export default function AiPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
   const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false);
+  const [desktopRailOpen, setDesktopRailOpen] = useState(true);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -2072,9 +2127,13 @@ export default function AiPage() {
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
   const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
-  const desktopGridClass = showDesktopRuntimePanel
-    ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
-    : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
+  const desktopGridClass = desktopRailOpen
+    ? showDesktopRuntimePanel
+      ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
+      : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]'
+    : showDesktopRuntimePanel
+      ? 'md:grid-cols-[minmax(0,1fr)_16rem] lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]'
+      : 'md:grid-cols-[minmax(0,1fr)]';
 
   return (
     <>
@@ -2095,28 +2154,30 @@ export default function AiPage() {
       <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
         <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
           <div className={`grid min-h-0 flex-1 md:overflow-hidden ${desktopGridClass}`}>
-            <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
-              <div className="flex h-full min-h-0 flex-col">
-                <div className="min-h-0 flex-1">
-                  <AiConversationRail
-                    conversations={liveConversations}
-                    archivedConversations={archivedConversations}
-                    activeConversationId={activeConversationId}
-                    disabled={conversationsLoading}
-                    className="h-full w-full border-r-0 sm:w-full"
-                    onSelect={handleSelectConversation}
-                    onNewChat={() => {
-                      void handleNewChat();
-                    }}
-                    onRename={handleRenameConversation}
-                    onArchiveToggle={(conversation) => {
-                      void handleArchiveToggle(conversation);
-                    }}
-                    onDelete={handleDeleteConversation}
-                  />
+            {desktopRailOpen ? (
+              <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="min-h-0 flex-1">
+                    <AiConversationRail
+                      conversations={liveConversations}
+                      archivedConversations={archivedConversations}
+                      activeConversationId={activeConversationId}
+                      disabled={conversationsLoading}
+                      className="h-full w-full border-r-0 sm:w-full"
+                      onSelect={handleSelectConversation}
+                      onNewChat={() => {
+                        void handleNewChat();
+                      }}
+                      onRename={handleRenameConversation}
+                      onArchiveToggle={(conversation) => {
+                        void handleArchiveToggle(conversation);
+                      }}
+                      onDelete={handleDeleteConversation}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : null}
 
             <div className="flex min-w-0 flex-col md:min-h-0 md:overflow-hidden">
               <div
@@ -2201,9 +2262,19 @@ export default function AiPage() {
                     <div className="flex min-w-0 items-center gap-3">
                       <button
                         type="button"
-                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none md:hidden"
-                        onClick={() => setDrawerOpen(true)}
-                        aria-label="Open conversations"
+                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none"
+                        onClick={() => {
+                          if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+                            setDesktopRailOpen((current) => !current);
+                          } else {
+                            setDrawerOpen(true);
+                          }
+                        }}
+                        aria-label={
+                          desktopRailOpen
+                            ? 'Hide conversations'
+                            : 'Show conversations'
+                        }
                       >
                         ☰
                       </button>
@@ -2352,6 +2423,7 @@ export default function AiPage() {
                           model={selectedModel}
                           isAdmin={me.role === 'admin'}
                           hasConversation={Boolean(activeConversation)}
+                          suggestionKey={activeConversation?.id ?? activeConversationId ?? 'starter'}
                           onNewChat={() => {
                             void handleNewChat();
                           }}
