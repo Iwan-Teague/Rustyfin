@@ -1239,9 +1239,9 @@ export default function AiPage() {
     activeConversationId ? queuedPrompts[activeConversationId] ?? '' : '';
   const hasQueuedPrompt = queuedPrompt.trim().length > 0;
   const messageScrollPaddingBottom = desktopViewport
-    ? Math.max(composerShellHeight + 8, 56)
-    : Math.max(composerShellHeight + 18, 160);
-  const messageEndScrollMarginBottom = desktopViewport ? 12 : 16;
+    ? 16
+    : Math.max(composerShellHeight + 10, 132);
+  const messageEndScrollMarginBottom = desktopViewport ? 6 : 12;
 
   const resetComposerHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -2611,7 +2611,7 @@ export default function AiPage() {
                 <div
                   ref={messageScrollRef}
                   onScroll={handleMessageScroll}
-                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
+                  className="ai-message-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
                   style={{
                     paddingBottom: `${messageScrollPaddingBottom}px`,
                     scrollPaddingBottom: `${messageScrollPaddingBottom}px`,
@@ -2682,6 +2682,10 @@ export default function AiPage() {
                         ))}
                       </div>
                     )}
+                    <div
+                      aria-hidden="true"
+                      className="ai-message-bottom-mask sticky bottom-0 -mt-5 h-5 w-full"
+                    />
                     <div
                       ref={messageEndRef}
                       aria-hidden="true"
