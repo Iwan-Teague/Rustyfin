@@ -417,25 +417,18 @@ function FallbackThinkingBlock({
   }, [live]);
 
   return (
-    <div className="mb-3">
+    <div className="mb-3 space-y-1.5">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-2 text-xs muted transition-colors hover:text-[var(--text-main)]"
+        className="ai-activity-fallback-toggle"
       >
-        <span
-          className="h-3 w-3 rounded-full border border-[var(--purple)]"
-          style={{
-            background: live ? 'var(--purple)' : 'transparent',
-            opacity: live ? 1 : 0.6,
-          }}
-        />
-        <span className="font-medium">
-          {live ? 'Thinking...' : open ? 'Hide fallback note' : 'Show fallback note'}
+        <span className="ai-activity-primary">
+          {live ? 'Thinking' : open ? 'Hide fallback note' : 'Show fallback note'}
         </span>
         {!live ? (
           <svg
-            className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+            className={`h-3 w-3 text-[var(--text-dim)] transition-transform ${open ? 'rotate-180' : ''}`}
             viewBox="0 0 16 16"
             fill="currentColor"
           >
@@ -444,13 +437,7 @@ function FallbackThinkingBlock({
         ) : null}
       </button>
       {open ? (
-        <div
-          className="mt-2 rounded-xl px-3 py-2.5 font-mono text-xs leading-relaxed muted whitespace-pre-wrap"
-          style={{
-            background: 'rgba(177,140,255,0.07)',
-            border: '1px solid rgba(177,140,255,0.2)',
-          }}
-        >
+        <div className="ai-activity-fallback-body">
           {text}
           {live ? <span className="ai-cursor" /> : null}
         </div>
@@ -1020,6 +1007,7 @@ export default function AiPage() {
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPromptMap>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
+  const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -1056,6 +1044,10 @@ export default function AiPage() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
   const autoStickToBottomRef = useRef(true);
+  const stopIntentRef = useRef<{
+    conversationId: string;
+    queuedText: string | null;
+  } | null>(null);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -1294,6 +1286,7 @@ export default function AiPage() {
   useEffect(() => {
     if (inferenceAvailable === true && selectedModel) return;
     setRuntimeDrawerOpen(false);
+    setDesktopRuntimeOpen(false);
   }, [inferenceAvailable, selectedModel]);
 
   useEffect(() => {
@@ -1899,6 +1892,18 @@ export default function AiPage() {
           finalizeAssistantTurn(conversationId!, assistantTurnId);
           void loadRuntime();
 
+          const stopIntent = stopIntentRef.current;
+          if (stopIntent?.conversationId === conversationId) {
+            stopIntentRef.current = null;
+            if (stopIntent.queuedText) {
+              setAutoSendRequest({
+                conversationId: conversationId!,
+                text: stopIntent.queuedText,
+              });
+            }
+            return;
+          }
+
           if (completed) {
             void loadConversationDetail(conversationId!);
             const queuedText = queuedPromptsRef.current[conversationId!]?.trim();
@@ -1967,6 +1972,15 @@ export default function AiPage() {
   }, [autoSendRequest, isStreaming, sendMessage]);
 
   const handleStop = useCallback(() => {
+    if (streamingConversationId) {
+      const queuedText = queuedPromptsRef.current[streamingConversationId]?.trim() || null;
+      stopIntentRef.current = {
+        conversationId: streamingConversationId,
+        queuedText,
+      };
+    } else {
+      stopIntentRef.current = null;
+    }
     stopRef.current?.();
     stopRef.current = null;
     setIsStreaming(false);
@@ -2055,7 +2069,8 @@ export default function AiPage() {
       ? 'Active response in another chat'
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
-  const desktopGridClass = showRuntimePanel
+  const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
+  const desktopGridClass = showDesktopRuntimePanel
     ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
     : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
 
@@ -2210,10 +2225,16 @@ export default function AiPage() {
                       {showRuntimePanel ? (
                         <button
                           type="button"
-                          onClick={() => setRuntimeDrawerOpen(true)}
-                          className="btn-ghost px-4 py-2 text-sm md:hidden"
+                          onClick={() => {
+                            if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+                              setDesktopRuntimeOpen((current) => !current);
+                            } else {
+                              setRuntimeDrawerOpen(true);
+                            }
+                          }}
+                          className="btn-ghost px-4 py-2 text-sm"
                         >
-                          Runtime
+                          {desktopRuntimeOpen ? 'Hide runtime' : 'Runtime'}
                         </button>
                       ) : null}
                       {inferenceAvailable === true && models.length > 0 ? (
@@ -2386,9 +2407,10 @@ export default function AiPage() {
                             <button
                               type="button"
                               onClick={handleStop}
-                              className="btn-secondary h-10 px-4 text-sm"
+                              className="btn-primary ai-send-control flex h-10 w-10 items-center justify-center rounded-full p-0"
+                              aria-label={hasQueuedPrompt ? 'Stop current response and continue with queued prompt' : 'Stop current response'}
                             >
-                              Stop
+                              <span className="ai-stop-square" aria-hidden="true" />
                             </button>
                           </>
                         ) : (
@@ -2486,7 +2508,7 @@ export default function AiPage() {
               </section>
             </div>
 
-            {showRuntimePanel ? (
+            {showDesktopRuntimePanel ? (
               <aside className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-l md:border-[var(--border)]">
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="min-h-0 flex-1 overflow-y-auto p-4">
