@@ -1929,70 +1929,37 @@ export default function AiPage() {
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
   const desktopGridClass = showRuntimePanel
-    ? 'lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
-    : 'lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
+    ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
+    : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
 
   return (
     <>
       {drawerOpen ? (
         <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/60 md:hidden"
           onClick={() => setDrawerOpen(false)}
         />
       ) : null}
 
       {runtimeDrawerOpen ? (
         <div
-          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/60 md:hidden"
           onClick={() => setRuntimeDrawerOpen(false)}
         />
       ) : null}
 
-      <div className="animate-rise min-h-[calc(100dvh-6rem)] bg-[rgba(16,20,31,0.94)] lg:h-[calc(100dvh-6rem)] lg:overflow-hidden">
-        <div className={`grid min-h-[calc(100dvh-6rem)] lg:h-[calc(100dvh-6rem)] ${desktopGridClass}`}>
-          <div className="hidden lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-[var(--border)]">
-            <div className="min-h-0 flex-1">
-              <AiConversationRail
-                conversations={liveConversations}
-                archivedConversations={archivedConversations}
-                activeConversationId={activeConversationId}
-                disabled={conversationsLoading}
-                className="h-full w-full border-r-0 sm:w-full"
-                onSelect={handleSelectConversation}
-                onNewChat={() => {
-                  void handleNewChat();
-                }}
-                onRename={handleRenameConversation}
-                onArchiveToggle={(conversation) => {
-                  void handleArchiveToggle(conversation);
-                }}
-                onDelete={handleDeleteConversation}
-              />
-            </div>
-          </div>
-
-          <div className="flex min-w-0 flex-col">
-            <div
-              className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 lg:hidden ${
-                drawerOpen ? 'translate-x-0' : '-translate-x-full'
-              }`}
-            >
-              <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.98)] shadow-2xl">
-                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                  <div>
-                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                      Conversations
-                    </p>
-                    <p className="mt-1 text-xs muted">Saved chats and history</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setDrawerOpen(false)}
-                    className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                    aria-label="Close conversations"
-                  >
-                    ×
-                  </button>
+      <div className="animate-rise relative left-1/2 right-1/2 w-screen -translate-x-1/2">
+        <div className="px-[var(--page-pad-inline)]">
+          <div
+            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-8.5rem)] md:min-h-[40rem] ${desktopGridClass}`}
+          >
+            <div className="hidden md:flex md:min-h-0 md:flex-col md:border-r md:border-[var(--border)]">
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                    Conversations
+                  </p>
+                  <p className="mt-1 text-xs muted">Saved chats and history</p>
                 </div>
                 <div className="min-h-0 flex-1">
                   <AiConversationRail
@@ -2000,7 +1967,7 @@ export default function AiPage() {
                     archivedConversations={archivedConversations}
                     activeConversationId={activeConversationId}
                     disabled={conversationsLoading}
-                    className="h-full border-r-0 sm:w-full"
+                    className="h-full w-full border-r-0 sm:w-full"
                     onSelect={handleSelectConversation}
                     onNewChat={() => {
                       void handleNewChat();
@@ -2015,338 +1982,382 @@ export default function AiPage() {
               </div>
             </div>
 
-            <div
-              className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden border-t border-[var(--border)] bg-[rgba(16,20,31,0.98)] shadow-2xl transition-transform duration-200 lg:hidden ${
-                runtimeDrawerOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'
-              }`}
-            >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                <div>
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                    AI Runtime
-                  </p>
-                  <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRuntimeDrawerOpen(false)}
-                  className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                  aria-label="Close runtime panel"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="overflow-y-auto p-4">
-                <RuntimePanel runtime={runtime} className="space-y-0" stacked />
-              </div>
-            </div>
-
-            <section className="flex min-h-[calc(100dvh-6rem)] min-w-0 flex-1 flex-col lg:min-h-0 lg:h-full">
-              <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(16,20,31,0.94)]">
-                <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <button
-                      type="button"
-                      className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none lg:hidden"
-                      onClick={() => setDrawerOpen(true)}
-                      aria-label="Open conversations"
-                    >
-                      ☰
-                    </button>
-                    <div className="min-w-0">
-                      <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                        <span className="accent-logo">AI</span>
-                        <span className="text-base font-normal text-[var(--text-muted)]">
-                          Assistant
-                        </span>
-                      </h1>
-                      <p className="truncate text-xs muted">
-                        {headerSubtitle}
-                        {headerStatus ? ` · ${headerStatus}` : ''}
+            <div className="flex min-w-0 flex-col">
+              <div
+                className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 md:hidden ${
+                  drawerOpen ? 'translate-x-0' : '-translate-x-full'
+                }`}
+              >
+                <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+                    <div>
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                        Conversations
                       </p>
+                      <p className="mt-1 text-xs muted">Saved chats and history</p>
                     </div>
-                  </div>
-
-                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
-                    {showRuntimePanel ? (
-                      <button
-                        type="button"
-                        onClick={() => setRuntimeDrawerOpen(true)}
-                        className="btn-ghost px-4 py-2 text-sm lg:hidden"
-                      >
-                        Runtime
-                      </button>
-                    ) : null}
-                    {inferenceAvailable === true && models.length > 0 ? (
-                      <ModelSelector
-                        models={models}
-                        selected={selectedModel}
-                        onChange={setSelectedModel}
-                      />
-                    ) : null}
-                    {activeConversation?.archived ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const summary = conversations.find(
-                            (conversation) => conversation.id === activeConversation.id,
-                          );
-                          if (summary) {
-                            void handleArchiveToggle(summary);
-                          }
-                        }}
-                        className="btn-primary px-4 py-2 text-sm sm:inline-flex"
-                      >
-                        Restore
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-
-              {modelsError ? (
-                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
-                    {modelsError}
-                  </div>
-                </div>
-              ) : null}
-
-              {conversationError ? (
-                <div className="border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)]">
-                  <div className="w-full px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
-                    {conversationError}
-                  </div>
-                </div>
-              ) : null}
-
-              {runtimeError ? (
-                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
-                    {runtimeError}
-                  </div>
-                </div>
-              ) : null}
-
-              {streamingElsewhere && streamingConversationId ? (
-                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
-                    <span>Rustyfin AI is still responding in another chat.</span>
                     <button
                       type="button"
-                      onClick={() => handleSelectConversation(streamingConversationId)}
-                      className="font-medium text-[var(--text-main)] underline underline-offset-4"
+                      onClick={() => setDrawerOpen(false)}
+                      className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+                      aria-label="Close conversations"
                     >
-                      Jump back
+                      ×
                     </button>
                   </div>
-                </div>
-              ) : null}
-
-              <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6 pt-5 sm:px-5 sm:pt-6">
-                <div className="mx-auto w-full max-w-4xl">
-                  {serviceUnavailable ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <InferenceUnavailable
-                        serviceUnavailable
-                        showRecommendation={false}
-                      />
-                    </div>
-                  ) : inferenceAvailable === false ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <InferenceUnavailable
-                        title="AI unavailable on this host"
-                        description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
-                        showRecommendation={false}
-                      />
-                    </div>
-                  ) : inferenceAvailable === null ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <span className="muted">Loading AI models…</span>
-                    </div>
-                  ) : !modelStorageAvailable ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <InferenceUnavailable
-                        title="AI model storage is unavailable"
-                        description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
-                        showRecommendation={false}
-                      />
-                    </div>
-                  ) : !selectedModel ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <InferenceUnavailable />
-                    </div>
-                  ) : activeConversationId &&
-                    loadingConversationId === activeConversationId &&
-                    !activeConversation ? (
-                    <div className="flex min-h-[48vh] items-center justify-center">
-                      <span className="muted">Loading conversation…</span>
-                    </div>
-                  ) : !activeConversation || activeConversation.messages.length === 0 ? (
-                    <div className="min-h-[48vh]">
-                      <EmptyState
-                        model={selectedModel}
-                        isAdmin={me.role === 'admin'}
-                        hasConversation={Boolean(activeConversation)}
-                        onNewChat={() => {
-                          void handleNewChat();
-                        }}
-                        onSuggest={handleSuggestion}
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-4">
-                      {activeConversation.messages.map((message) => (
-                        <MessageBubble
-                          key={message.id}
-                          entry={message}
-                          onConfirmPendingAction={handleConfirmPendingAction}
-                          confirmingToken={confirmingToken}
-                          interactionDisabled={isStreaming}
-                        />
-                      ))}
-                    </div>
-                  )}
-                  <div ref={messageEndRef} />
+                  <div className="min-h-0 flex-1">
+                    <AiConversationRail
+                      conversations={liveConversations}
+                      archivedConversations={archivedConversations}
+                      activeConversationId={activeConversationId}
+                      disabled={conversationsLoading}
+                      className="h-full border-r-0 sm:w-full"
+                      onSelect={handleSelectConversation}
+                      onNewChat={() => {
+                        void handleNewChat();
+                      }}
+                      onRename={handleRenameConversation}
+                      onArchiveToggle={(conversation) => {
+                        void handleArchiveToggle(conversation);
+                      }}
+                      onDelete={handleDeleteConversation}
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(16,20,31,0.94)]">
-                <div className="w-full px-3 py-3 sm:px-5">
-                  <div className="flex items-end gap-3">
-                    <textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={handleInputChange}
-                      onKeyDown={handleKeyDown}
-                      placeholder={placeholder}
-                      className="min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
-                      disabled={composerDisabled}
-                      rows={1}
-                    />
+              <div
+                className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden border-t border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl transition-transform duration-200 md:hidden ${
+                  runtimeDrawerOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'
+                }`}
+              >
+                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+                  <div>
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                      AI Runtime
+                    </p>
+                    <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRuntimeDrawerOpen(false)}
+                    className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+                    aria-label="Close runtime panel"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="overflow-y-auto p-4">
+                  <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+                </div>
+              </div>
 
-                    <div className="flex shrink-0 items-center gap-2">
-                      {isStreaming ? (
-                        <>
-                          {canQueueActiveConversation ? (
+              <section className="flex min-h-[calc(100dvh-8.5rem)] min-w-0 flex-1 flex-col md:min-h-0 md:h-full">
+                <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
+                  <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <button
+                        type="button"
+                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none md:hidden"
+                        onClick={() => setDrawerOpen(true)}
+                        aria-label="Open conversations"
+                      >
+                        ☰
+                      </button>
+                      <div className="min-w-0">
+                        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+                          <span className="accent-logo">AI</span>
+                          <span className="text-base font-normal text-[var(--text-muted)]">
+                            Assistant
+                          </span>
+                        </h1>
+                        <p className="truncate text-xs muted">
+                          {headerSubtitle}
+                          {headerStatus ? ` · ${headerStatus}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+                      {showRuntimePanel ? (
+                        <button
+                          type="button"
+                          onClick={() => setRuntimeDrawerOpen(true)}
+                          className="btn-ghost px-4 py-2 text-sm md:hidden"
+                        >
+                          Runtime
+                        </button>
+                      ) : null}
+                      {inferenceAvailable === true && models.length > 0 ? (
+                        <ModelSelector
+                          models={models}
+                          selected={selectedModel}
+                          onChange={setSelectedModel}
+                        />
+                      ) : null}
+                      {activeConversation?.archived ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const summary = conversations.find(
+                              (conversation) => conversation.id === activeConversation.id,
+                            );
+                            if (summary) {
+                              void handleArchiveToggle(summary);
+                            }
+                          }}
+                          className="btn-primary px-4 py-2 text-sm sm:inline-flex"
+                        >
+                          Restore
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                {modelsError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      {modelsError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {conversationError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
+                      {conversationError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {runtimeError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      {runtimeError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {streamingElsewhere && streamingConversationId ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      <span>Rustyfin AI is still responding in another chat.</span>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectConversation(streamingConversationId)}
+                        className="font-medium text-[var(--text-main)] underline underline-offset-4"
+                      >
+                        Jump back
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8">
+                  <div className="mx-auto w-full max-w-4xl">
+                    {serviceUnavailable ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          serviceUnavailable
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : inferenceAvailable === false ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          title="AI unavailable on this host"
+                          description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : inferenceAvailable === null ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <span className="muted">Loading AI models…</span>
+                      </div>
+                    ) : !modelStorageAvailable ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          title="AI model storage is unavailable"
+                          description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : !selectedModel ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable />
+                      </div>
+                    ) : activeConversationId &&
+                      loadingConversationId === activeConversationId &&
+                      !activeConversation ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <span className="muted">Loading conversation…</span>
+                      </div>
+                    ) : !activeConversation || activeConversation.messages.length === 0 ? (
+                      <div className="min-h-[48vh]">
+                        <EmptyState
+                          model={selectedModel}
+                          isAdmin={me.role === 'admin'}
+                          hasConversation={Boolean(activeConversation)}
+                          onNewChat={() => {
+                            void handleNewChat();
+                          }}
+                          onSuggest={handleSuggestion}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-4">
+                        {activeConversation.messages.map((message) => (
+                          <MessageBubble
+                            key={message.id}
+                            entry={message}
+                            onConfirmPendingAction={handleConfirmPendingAction}
+                            confirmingToken={confirmingToken}
+                            interactionDisabled={isStreaming}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <div ref={messageEndRef} />
+                  </div>
+                </div>
+
+                <div className="sticky bottom-0 z-10 shrink-0 border-t border-[var(--border)] bg-[linear-gradient(180deg,rgba(36,43,60,0)_0%,rgba(36,43,60,0.7)_18%,rgba(36,43,60,0.94)_100%)] backdrop-blur-sm">
+                  <div className="w-full px-3 pb-3 pt-4 sm:px-5">
+                    <div className="flex items-end gap-3">
+                      <textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={handleInputChange}
+                        onKeyDown={handleKeyDown}
+                        placeholder={placeholder}
+                        className="min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
+                        disabled={composerDisabled}
+                        rows={1}
+                      />
+
+                      <div className="flex shrink-0 items-center gap-2">
+                        {isStreaming ? (
+                          <>
+                            {canQueueActiveConversation ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void sendMessage();
+                                }}
+                                className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={queueActionDisabled}
+                              >
+                                {queueActionLabel}
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={handleStop}
+                              className="btn-secondary h-10 px-4 text-sm"
+                            >
+                              Stop
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (voiceState === 'recording') {
+                                  stopVoiceInput();
+                                } else {
+                                  void startVoiceInput();
+                                }
+                              }}
+                              className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={voiceControlDisabled}
+                              aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                            >
+                              <svg
+                                className="h-4 w-4"
+                                viewBox="0 0 24 24"
+                                fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                                stroke="currentColor"
+                                strokeWidth="1.9"
+                              >
+                                <rect x="9" y="3" width="6" height="12" rx="3" />
+                                <path d="M6 11a6 6 0 0 0 12 0" />
+                                <path d="M12 17v4" />
+                              </svg>
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
                                 void sendMessage();
                               }}
-                              className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
-                              disabled={queueActionDisabled}
+                              className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={composerDisabled || !input.trim()}
+                              aria-label="Send message"
                             >
-                              {queueActionLabel}
+                              <svg
+                                className="h-4 w-4"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.9"
+                              >
+                                <path d="M5 12h12" />
+                                <path d="m13 6 6 6-6 6" />
+                              </svg>
                             </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={handleStop}
-                            className="btn-secondary h-10 px-4 text-sm"
-                          >
-                            Stop
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (voiceState === 'recording') {
-                                stopVoiceInput();
-                              } else {
-                                void startVoiceInput();
-                              }
-                            }}
-                            className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={voiceControlDisabled}
-                            aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
-                          >
-                            <svg
-                              className="h-4 w-4"
-                              viewBox="0 0 24 24"
-                              fill={voiceState === 'recording' ? 'currentColor' : 'none'}
-                              stroke="currentColor"
-                              strokeWidth="1.9"
-                            >
-                              <rect x="9" y="3" width="6" height="12" rx="3" />
-                              <path d="M6 11a6 6 0 0 0 12 0" />
-                              <path d="M12 17v4" />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void sendMessage();
-                            }}
-                            className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={composerDisabled || !input.trim()}
-                            aria-label="Send message"
-                          >
-                            <svg
-                              className="h-4 w-4"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="1.9"
-                            >
-                              <path d="M5 12h12" />
-                              <path d="m13 6 6 6-6 6" />
-                            </svg>
-                          </button>
-                        </>
-                      )}
+                          </>
+                        )}
+                      </div>
                     </div>
+
+                    {voiceError || voiceNotice || voiceState !== 'idle' || queuedNotice ? (
+                      <div className="mt-2 space-y-1.5 px-1 text-xs">
+                        {voiceError ? (
+                          <div className="text-[var(--danger)]">{voiceError}</div>
+                        ) : voiceNotice ? (
+                          <div className="text-[var(--orange-soft)]">{voiceNotice}</div>
+                        ) : voiceState !== 'idle' ? (
+                          <div className="muted">
+                            {voiceState === 'recording'
+                              ? 'Listening…'
+                              : voiceState === 'stopping'
+                                ? 'Stopping…'
+                                : voiceState === 'transcribing'
+                                  ? 'Transcribing…'
+                                  : null}
+                          </div>
+                        ) : null}
+
+                        {queuedNotice ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <span className="muted">{queuedNotice}</span>
+                            {hasQueuedPrompt ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (activeConversationId) {
+                                    clearQueuedPrompt(activeConversationId);
+                                  }
+                                }}
+                                className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                              >
+                                Cancel queued
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
-
-                  {voiceError || voiceNotice || voiceState !== 'idle' || queuedNotice ? (
-                    <div className="mt-2 space-y-1.5 px-1 text-xs">
-                      {voiceError ? (
-                        <div className="text-[var(--danger)]">{voiceError}</div>
-                      ) : voiceNotice ? (
-                        <div className="text-[var(--orange-soft)]">{voiceNotice}</div>
-                      ) : voiceState !== 'idle' ? (
-                        <div className="muted">
-                          {voiceState === 'recording'
-                            ? 'Listening…'
-                            : voiceState === 'stopping'
-                              ? 'Stopping…'
-                              : voiceState === 'transcribing'
-                                ? 'Transcribing…'
-                                : null}
-                        </div>
-                      ) : null}
-
-                      {queuedNotice ? (
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <span className="muted">{queuedNotice}</span>
-                          {hasQueuedPrompt ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (activeConversationId) {
-                                  clearQueuedPrompt(activeConversationId);
-                                }
-                              }}
-                              className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
-                            >
-                              Cancel queued
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
                 </div>
-              </div>
-            </section>
-          </div>
+              </section>
+            </div>
 
-          {showRuntimePanel ? (
-            <aside className="hidden lg:flex lg:min-h-0 lg:flex-col lg:border-l lg:border-[var(--border)]">
-              <div className="flex h-full min-h-0 flex-col">
-                  <div className="border-b border-[var(--border)] px-4 py-3">
+            {showRuntimePanel ? (
+              <aside className="hidden md:flex md:min-h-0 md:flex-col md:border-l md:border-[var(--border)]">
+                <div className="flex h-full min-h-0 flex-col">
+                  <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
                       AI Runtime
                     </p>
@@ -2355,9 +2366,10 @@ export default function AiPage() {
                   <div className="min-h-0 flex-1 overflow-y-auto p-4">
                     <RuntimePanel runtime={runtime} className="space-y-0" stacked />
                   </div>
-              </div>
-            </aside>
-          ) : null}
+                </div>
+              </aside>
+            ) : null}
+          </div>
         </div>
       </div>
 
