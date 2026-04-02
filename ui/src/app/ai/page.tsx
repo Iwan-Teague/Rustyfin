@@ -1928,6 +1928,9 @@ export default function AiPage() {
       ? 'Active response in another chat'
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
+  const desktopGridClass = showRuntimePanel
+    ? 'lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
+    : 'lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
 
   return (
     <>
@@ -1940,21 +1943,21 @@ export default function AiPage() {
 
       {runtimeDrawerOpen ? (
         <div
-          className="fixed inset-0 z-40 bg-black/60 xl:hidden"
+          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
           onClick={() => setRuntimeDrawerOpen(false)}
         />
       ) : null}
 
-      <div className="animate-rise pb-8">
-        <div className="grid gap-4 lg:grid-cols-[19rem_minmax(0,1fr)] xl:grid-cols-[19rem_minmax(0,1fr)_22rem]">
-          <div className="hidden lg:block">
-            <div className="sticky top-24 h-[calc(100dvh-8rem)] overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
+      <div className="animate-rise min-h-[calc(100dvh-6rem)] bg-[rgba(16,20,31,0.94)] lg:h-[calc(100dvh-6rem)] lg:overflow-hidden">
+        <div className={`grid min-h-[calc(100dvh-6rem)] lg:h-[calc(100dvh-6rem)] ${desktopGridClass}`}>
+          <div className="hidden lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-[var(--border)]">
+            <div className="min-h-0 flex-1">
               <AiConversationRail
                 conversations={liveConversations}
                 archivedConversations={archivedConversations}
                 activeConversationId={activeConversationId}
                 disabled={conversationsLoading}
-                className="h-full w-full border-r-0 bg-transparent backdrop-blur-none sm:w-full"
+                className="h-full w-full border-r-0 sm:w-full"
                 onSelect={handleSelectConversation}
                 onNewChat={() => {
                   void handleNewChat();
@@ -1968,13 +1971,13 @@ export default function AiPage() {
             </div>
           </div>
 
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-col">
             <div
               className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 lg:hidden ${
                 drawerOpen ? 'translate-x-0' : '-translate-x-full'
               }`}
             >
-              <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.96)] shadow-2xl">
+              <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.98)] shadow-2xl">
                 <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
                   <div>
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
@@ -1997,7 +2000,7 @@ export default function AiPage() {
                     archivedConversations={archivedConversations}
                     activeConversationId={activeConversationId}
                     disabled={conversationsLoading}
-                    className="h-full border-r-0 bg-transparent backdrop-blur-none sm:w-full"
+                    className="h-full border-r-0 sm:w-full"
                     onSelect={handleSelectConversation}
                     onNewChat={() => {
                       void handleNewChat();
@@ -2013,7 +2016,7 @@ export default function AiPage() {
             </div>
 
             <div
-              className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden rounded-t-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.96)] shadow-2xl transition-transform duration-200 xl:hidden ${
+              className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden border-t border-[var(--border)] bg-[rgba(16,20,31,0.98)] shadow-2xl transition-transform duration-200 lg:hidden ${
                 runtimeDrawerOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'
               }`}
             >
@@ -2038,8 +2041,8 @@ export default function AiPage() {
               </div>
             </div>
 
-            <section className="min-w-0">
-              <div className="border-b border-[var(--border)] bg-[rgba(16,20,31,0.94)] backdrop-blur-xl">
+            <section className="flex min-h-[calc(100dvh-6rem)] min-w-0 flex-1 flex-col lg:min-h-0 lg:h-full">
+              <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(16,20,31,0.94)]">
                 <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
                   <div className="flex min-w-0 items-center gap-3">
                     <button
@@ -2069,7 +2072,7 @@ export default function AiPage() {
                       <button
                         type="button"
                         onClick={() => setRuntimeDrawerOpen(true)}
-                        className="btn-ghost px-4 py-2 text-sm xl:hidden"
+                        className="btn-ghost px-4 py-2 text-sm lg:hidden"
                       >
                         Runtime
                       </button>
@@ -2103,7 +2106,7 @@ export default function AiPage() {
 
               {modelsError ? (
                 <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                  <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
                     {modelsError}
                   </div>
                 </div>
@@ -2111,7 +2114,7 @@ export default function AiPage() {
 
               {conversationError ? (
                 <div className="border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)]">
-                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
+                  <div className="w-full px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
                     {conversationError}
                   </div>
                 </div>
@@ -2119,7 +2122,7 @@ export default function AiPage() {
 
               {runtimeError ? (
                 <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                  <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
                     {runtimeError}
                   </div>
                 </div>
@@ -2127,7 +2130,7 @@ export default function AiPage() {
 
               {streamingElsewhere && streamingConversationId ? (
                 <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
-                  <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                  <div className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
                     <span>Rustyfin AI is still responding in another chat.</span>
                     <button
                       type="button"
@@ -2140,7 +2143,7 @@ export default function AiPage() {
                 </div>
               ) : null}
 
-              <div className="px-3 pb-6 pt-5 sm:px-5 sm:pt-6">
+              <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6 pt-5 sm:px-5 sm:pt-6">
                 <div className="mx-auto w-full max-w-4xl">
                   {serviceUnavailable ? (
                     <div className="flex min-h-[48vh] items-center justify-center">
@@ -2208,16 +2211,16 @@ export default function AiPage() {
                 </div>
               </div>
 
-              <div className="sticky bottom-0 z-20 border-t border-[var(--border)] bg-[rgba(16,20,31,0.94)] backdrop-blur-xl shadow-[0_-10px_28px_rgba(0,0,0,0.18)]">
-                <div className="mx-auto w-full max-w-4xl px-3 py-3 sm:px-5">
-                  <div className="flex items-end gap-3 rounded-[1.6rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] px-3 py-3 shadow-[0_14px_40px_rgba(0,0,0,0.2)]">
+              <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(16,20,31,0.94)]">
+                <div className="w-full px-3 py-3 sm:px-5">
+                  <div className="flex items-end gap-3">
                     <textarea
                       ref={textareaRef}
                       value={input}
                       onChange={handleInputChange}
                       onKeyDown={handleKeyDown}
                       placeholder={placeholder}
-                      className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
+                      className="min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
                       disabled={composerDisabled}
                       rows={1}
                     />
@@ -2341,9 +2344,8 @@ export default function AiPage() {
           </div>
 
           {showRuntimePanel ? (
-            <aside className="hidden xl:block">
-              <div className="sticky top-24 h-[calc(100dvh-8rem)] overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
-                <div className="flex h-full min-h-0 flex-col">
+            <aside className="hidden lg:flex lg:min-h-0 lg:flex-col lg:border-l lg:border-[var(--border)]">
+              <div className="flex h-full min-h-0 flex-col">
                   <div className="border-b border-[var(--border)] px-4 py-3">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
                       AI Runtime
@@ -2353,7 +2355,6 @@ export default function AiPage() {
                   <div className="min-h-0 flex-1 overflow-y-auto p-4">
                     <RuntimePanel runtime={runtime} className="space-y-0" stacked />
                   </div>
-                </div>
               </div>
             </aside>
           ) : null}
