@@ -110,6 +110,16 @@ textarea:focus-visible {
   appearance: none;
 }
 
+.ai-model-select,
+.ai-model-select:focus,
+.ai-model-select:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--border) !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .app-nav {
   position: relative;
   top: 0;

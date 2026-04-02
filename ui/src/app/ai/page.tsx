@@ -685,50 +685,28 @@ function RuntimePanel({
       </div>
 
       <div className="mt-5 border-t border-[var(--border)] pt-4">
+        <section className="border-b border-[var(--border)] pb-4">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Chat</p>
+          {conversationStats ? (
+            <div className="mt-2 space-y-1 text-xs muted">
+              <p>{conversationStats.promptCount} prompts</p>
+              <p>{conversationStats.totalInputTokens} input tokens</p>
+              <p>{conversationStats.totalOutputTokens} output tokens</p>
+              <p>Avg speed {formatTps(conversationStats.averageTokensPerSecond)}</p>
+              <p>Avg token time {formatMs(conversationStats.averageMsPerToken)}</p>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs muted">No completed chat stats yet.</p>
+          )}
+        </section>
+
         <button
           type="button"
           onClick={onToggleDetails}
-          className="text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+          className="mt-4 text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
         >
-          {showDetails ? 'Hide AI details' : 'Show AI details'}
+          {showDetails ? 'Hide AI prompt details' : 'Show AI prompt details'}
         </button>
-
-        {showDetails ? (
-          <div className="mt-4 space-y-5">
-            <section className="border-b border-[var(--border)] pb-4">
-              <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Chat stats</p>
-              {conversationStats ? (
-                <div className="mt-2 space-y-1 text-xs muted">
-                  <p>{conversationStats.promptCount} prompts</p>
-                  <p>{conversationStats.totalInputTokens} input tokens</p>
-                  <p>{conversationStats.totalOutputTokens} output tokens</p>
-                  <p>Avg speed {formatTps(conversationStats.averageTokensPerSecond)}</p>
-                  <p>Avg token time {formatMs(conversationStats.averageMsPerToken)}</p>
-                </div>
-              ) : (
-                <p className="mt-2 text-xs muted">No completed prompt stats yet.</p>
-              )}
-            </section>
-
-            <section className="space-y-3">
-              <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Per prompt</p>
-              {conversationStats && conversationStats.prompts.length > 0 ? (
-                conversationStats.prompts.map((prompt, index) => (
-                  <div key={prompt.id} className="space-y-1 text-xs muted">
-                    <p className="truncate text-sm font-semibold text-[var(--text-main)]">
-                      {index + 1}. {prompt.label}
-                    </p>
-                    <p>{prompt.promptTokens} in · {prompt.completionTokens} out</p>
-                    <p>{formatMs(prompt.generationDurationMs)} gen · {formatMs(prompt.totalDurationMs)} total</p>
-                    <p>{formatTps(prompt.tokensPerSecond)}</p>
-                  </div>
-                ))
-              ) : (
-                <p className="text-xs muted">No per-prompt stats available yet.</p>
-              )}
-            </section>
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -765,11 +743,13 @@ function preferredRecorderMimeType(): string | undefined {
 
 function MessageBubble({
   entry,
+  showStats,
   onConfirmPendingAction,
   confirmingToken,
   interactionDisabled,
 }: {
   entry: UiConversationTurn;
+  showStats: boolean;
   onConfirmPendingAction: (pendingAction: AiPendingAction) => void;
   confirmingToken: string | null;
   interactionDisabled: boolean;
@@ -822,7 +802,7 @@ function MessageBubble({
           {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
         </div>
 
-        {entry.stats ? <StatsBar stats={entry.stats} /> : null}
+        {showStats && entry.stats ? <StatsBar stats={entry.stats} /> : null}
 
         {entry.pending_action ? (
           <PendingActionCard
@@ -1003,7 +983,7 @@ function ModelSelector({
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors focus:border-[var(--purple)] focus:outline-none"
+        className="ai-model-select w-full appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -1059,7 +1039,7 @@ export default function AiPage() {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
-  const [showRuntimeDetails, setShowRuntimeDetails] = useState(false);
+  const [showPromptDetails, setShowPromptDetails] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -2095,10 +2075,10 @@ export default function AiPage() {
         />
       ) : null}
 
-      <div className="animate-rise relative left-1/2 right-1/2 w-screen -translate-x-1/2">
+      <div className="animate-rise relative left-1/2 right-1/2 -mb-[var(--page-pad-bottom)] w-screen -translate-x-1/2">
         <div className="px-[var(--page-pad-inline)]">
           <div
-            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-11rem)] md:max-h-[calc(100dvh-11rem)] md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
+            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-8.5rem)] md:max-h-[calc(100dvh-8.5rem)] md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
           >
             <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
@@ -2192,8 +2172,8 @@ export default function AiPage() {
                   <RuntimePanel
                     runtime={runtime}
                     conversationStats={activeConversationStats}
-                    showDetails={showRuntimeDetails}
-                    onToggleDetails={() => setShowRuntimeDetails((current) => !current)}
+                    showDetails={showPromptDetails}
+                    onToggleDetails={() => setShowPromptDetails((current) => !current)}
                     className="space-y-0"
                     stacked
                   />
@@ -2363,6 +2343,7 @@ export default function AiPage() {
                           <MessageBubble
                             key={message.id}
                             entry={message}
+                            showStats={showPromptDetails}
                             onConfirmPendingAction={handleConfirmPendingAction}
                             confirmingToken={confirmingToken}
                             interactionDisabled={isStreaming}
@@ -2374,7 +2355,7 @@ export default function AiPage() {
                 </div>
 
                 <div className="sticky bottom-0 z-10 shrink-0 border-t border-[var(--border)] bg-[linear-gradient(180deg,rgba(36,43,60,0)_0%,rgba(36,43,60,0.7)_18%,rgba(36,43,60,0.94)_100%)] backdrop-blur-sm">
-                  <div className="w-full px-3 pb-3 pt-4 sm:px-5">
+                  <div className="w-full px-3 pb-0 pt-4 sm:px-5">
                     <div className="flex items-end gap-3">
                       <textarea
                         ref={textareaRef}
@@ -2512,8 +2493,8 @@ export default function AiPage() {
                     <RuntimePanel
                       runtime={runtime}
                       conversationStats={activeConversationStats}
-                      showDetails={showRuntimeDetails}
-                      onToggleDetails={() => setShowRuntimeDetails((current) => !current)}
+                      showDetails={showPromptDetails}
+                      onToggleDetails={() => setShowPromptDetails((current) => !current)}
                       className="space-y-0"
                       stacked
                     />
