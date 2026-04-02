@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::context::AssistantContext;
+use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
@@ -289,6 +290,16 @@ struct HostRuntimeSwapSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct CurrentDateTimeAssistantSummary {
+    local_timestamp: String,
+    local_date: String,
+    local_time: String,
+    weekday: String,
+    timezone_offset: String,
+    unix_timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
 struct PublicWebSearchSummary {
     query: String,
     results: Vec<super::web::PublicWebSearchResult>,
@@ -471,6 +482,7 @@ pub async fn execute_tool(
         AssistantToolName::RoomsListActive => rooms_list_active(state, context, call).await,
         AssistantToolName::RoomsListJoinable => rooms_list_joinable(state, context, call).await,
         AssistantToolName::RoomsGetRoomSummary => room_get_room_summary(state, context, call).await,
+        AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime().await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
@@ -1481,7 +1493,7 @@ fn validate_calendar_date(raw: &str) -> Result<chrono::NaiveDate, String> {
 }
 
 fn validate_calendar_birthday_year(year: i32) -> Result<(), String> {
-    let current_year = Utc::now().year();
+    let current_year = assistant_local_year();
     if !(1900..=current_year).contains(&year) {
         return Err(format!(
             "birthday_year must be between 1900 and {current_year}"
@@ -1811,6 +1823,26 @@ async fn system_get_host_runtime_summary(
 
     Ok((
         "Rustyfin host runtime summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_current_datetime() -> Result<(String, serde_json::Value), String> {
+    let now = assistant_local_now();
+    let summary = CurrentDateTimeAssistantSummary {
+        local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        local_date: now.format("%F").to_string(),
+        local_time: now.format("%H:%M:%S").to_string(),
+        weekday: now.format("%A").to_string(),
+        timezone_offset: now.format("%:z").to_string(),
+        unix_timestamp: now.timestamp(),
+    };
+
+    Ok((
+        format!(
+            "Rustyfin host local date and time: {} ({})",
+            summary.local_date, summary.weekday
+        ),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
 }
@@ -2309,7 +2341,7 @@ fn calendar_window_for_call(
         | AssistantToolInput::WebFetch { .. }
         | AssistantToolInput::RoomsFilter { .. }
         | AssistantToolInput::ServerFilter { .. } => {
-            let from = Utc::now().date_naive();
+            let from = assistant_local_today();
             let to = from + Duration::days(fallback_days);
             (
                 from.format("%F").to_string(),
@@ -2386,7 +2418,7 @@ fn birthday_month_day_display(event_date: &str) -> String {
 }
 
 fn next_birthday_occurrence(event_date: &str) -> String {
-    let today = Utc::now().date_naive();
+    let today = assistant_local_today();
     let Ok(date) = chrono::NaiveDate::parse_from_str(event_date, "%Y-%m-%d") else {
         return event_date.to_string();
     };
@@ -3716,6 +3748,7 @@ fn follow_up_entities(
         | AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
+        | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth

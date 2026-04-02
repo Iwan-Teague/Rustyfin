@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use futures::{StreamExt, future::join_all};
 use rustfin_ai_agent::{ChatChunk, ChatMessage, LlamaEngine, SamplingParams};
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use super::confirmation::{
     is_supported_calendar_create_intent, pending_action_request_for_message,
 };
 use super::context::AssistantContext;
+use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
@@ -183,6 +184,7 @@ fn build_model_planner_messages(
     let allowed_tools = planner_tool_inventory(user);
     let recent_tools = recent_grounded_tools(history);
     let recent_history = planner_history_summary(history);
+    let local_now = assistant_local_now();
     let role_label = if user.role == "admin" {
         "admin"
     } else {
@@ -215,6 +217,7 @@ Rules:\n\
 - Use weather_get_current for current weather, temperature, wind, or conditions right now.\n\
 - Use weather_get_forecast for forecast, tomorrow, weekend, next few days, rain chance, or weather planning questions.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
+- Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
@@ -234,7 +237,8 @@ Allowed tools for this user:\n{}",
         ChatMessage {
             role: "user".to_string(),
             content: format!(
-                "Current user role: {role_label}\nRecent grounded tools: {}\nRecent conversation:\n{}\nCurrent user message:\n{}",
+                "Current user role: {role_label}\nRustyfin host local date/time: {}\nRecent grounded tools: {}\nRecent conversation:\n{}\nCurrent user message:\n{}",
+                local_now.format("%Y-%m-%d %H:%M:%S %:z (%A)"),
                 if recent_tools.is_empty() {
                     "none".to_string()
                 } else {
@@ -308,6 +312,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::RoomsListActive => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
+        AssistantToolName::SystemGetCurrentDateTime => " Args: none.",
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
         }
@@ -476,6 +481,7 @@ fn normalize_model_tool_input(
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
@@ -803,7 +809,7 @@ fn calendar_query_has_explicit_window(message_lower: &str) -> bool {
     ) || extract_next_numbered_window(message_lower, "day", "days").is_some()
         || extract_next_numbered_window(message_lower, "week", "weeks").is_some()
         || extract_next_numbered_window(message_lower, "month", "months").is_some()
-        || extract_iso_date(message_lower).is_some()
+        || extract_single_calendar_date(message_lower, assistant_local_today()).is_some()
 }
 
 fn is_ambiguous_server_query(message_lower: &str, message: &str) -> bool {
@@ -1002,6 +1008,15 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
+    if is_current_datetime_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetCurrentDateTime,
+            AssistantToolInput::None,
+        );
+    }
+
     if is_host_runtime_query(&lower) {
         push_tool(
             &mut planned,
@@ -1146,10 +1161,19 @@ pub fn build_assistant_messages(
     request: AssistantChatRequest,
     grounding_blocks: &[AssistantToolContextBlock],
 ) -> Vec<ChatMessage> {
+    let local_now = assistant_local_now();
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: build_system_prompt(),
     }];
+
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "Current Rustyfin host local date/time for this turn: {}. Use this when interpreting relative dates like today, tomorrow, and next Tuesday.",
+            local_now.format("%Y-%m-%d %H:%M:%S %:z (%A)")
+        ),
+    });
 
     if !grounding_blocks.is_empty() {
         messages.push(ChatMessage {
@@ -1269,6 +1293,9 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         }
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
+        }
+        (AssistantToolName::SystemGetCurrentDateTime, _) => {
+            "Checking the Rustyfin host date and time".to_string()
         }
         (AssistantToolName::SystemGetHostRuntimeSummary, _) => {
             "Checking Rustyfin host runtime stats".to_string()
@@ -1640,6 +1667,16 @@ fn apply_follow_up_tool_hints(
                     );
                 }
             }
+            AssistantToolName::SystemGetCurrentDateTime => {
+                if is_current_datetime_query(&message.to_ascii_lowercase()) {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetCurrentDateTime,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
             AssistantToolName::SystemGetBackupSummary => {
                 if is_backup_query(&message.to_ascii_lowercase()) {
                     push_tool(
@@ -1737,13 +1774,13 @@ fn apply_follow_up_entity_reference(
                         .input_hint
                         .calendar_from_date
                         .clone()
-                        .unwrap_or_else(|| Utc::now().date_naive().format("%F").to_string()),
+                        .unwrap_or_else(|| assistant_local_today().format("%F").to_string()),
                     to_date: context
                         .input_hint
                         .calendar_to_date
                         .clone()
                         .unwrap_or_else(|| {
-                            (Utc::now().date_naive() + Duration::days(30))
+                            (assistant_local_today() + Duration::days(30))
                                 .format("%F")
                                 .to_string()
                         }),
@@ -3176,6 +3213,45 @@ fn is_storage_query(message_lower: &str) -> bool {
     )
 }
 
+fn is_current_datetime_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "what date is it",
+            "what day is it",
+            "what time is it",
+            "what's the date",
+            "whats the date",
+            "what's the time",
+            "whats the time",
+            "today's date",
+            "todays date",
+            "current date",
+            "current time",
+            "current day",
+            "date today",
+            "time right now",
+            "date right now",
+        ],
+    ) || ((message_lower.contains("what date is next ")
+        || message_lower.contains("what day is next ")
+        || message_lower.contains("when is next ")
+        || message_lower.contains("what date is this ")
+        || message_lower.contains("what day is this "))
+        && has_any(
+            message_lower,
+            &[
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ],
+        ))
+}
+
 fn is_recent_errors_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -3511,14 +3587,14 @@ fn extract_calendar_window(
     fallback_days: i64,
     query: Option<String>,
 ) -> AssistantToolInput {
-    let today = Utc::now().date_naive();
+    let today = assistant_local_today();
     let lower = message.to_ascii_lowercase();
 
-    if let Some(date) = extract_iso_date(&lower) {
+    if let Some((date, matched_text)) = extract_single_calendar_date(message, today) {
         return AssistantToolInput::CalendarWindow {
             from_date: date.format("%F").to_string(),
             to_date: date.format("%F").to_string(),
-            label: format!("{} only", date.format("%F")),
+            label: calendar_date_label(date, &matched_text),
             query,
         };
     }
@@ -3560,15 +3636,31 @@ fn extract_calendar_window(
     }
 }
 
-fn extract_iso_date(message_lower: &str) -> Option<NaiveDate> {
-    for token in message_lower.split(|c: char| !(c.is_ascii_digit() || c == '-')) {
-        if token.len() == 10 {
-            if let Ok(date) = NaiveDate::parse_from_str(token, "%Y-%m-%d") {
-                return Some(date);
-            }
-        }
+fn calendar_date_label(date: NaiveDate, matched_text: &str) -> String {
+    let normalized = strip_calendar_date_prefix(matched_text);
+    let lower = normalized.to_ascii_lowercase();
+    if lower == "today"
+        || lower == "tomorrow"
+        || lower == "day after tomorrow"
+        || lower.starts_with("next ")
+        || lower.starts_with("this ")
+    {
+        normalized.to_string()
+    } else {
+        format!("{} ({normalized})", date.format("%F"))
     }
-    None
+}
+
+fn strip_calendar_date_prefix(matched_text: &str) -> &str {
+    let trimmed = matched_text.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("on ") {
+        trimmed[3..].trim_start()
+    } else if lower.starts_with("for ") {
+        trimmed[4..].trim_start()
+    } else {
+        trimmed
+    }
 }
 
 fn extract_next_numbered_window(message_lower: &str, singular: &str, plural: &str) -> Option<i64> {
@@ -3737,6 +3829,12 @@ mod tests {
     #[test]
     fn clarification_does_not_trigger_for_explicit_calendar_window() {
         let message = "What events do I have this week?";
+        assert!(clarification_for_message(message).is_none());
+    }
+
+    #[test]
+    fn clarification_does_not_trigger_for_relative_weekday_calendar_window() {
+        let message = "What events do I have next Tuesday?";
         assert!(clarification_for_message(message).is_none());
     }
 
@@ -3979,6 +4077,32 @@ mod tests {
             AssistantToolInput::CalendarWindow { label, .. } => assert_eq!(label, "today"),
             _ => panic!("expected calendar window"),
         }
+    }
+
+    #[test]
+    fn planner_extracts_relative_weekday_calendar_window() {
+        let tools = plan_tool_calls("What events do I have next Tuesday?");
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow {
+                from_date,
+                to_date,
+                label,
+                ..
+            } => {
+                assert_eq!(from_date, to_date);
+                assert!(label.contains("next Tuesday"));
+            }
+            _ => panic!("expected calendar window"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_current_datetime_queries() {
+        let tools = plan_tool_calls("What date is next Tuesday?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
