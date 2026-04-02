@@ -1,8 +1,12 @@
 use std::sync::OnceLock;
 
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::NaiveDate;
 use regex::Regex;
 
+use super::dates::{
+    DateCandidate, assistant_local_today, assistant_local_year, extract_first_date_candidate,
+    resolve_event_date,
+};
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantConfirmationPayload, AssistantPendingActionKind, AssistantToolInput, PlannedToolCall,
@@ -58,8 +62,17 @@ fn parse_birthday_request(
     message: &str,
     conversation_id: Option<&str>,
 ) -> Result<ParsedPendingActionRequest, String> {
+    parse_birthday_request_for(user, message, conversation_id, assistant_local_today())
+}
+
+fn parse_birthday_request_for(
+    user: &AuthUser,
+    message: &str,
+    conversation_id: Option<&str>,
+    today: NaiveDate,
+) -> Result<ParsedPendingActionRequest, String> {
     let scope = resolve_scope(user, message)?;
-    let (person, date_candidate) = extract_birthday_subject_and_date(message).ok_or_else(|| {
+    let (person, date_candidate) = extract_birthday_subject_and_date(message, today).ok_or_else(|| {
         "I can add a birthday, but I need the person and the date. Try \"Add Rachel's birthday on 2003-06-09\".".to_string()
     })?;
     let name = normalize_person_name(&person).ok_or_else(|| {
@@ -114,14 +127,24 @@ fn parse_event_request(
     message: &str,
     conversation_id: Option<&str>,
 ) -> Result<ParsedPendingActionRequest, String> {
+    parse_event_request_for(user, message, conversation_id, assistant_local_today())
+}
+
+fn parse_event_request_for(
+    user: &AuthUser,
+    message: &str,
+    conversation_id: Option<&str>,
+    today: NaiveDate,
+) -> Result<ParsedPendingActionRequest, String> {
     let scope = resolve_scope(user, message)?;
-    let date_candidate = extract_first_date_candidate(message).ok_or_else(|| {
+    let date_candidate = extract_first_date_candidate(message, today).ok_or_else(|| {
         "I can create a calendar event, but I need a date. Try \"Add dentist appointment on 2026-06-09\".".to_string()
     })?;
-    let event_date = resolve_event_date(date_candidate.clone())?;
-    let title = extract_event_title(message, date_candidate.matched_text.as_deref()).ok_or_else(|| {
-        "I can create a calendar event, but I need a title and a date. Try \"Add dentist appointment on 2026-06-09\".".to_string()
-    })?;
+    let event_date = resolve_event_date(&date_candidate, today)?;
+    let title = extract_event_title(message, Some(date_candidate.matched_text.as_str()))
+        .ok_or_else(|| {
+            "I can create a calendar event, but I need a title and a date. Try \"Add dentist appointment on 2026-06-09\".".to_string()
+        })?;
     let summary = format!(
         "Create calendar event \"{}\" on {} in {}",
         title,
@@ -172,87 +195,15 @@ fn resolve_scope(user: &AuthUser, message: &str) -> Result<String, String> {
     Ok("personal".to_string())
 }
 
-#[derive(Debug, Clone)]
-struct DateCandidate {
-    month: u32,
-    day: u32,
-    year: Option<i32>,
-    matched_text: Option<String>,
-}
-
-fn extract_birthday_subject_and_date(message: &str) -> Option<(String, DateCandidate)> {
+fn extract_birthday_subject_and_date(
+    message: &str,
+    today: NaiveDate,
+) -> Option<(String, DateCandidate)> {
     let birthday_regex = birthday_subject_regex();
     let captures = birthday_regex.captures(message)?;
     let subject = captures.get(1)?.as_str().trim().to_string();
-    let date_candidate = extract_first_date_candidate(message)?;
+    let date_candidate = extract_first_date_candidate(message, today)?;
     Some((subject, date_candidate))
-}
-
-fn extract_first_date_candidate(message: &str) -> Option<DateCandidate> {
-    if let Some(iso) = extract_iso_date(message) {
-        return Some(iso);
-    }
-    extract_month_name_date(message)
-}
-
-fn extract_iso_date(message: &str) -> Option<DateCandidate> {
-    let regex = iso_date_regex();
-    let matched = regex.find(message)?;
-    let raw = matched.as_str();
-    let date = NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()?;
-    Some(DateCandidate {
-        month: date.month(),
-        day: date.day(),
-        year: Some(date.year()),
-        matched_text: Some(raw.to_string()),
-    })
-}
-
-fn extract_month_name_date(message: &str) -> Option<DateCandidate> {
-    let regex = month_name_date_regex();
-    let captures = regex.captures(message)?;
-    let raw = captures.get(0)?.as_str().trim().to_string();
-    let month = parse_month_name(captures.get(1)?.as_str())?;
-    let day = captures
-        .get(2)?
-        .as_str()
-        .parse::<u32>()
-        .ok()
-        .filter(|day| (1..=31).contains(day))?;
-    let year = captures
-        .get(3)
-        .and_then(|value| value.as_str().parse::<i32>().ok());
-    Some(DateCandidate {
-        month,
-        day,
-        year,
-        matched_text: Some(raw),
-    })
-}
-
-fn resolve_event_date(candidate: DateCandidate) -> Result<NaiveDate, String> {
-    if let Some(year) = candidate.year {
-        return NaiveDate::from_ymd_opt(year, candidate.month, candidate.day).ok_or_else(|| {
-            "I couldn't parse that calendar date. Use YYYY-MM-DD or a date like June 9, 2026."
-                .to_string()
-        });
-    }
-
-    let today = Utc::now().date_naive();
-    let current_year = today.year();
-    let mut date = NaiveDate::from_ymd_opt(current_year, candidate.month, candidate.day)
-        .ok_or_else(|| {
-            "I couldn't parse that calendar date. Use YYYY-MM-DD or a date like June 9, 2026."
-                .to_string()
-        })?;
-    if date < today {
-        date = NaiveDate::from_ymd_opt(current_year + 1, candidate.month, candidate.day)
-            .ok_or_else(|| {
-                "I couldn't parse that calendar date. Use YYYY-MM-DD or a date like June 9, 2026."
-                    .to_string()
-            })?;
-    }
-    Ok(date)
 }
 
 fn extract_event_title(message: &str, matched_date: Option<&str>) -> Option<String> {
@@ -283,8 +234,6 @@ fn extract_event_title(message: &str, matched_date: Option<&str>) -> Option<Stri
         " in my calendar",
         " on my calendar",
         " calendar",
-        " event",
-        " events",
     ] {
         if title.to_ascii_lowercase().ends_with(suffix) {
             let end = title.len().saturating_sub(suffix.len());
@@ -328,7 +277,7 @@ fn extract_year_hint(message: &str) -> Option<i32> {
 }
 
 fn validate_birthday_year(year: i32) -> Result<(), String> {
-    let current_year = Utc::now().year();
+    let current_year = assistant_local_year();
     if !(1900..=current_year).contains(&year) {
         return Err(format!(
             "I can add that birthday, but the birth year must be between 1900 and {current_year}."
@@ -349,24 +298,6 @@ fn human_date(date: NaiveDate) -> String {
     date.format("%B %-d, %Y").to_string()
 }
 
-fn parse_month_name(raw: &str) -> Option<u32> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "jan" | "january" => Some(1),
-        "feb" | "february" => Some(2),
-        "mar" | "march" => Some(3),
-        "apr" | "april" => Some(4),
-        "may" => Some(5),
-        "jun" | "june" => Some(6),
-        "jul" | "july" => Some(7),
-        "aug" | "august" => Some(8),
-        "sep" | "sept" | "september" => Some(9),
-        "oct" | "october" => Some(10),
-        "nov" | "november" => Some(11),
-        "dec" | "december" => Some(12),
-        _ => None,
-    }
-}
-
 fn has_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
@@ -376,23 +307,6 @@ fn birthday_subject_regex() -> &'static Regex {
     REGEX.get_or_init(|| {
         Regex::new(r"(?i)(?:add|create|make|save|schedule)\s+(.+?)\s+birthday\b")
             .expect("birthday subject regex should compile")
-    })
-}
-
-fn iso_date_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(r"\b\d{4}-\d{2}-\d{2}\b").expect("iso date regex should compile")
-    })
-}
-
-fn month_name_date_regex() -> &'static Regex {
-    static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| {
-        Regex::new(
-            r"(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)?(\d{4})?\b",
-        )
-        .expect("month name date regex should compile")
     })
 }
 
@@ -406,7 +320,12 @@ fn year_hint_regex() -> &'static Regex {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssistantPendingActionKind, pending_action_request_for_message};
+    use chrono::NaiveDate;
+
+    use super::{
+        AssistantPendingActionKind, parse_birthday_request_for, parse_event_request_for,
+        pending_action_request_for_message,
+    };
     use crate::auth::AuthUser;
 
     fn test_user(role: &str) -> AuthUser {
@@ -465,5 +384,53 @@ mod tests {
         .expect_err("birthday intent should require a birth year");
 
         assert!(parsed.contains("need the birth year"));
+    }
+
+    #[test]
+    fn parses_relative_weekday_event_against_local_today() {
+        let parsed = parse_event_request_for(
+            &test_user("user"),
+            "Make test event for next Tuesday",
+            None,
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+        )
+        .expect("event intent should parse");
+
+        assert_eq!(
+            parsed.payload.summary,
+            "Create calendar event \"test event\" on April 7, 2026 in your personal calendar"
+        );
+    }
+
+    #[test]
+    fn parses_day_first_month_name_event_without_second_prompt() {
+        let parsed = parse_event_request_for(
+            &test_user("user"),
+            "Make the test event for 7th of April",
+            None,
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+        )
+        .expect("event intent should parse");
+
+        assert_eq!(
+            parsed.payload.summary,
+            "Create calendar event \"the test event\" on April 7, 2026 in your personal calendar"
+        );
+    }
+
+    #[test]
+    fn parses_day_first_birthday_date() {
+        let parsed = parse_birthday_request_for(
+            &test_user("user"),
+            "Add Rachel's birthday on the 7th of April 2003 to my calendar",
+            None,
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap(),
+        )
+        .expect("birthday intent should parse");
+
+        assert_eq!(
+            parsed.payload.summary,
+            "Create recurring birthday for Rachel on April 7, 2003 in your personal calendar"
+        );
     }
 }
