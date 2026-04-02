@@ -1,4 +1,8 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, Utc};
 use serde::Serialize;
@@ -333,21 +337,54 @@ struct TranscodeAssistantDetailedSummary {
     hw_accel_required: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct StoragePathSummary {
     name: String,
     path: String,
     exists: bool,
+    resolved_path: Option<String>,
+    stats_path: Option<String>,
     mount_point: Option<String>,
+    mount_file_system: Option<String>,
+    mount_source: Option<String>,
     total_bytes: Option<u64>,
+    total_human: Option<String>,
     available_bytes: Option<u64>,
+    available_human: Option<String>,
+    used_bytes: Option<u64>,
+    used_human: Option<String>,
+    used_percent: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct StorageMountSummary {
+    mount_point: String,
+    mount_file_system: Option<String>,
+    mount_source: Option<String>,
+    tracked_paths: Vec<String>,
+    total_bytes: Option<u64>,
+    total_human: Option<String>,
+    available_bytes: Option<u64>,
+    available_human: Option<String>,
+    used_bytes: Option<u64>,
+    used_human: Option<String>,
+    used_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
 struct StorageAssistantSummary {
     available: bool,
     reason: Option<String>,
+    mounts: Vec<StorageMountSummary>,
     paths: Vec<StoragePathSummary>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinuxMountEntry {
+    mount_point: std::path::PathBuf,
+    file_system: String,
+    source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2987,6 +3024,7 @@ async fn collect_storage_summary(state: &AppState) -> StorageAssistantSummary {
             Err(error) => StorageAssistantSummary {
                 available: false,
                 reason: Some(format!("Failed to collect storage summary: {error}")),
+                mounts: Vec::new(),
                 paths: Vec::new(),
             },
         }
@@ -2998,6 +3036,7 @@ async fn collect_storage_summary(state: &AppState) -> StorageAssistantSummary {
         StorageAssistantSummary {
             available: false,
             reason: Some("Storage summary is only available on Linux hosts.".to_string()),
+            mounts: Vec::new(),
             paths: Vec::new(),
         }
     }
@@ -3007,34 +3046,244 @@ async fn collect_storage_summary(state: &AppState) -> StorageAssistantSummary {
 fn collect_linux_storage_summary(
     paths: Vec<(String, std::path::PathBuf)>,
 ) -> StorageAssistantSummary {
-    let disks = sysinfo::Disks::new_with_refreshed_list();
-    let summaries = paths
+    let mounts = linux_mount_entries();
+    let path_summaries = paths
         .into_iter()
         .map(|(name, path)| {
             let exists = path.exists();
-            let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            let disk = disks
-                .list()
-                .iter()
-                .filter(|disk| target.starts_with(disk.mount_point()))
-                .max_by_key(|disk| disk.mount_point().components().count());
+            let resolved_path = if exists {
+                Some(std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()))
+            } else {
+                None
+            };
+            let stats_path = nearest_existing_storage_path(&path);
+            let mount = stats_path
+                .as_deref()
+                .and_then(|target| select_linux_mount_entry(&mounts, target));
+            let (mount_point, mount_file_system, mount_source) = match mount {
+                Some(entry) => (
+                    Some(entry.mount_point.display().to_string()),
+                    Some(entry.file_system.clone()),
+                    entry.source.clone(),
+                ),
+                None => (None, None, None),
+            };
+            let (total_bytes, available_bytes) = stats_path
+                .as_deref()
+                .and_then(read_linux_storage_bytes)
+                .map(|(total, available)| (Some(total), Some(available)))
+                .unwrap_or((None, None));
+            let used_bytes = storage_used_bytes(total_bytes, available_bytes);
+            let used_percent = storage_used_percent(total_bytes, available_bytes);
 
             StoragePathSummary {
                 name,
                 path: path.display().to_string(),
                 exists,
-                mount_point: disk.map(|disk| disk.mount_point().display().to_string()),
-                total_bytes: disk.map(|disk| disk.total_space()),
-                available_bytes: disk.map(|disk| disk.available_space()),
+                resolved_path: resolved_path.map(|resolved| resolved.display().to_string()),
+                stats_path: stats_path.map(|probe| probe.display().to_string()),
+                mount_point,
+                mount_file_system,
+                mount_source,
+                total_bytes,
+                total_human: total_bytes.map(humanize_binary_bytes),
+                available_bytes,
+                available_human: available_bytes.map(humanize_binary_bytes),
+                used_bytes,
+                used_human: used_bytes.map(humanize_binary_bytes),
+                used_percent,
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mount_summaries = summarize_storage_mounts(&path_summaries);
 
     StorageAssistantSummary {
         available: true,
         reason: None,
-        paths: summaries,
+        mounts: mount_summaries,
+        paths: path_summaries,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn summarize_storage_mounts(paths: &[StoragePathSummary]) -> Vec<StorageMountSummary> {
+    let mut mounts =
+        HashMap::<(String, Option<String>, Option<String>), StorageMountSummary>::new();
+
+    for path in paths {
+        let Some(mount_point) = path.mount_point.clone().or_else(|| path.stats_path.clone()) else {
+            continue;
+        };
+
+        let entry = mounts.entry((
+            mount_point.clone(),
+            path.mount_file_system.clone(),
+            path.mount_source.clone(),
+        ));
+        let mount_summary = entry.or_insert_with(|| StorageMountSummary {
+            mount_point,
+            mount_file_system: path.mount_file_system.clone(),
+            mount_source: path.mount_source.clone(),
+            tracked_paths: Vec::new(),
+            total_bytes: path.total_bytes,
+            total_human: path.total_human.clone(),
+            available_bytes: path.available_bytes,
+            available_human: path.available_human.clone(),
+            used_bytes: path.used_bytes,
+            used_human: path.used_human.clone(),
+            used_percent: path.used_percent,
+        });
+        mount_summary.tracked_paths.push(path.name.clone());
+    }
+
+    let mut summaries = mounts.into_values().collect::<Vec<_>>();
+    for summary in &mut summaries {
+        summary.tracked_paths.sort();
+        summary.tracked_paths.dedup();
+    }
+    summaries.sort_by(|left, right| left.mount_point.cmp(&right.mount_point));
+    summaries
+}
+
+#[cfg(target_os = "linux")]
+fn nearest_existing_storage_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.exists() {
+            return Some(
+                std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf()),
+            );
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_storage_bytes(path: &std::path::Path) -> Option<(u64, u64)> {
+    let path_cstr = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: the C string is NUL-terminated and points to a valid existing path.
+    let result = unsafe { libc::statvfs(path_cstr.as_ptr(), stats.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+
+    // SAFETY: statvfs wrote the output struct because the call succeeded.
+    let stats = unsafe { stats.assume_init() };
+    let fragment_size = if stats.f_frsize > 0 {
+        stats.f_frsize as u64
+    } else {
+        stats.f_bsize as u64
+    };
+    let total_bytes = (stats.f_blocks as u64).saturating_mul(fragment_size);
+    let available_bytes = (stats.f_bavail as u64).saturating_mul(fragment_size);
+    Some((total_bytes, available_bytes))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_entries() -> Vec<LinuxMountEntry> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .filter_map(parse_linux_mount_entry)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_mount_entry(line: &str) -> Option<LinuxMountEntry> {
+    let (left, right) = line.split_once(" - ")?;
+    let left_fields = left.split_whitespace().collect::<Vec<_>>();
+    let right_fields = right.split_whitespace().collect::<Vec<_>>();
+    if left_fields.len() < 5 || right_fields.is_empty() {
+        return None;
+    }
+
+    Some(LinuxMountEntry {
+        mount_point: std::path::PathBuf::from(decode_linux_mountinfo_field(left_fields[4])),
+        file_system: right_fields[0].to_string(),
+        source: right_fields
+            .get(1)
+            .map(|value| decode_linux_mountinfo_field(value)),
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn decode_linux_mountinfo_field(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0_usize;
+
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1].is_ascii_digit()
+            && bytes[index + 2].is_ascii_digit()
+            && bytes[index + 3].is_ascii_digit()
+        {
+            let octal = &value[index + 1..index + 4];
+            if octal.bytes().all(|digit| matches!(digit, b'0'..=b'7'))
+                && let Ok(decoded_byte) = u8::from_str_radix(octal, 8)
+            {
+                decoded.push(decoded_byte);
+                index += 4;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+#[cfg(target_os = "linux")]
+fn select_linux_mount_entry<'a>(
+    mounts: &'a [LinuxMountEntry],
+    target: &std::path::Path,
+) -> Option<&'a LinuxMountEntry> {
+    mounts
+        .iter()
+        .filter(|entry| target.starts_with(&entry.mount_point))
+        .max_by(|left, right| {
+            left.mount_point
+                .components()
+                .count()
+                .cmp(&right.mount_point.components().count())
+                .then_with(|| {
+                    left.file_system
+                        .ne("autofs")
+                        .cmp(&right.file_system.ne("autofs"))
+                })
+        })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn storage_used_bytes(total_bytes: Option<u64>, available_bytes: Option<u64>) -> Option<u64> {
+    total_bytes
+        .zip(available_bytes)
+        .map(|(total, available)| total.saturating_sub(available))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn storage_used_percent(total_bytes: Option<u64>, available_bytes: Option<u64>) -> Option<f64> {
+    total_bytes
+        .zip(available_bytes)
+        .and_then(|(total, available)| {
+            if total == 0 {
+                None
+            } else {
+                Some(
+                    (((total.saturating_sub(available)) as f64 / total as f64) * 1000.0).round()
+                        / 10.0,
+                )
+            }
+        })
 }
 
 fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
@@ -3533,10 +3782,15 @@ fn downloads_status_label(count: usize, query: Option<&str>, availability: Optio
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::{
+        LinuxMountEntry, StoragePathSummary, nearest_existing_storage_path,
+        select_linux_mount_entry, summarize_storage_mounts,
+    };
     use super::{
         birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
-        next_birthday_occurrence, probe_service_health_component, transcript_excerpt_indexes,
-        transcript_terms,
+        next_birthday_occurrence, probe_service_health_component, storage_used_bytes,
+        storage_used_percent, transcript_excerpt_indexes, transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::types::{
@@ -3711,6 +3965,110 @@ mod tests {
         assert!(terms.contains(&"rachel".to_string()));
         assert!(!terms.contains(&"yeah".to_string()));
         assert!(!terms.contains(&"okay".to_string()));
+    }
+
+    #[test]
+    fn storage_usage_helpers_compute_used_capacity() {
+        assert_eq!(storage_used_bytes(Some(1_000), Some(400)), Some(600));
+        assert_eq!(storage_used_percent(Some(1_000), Some(400)), Some(60.0));
+        assert_eq!(storage_used_percent(Some(0), Some(0)), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn select_linux_mount_entry_prefers_real_fs_over_autofs_on_same_mount_point() {
+        let mounts = vec![
+            LinuxMountEntry {
+                mount_point: "/mnt/truenas_media".into(),
+                file_system: "autofs".to_string(),
+                source: Some("systemd-1".to_string()),
+            },
+            LinuxMountEntry {
+                mount_point: "/mnt/truenas_media".into(),
+                file_system: "nfs4".to_string(),
+                source: Some("192.168.0.4:/mnt/Bluechip/media".to_string()),
+            },
+        ];
+
+        let selected =
+            select_linux_mount_entry(&mounts, std::path::Path::new("/mnt/truenas_media"))
+                .expect("mount should be selected");
+
+        assert_eq!(selected.file_system, "nfs4");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn summarize_storage_mounts_deduplicates_paths_on_same_mount() {
+        let mounts = summarize_storage_mounts(&[
+            StoragePathSummary {
+                name: "cache_dir".to_string(),
+                path: "/srv/cache".to_string(),
+                exists: true,
+                resolved_path: Some("/srv/cache".to_string()),
+                stats_path: Some("/srv/cache".to_string()),
+                mount_point: Some("/".to_string()),
+                mount_file_system: Some("ext4".to_string()),
+                mount_source: Some("/dev/nvme0n1p3".to_string()),
+                total_bytes: Some(100),
+                total_human: Some("100 B".to_string()),
+                available_bytes: Some(40),
+                available_human: Some("40 B".to_string()),
+                used_bytes: Some(60),
+                used_human: Some("60 B".to_string()),
+                used_percent: Some(60.0),
+            },
+            StoragePathSummary {
+                name: "watch_party_audio_dir".to_string(),
+                path: "/srv/cache/watch_party_audio".to_string(),
+                exists: true,
+                resolved_path: Some("/srv/cache/watch_party_audio".to_string()),
+                stats_path: Some("/srv/cache/watch_party_audio".to_string()),
+                mount_point: Some("/".to_string()),
+                mount_file_system: Some("ext4".to_string()),
+                mount_source: Some("/dev/nvme0n1p3".to_string()),
+                total_bytes: Some(100),
+                total_human: Some("100 B".to_string()),
+                available_bytes: Some(40),
+                available_human: Some("40 B".to_string()),
+                used_bytes: Some(60),
+                used_human: Some("60 B".to_string()),
+                used_percent: Some(60.0),
+            },
+            StoragePathSummary {
+                name: "media_root".to_string(),
+                path: "/mnt/truenas_media".to_string(),
+                exists: true,
+                resolved_path: Some("/mnt/truenas_media".to_string()),
+                stats_path: Some("/mnt/truenas_media".to_string()),
+                mount_point: Some("/mnt/truenas_media".to_string()),
+                mount_file_system: Some("nfs4".to_string()),
+                mount_source: Some("192.168.0.4:/mnt/Bluechip/media".to_string()),
+                total_bytes: Some(200),
+                total_human: Some("200 B".to_string()),
+                available_bytes: Some(120),
+                available_human: Some("120 B".to_string()),
+                used_bytes: Some(80),
+                used_human: Some("80 B".to_string()),
+                used_percent: Some(40.0),
+            },
+        ]);
+
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(
+            mounts[0].tracked_paths,
+            vec!["cache_dir".to_string(), "watch_party_audio_dir".to_string()]
+        );
+        assert_eq!(mounts[1].tracked_paths, vec!["media_root".to_string()]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nearest_existing_storage_path_falls_back_to_existing_parent() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let missing_path = tempdir.path().join("missing").join("models");
+        let probe = nearest_existing_storage_path(&missing_path).expect("existing parent expected");
+        assert_eq!(probe, tempdir.path());
     }
 
     #[tokio::test]
