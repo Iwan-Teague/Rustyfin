@@ -20,6 +20,8 @@ The supported runtime for Rustyfin is **native Debian 12 and Debian 13**. If a d
   - execution-ready breakdown of remaining project work, split into four agent workstreams with prompts and done criteria
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-03-26-installer-platform-runtime-open-work-audit.md`
   - detailed open installer, platform, runtime-layout, and validation audit used by the execution program
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-04-02-first-install-dependency-audit-follow-up.md`
+  - focused follow-up notes from the first-install dependency/layout examination, including the remaining installer reliability gaps
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-backups-open-work-audit-2026-03-26.md`
   - detailed open backups and advanced `Servers` audit used by the execution program
 

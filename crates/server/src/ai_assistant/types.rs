@@ -44,6 +44,14 @@ pub enum AssistantToolInput {
         event_date: String,
         birthday_year: i32,
     },
+    CalendarDeleteEvent {
+        event_id: String,
+        title: String,
+        event_date: String,
+        scope: String,
+        event_type: String,
+        recurrence: String,
+    },
     ChannelsFilter {
         query: Option<String>,
     },
@@ -224,6 +232,7 @@ pub struct AssistantFollowUpContext {
 pub enum AssistantPendingActionKind {
     CalendarCreateEvent,
     CalendarCreateBirthday,
+    CalendarDeleteEvent,
 }
 
 impl AssistantPendingActionKind {
@@ -231,6 +240,7 @@ impl AssistantPendingActionKind {
         match self {
             Self::CalendarCreateEvent => "calendar_create_event",
             Self::CalendarCreateBirthday => "calendar_create_birthday",
+            Self::CalendarDeleteEvent => "calendar_delete_event",
         }
     }
 }

@@ -453,6 +453,7 @@ pub async fn execute_tool(
         AssistantToolName::CalendarCreateBirthday => {
             calendar_create_birthday(state, context, call).await
         }
+        AssistantToolName::CalendarDeleteEvent => calendar_delete_event(state, context, call).await,
         AssistantToolName::ChannelsListUnreadActivity => {
             channels_list_unread_activity(state, context, call).await
         }
@@ -1308,6 +1309,7 @@ async fn calendar_get_next_event(
         &state.db,
         &context.user_id,
         context.is_admin,
+        assistant_local_today(),
     )
     .await
     .map_err(|e| format!("failed to load the next visible calendar event: {e}"))?;
@@ -1498,6 +1500,64 @@ async fn calendar_create_birthday(
     ))
 }
 
+async fn calendar_delete_event(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::CalendarDeleteEvent {
+        event_id,
+        title,
+        event_date,
+        scope,
+        event_type,
+        recurrence,
+    } = &call.input
+    else {
+        return Err("missing calendar delete payload".to_string());
+    };
+
+    let existing = rustfin_db::repo::calendar::get_event(&state.db, event_id)
+        .await
+        .map_err(|e| format!("failed to reload the calendar event to delete: {e}"))?
+        .ok_or_else(|| "That calendar event is no longer available.".to_string())?;
+
+    if !calendar_event_can_manage(context, &existing) {
+        return Err(
+            "Your Rustyfin account is not allowed to delete that calendar entry.".to_string(),
+        );
+    }
+
+    if existing.title != *title
+        || existing.event_date != *event_date
+        || existing.scope != *scope
+        || existing.event_type != *event_type
+        || existing.recurrence != *recurrence
+    {
+        return Err(
+            "That calendar entry changed after the confirmation card was issued. Ask Rustyfin AI to prepare the delete again."
+                .to_string(),
+        );
+    }
+
+    let deleted = rustfin_db::repo::calendar::delete_event(&state.db, event_id)
+        .await
+        .map_err(|e| format!("failed to delete the calendar event: {e}"))?;
+    if !deleted {
+        return Err("That calendar event is no longer available.".to_string());
+    }
+
+    let summary = verify_deleted_calendar_event(state, context, &existing).await?;
+
+    Ok((
+        format!("Deleted calendar event \"{}\"", summary.title),
+        json!({
+            "verified": true,
+            "event": summary,
+        }),
+    ))
+}
+
 fn validate_calendar_title(raw: &str) -> Result<String, String> {
     let title = raw.trim();
     if title.is_empty() {
@@ -1606,6 +1666,69 @@ async fn verify_created_calendar_event(
         month_day_display: is_birthday.then(|| birthday_month_day_display(&event.event_date)),
         next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&event.event_date)),
     })
+}
+
+async fn verify_deleted_calendar_event(
+    state: &AppState,
+    context: &AssistantContext,
+    deleted_event: &rustfin_db::repo::calendar::CalendarEventRow,
+) -> Result<CalendarEventDetailSummary, String> {
+    if rustfin_db::repo::calendar::get_event(&state.db, &deleted_event.id)
+        .await
+        .map_err(|e| format!("failed to reload the deleted calendar event: {e}"))?
+        .is_some()
+    {
+        return Err(
+            "Rustyfin deleted the calendar entry, but it could not verify that the entry disappeared from the normal calendar read path."
+                .to_string(),
+        );
+    }
+
+    let visible_events = rustfin_db::repo::calendar::list_visible_events(
+        &state.db,
+        &context.user_id,
+        context.is_admin,
+        &deleted_event.event_date,
+        &deleted_event.event_date,
+    )
+    .await
+    .map_err(|e| format!("failed to verify the deleted calendar event: {e}"))?;
+
+    if visible_events
+        .iter()
+        .any(|candidate| candidate.id == deleted_event.id)
+    {
+        return Err(
+            "Rustyfin deleted the calendar entry, but it could not verify that the entry disappeared from the normal calendar read path."
+                .to_string(),
+        );
+    }
+
+    let is_birthday = deleted_event.event_type == "birthday";
+    Ok(CalendarEventDetailSummary {
+        id: deleted_event.id.clone(),
+        title: deleted_event.title.clone(),
+        description: deleted_event.description.clone(),
+        event_date: deleted_event.event_date.clone(),
+        scope: deleted_event.scope.clone(),
+        event_type: deleted_event.event_type.clone(),
+        recurrence: deleted_event.recurrence.clone(),
+        owner_username: deleted_event.owner_username.clone(),
+        created_by_username: deleted_event.created_by_username.clone(),
+        birthday_year: deleted_event.birthday_year,
+        month_day_display: is_birthday
+            .then(|| birthday_month_day_display(&deleted_event.event_date)),
+        next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&deleted_event.event_date)),
+    })
+}
+
+fn calendar_event_can_manage(
+    context: &AssistantContext,
+    event: &rustfin_db::repo::calendar::CalendarEventRow,
+) -> bool {
+    context.is_admin
+        || (event.scope == "personal"
+            && event.owner_user_id.as_deref() == Some(context.user_id.as_str()))
 }
 
 async fn channels_list_unread_activity(
@@ -2354,10 +2477,11 @@ fn calendar_window_for_call(
             ..
         } => (from_date.clone(), to_date.clone(), label.clone()),
         AssistantToolInput::CalendarCreateEvent { event_date, .. }
-        | AssistantToolInput::CalendarCreateBirthday { event_date, .. } => (
+        | AssistantToolInput::CalendarCreateBirthday { event_date, .. }
+        | AssistantToolInput::CalendarDeleteEvent { event_date, .. } => (
             event_date.clone(),
             event_date.clone(),
-            "the created calendar event".to_string(),
+            "the calendar event".to_string(),
         ),
         AssistantToolInput::None
         | AssistantToolInput::ChannelsFilter { .. }
@@ -3374,6 +3498,7 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             calendar_query: Some(title.clone()),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::CalendarDeleteEvent { .. } => AssistantFollowUpInputHint::default(),
         AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
             channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -3563,6 +3688,7 @@ fn follow_up_entities(
                 }]
             })
             .unwrap_or_default(),
+        AssistantToolName::CalendarDeleteEvent => Vec::new(),
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
         AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
             ordinal: 1,

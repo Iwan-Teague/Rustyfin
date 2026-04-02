@@ -148,7 +148,10 @@ export interface AiStatusUpdate {
   kind: 'checking' | 'complete' | 'error';
 }
 
-export type AiPendingActionKind = 'calendar_create_event' | 'calendar_create_birthday';
+export type AiPendingActionKind =
+  | 'calendar_create_event'
+  | 'calendar_create_birthday'
+  | 'calendar_delete_event';
 
 export type AiPendingActionStatus = 'pending' | 'confirmed' | 'expired';
 
@@ -268,6 +271,8 @@ function normalizePendingAction(value: unknown): AiPendingAction | null {
       ? 'calendar_create_birthday'
       : value.action_kind === 'calendar_create_event'
         ? 'calendar_create_event'
+        : value.action_kind === 'calendar_delete_event'
+          ? 'calendar_delete_event'
         : null;
   if (!action_kind) return null;
   const status =
@@ -354,7 +359,9 @@ function handleSsePayload(
     const action_kind =
       record.action_kind === 'calendar_create_birthday'
         ? 'calendar_create_birthday'
-        : 'calendar_create_event';
+        : record.action_kind === 'calendar_delete_event'
+          ? 'calendar_delete_event'
+          : 'calendar_create_event';
     onEvent({
       type: 'confirmation_required',
       confirmation: {
