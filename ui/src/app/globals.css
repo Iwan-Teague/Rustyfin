@@ -405,19 +405,12 @@ textarea:focus-visible {
   z-index: 0;
   pointer-events: none;
   background:
-    linear-gradient(
-      180deg,
-      rgba(29, 34, 49, 0.14) 0%,
-      rgba(29, 34, 49, 0.84) 16%,
-      rgba(36, 43, 60, 0.95) 42%,
-      rgba(36, 43, 60, 0.985) 100%
-    ),
-    linear-gradient(150deg, rgba(29, 34, 49, 0.96) 0%, rgba(36, 43, 60, 0.985) 100%);
-  box-shadow:
-    0 -20px 44px rgba(9, 12, 20, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
+    radial-gradient(60rem 60rem at 10% -20%, rgba(177, 140, 255, 0.16), transparent 55%),
+    radial-gradient(45rem 45rem at 95% 0%, rgba(255, 145, 77, 0.14), transparent 55%),
+    linear-gradient(150deg, rgba(29, 34, 49, 0.9) 0%, rgba(36, 43, 60, 0.94) 55%, rgba(43, 51, 71, 0.965) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .ai-stop-square {

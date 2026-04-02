@@ -1239,8 +1239,9 @@ export default function AiPage() {
     activeConversationId ? queuedPrompts[activeConversationId] ?? '' : '';
   const hasQueuedPrompt = queuedPrompt.trim().length > 0;
   const messageScrollPaddingBottom = desktopViewport
-    ? Math.max(composerShellHeight + 24, 80)
-    : Math.max(composerShellHeight + 40, 208);
+    ? Math.max(composerShellHeight + 8, 56)
+    : Math.max(composerShellHeight + 18, 160);
+  const messageEndScrollMarginBottom = desktopViewport ? 12 : 16;
 
   const resetComposerHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -2685,7 +2686,7 @@ export default function AiPage() {
                       ref={messageEndRef}
                       aria-hidden="true"
                       className="h-px w-full"
-                      style={{ scrollMarginBottom: `${messageScrollPaddingBottom}px` }}
+                      style={{ scrollMarginBottom: `${messageEndScrollMarginBottom}px` }}
                     />
                   </div>
                 </div>
