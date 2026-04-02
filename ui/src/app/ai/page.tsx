@@ -546,68 +546,59 @@ function RuntimePanel({
 
   return (
     <div className={className}>
-      <div className={stacked ? 'grid gap-2' : 'grid gap-2 md:grid-cols-2 xl:grid-cols-4'}>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+      <div className={stacked ? 'space-y-5' : 'grid gap-5 md:grid-cols-2'}>
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Model</p>
           <p className="mt-1 text-sm font-semibold">
             {runtime.model.name ?? 'No model loaded'}
           </p>
-          <p className="mt-1 text-xs muted">
-            {runtime.model.backend} · ctx {runtime.model.context_length} · {runtime.model.n_threads} threads
-          </p>
-          <p className="mt-1 text-xs muted">
-            {runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}
-          </p>
-          {configuredDevices ? (
-            <p className="mt-1 text-xs muted">{configuredDevices}</p>
-          ) : null}
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>{runtime.model.backend} backend</p>
+            <p>Context {runtime.model.context_length} · {runtime.model.n_threads} threads</p>
+            <p>{runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}</p>
+            {configuredDevices ? <p>{configuredDevices}</p> : null}
+          </div>
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Turn</p>
           <p className="mt-1 text-sm font-semibold">
             {runtimePhaseLabel(runtime.turn.phase)}
           </p>
-          <p className="mt-1 text-xs muted">
-            {runtime.turn.active_request_count} active · queue {runtime.turn.queue_depth}
-          </p>
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>{runtime.turn.active_request_count} active requests</p>
+            <p>Queue depth {runtime.turn.queue_depth}</p>
+          </div>
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Resources</p>
-          <p className="mt-1 text-sm font-semibold">
-            {runtime.resources.process_rss_human ?? '—'}
-          </p>
-          <p className="mt-1 text-xs muted">
-            CPU {formatPercent(runtime.resources.host_cpu_percent, 1)}
-          </p>
-          <p className="mt-1 text-xs muted">
-            RAM {runtimeRamSummary(runtime.resources)}
-          </p>
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>Process RSS {runtime.resources.process_rss_human ?? '—'}</p>
+            <p>CPU {formatPercent(runtime.resources.host_cpu_percent, 1)}</p>
+            <p>RAM {runtimeRamSummary(runtime.resources)}</p>
+          </div>
+        </section>
+
+        <section className="space-y-2">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">GPUs</p>
           {runtime.gpus.length > 0 ? (
-            <div className="mt-2 space-y-2">
+            <div className="space-y-3">
               {runtime.gpus.map((gpu) => (
-                <div
-                  key={`${gpu.index ?? 'gpu'}-${gpu.name}`}
-                  className="rounded-xl border border-[var(--border)] bg-[rgba(255,255,255,0.03)] px-3 py-2"
-                >
-                  <p className="text-sm font-semibold">
+                <div key={`${gpu.index ?? 'gpu'}-${gpu.name}`} className="space-y-1 text-xs muted">
+                  <p className="text-sm font-semibold text-[var(--text-main)]">
                     {gpu.index !== undefined && gpu.index !== null ? `GPU ${gpu.index}` : 'GPU'} · {gpu.name}
                   </p>
-                  <p className="mt-1 text-xs muted">
-                    {formatPercent(gpu.utilization_percent, 0)} · {gpu.vram_used_human ?? '—'} / {gpu.vram_total_human ?? '—'}
-                  </p>
-                  <p className="mt-1 text-xs muted">
-                    Temp {gpu.temperature_celsius ?? '—'}°C
-                  </p>
+                  <p>Utilization {formatPercent(gpu.utilization_percent, 0)}</p>
+                  <p>VRAM {gpu.vram_used_human ?? '—'} / {gpu.vram_total_human ?? '—'}</p>
+                  <p>Temp {gpu.temperature_celsius ?? '—'}°C</p>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="mt-1 text-xs muted">No GPU telemetry available for this host runtime.</p>
+            <p className="text-xs muted">No GPU telemetry available for this host runtime.</p>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
@@ -946,13 +937,14 @@ export default function AiPage() {
 
   const queuedPromptsRef = useRef<QueuedPromptMap>({});
   const activeConversationIdRef = useRef<string | null>(null);
-  const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
+  const autoStickToBottomRef = useRef(true);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -977,6 +969,19 @@ export default function AiPage() {
 
   const focusComposer = useCallback(() => {
     textareaRef.current?.focus();
+  }, []);
+
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const node = messageScrollRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }, []);
+
+  const handleMessageScroll = useCallback(() => {
+    const node = messageScrollRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - (node.scrollTop + node.clientHeight);
+    autoStickToBottomRef.current = distanceFromBottom <= 48;
   }, []);
 
   const upsertQueuedPrompt = useCallback((conversationId: string, text: string) => {
@@ -1144,14 +1149,23 @@ export default function AiPage() {
   }, [activeConversationId, loadConversationDetail, me]);
 
   useEffect(() => {
-    const node = messageEndRef.current;
-    if (!node) return;
-    node.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    if (!autoStickToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
   }, [
     activeConversationId,
     activeConversation?.messages.length,
     lastActiveMessageContent,
+    scrollMessagesToBottom,
   ]);
+
+  useEffect(() => {
+    autoStickToBottomRef.current = true;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+  }, [activeConversationId, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (!drawerOpen && !runtimeDrawerOpen) return;
@@ -1561,6 +1575,7 @@ export default function AiPage() {
 
     try {
       setConversationError('');
+      autoStickToBottomRef.current = true;
       if (!conversationId) {
         const detail = await createConversationRecord();
         conversationId = detail.id;
@@ -1955,12 +1970,6 @@ export default function AiPage() {
           >
             <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
-                <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                    Conversations
-                  </p>
-                  <p className="mt-1 text-xs muted">Saved chats and history</p>
-                </div>
                 <div className="min-h-0 flex-1">
                   <AiConversationRail
                     conversations={liveConversations}
@@ -2154,7 +2163,11 @@ export default function AiPage() {
                   </div>
                 ) : null}
 
-                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8">
+                <div
+                  ref={messageScrollRef}
+                  onScroll={handleMessageScroll}
+                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8"
+                >
                   <div className="mx-auto w-full max-w-4xl">
                     {serviceUnavailable ? (
                       <div className="flex min-h-[48vh] items-center justify-center">
@@ -2218,7 +2231,6 @@ export default function AiPage() {
                         ))}
                       </div>
                     )}
-                    <div ref={messageEndRef} />
                   </div>
                 </div>
 
@@ -2357,12 +2369,6 @@ export default function AiPage() {
             {showRuntimePanel ? (
               <aside className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-l md:border-[var(--border)]">
                 <div className="flex h-full min-h-0 flex-col">
-                  <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
-                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                      AI Runtime
-                    </p>
-                    <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
-                  </div>
                   <div className="min-h-0 flex-1 overflow-y-auto p-4">
                     <RuntimePanel runtime={runtime} className="space-y-0" stacked />
                   </div>

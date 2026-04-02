@@ -199,8 +199,8 @@ export default function AiConversationRail({
   const groups: ConversationGroup[] = [];
   if (conversations.length > 0) {
     groups.push({
-      id: 'rustyfin',
-      title: 'Rustyfin',
+      id: 'recent',
+      title: 'Recent',
       items: conversations,
       archiveLabel: 'Archive',
     });
@@ -218,7 +218,7 @@ export default function AiConversationRail({
     <aside
       className={`flex min-h-0 w-[min(19rem,88vw)] flex-col overflow-hidden bg-transparent sm:w-[19rem] ${className}`}
     >
-      <div className="shrink-0 border-b border-[var(--border)] px-4 py-4">
+      <div className="shrink-0 px-3 py-0">
         <button
           type="button"
           onClick={onNewChat}
@@ -229,7 +229,7 @@ export default function AiConversationRail({
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3 pt-1">
         {groups.length === 0 ? (
           <div className="px-3 py-5 text-center text-[0.78rem] muted">
             No saved chats yet
