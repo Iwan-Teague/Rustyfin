@@ -2271,9 +2271,7 @@ export default function AiPage() {
     ? isStreaming
       ? 'Queued follow-up will send automatically when this answer finishes.'
       : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
-    : canQueueActiveConversation
-      ? 'You can queue the next prompt while Rustyfin finishes this answer.'
-      : null;
+    : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
@@ -2537,7 +2535,7 @@ export default function AiPage() {
                 <div
                   ref={messageScrollRef}
                   onScroll={handleMessageScroll}
-                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-28 pt-5 sm:px-5 sm:pt-6 md:pb-8"
+                  className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-44 pt-5 sm:px-5 sm:pb-36 sm:pt-6 md:pb-8"
                 >
                   <div className="mx-auto w-full max-w-4xl">
                     {serviceUnavailable ? (
