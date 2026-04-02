@@ -1826,30 +1826,40 @@ export default function AiPage() {
             drawerOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
-          <div className="relative h-full">
-            <button
-              type="button"
-              onClick={() => setDrawerOpen(false)}
-              className="btn-ghost absolute right-3 top-3 z-10 h-9 w-9 rounded-full p-0 text-lg"
-              aria-label="Close conversations"
-            >
-              ×
-            </button>
-            <AiConversationRail
-              conversations={liveConversations}
-              archivedConversations={archivedConversations}
-              activeConversationId={activeConversationId}
-              disabled={conversationsLoading}
-              onSelect={handleSelectConversation}
-              onNewChat={() => {
-                void handleNewChat();
-              }}
-              onRename={handleRenameConversation}
-              onArchiveToggle={(conversation) => {
-                void handleArchiveToggle(conversation);
-              }}
-              onDelete={handleDeleteConversation}
-            />
+          <div className="flex h-full w-[min(19rem,88vw)] flex-col">
+            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[rgba(10,14,24,0.96)] px-4 py-3">
+              <div>
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                  Conversations
+                </p>
+                <p className="mt-1 text-xs muted">Saved chats and history</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(false)}
+                className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+                aria-label="Close conversations"
+              >
+                ×
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <AiConversationRail
+                conversations={liveConversations}
+                archivedConversations={archivedConversations}
+                activeConversationId={activeConversationId}
+                disabled={conversationsLoading}
+                onSelect={handleSelectConversation}
+                onNewChat={() => {
+                  void handleNewChat();
+                }}
+                onRename={handleRenameConversation}
+                onArchiveToggle={(conversation) => {
+                  void handleArchiveToggle(conversation);
+                }}
+                onDelete={handleDeleteConversation}
+              />
+            </div>
           </div>
         </div>
 
