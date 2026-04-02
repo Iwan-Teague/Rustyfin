@@ -7,9 +7,10 @@ use async_stream::stream;
 use futures::Stream;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::params::{LlamaModelParams, LlamaSplitMode};
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::{LlamaBackendDeviceType, list_llama_ggml_backend_devices};
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -21,8 +22,38 @@ use crate::types::{ChatChunk, ChatMessage};
 pub struct LlamaEngineParams {
     pub n_gpu_layers: i32,
     pub tensor_split: Vec<f32>,
+    pub split_mode: LlamaGpuSplitMode,
+    pub main_gpu: Option<i32>,
+    pub device_indices: Vec<usize>,
     pub n_ctx: u32,
     pub n_threads: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlamaGpuSplitMode {
+    None,
+    Layer,
+    Row,
+}
+
+impl LlamaGpuSplitMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Layer => "layer",
+            Self::Row => "row",
+        }
+    }
+}
+
+impl From<LlamaGpuSplitMode> for LlamaSplitMode {
+    fn from(value: LlamaGpuSplitMode) -> Self {
+        match value {
+            LlamaGpuSplitMode::None => LlamaSplitMode::None,
+            LlamaGpuSplitMode::Layer => LlamaSplitMode::Layer,
+            LlamaGpuSplitMode::Row => LlamaSplitMode::Row,
+        }
+    }
 }
 
 impl Default for LlamaEngineParams {
@@ -30,6 +61,9 @@ impl Default for LlamaEngineParams {
         Self {
             n_gpu_layers: -1,
             tensor_split: vec![],
+            split_mode: LlamaGpuSplitMode::Layer,
+            main_gpu: None,
+            device_indices: vec![],
             n_ctx: 4096,
             n_threads: 8,
         }
@@ -81,13 +115,33 @@ impl LlamaEngine {
         if params.n_gpu_layers >= 0 {
             model_params = model_params.with_n_gpu_layers(params.n_gpu_layers as u32);
         }
+        model_params = model_params.with_split_mode(params.split_mode.into());
+
+        let resolved_device_indices = resolve_device_indices(&params);
+        if !resolved_device_indices.is_empty() {
+            model_params = model_params
+                .with_devices(&resolved_device_indices)
+                .map_err(|error| {
+                    AiError::ContextError(format!(
+                        "failed to select llama backend devices {:?}: {error}",
+                        resolved_device_indices
+                    ))
+                })?;
+        }
+
+        if let Some(main_gpu) = params.main_gpu {
+            model_params = model_params.with_main_gpu(main_gpu);
+        }
 
         let model = LlamaModel::load_from_file(backend, gguf_path, &model_params)
             .map_err(|error| AiError::InferenceError(format!("failed to load model: {error}")))?;
 
+        let mut resolved_params = params;
+        resolved_params.device_indices = resolved_device_indices;
+
         Ok(Self {
             model: Arc::new(model),
-            params,
+            params: resolved_params,
         })
     }
 
@@ -116,6 +170,50 @@ impl LlamaEngine {
     pub fn params(&self) -> &LlamaEngineParams {
         &self.params
     }
+}
+
+fn resolve_device_indices(params: &LlamaEngineParams) -> Vec<usize> {
+    let device_indices = if params.device_indices.is_empty() {
+        default_gpu_backend_device_indices()
+    } else {
+        params.device_indices.clone()
+    };
+
+    normalize_device_indices(device_indices, params.split_mode, params.main_gpu)
+}
+
+fn default_gpu_backend_device_indices() -> Vec<usize> {
+    list_llama_ggml_backend_devices()
+        .into_iter()
+        .filter(|device| {
+            matches!(
+                device.device_type,
+                LlamaBackendDeviceType::Gpu | LlamaBackendDeviceType::IntegratedGpu
+            )
+        })
+        .map(|device| device.index)
+        .collect()
+}
+
+fn normalize_device_indices(
+    mut device_indices: Vec<usize>,
+    split_mode: LlamaGpuSplitMode,
+    main_gpu: Option<i32>,
+) -> Vec<usize> {
+    if split_mode == LlamaGpuSplitMode::None {
+        if let Some(main_gpu) = main_gpu.and_then(|value| usize::try_from(value).ok()) {
+            device_indices.retain(|index| *index == main_gpu);
+            if device_indices.is_empty() {
+                device_indices.push(main_gpu);
+            }
+        } else {
+            device_indices.truncate(1);
+        }
+    }
+
+    device_indices.sort_unstable();
+    device_indices.dedup();
+    device_indices
 }
 
 fn run_decode_loop(
@@ -280,4 +378,41 @@ fn run_decode_loop(
     let _ = tx.send(Ok(ChatChunk::Done));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LlamaGpuSplitMode, normalize_device_indices};
+
+    #[test]
+    fn normalize_device_indices_keeps_all_unique_devices_for_split_modes() {
+        assert_eq!(
+            normalize_device_indices(vec![2, 0, 2, 1], LlamaGpuSplitMode::Layer, None),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            normalize_device_indices(vec![1, 0, 1], LlamaGpuSplitMode::Row, None),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn normalize_device_indices_uses_single_device_when_split_disabled() {
+        assert_eq!(
+            normalize_device_indices(vec![3, 1, 2], LlamaGpuSplitMode::None, None),
+            vec![3]
+        );
+        assert_eq!(
+            normalize_device_indices(vec![3, 1, 2], LlamaGpuSplitMode::None, Some(2)),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn normalize_device_indices_allows_explicit_main_gpu_even_without_visible_devices() {
+        assert_eq!(
+            normalize_device_indices(vec![], LlamaGpuSplitMode::None, Some(1)),
+            vec![1]
+        );
+    }
 }

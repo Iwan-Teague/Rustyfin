@@ -22,6 +22,8 @@ pub struct AiRuntimeModelSummary {
     pub context_length: u32,
     pub n_threads: u32,
     pub n_gpu_layers: i32,
+    pub split_mode: String,
+    pub device_indices: Vec<usize>,
     pub loaded: bool,
 }
 
@@ -41,13 +43,21 @@ pub struct AiRuntimeResourcesSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_cpu_percent: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_ram_used_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_ram_total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_ram_used_human: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_ram_total_human: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_ram_used_percent: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AiRuntimeGpuSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub utilization_percent: Option<f64>,
@@ -71,7 +81,16 @@ pub async fn get_ai_runtime(
     let runtime = state.runtime_metrics.snapshot();
     let gpus = collect_gpu_metrics().await;
 
-    let (loaded_model, loaded, phase, context_length, n_threads, n_gpu_layers) = {
+    let (
+        loaded_model,
+        loaded,
+        phase,
+        context_length,
+        n_threads,
+        n_gpu_layers,
+        split_mode,
+        device_indices,
+    ) = {
         let guard = state.engine.lock().await;
         let loaded_model = guard.loaded_model.clone();
         let loaded = guard.engine.is_some();
@@ -87,6 +106,8 @@ pub async fn get_ai_runtime(
             params.n_ctx,
             params.n_threads,
             params.n_gpu_layers,
+            params.split_mode.as_str().to_string(),
+            params.device_indices,
         )
     };
 
@@ -105,6 +126,8 @@ pub async fn get_ai_runtime(
             context_length,
             n_threads,
             n_gpu_layers,
+            split_mode,
+            device_indices,
             loaded,
         },
         turn: AiRuntimeTurnSummary {
@@ -116,8 +139,11 @@ pub async fn get_ai_runtime(
             process_rss_human: process_rss_bytes.map(human_bytes),
             process_rss_bytes,
             host_cpu_percent: host.cpu_usage_percent,
+            host_ram_used_bytes: host.used_memory_bytes,
+            host_ram_total_bytes: host.total_memory_bytes,
             host_ram_used_human: host.used_memory_bytes.map(human_bytes),
             host_ram_total_human: host.total_memory_bytes.map(human_bytes),
+            host_ram_used_percent: host.memory_used_percent,
         },
         gpus,
     }))
@@ -143,7 +169,7 @@ fn inferred_backend(gpus: &[AiRuntimeGpuSummary]) -> String {
 async fn collect_gpu_metrics() -> Vec<AiRuntimeGpuSummary> {
     let output = tokio::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+            "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -167,24 +193,22 @@ async fn collect_gpu_metrics() -> Vec<AiRuntimeGpuSummary> {
                 return None;
             }
             let used_bytes = columns
-                .get(2)
-                .and_then(|value| value.parse::<u64>().ok())
-                .map(|value| value.saturating_mul(1024 * 1024));
-            let total_bytes = columns
                 .get(3)
                 .and_then(|value| value.parse::<u64>().ok())
                 .map(|value| value.saturating_mul(1024 * 1024));
+            let total_bytes = columns
+                .get(4)
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|value| value.saturating_mul(1024 * 1024));
             Some(AiRuntimeGpuSummary {
-                name: columns
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "GPU".to_string()),
-                utilization_percent: columns.get(1).and_then(|value| value.parse::<f64>().ok()),
+                index: columns.get(0).and_then(|value| value.parse::<u32>().ok()),
+                name: columns.get(1).cloned().unwrap_or_else(|| "GPU".to_string()),
+                utilization_percent: columns.get(2).and_then(|value| value.parse::<f64>().ok()),
                 vram_used_human: used_bytes.map(human_bytes),
                 vram_used_bytes: used_bytes,
                 vram_total_human: total_bytes.map(human_bytes),
                 vram_total_bytes: total_bytes,
-                temperature_celsius: columns.get(4).and_then(|value| value.parse::<f64>().ok()),
+                temperature_celsius: columns.get(5).and_then(|value| value.parse::<f64>().ok()),
             })
         })
         .collect()
@@ -318,6 +342,11 @@ mod tests {
 
         assert_eq!(body["model"]["name"].as_str(), Some("tiny.gguf"));
         assert_eq!(body["model"]["loaded"].as_bool(), Some(false));
+        assert_eq!(body["model"]["split_mode"].as_str(), Some("layer"));
+        assert_eq!(
+            body["model"]["device_indices"].as_array().map(Vec::len),
+            Some(0)
+        );
         assert!(
             !body["model"]["backend"]
                 .as_str()
@@ -328,6 +357,11 @@ mod tests {
         assert_eq!(body["turn"]["active_request_count"].as_u64(), Some(2));
         assert_eq!(body["turn"]["queue_depth"].as_u64(), Some(1));
         assert!(body["resources"].is_object());
+        #[cfg(target_os = "linux")]
+        {
+            assert!(body["resources"].get("host_ram_used_human").is_some());
+            assert!(body["resources"].get("host_ram_total_human").is_some());
+        }
         assert!(body["gpus"].is_array());
     }
 

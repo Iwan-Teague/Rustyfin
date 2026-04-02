@@ -52,11 +52,11 @@ Rustyfin is a native-Debian-first local media platform with:
   - persisted assistant turns must retain `activity_trace_json`, `stats_json`, grounding sources, follow-up contexts, and pending confirmation payload state so reloaded chats can replay the same assistant activity stack and confirmation cards cleanly
   - short follow-up turns may use prior grounded tool names as planner hints only; never trust client-sent grounding payloads as authoritative data, always rerun server-side tools
   - short follow-up turns may also carry minimal hidden follow-up context for entity references like `the second one`; treat it as a hint, rerun the relevant server-side detail tool, and never trust the client payload as authoritative state
-  - grounded host-runtime summaries should include human-readable memory fields and per-turn stats should preserve planner/tool/generation/queue/load/end-to-end timing so `/ai` does not mislabel generation time as total turn time
+  - grounded host-runtime summaries should include accurate human-readable memory fields and per-turn stats should preserve planner/tool/generation/queue/load/end-to-end timing so `/ai` does not mislabel generation time as total turn time
   - grounded `/ai` now records traceable server logs plus assistant chat/tool runtime counters, and recent requests are durably persisted for the Admin `AI` tab; preserve those diagnostics when extending the assistant
   - assistant audit retention now defaults to 30 days with hourly pruning and `RUSTFIN_AI_AUDIT_RETENTION_DAYS` override support; preserve that lifecycle when extending audit persistence
   - `/api/v1/ai/transcribe` is the authenticated `/ai` speech-to-text fallback surface; keep uploads transient, enforce backend size/duration limits, and prefer browser-native speech recognition when it is available
-  - `/api/v1/ai/runtime` is the curated authenticated runtime/telemetry surface for `/ai`; keep it focused on active model/backend, turn phase, queue depth, AI-relevant process/host resource usage, and graceful GPU telemetry when available
+  - `/api/v1/ai/runtime` is the curated authenticated runtime/telemetry surface for `/ai`; keep it focused on active model/backend, turn phase, queue depth, AI-relevant process/host resource usage, selected multi-GPU split/device state, and graceful per-GPU telemetry when available
   - grounded tool registry metadata must be enforced at execution time; do not treat read/write, role, or confirmation requirements as documentation-only fields
   - confirmation-gated calendar write tools must not execute without a valid unexpired token and a server-side read-after-write verification pass; do not let the model imply product writes succeeded before that verification completes
   - unsupported create/edit/delete prompts outside the explicit calendar create/birthday flow must still return server-authored refusals
@@ -145,6 +145,9 @@ Runtime behavior:
 - if installer validation fails, keep the captured `systemctl status` output and native log tails; do not replace this with a silent or best-effort success path
 - On Linux hosts, use `RUSTFIN_TRANSCODER_HW_ACCEL` to control hardware acceleration (`auto`, `none`, `nvenc`, `vaapi`, `qsv`, `videotoolbox`)
 - On Linux hosts, use `RUSTFIN_AI_GPU_BACKEND` to control the AI inference backend (`auto`, `disabled`, `cpu`, `cuda`, `rocm`, `vulkan`)
+- On Linux hosts, use `RUSTFIN_AI_GPU_SPLIT_MODE` to control llama model split mode (`layer`, `row`, `none`)
+- On Linux hosts, use `RUSTFIN_AI_GPU_MAIN_DEVICE` to prefer a single llama backend GPU device index when split mode is `none`
+- On Linux hosts, use `RUSTFIN_AI_GPU_DEVICES` to pin a comma-separated llama backend GPU device index list; empty or `all` means use every visible GPU backend device
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
   - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default

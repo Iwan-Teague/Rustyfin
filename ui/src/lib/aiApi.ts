@@ -181,6 +181,8 @@ export interface AiRuntimeResponse {
     context_length: number;
     n_threads: number;
     n_gpu_layers: number;
+    split_mode: 'none' | 'layer' | 'row' | string;
+    device_indices: number[];
     loaded: boolean;
   };
   turn: {
@@ -192,10 +194,14 @@ export interface AiRuntimeResponse {
     process_rss_bytes?: number | null;
     process_rss_human?: string | null;
     host_cpu_percent?: number | null;
+    host_ram_used_bytes?: number | null;
+    host_ram_total_bytes?: number | null;
     host_ram_used_human?: string | null;
     host_ram_total_human?: string | null;
+    host_ram_used_percent?: number | null;
   };
   gpus: Array<{
+    index?: number | null;
     name: string;
     utilization_percent?: number | null;
     vram_used_bytes?: number | null;

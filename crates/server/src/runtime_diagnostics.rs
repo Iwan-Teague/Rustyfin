@@ -120,11 +120,12 @@ fn collect_linux_host_runtime_snapshot() -> HostRuntimeSnapshot {
         },
     );
 
-    let total_memory_bytes = Some(kib_to_bytes(system.total_memory()));
-    let used_memory_bytes = Some(kib_to_bytes(system.used_memory()));
+    // sysinfo 0.33 reports memory values in bytes already.
+    let total_memory_bytes = Some(system.total_memory());
+    let used_memory_bytes = Some(system.used_memory());
     let memory_used_percent = percentage(system.used_memory(), system.total_memory());
-    let total_swap_bytes = Some(kib_to_bytes(system.total_swap()));
-    let used_swap_bytes = Some(kib_to_bytes(system.used_swap()));
+    let total_swap_bytes = Some(system.total_swap());
+    let used_swap_bytes = Some(system.used_swap());
     let swap_used_percent = percentage(system.used_swap(), system.total_swap());
 
     let load_average = sysinfo::System::load_average();
@@ -149,11 +150,6 @@ fn collect_linux_host_runtime_snapshot() -> HostRuntimeSnapshot {
             fifteen: round_metric(load_average.fifteen),
         }),
     }
-}
-
-#[cfg(target_os = "linux")]
-fn kib_to_bytes(value: u64) -> u64 {
-    value.saturating_mul(1024)
 }
 
 #[cfg(target_os = "linux")]

@@ -1079,11 +1079,8 @@ async fn load_engine_for_chat(
 
     let load_started = Instant::now();
     if needs_reload {
-        let engine = rustfin_ai_agent::LlamaEngine::load(
-            gguf_path,
-            rustfin_ai_agent::LlamaEngineParams::default(),
-        )
-        .map_err(|error| format!("failed to load model {}: {error}", gguf_path.display()))?;
+        let engine = rustfin_ai_agent::LlamaEngine::load(gguf_path, engine_params_from_env())
+            .map_err(|error| format!("failed to load model {}: {error}", gguf_path.display()))?;
         guard.loaded_model = Some(model_name.to_string());
         guard.engine = Some(engine);
     }
@@ -1100,6 +1097,150 @@ async fn load_engine_for_chat(
 async fn set_engine_phase(state: &AppState, phase: AssistantRuntimePhase) {
     let mut guard = state.engine.lock().await;
     guard.active_phase = phase;
+}
+
+fn engine_params_from_env() -> rustfin_ai_agent::LlamaEngineParams {
+    let mut params = rustfin_ai_agent::LlamaEngineParams::default();
+    params.split_mode = parse_gpu_split_mode_from_env();
+    params.main_gpu = parse_i32_env("RUSTFIN_AI_GPU_MAIN_DEVICE");
+    params.device_indices = parse_device_indices_env("RUSTFIN_AI_GPU_DEVICES");
+    params
+}
+
+fn parse_gpu_split_mode_from_env() -> rustfin_ai_agent::engine::LlamaGpuSplitMode {
+    parse_gpu_split_mode_override(std::env::var("RUSTFIN_AI_GPU_SPLIT_MODE").ok().as_deref())
+}
+
+fn parse_gpu_split_mode_override(
+    value: Option<&str>,
+) -> rustfin_ai_agent::engine::LlamaGpuSplitMode {
+    match value
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("none") => rustfin_ai_agent::engine::LlamaGpuSplitMode::None,
+        Some("row") => rustfin_ai_agent::engine::LlamaGpuSplitMode::Row,
+        Some("layer") | None | Some("") => rustfin_ai_agent::engine::LlamaGpuSplitMode::Layer,
+        Some(other) => {
+            warn!(
+                value = %other,
+                "ignoring unsupported RUSTFIN_AI_GPU_SPLIT_MODE; expected one of none|layer|row"
+            );
+            rustfin_ai_agent::engine::LlamaGpuSplitMode::Layer
+        }
+    }
+}
+
+fn parse_i32_env(name: &str) -> Option<i32> {
+    parse_i32_override(name, std::env::var(name).ok().as_deref())
+}
+
+fn parse_i32_override(name: &str, value: Option<&str>) -> Option<i32> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    match trimmed.parse::<i32>() {
+        Ok(parsed) => Some(parsed),
+        Err(error) => {
+            warn!(env = name, value = trimmed, %error, "ignoring invalid integer env override");
+            None
+        }
+    }
+}
+
+fn parse_device_indices_env(name: &str) -> Vec<usize> {
+    parse_device_indices_override(name, std::env::var(name).ok().as_deref())
+}
+
+fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> {
+    let Some(trimmed) = value.map(str::trim) else {
+        return Vec::new();
+    };
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("all") {
+        return Vec::new();
+    }
+
+    trimmed
+        .split(',')
+        .filter_map(|segment| {
+            let item = segment.trim();
+            if item.is_empty() {
+                return None;
+            }
+            match item.parse::<usize>() {
+                Ok(index) => Some(index),
+                Err(error) => {
+                    warn!(
+                        env = name,
+                        value = item,
+                        %error,
+                        "ignoring invalid AI GPU device index override"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override};
+    use rustfin_ai_agent::engine::LlamaGpuSplitMode;
+
+    #[test]
+    fn parse_gpu_split_mode_override_defaults_to_layer() {
+        assert_eq!(
+            parse_gpu_split_mode_override(None),
+            LlamaGpuSplitMode::Layer
+        );
+        assert_eq!(
+            parse_gpu_split_mode_override(Some("layer")),
+            LlamaGpuSplitMode::Layer
+        );
+        assert_eq!(
+            parse_gpu_split_mode_override(Some("unsupported")),
+            LlamaGpuSplitMode::Layer
+        );
+    }
+
+    #[test]
+    fn parse_gpu_split_mode_override_supports_none_and_row() {
+        assert_eq!(
+            parse_gpu_split_mode_override(Some("none")),
+            LlamaGpuSplitMode::None
+        );
+        assert_eq!(
+            parse_gpu_split_mode_override(Some("row")),
+            LlamaGpuSplitMode::Row
+        );
+    }
+
+    #[test]
+    fn parse_i32_override_ignores_empty_and_invalid_values() {
+        assert_eq!(parse_i32_override("TEST_VALUE", None), None);
+        assert_eq!(parse_i32_override("TEST_VALUE", Some("   ")), None);
+        assert_eq!(parse_i32_override("TEST_VALUE", Some("abc")), None);
+        assert_eq!(parse_i32_override("TEST_VALUE", Some("7")), Some(7));
+    }
+
+    #[test]
+    fn parse_device_indices_override_supports_all_and_filters_invalid_items() {
+        assert_eq!(
+            parse_device_indices_override("TEST_VALUE", None),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            parse_device_indices_override("TEST_VALUE", Some("all")),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            parse_device_indices_override("TEST_VALUE", Some("0, 2, bad, 2")),
+            vec![0, 2, 2]
+        );
+    }
 }
 
 async fn store_confirmation_payload(

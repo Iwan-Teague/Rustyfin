@@ -194,6 +194,40 @@ function modelDisplayName(name: string): string {
   return name.replace(':', ' · ');
 }
 
+function formatPercent(value: number | null | undefined, digits = 0): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+function runtimeSplitModeLabel(splitMode: AiRuntimeResponse['model']['split_mode']): string {
+  switch (splitMode) {
+    case 'none':
+      return 'Single GPU';
+    case 'row':
+      return 'Tensor split';
+    case 'layer':
+      return 'Layer split';
+    default:
+      return splitMode;
+  }
+}
+
+function runtimeRamSummary(resources: AiRuntimeResponse['resources']): string {
+  const used = resources.host_ram_used_human ?? '—';
+  const total = resources.host_ram_total_human ?? '—';
+  const percent = formatPercent(resources.host_ram_used_percent, 1);
+  return `${used} of ${total} (${percent})`;
+}
+
+function runtimeDeviceSummary(deviceIndices: number[]): string | null {
+  if (deviceIndices.length === 0) {
+    return null;
+  }
+  return `Devices ${deviceIndices.join(', ')}`;
+}
+
 function mergePhaseEvent(
   activityTrace: AiActivityTraceItem[],
   event: AiPhaseEvent,
@@ -460,8 +494,13 @@ function PendingActionCard({
         borderColor: 'rgba(255,145,77,0.22)',
       }}
     >
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="chip chip-accent text-[0.65rem]">{statusLabel}</span>
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-[var(--orange-soft)]">
+            {statusLabel}
+          </p>
+          <p className="mt-1 text-xs muted">Calendar action requires an explicit confirmation.</p>
+        </div>
         {!confirmed && !expired ? (
           <button
             type="button"
@@ -480,7 +519,14 @@ function PendingActionCard({
 
 function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
   if (!runtime) return null;
-  const primaryGpu = runtime.gpus[0];
+  const configuredGpuCount = runtime.model.device_indices.length;
+  const configuredDevices = runtimeDeviceSummary(runtime.model.device_indices);
+  const gpuSummary =
+    configuredGpuCount > 0
+      ? `${configuredGpuCount} GPU${configuredGpuCount === 1 ? '' : 's'} selected`
+      : runtime.gpus.length > 0
+        ? `${runtime.gpus.length} GPU${runtime.gpus.length === 1 ? '' : 's'} visible`
+        : 'CPU mode';
 
   return (
     <div className="shrink-0 border-b border-[var(--border)] px-3 py-3 sm:px-5">
@@ -493,6 +539,12 @@ function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
           <p className="mt-1 text-xs muted">
             {runtime.model.backend} · ctx {runtime.model.context_length} · {runtime.model.n_threads} threads
           </p>
+          <p className="mt-1 text-xs muted">
+            {runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}
+          </p>
+          {configuredDevices ? (
+            <p className="mt-1 text-xs muted">{configuredDevices}</p>
+          ) : null}
         </div>
         <div className="panel-soft rounded-2xl px-3 py-3">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Turn</p>
@@ -509,21 +561,36 @@ function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
             {runtime.resources.process_rss_human ?? '—'}
           </p>
           <p className="mt-1 text-xs muted">
-            CPU {runtime.resources.host_cpu_percent ?? '—'}%
-            {' · '}
-            RAM {runtime.resources.host_ram_used_human ?? '—'}
+            CPU {formatPercent(runtime.resources.host_cpu_percent, 1)}
+          </p>
+          <p className="mt-1 text-xs muted">
+            RAM {runtimeRamSummary(runtime.resources)}
           </p>
         </div>
         <div className="panel-soft rounded-2xl px-3 py-3">
-          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">GPU</p>
-          <p className="mt-1 text-sm font-semibold">
-            {primaryGpu?.name ?? 'No GPU telemetry'}
-          </p>
-          <p className="mt-1 text-xs muted">
-            {primaryGpu
-              ? `${primaryGpu.utilization_percent ?? '—'}% · ${primaryGpu.vram_used_human ?? '—'} / ${primaryGpu.vram_total_human ?? '—'}`
-              : 'CPU mode or unavailable'}
-          </p>
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">GPUs</p>
+          {runtime.gpus.length > 0 ? (
+            <div className="mt-2 space-y-2">
+              {runtime.gpus.map((gpu) => (
+                <div
+                  key={`${gpu.index ?? 'gpu'}-${gpu.name}`}
+                  className="rounded-xl border border-[var(--border)] bg-[rgba(255,255,255,0.03)] px-3 py-2"
+                >
+                  <p className="text-sm font-semibold">
+                    {gpu.index !== undefined && gpu.index !== null ? `GPU ${gpu.index}` : 'GPU'} · {gpu.name}
+                  </p>
+                  <p className="mt-1 text-xs muted">
+                    {formatPercent(gpu.utilization_percent, 0)} · {gpu.vram_used_human ?? '—'} / {gpu.vram_total_human ?? '—'}
+                  </p>
+                  <p className="mt-1 text-xs muted">
+                    Temp {gpu.temperature_celsius ?? '—'}°C
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-1 text-xs muted">No GPU telemetry available for this host runtime.</p>
+          )}
         </div>
       </div>
     </div>
@@ -677,9 +744,7 @@ function InferenceUnavailable({
         <p className="max-w-xs text-sm muted">{resolvedDescription}</p>
       </div>
       {shouldShowRecommendation ? (
-        <span className="chip chip-accent text-[0.7rem]">
-          Starter installs use Qwen2.5 1.5B (~1 GB)
-        </span>
+        <p className="text-xs muted">Starter installs use Qwen2.5 1.5B, roughly 1 GB on disk.</p>
       ) : null}
     </div>
   );
@@ -797,11 +862,11 @@ function ModelSelector({
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="relative">
+    <div className="relative w-full sm:w-auto">
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors focus:border-[var(--purple)] focus:outline-none"
+        className="w-full appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors focus:border-[var(--purple)] focus:outline-none"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -1690,6 +1755,14 @@ export default function AiPage() {
       : streamingElsewhere
         ? 'Rustyfin AI is still working in another chat.'
         : 'Ask Rustyfin AI something grounded in your server state…';
+  const headerSubtitle = activeConversation?.title ??
+    liveConversations[0]?.title ??
+    'Conversation history';
+  const headerStatus = activeConversation?.archived
+    ? 'Archived conversation'
+    : streamingElsewhere
+      ? 'Active response in another chat'
+      : null;
 
   return (
     <>
@@ -1752,7 +1825,7 @@ export default function AiPage() {
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]">
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-3 sm:px-5">
+          <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--border)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
             <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
@@ -1770,31 +1843,19 @@ export default function AiPage() {
                   </span>
                 </h1>
                 <p className="truncate text-xs muted">
-                  {activeConversation?.title ??
-                    liveConversations[0]?.title ??
-                    'Conversation history'}
+                  {headerSubtitle}
+                  {headerStatus ? ` · ${headerStatus}` : ''}
                 </p>
               </div>
-              {activeConversation?.archived ? (
-                <span className="chip text-[0.65rem]">Archived</span>
-              ) : null}
-              {streamingElsewhere ? (
-                <span className="chip chip-accent text-[0.65rem]">Active response elsewhere</span>
-              ) : null}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
               {inferenceAvailable === true && models.length > 0 ? (
                 <ModelSelector
                   models={models}
                   selected={selectedModel}
                   onChange={setSelectedModel}
                 />
-              ) : null}
-              {inferenceAvailable === true ? (
-                <span className="chip chip-accent hidden text-[0.65rem] sm:inline-flex">
-                  Grounded mode
-                </span>
               ) : null}
               {activeConversation?.archived ? (
                 <button
@@ -1807,7 +1868,7 @@ export default function AiPage() {
                       void handleArchiveToggle(summary);
                     }
                   }}
-                  className="btn-primary hidden px-4 py-2 text-sm sm:inline-flex"
+                  className="btn-primary px-4 py-2 text-sm sm:inline-flex"
                 >
                   Restore
                 </button>
@@ -2000,7 +2061,7 @@ export default function AiPage() {
 
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[0.68rem] muted">
                 <span>
-                  Structured thinking, grounded tools, confirmed calendar writes, voice input, and persisted chats are enabled on this page.
+                  Saved chats, voice input, confirmed calendar writes, and live runtime telemetry are available here.
                 </span>
                 <span>Press Ctrl/Command + Enter to send</span>
               </div>

@@ -118,7 +118,7 @@ export default function AiConversationRail({
   onDelete: (conversation: AiConversationSummary) => void;
 }) {
   return (
-    <aside className="flex h-full w-[19rem] flex-col border-r border-[var(--border)] bg-[rgba(0,0,0,0.2)]">
+    <aside className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(0,0,0,0.2)] sm:w-[19rem]">
       <div className="border-b border-[var(--border)] px-4 py-4">
         <button
           type="button"
