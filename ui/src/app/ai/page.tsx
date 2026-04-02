@@ -2480,7 +2480,7 @@ export default function AiPage() {
               </div>
             </aside>
 
-            <div className="flex min-w-0 flex-col md:min-h-0 md:overflow-hidden">
+            <div className="flex min-w-0 flex-1 basis-0 flex-col md:min-h-0 md:overflow-hidden">
               <section className="flex min-h-0 min-w-0 flex-1 flex-col md:h-full md:overflow-hidden">
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
                   <div className="flex items-start justify-between gap-3 px-3 py-3 sm:px-5 sm:py-4 md:items-center">
@@ -2600,7 +2600,7 @@ export default function AiPage() {
                   className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
                   style={{ paddingBottom: `${messageScrollPaddingBottom}px` }}
                 >
-                  <div className="mx-auto w-full max-w-4xl">
+                  <div className="w-full">
                     {serviceUnavailable ? (
                       <div className="flex min-h-[48vh] items-center justify-center">
                         <InferenceUnavailable
