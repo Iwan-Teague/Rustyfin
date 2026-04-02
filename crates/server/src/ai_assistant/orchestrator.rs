@@ -53,6 +53,13 @@ pub async fn plan_tool_calls_with_model_assist(
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> PlannedToolSet {
+    if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return PlannedToolSet {
+            mode: AssistantPlannerMode::DeterministicFallback,
+            calls: Vec::new(),
+        };
+    }
+
     if extract_follow_up_entity_reference(message).is_some() {
         let calls = plan_tool_calls_with_history(message, history);
         if !calls.is_empty() {
@@ -139,6 +146,14 @@ pub async fn prepare_assistant_turn(
             messages: Vec::new(),
             sources: Vec::new(),
             immediate_response: Some(refusal),
+        };
+    }
+
+    if let Some(tool_inventory) = deterministic_tool_inventory_reply(user, &request.message) {
+        return PreparedAssistantTurn {
+            messages: Vec::new(),
+            sources: Vec::new(),
+            immediate_response: Some(tool_inventory),
         };
     }
 
@@ -476,6 +491,10 @@ fn normalize_model_plan(
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> Vec<PlannedToolCall> {
+    if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return Vec::new();
+    }
+
     if response.mode.as_deref() == Some("none") {
         return Vec::new();
     }
@@ -921,6 +940,9 @@ pub fn plan_tool_calls_with_history(
     history: &[AssistantHistoryMessage],
 ) -> Vec<PlannedToolCall> {
     let lower = message.to_ascii_lowercase();
+    if is_tool_inventory_query(&lower) {
+        return Vec::new();
+    }
     let mut planned = Vec::new();
     let mut seen = HashSet::new();
 
@@ -3731,6 +3753,108 @@ fn is_recent_errors_query(message_lower: &str) -> bool {
     )
 }
 
+fn is_tool_inventory_query(message_lower: &str) -> bool {
+    if message_lower.contains("list of all the functions")
+        || message_lower.contains("list all the functions")
+        || message_lower.contains("available functions")
+        || message_lower.contains("available tools")
+        || message_lower.contains("tool list")
+        || message_lower.contains("function list")
+        || message_lower.contains("grounded tools")
+        || message_lower.contains("what tools do you have access")
+        || message_lower.contains("what functions do you have access")
+        || message_lower.contains("what tools can you use")
+        || message_lower.contains("what functions can you use")
+    {
+        return true;
+    }
+
+    let mentions_inventory_target = has_any(
+        message_lower,
+        &["tool", "tools", "function", "functions", "capabilities"],
+    );
+    let asks_for_inventory = has_any(
+        message_lower,
+        &[
+            "what are",
+            "which are",
+            "list",
+            "show",
+            "available",
+            "access to",
+            "have access",
+            "can you use",
+            "can you access",
+        ],
+    );
+    let points_at_assistant = has_any(
+        message_lower,
+        &[
+            "you",
+            "your",
+            "this environment",
+            "rustyfin ai",
+            "assistant",
+        ],
+    );
+
+    mentions_inventory_target && asks_for_inventory && points_at_assistant
+}
+
+pub fn deterministic_tool_inventory_reply(user: &AuthUser, message: &str) -> Option<String> {
+    if !is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return None;
+    }
+
+    let visible_tools = AssistantToolName::all()
+        .iter()
+        .copied()
+        .filter(|tool| tool_visible_to_user(*tool, user))
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![format!(
+        "I can use these grounded Rustyfin functions in this environment for your account ({} total):",
+        visible_tools.len()
+    )];
+    if user.role == "admin" {
+        lines.push(
+            "Admin-only host diagnostics are included because your account has admin access."
+                .to_string(),
+        );
+    }
+
+    for tool in visible_tools {
+        let spec = tool.spec();
+        let mut notes = vec![match spec.access_mode {
+            super::types::ToolAccessMode::ReadOnly => "read-only".to_string(),
+            super::types::ToolAccessMode::Write => "write".to_string(),
+            super::types::ToolAccessMode::DestructiveWrite => "destructive-write".to_string(),
+        }];
+        match spec.confirmation {
+            super::types::ToolConfirmationPolicy::None => {}
+            super::types::ToolConfirmationPolicy::ExplicitUserConfirm => {
+                notes.push("confirmation required".to_string())
+            }
+            super::types::ToolConfirmationPolicy::ProtectedAction => {
+                notes.push("protected action".to_string())
+            }
+        }
+        lines.push(format!(
+            "- {}: {} [{}]",
+            spec.name,
+            spec.summary,
+            notes.join(", ")
+        ));
+    }
+
+    lines.push(
+        "I do not have arbitrary shell, database, or filesystem access. I can only use the backend-owned Rustyfin functions listed above."
+            .to_string(),
+    );
+
+    Some(lines.join("\n"))
+}
+
 fn is_network_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -4227,8 +4351,9 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 mod tests {
     use super::{
         AssistantToolName, ModelPlannerResponse, clarification_for_message,
-        deterministic_current_datetime_reply, normalize_model_plan, parse_model_planner_response,
-        plan_tool_calls, plan_tool_calls_with_history, status_label_for_tool_call,
+        deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
+        normalize_model_plan, parse_model_planner_response, plan_tool_calls,
+        plan_tool_calls_with_history, status_label_for_tool_call,
         unsupported_write_response_for_message,
     };
     use crate::ai_assistant::dates::assistant_local_today;
@@ -4436,6 +4561,14 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_keeps_tool_inventory_queries_off_grounded_tools() {
+        let tools = plan_tool_calls(
+            "Give me a list of all the functions you have access to in this environment",
+        );
+        assert!(tools.is_empty());
     }
 
     #[test]
@@ -4738,6 +4871,30 @@ mod tests {
         .expect("expected deterministic reply");
         assert!(reply.contains("next Tuesday"));
         assert!(reply.contains("Tuesday, April 7, 2026"));
+    }
+
+    #[test]
+    fn deterministic_tool_inventory_reply_lists_user_visible_tools() {
+        let reply = deterministic_tool_inventory_reply(
+            &auth_user("user"),
+            "Give me a list of all the functions you have access to in this environment",
+        )
+        .expect("expected deterministic tool inventory reply");
+        assert!(reply.contains("network_get_topology_summary"));
+        assert!(reply.contains("system_get_current_datetime"));
+        assert!(reply.contains("calendar_create_event"));
+        assert!(!reply.contains("system_get_service_health"));
+    }
+
+    #[test]
+    fn deterministic_tool_inventory_reply_lists_admin_tools_for_admins() {
+        let reply = deterministic_tool_inventory_reply(
+            &auth_user("admin"),
+            "What tools can you use in this environment?",
+        )
+        .expect("expected deterministic tool inventory reply");
+        assert!(reply.contains("system_get_service_health"));
+        assert!(reply.contains("system_get_host_runtime_summary"));
     }
 
     #[test]

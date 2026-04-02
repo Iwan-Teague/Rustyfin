@@ -28,7 +28,8 @@ use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
     deterministic_current_datetime_reply, deterministic_network_reply,
-    immediate_response_for_message, plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    deterministic_tool_inventory_reply, immediate_response_for_message,
+    plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
@@ -564,6 +565,75 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::UnsupportedWriteRefusal,
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .await;
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &[],
+                    &[],
+                    &[],
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(message) = deterministic_tool_inventory_reply(&user, &req.message) {
+            let planning_finished_ts_ms = now_ts_ms();
+            finish_phase(
+                &mut activity_trace,
+                AssistantPhase::Planning,
+                planning_finished_ts_ms,
+            );
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "phase",
+                &AssistantPhaseEvent {
+                    phase: AssistantPhase::Planning,
+                    label: "Thinking...".to_string(),
+                    started_ts_ms: planning_started_ts_ms,
+                    finished_ts_ms: Some(planning_finished_ts_ms),
+                },
+            ));
+            assistant_content = message;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                0,
+                0,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                0.0,
+            ));
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
                 &[],
                 &[],
                 &[],
