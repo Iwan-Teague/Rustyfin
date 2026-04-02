@@ -43,6 +43,25 @@ type UiConversationDetail = Omit<AiConversationDetail, 'messages'> & {
   messages: UiConversationTurn[];
 };
 
+type ConversationPromptStats = {
+  id: string;
+  label: string;
+  promptTokens: number;
+  completionTokens: number;
+  generationDurationMs: number;
+  totalDurationMs: number;
+  tokensPerSecond: number;
+};
+
+type ConversationStatsSummary = {
+  promptCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  averageTokensPerSecond: number;
+  averageMsPerToken: number;
+  prompts: ConversationPromptStats[];
+};
+
 type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'ready' | 'error';
@@ -228,6 +247,64 @@ function runtimeDeviceSummary(deviceIndices: number[]): string | null {
     return null;
   }
   return `Devices ${deviceIndices.join(', ')}`;
+}
+
+function buildConversationStatsSummary(
+  conversation: UiConversationDetail | null,
+): ConversationStatsSummary | null {
+  if (!conversation) return null;
+
+  const prompts: ConversationPromptStats[] = [];
+  const userTurns = conversation.messages.filter((message) => message.role === 'user');
+  let lastUserContent = 'Prompt';
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalGenerationDurationMs = 0;
+
+  for (const message of conversation.messages) {
+    if (message.role === 'user') {
+      lastUserContent = normalizePreview(message.content);
+      continue;
+    }
+
+    if (!message.stats) {
+      continue;
+    }
+
+    totalInputTokens += message.stats.prompt_tokens;
+    totalOutputTokens += message.stats.completion_tokens;
+    totalGenerationDurationMs += message.stats.generation_duration_ms;
+
+    prompts.push({
+      id: message.id,
+      label: lastUserContent,
+      promptTokens: message.stats.prompt_tokens,
+      completionTokens: message.stats.completion_tokens,
+      generationDurationMs: message.stats.generation_duration_ms,
+      totalDurationMs: message.stats.end_to_end_duration_ms || message.stats.total_duration_ms,
+      tokensPerSecond: message.stats.tokens_per_second,
+    });
+  }
+
+  if (userTurns.length === 0 && prompts.length === 0) {
+    return null;
+  }
+
+  const averageTokensPerSecond =
+    totalGenerationDurationMs > 0 && totalOutputTokens > 0
+      ? totalOutputTokens / (totalGenerationDurationMs / 1000)
+      : 0;
+  const averageMsPerToken =
+    totalOutputTokens > 0 ? totalGenerationDurationMs / totalOutputTokens : 0;
+
+  return {
+    promptCount: userTurns.length,
+    totalInputTokens,
+    totalOutputTokens,
+    averageTokensPerSecond,
+    averageMsPerToken,
+    prompts,
+  };
 }
 
 function mergePhaseEvent(
@@ -521,10 +598,16 @@ function PendingActionCard({
 
 function RuntimePanel({
   runtime,
+  conversationStats,
+  showDetails,
+  onToggleDetails,
   className = '',
   stacked = false,
 }: {
   runtime: AiRuntimeResponse | null;
+  conversationStats: ConversationStatsSummary | null;
+  showDetails: boolean;
+  onToggleDetails: () => void;
   className?: string;
   stacked?: boolean;
 }) {
@@ -599,6 +682,53 @@ function RuntimePanel({
             <p className="text-xs muted">No GPU telemetry available for this host runtime.</p>
           )}
         </section>
+      </div>
+
+      <div className="mt-5 border-t border-[var(--border)] pt-4">
+        <button
+          type="button"
+          onClick={onToggleDetails}
+          className="text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+        >
+          {showDetails ? 'Hide AI details' : 'Show AI details'}
+        </button>
+
+        {showDetails ? (
+          <div className="mt-4 space-y-5">
+            <section className="border-b border-[var(--border)] pb-4">
+              <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Chat stats</p>
+              {conversationStats ? (
+                <div className="mt-2 space-y-1 text-xs muted">
+                  <p>{conversationStats.promptCount} prompts</p>
+                  <p>{conversationStats.totalInputTokens} input tokens</p>
+                  <p>{conversationStats.totalOutputTokens} output tokens</p>
+                  <p>Avg speed {formatTps(conversationStats.averageTokensPerSecond)}</p>
+                  <p>Avg token time {formatMs(conversationStats.averageMsPerToken)}</p>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs muted">No completed prompt stats yet.</p>
+              )}
+            </section>
+
+            <section className="space-y-3">
+              <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Per prompt</p>
+              {conversationStats && conversationStats.prompts.length > 0 ? (
+                conversationStats.prompts.map((prompt, index) => (
+                  <div key={prompt.id} className="space-y-1 text-xs muted">
+                    <p className="truncate text-sm font-semibold text-[var(--text-main)]">
+                      {index + 1}. {prompt.label}
+                    </p>
+                    <p>{prompt.promptTokens} in · {prompt.completionTokens} out</p>
+                    <p>{formatMs(prompt.generationDurationMs)} gen · {formatMs(prompt.totalDurationMs)} total</p>
+                    <p>{formatTps(prompt.tokensPerSecond)}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-xs muted">No per-prompt stats available yet.</p>
+              )}
+            </section>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -929,6 +1059,7 @@ export default function AiPage() {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [showRuntimeDetails, setShowRuntimeDetails] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -955,6 +1086,7 @@ export default function AiPage() {
       : '';
   const archivedConversations = conversations.filter((conversation) => conversation.archived);
   const liveConversations = conversations.filter((conversation) => !conversation.archived);
+  const activeConversationStats = buildConversationStatsSummary(activeConversation);
   const streamingElsewhere =
     Boolean(streamingConversationId) && streamingConversationId !== activeConversationId;
   const queuedPrompt =
@@ -1878,7 +2010,7 @@ export default function AiPage() {
   }, [streamingConversationId]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void sendMessage();
     }
@@ -2057,7 +2189,14 @@ export default function AiPage() {
                   </button>
                 </div>
                 <div className="overflow-y-auto p-4">
-                  <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+                  <RuntimePanel
+                    runtime={runtime}
+                    conversationStats={activeConversationStats}
+                    showDetails={showRuntimeDetails}
+                    onToggleDetails={() => setShowRuntimeDetails((current) => !current)}
+                    className="space-y-0"
+                    stacked
+                  />
                 </div>
               </div>
 
@@ -2243,7 +2382,7 @@ export default function AiPage() {
                         onChange={handleInputChange}
                         onKeyDown={handleKeyDown}
                         placeholder={placeholder}
-                        className="min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
+                        className="ai-composer-textarea min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
                         disabled={composerDisabled}
                         rows={1}
                       />
@@ -2370,7 +2509,14 @@ export default function AiPage() {
               <aside className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-l md:border-[var(--border)]">
                 <div className="flex h-full min-h-0 flex-col">
                   <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                    <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+                    <RuntimePanel
+                      runtime={runtime}
+                      conversationStats={activeConversationStats}
+                      showDetails={showRuntimeDetails}
+                      onToggleDetails={() => setShowRuntimeDetails((current) => !current)}
+                      className="space-y-0"
+                      stacked
+                    />
                   </div>
                 </div>
               </aside>
