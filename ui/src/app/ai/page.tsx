@@ -1206,6 +1206,7 @@ export default function AiPage() {
   const queuedPromptsRef = useRef<QueuedPromptMap>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
@@ -1237,6 +1238,9 @@ export default function AiPage() {
   const queuedPrompt =
     activeConversationId ? queuedPrompts[activeConversationId] ?? '' : '';
   const hasQueuedPrompt = queuedPrompt.trim().length > 0;
+  const messageScrollPaddingBottom = desktopViewport
+    ? Math.max(composerShellHeight + 24, 80)
+    : Math.max(composerShellHeight + 40, 208);
 
   const resetComposerHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -1249,6 +1253,11 @@ export default function AiPage() {
   }, []);
 
   const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const endNode = messageEndRef.current;
+    if (endNode) {
+      endNode.scrollIntoView({ block: 'end', behavior, inline: 'nearest' });
+      return;
+    }
     const node = messageScrollRef.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior });
@@ -1459,6 +1468,13 @@ export default function AiPage() {
     lastActiveMessageContent,
     scrollMessagesToBottom,
   ]);
+
+  useEffect(() => {
+    if (!autoStickToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+  }, [messageScrollPaddingBottom, scrollMessagesToBottom]);
 
   useEffect(() => {
     autoStickToBottomRef.current = true;
@@ -2347,9 +2363,6 @@ export default function AiPage() {
   const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
   const desktopRailWidth = desktopRailOpen ? 'clamp(15rem, 18vw, 18rem)' : '0px';
   const desktopRuntimeWidth = showDesktopRuntimePanel ? 'clamp(16rem, 19vw, 20rem)' : '0px';
-  const messageScrollPaddingBottom = desktopViewport
-    ? Math.max(composerShellHeight + 16, 48)
-    : Math.max(composerShellHeight + 20, 176);
 
   return (
     <>
@@ -2598,7 +2611,10 @@ export default function AiPage() {
                   ref={messageScrollRef}
                   onScroll={handleMessageScroll}
                   className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
-                  style={{ paddingBottom: `${messageScrollPaddingBottom}px` }}
+                  style={{
+                    paddingBottom: `${messageScrollPaddingBottom}px`,
+                    scrollPaddingBottom: `${messageScrollPaddingBottom}px`,
+                  }}
                 >
                   <div className="w-full">
                     {serviceUnavailable ? (
@@ -2665,6 +2681,12 @@ export default function AiPage() {
                         ))}
                       </div>
                     )}
+                    <div
+                      ref={messageEndRef}
+                      aria-hidden="true"
+                      className="h-px w-full"
+                      style={{ scrollMarginBottom: `${messageScrollPaddingBottom}px` }}
+                    />
                   </div>
                 </div>
 
