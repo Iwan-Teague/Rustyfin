@@ -216,7 +216,7 @@ export default function AiConversationRail({
 
   return (
     <aside
-      className={`flex min-h-0 w-[min(19rem,88vw)] flex-col overflow-hidden bg-transparent sm:w-[19rem] ${className}`}
+      className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent ${className}`}
     >
       <div className="shrink-0 px-3 pb-4 pt-0">
         <button

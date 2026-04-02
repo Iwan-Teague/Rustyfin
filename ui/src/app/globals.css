@@ -239,6 +239,47 @@ textarea:focus-visible {
   border-radius: var(--radius-md);
 }
 
+.ai-side-panel-shell {
+  overflow: hidden;
+  flex: 0 0 auto;
+  transition:
+    width 180ms var(--ease-out-expo),
+    opacity 140ms var(--ease-out-quart),
+    border-color 160ms var(--ease-out-quart);
+}
+
+.ai-side-panel-shell[data-open="false"] {
+  opacity: 0.01;
+}
+
+.ai-side-panel-shell[data-open="false"] .ai-side-panel-inner {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ai-side-panel-shell[data-open="true"] .ai-side-panel-inner {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.ai-side-panel-inner {
+  min-width: 0;
+  transition:
+    opacity 140ms var(--ease-out-quart),
+    transform 180ms var(--ease-out-expo),
+    border-color 160ms var(--ease-out-quart);
+}
+
+.ai-side-panel-shell[data-side="left"][data-open="false"] .ai-side-panel-inner {
+  transform: translateX(-0.9rem);
+  border-color: transparent;
+}
+
+.ai-side-panel-shell[data-side="right"][data-open="false"] .ai-side-panel-inner {
+  transform: translateX(0.9rem);
+  border-color: transparent;
+}
+
 .ai-activity-stream {
   display: flex;
   flex-direction: column;

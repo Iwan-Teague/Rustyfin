@@ -65,6 +65,8 @@ type ConversationStatsSummary = {
 type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
+type ComposerResponseMode = 'instant' | 'thinking';
+type ComposerAttachmentKind = 'document' | 'image';
 
 type BrowserSpeechRecognitionResult = {
   isFinal: boolean;
@@ -199,6 +201,82 @@ function formatMs(ms: number): string {
 
 function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function isTextLikeDocument(file: File): boolean {
+  const lowerName = file.name.toLowerCase();
+  const textExtensions = [
+    '.txt',
+    '.md',
+    '.markdown',
+    '.json',
+    '.csv',
+    '.log',
+    '.yaml',
+    '.yml',
+    '.xml',
+    '.html',
+    '.css',
+    '.js',
+    '.jsx',
+    '.ts',
+    '.tsx',
+    '.rs',
+    '.toml',
+    '.ini',
+    '.conf',
+    '.sql',
+  ];
+  return file.type.startsWith('text/') || textExtensions.some((extension) => lowerName.endsWith(extension));
+}
+
+async function buildAttachmentInsert(file: File, kind: ComposerAttachmentKind): Promise<string> {
+  const details = `${file.type || 'unknown type'} · ${formatBytes(file.size)}`;
+  if (kind === 'image') {
+    return `Attached image: ${file.name} (${details}). Image bytes are not yet parsed by the current Rustyfin AI composer path, so this is a file reference only.`;
+  }
+
+  if (!isTextLikeDocument(file)) {
+    return `Attached document: ${file.name} (${details}). This file was added as a reference because the current browser path only embeds text-based document contents.`;
+  }
+
+  try {
+    const rawText = await file.text();
+    const text = rawText.trim();
+    if (!text) {
+      return `Attached document: ${file.name} (${details}). The file was empty.`;
+    }
+
+    const trimmed = text.length > 12000 ? `${text.slice(0, 12000)}\n\n[Document truncated after 12,000 characters.]` : text;
+    return [
+      `Attached document: ${file.name} (${details})`,
+      `--- Begin ${file.name} ---`,
+      trimmed,
+      `--- End ${file.name} ---`,
+    ].join('\n');
+  } catch {
+    return `Attached document: ${file.name} (${details}). Rustyfin could not read this file in the browser, so it was added as a reference only.`;
+  }
+}
+
+function appendPromptText(current: string, addition: string): string {
+  const base = current.trimEnd();
+  const extra = addition.trim();
+  if (!base) return extra;
+  if (!extra) return base;
+  return `${base}\n\n${extra}`;
 }
 
 function parseContent(raw: string): { thinking: string | null; content: string } {
@@ -1014,17 +1092,19 @@ function ModelSelector({
   models,
   selected,
   onChange,
+  className = '',
 }: {
   models: AiModel[];
   selected: string;
   onChange: (value: string) => void;
+  className?: string;
 }) {
   return (
-    <div className="relative w-full sm:w-auto">
+    <div className={`relative min-w-[11rem] ${className}`}>
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="ai-model-select w-full appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
+        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -1040,6 +1120,37 @@ function ModelSelector({
       >
         <path d="M8 11L2 5h12z" />
       </svg>
+    </div>
+  );
+}
+
+function ResponseModeSelector({
+  value,
+  onChange,
+}: {
+  value: ComposerResponseMode;
+  onChange: (value: ComposerResponseMode) => void;
+}) {
+  return (
+    <div className="inline-flex h-10 items-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] p-1">
+      {(['instant', 'thinking'] as const).map((mode) => {
+        const active = value === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => onChange(mode)}
+            className={`rounded-full px-3 py-1.5 text-sm font-medium transition-all ${
+              active
+                ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-main)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+            }`}
+            aria-pressed={active}
+          >
+            {mode === 'instant' ? 'Instant' : 'Thinking'}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1068,6 +1179,7 @@ export default function AiPage() {
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
 
   const [input, setInput] = useState('');
+  const [responseMode, setResponseMode] = useState<ComposerResponseMode>('instant');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [confirmingToken, setConfirmingToken] = useState<string | null>(null);
@@ -1082,6 +1194,7 @@ export default function AiPage() {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -1093,6 +1206,9 @@ export default function AiPage() {
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
+  const composerMenuRef = useRef<HTMLDivElement | null>(null);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -1348,6 +1464,17 @@ export default function AiPage() {
   }, [drawerOpen, runtimeDrawerOpen]);
 
   useEffect(() => {
+    if (!composerMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!composerMenuRef.current?.contains(event.target as Node)) {
+        setComposerMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [composerMenuOpen]);
+
+  useEffect(() => {
     if (inferenceAvailable === true && selectedModel) return;
     setRuntimeDrawerOpen(false);
     setDesktopRuntimeOpen(false);
@@ -1405,9 +1532,35 @@ export default function AiPage() {
         setVoiceError('Rustyfin could not detect any speech in that recording.');
         return;
       }
-      setInput(next);
+      setInput((current) => appendPromptText(current, next));
       setVoiceState('idle');
       setVoiceError(null);
+      requestAnimationFrame(() => {
+        focusComposer();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
+    },
+    [focusComposer],
+  );
+
+  const insertAttachmentIntoPrompt = useCallback(
+    async (files: FileList | null, kind: ComposerAttachmentKind) => {
+      if (!files || files.length === 0) {
+        return;
+      }
+
+      const inserts: string[] = [];
+      for (const file of Array.from(files)) {
+        inserts.push(await buildAttachmentInsert(file, kind));
+      }
+
+      const combined = inserts.join('\n\n');
+      setInput((current) => appendPromptText(current, combined));
+      setComposerMenuOpen(false);
+
       requestAnimationFrame(() => {
         focusComposer();
         if (textareaRef.current) {
@@ -1453,6 +1606,22 @@ export default function AiPage() {
       });
     },
     [focusComposer, upsertQueuedPrompt],
+  );
+
+  const handleDocumentFilesSelected = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      await insertAttachmentIntoPrompt(event.target.files, 'document');
+      event.target.value = '';
+    },
+    [insertAttachmentIntoPrompt],
+  );
+
+  const handleImageFilesSelected = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      await insertAttachmentIntoPrompt(event.target.files, 'image');
+      event.target.value = '';
+    },
+    [insertAttachmentIntoPrompt],
   );
 
   const handleSelectConversation = useCallback(
@@ -2127,13 +2296,8 @@ export default function AiPage() {
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
   const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
-  const desktopGridClass = desktopRailOpen
-    ? showDesktopRuntimePanel
-      ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
-      : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]'
-    : showDesktopRuntimePanel
-      ? 'md:grid-cols-[minmax(0,1fr)_16rem] lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]'
-      : 'md:grid-cols-[minmax(0,1fr)]';
+  const desktopRailWidth = desktopRailOpen ? 'clamp(15rem, 18vw, 18rem)' : '0px';
+  const desktopRuntimeWidth = showDesktopRuntimePanel ? 'clamp(16rem, 19vw, 20rem)' : '0px';
 
   return (
     <>
@@ -2153,31 +2317,34 @@ export default function AiPage() {
 
       <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
         <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
-          <div className={`grid min-h-0 flex-1 md:overflow-hidden ${desktopGridClass}`}>
-            {desktopRailOpen ? (
-              <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
-                <div className="flex h-full min-h-0 flex-col">
-                  <div className="min-h-0 flex-1">
-                    <AiConversationRail
-                      conversations={liveConversations}
-                      archivedConversations={archivedConversations}
-                      activeConversationId={activeConversationId}
-                      disabled={conversationsLoading}
-                      className="h-full w-full border-r-0 sm:w-full"
-                      onSelect={handleSelectConversation}
-                      onNewChat={() => {
-                        void handleNewChat();
-                      }}
-                      onRename={handleRenameConversation}
-                      onArchiveToggle={(conversation) => {
-                        void handleArchiveToggle(conversation);
-                      }}
-                      onDelete={handleDeleteConversation}
-                    />
-                  </div>
+          <div className="flex min-h-0 flex-1 md:overflow-hidden">
+            <aside
+              className="ai-side-panel-shell ai-side-panel-shell-left hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+              data-open={desktopRailOpen ? 'true' : 'false'}
+              data-side="left"
+              style={{ width: desktopRailWidth }}
+            >
+              <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-r border-[var(--border)]">
+                <div className="min-h-0 flex-1">
+                  <AiConversationRail
+                    conversations={liveConversations}
+                    archivedConversations={archivedConversations}
+                    activeConversationId={activeConversationId}
+                    disabled={conversationsLoading}
+                    className="h-full w-full border-r-0"
+                    onSelect={handleSelectConversation}
+                    onNewChat={() => {
+                      void handleNewChat();
+                    }}
+                    onRename={handleRenameConversation}
+                    onArchiveToggle={(conversation) => {
+                      void handleArchiveToggle(conversation);
+                    }}
+                    onDelete={handleDeleteConversation}
+                  />
                 </div>
               </div>
-            ) : null}
+            </aside>
 
             <div className="flex min-w-0 flex-col md:min-h-0 md:overflow-hidden">
               <div
@@ -2307,13 +2474,6 @@ export default function AiPage() {
                         >
                           {desktopRuntimeOpen ? 'Hide runtime' : 'Runtime'}
                         </button>
-                      ) : null}
-                      {inferenceAvailable === true && models.length > 0 ? (
-                        <ModelSelector
-                          models={models}
-                          selected={selectedModel}
-                          onChange={setSelectedModel}
-                        />
                       ) : null}
                       {activeConversation?.archived ? (
                         <button
@@ -2449,91 +2609,159 @@ export default function AiPage() {
 
                 <div className="sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)] bg-transparent">
                   <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
-                    <div className="flex min-h-[3.25rem] items-center gap-3">
-                      <textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={handleInputChange}
-                        onKeyDown={handleKeyDown}
-                        placeholder={placeholder}
-                        className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
-                        disabled={composerDisabled}
-                        rows={1}
-                      />
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div ref={composerMenuRef} className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setComposerMenuOpen((current) => !current)}
+                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={composerDisabled}
+                            aria-label="Add media or prompt controls"
+                          >
+                            +
+                          </button>
+                          {composerMenuOpen ? (
+                            <div className="absolute bottom-[calc(100%+0.55rem)] left-0 z-30 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                              <button
+                                type="button"
+                                onClick={() => documentInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add document
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => imageInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add image
+                              </button>
+                            </div>
+                          ) : null}
+                          <input
+                            ref={documentInputRef}
+                            type="file"
+                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleDocumentFilesSelected(event);
+                            }}
+                          />
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleImageFilesSelected(event);
+                            }}
+                          />
+                        </div>
 
-                      <div className="flex shrink-0 -translate-y-0.5 items-center gap-2">
-                        {isStreaming ? (
-                          <>
-                            {canQueueActiveConversation ? (
+                        {inferenceAvailable === true && models.length > 0 ? (
+                          <ModelSelector
+                            models={models}
+                            selected={selectedModel}
+                            onChange={setSelectedModel}
+                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
+                          />
+                        ) : null}
+
+                        <ResponseModeSelector
+                          value={responseMode}
+                          onChange={setResponseMode}
+                        />
+                      </div>
+
+                      <div className="flex min-h-[3.25rem] items-center gap-3">
+                        <textarea
+                          ref={textareaRef}
+                          value={input}
+                          onChange={handleInputChange}
+                          onKeyDown={handleKeyDown}
+                          placeholder={placeholder}
+                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                          disabled={composerDisabled}
+                          rows={1}
+                        />
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          {isStreaming ? (
+                            <>
+                              {canQueueActiveConversation ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void sendMessage();
+                                  }}
+                                  className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                                  disabled={queueActionDisabled}
+                                >
+                                  {queueActionLabel}
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={handleStop}
+                                className="btn-primary ai-send-control flex h-10 w-10 items-center justify-center rounded-full p-0"
+                                aria-label={hasQueuedPrompt ? 'Stop current response and continue with queued prompt' : 'Stop current response'}
+                              >
+                                <span className="ai-stop-square" aria-hidden="true" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (voiceState === 'recording') {
+                                    stopVoiceInput();
+                                  } else {
+                                    void startVoiceInput();
+                                  }
+                                }}
+                                className="btn-secondary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={voiceControlDisabled}
+                                aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  viewBox="0 0 24 24"
+                                  fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                                  stroke="currentColor"
+                                  strokeWidth="1.9"
+                                >
+                                  <rect x="9" y="3" width="6" height="12" rx="3" />
+                                  <path d="M6 11a6 6 0 0 0 12 0" />
+                                  <path d="M12 17v4" />
+                                </svg>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => {
                                   void sendMessage();
                                 }}
-                                className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
-                                disabled={queueActionDisabled}
+                                className="btn-primary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={composerDisabled || !input.trim()}
+                                aria-label="Send message"
                               >
-                                {queueActionLabel}
+                                <svg
+                                  className="h-4 w-4"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.9"
+                                >
+                                  <path d="M5 12h12" />
+                                  <path d="m13 6 6 6-6 6" />
+                                </svg>
                               </button>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={handleStop}
-                              className="btn-primary ai-send-control flex h-10 w-10 items-center justify-center rounded-full p-0"
-                              aria-label={hasQueuedPrompt ? 'Stop current response and continue with queued prompt' : 'Stop current response'}
-                            >
-                              <span className="ai-stop-square" aria-hidden="true" />
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (voiceState === 'recording') {
-                                  stopVoiceInput();
-                                } else {
-                                  void startVoiceInput();
-                                }
-                              }}
-                              className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                              disabled={voiceControlDisabled}
-                              aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
-                            >
-                              <svg
-                                className="h-4 w-4"
-                                viewBox="0 0 24 24"
-                                fill={voiceState === 'recording' ? 'currentColor' : 'none'}
-                                stroke="currentColor"
-                                strokeWidth="1.9"
-                              >
-                                <rect x="9" y="3" width="6" height="12" rx="3" />
-                                <path d="M6 11a6 6 0 0 0 12 0" />
-                                <path d="M12 17v4" />
-                              </svg>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void sendMessage();
-                              }}
-                              className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                              disabled={composerDisabled || !input.trim()}
-                              aria-label="Send message"
-                            >
-                              <svg
-                                className="h-4 w-4"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.9"
-                              >
-                                <path d="M5 12h12" />
-                                <path d="m13 6 6 6-6 6" />
-                              </svg>
-                            </button>
-                          </>
-                        )}
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -2568,22 +2796,25 @@ export default function AiPage() {
               </section>
             </div>
 
-            {showDesktopRuntimePanel ? (
-              <aside className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-l md:border-[var(--border)]">
-                <div className="flex h-full min-h-0 flex-col">
-                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                    <RuntimePanel
-                      runtime={runtime}
-                      conversationStats={activeConversationStats}
-                      showDetails={showPromptDetails}
-                      onToggleDetails={() => setShowPromptDetails((current) => !current)}
-                      className="space-y-0"
-                      stacked
-                    />
-                  </div>
+            <aside
+              className="ai-side-panel-shell ai-side-panel-shell-right hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+              data-open={showDesktopRuntimePanel ? 'true' : 'false'}
+              data-side="right"
+              style={{ width: desktopRuntimeWidth }}
+            >
+              <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-l border-[var(--border)]">
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <RuntimePanel
+                    runtime={runtime}
+                    conversationStats={activeConversationStats}
+                    showDetails={showPromptDetails}
+                    onToggleDetails={() => setShowPromptDetails((current) => !current)}
+                    className="space-y-0"
+                    stacked
+                  />
                 </div>
-              </aside>
-            ) : null}
+              </div>
+            </aside>
           </div>
         </div>
       </div>
