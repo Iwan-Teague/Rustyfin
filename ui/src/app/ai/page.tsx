@@ -2094,7 +2094,7 @@ export default function AiPage() {
 
       <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
         <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
-          <div className={`grid min-h-0 flex-1 md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}>
+          <div className={`grid min-h-0 flex-1 md:overflow-hidden ${desktopGridClass}`}>
             <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
                 <div className="min-h-0 flex-1">
