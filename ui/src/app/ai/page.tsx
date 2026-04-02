@@ -12,7 +12,6 @@ import {
   type AiConversationDetail,
   type AiConversationSummary,
   type AiConversationTurn,
-  type AiGroundingSource,
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
@@ -43,6 +42,8 @@ type UiConversationTurn = AiConversationTurn & {
 type UiConversationDetail = Omit<AiConversationDetail, 'messages'> & {
   messages: UiConversationTurn[];
 };
+
+type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'ready' | 'error';
 
@@ -179,22 +180,6 @@ function formatMs(ms: number): string {
 
 function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
-}
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
-    return 'Unknown size';
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function parseContent(raw: string): { thinking: string | null; content: string } {
@@ -502,10 +487,6 @@ function PendingActionCard({
   const expired = pendingActionExpired(pendingAction);
   const confirmed = pendingAction.status === 'confirmed';
   const statusLabel = confirmed ? 'Confirmed' : expired ? 'Expired' : 'Confirmation required';
-  const helperText =
-    pendingAction.action_kind === 'document_create_download'
-      ? 'This document will be generated and attached as a download after you confirm.'
-      : 'Rustyfin AI needs explicit confirmation before it changes data.';
 
   return (
     <div
@@ -520,7 +501,7 @@ function PendingActionCard({
           <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-[var(--orange-soft)]">
             {statusLabel}
           </p>
-          <p className="mt-1 text-xs muted">{helperText}</p>
+          <p className="mt-1 text-xs muted">Calendar action requires an explicit confirmation.</p>
         </div>
         {!confirmed && !expired ? (
           <button
@@ -534,47 +515,6 @@ function PendingActionCard({
         ) : null}
       </div>
       <p className="text-sm leading-relaxed">{pendingAction.summary}</p>
-    </div>
-  );
-}
-
-function DownloadLinks({
-  sources,
-}: {
-  sources: AiGroundingSource[];
-}) {
-  const downloads = sources.filter(
-    (source) => source.download_url && source.download_file_name,
-  );
-  if (downloads.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="mt-3 flex flex-col gap-2">
-      {downloads.map((source, index) => (
-        <a
-          key={`${source.tool}-${source.download_url}-${index}`}
-          href={source.download_url ?? '#'}
-          download={source.download_file_name ?? undefined}
-          className="panel-soft flex items-center justify-between gap-3 rounded-2xl px-4 py-3 transition-colors hover:border-[rgba(255,145,77,0.28)]"
-          style={{ border: '1px solid rgba(255,255,255,0.08)' }}
-        >
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-[var(--text-main)]">
-              {source.download_file_name}
-            </p>
-            <p className="mt-1 text-xs muted">
-              Downloadable {source.download_media_type?.startsWith('text/markdown') ? 'markdown' : 'text'} file
-              {' · '}
-              {formatBytes(source.download_size_bytes)}
-            </p>
-          </div>
-          <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--orange-soft)]">
-            Download
-          </span>
-        </a>
-      ))}
     </div>
   );
 }
@@ -762,7 +702,6 @@ function MessageBubble({
         </div>
 
         {entry.stats ? <StatsBar stats={entry.stats} /> : null}
-        <DownloadLinks sources={entry.grounding_sources} />
 
         {entry.pending_action ? (
           <PendingActionCard
@@ -977,6 +916,7 @@ export default function AiPage() {
   const [conversations, setConversations] = useState<AiConversationSummary[]>([]);
   const [conversationDetails, setConversationDetails] = useState<Record<string, UiConversationDetail>>({});
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPromptMap>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
   const [conversationError, setConversationError] = useState('');
@@ -987,6 +927,10 @@ export default function AiPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [confirmingToken, setConfirmingToken] = useState<string | null>(null);
+  const [autoSendRequest, setAutoSendRequest] = useState<{
+    conversationId: string;
+    text: string;
+  } | null>(null);
 
   const [runtime, setRuntime] = useState<AiRuntimeResponse | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -1000,7 +944,9 @@ export default function AiPage() {
   const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
 
-  const threadRef = useRef<HTMLDivElement | null>(null);
+  const queuedPromptsRef = useRef<QueuedPromptMap>({});
+  const activeConversationIdRef = useRef<string | null>(null);
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -1019,6 +965,9 @@ export default function AiPage() {
   const liveConversations = conversations.filter((conversation) => !conversation.archived);
   const streamingElsewhere =
     Boolean(streamingConversationId) && streamingConversationId !== activeConversationId;
+  const queuedPrompt =
+    activeConversationId ? queuedPrompts[activeConversationId] ?? '' : '';
+  const hasQueuedPrompt = queuedPrompt.trim().length > 0;
 
   const resetComposerHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -1028,6 +977,32 @@ export default function AiPage() {
 
   const focusComposer = useCallback(() => {
     textareaRef.current?.focus();
+  }, []);
+
+  const upsertQueuedPrompt = useCallback((conversationId: string, text: string) => {
+    const normalized = text.trim();
+    setQueuedPrompts((current) => {
+      const next = { ...current };
+      if (normalized) {
+        next[conversationId] = normalized;
+      } else {
+        delete next[conversationId];
+      }
+      queuedPromptsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const clearQueuedPrompt = useCallback((conversationId: string) => {
+    setQueuedPrompts((current) => {
+      if (!(conversationId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[conversationId];
+      queuedPromptsRef.current = next;
+      return next;
+    });
   }, []);
 
   const storeConversationDetail = useCallback((detail: AiConversationDetail) => {
@@ -1134,6 +1109,14 @@ export default function AiPage() {
   }, [storeConversationDetail]);
 
   useEffect(() => {
+    queuedPromptsRef.current = queuedPrompts;
+  }, [queuedPrompts]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
     if (!authLoading && !me) {
       router.replace('/login');
     }
@@ -1161,9 +1144,9 @@ export default function AiPage() {
   }, [activeConversationId, loadConversationDetail, me]);
 
   useEffect(() => {
-    const node = threadRef.current;
+    const node = messageEndRef.current;
     if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+    node.scrollIntoView({ block: 'end', behavior: 'smooth' });
   }, [
     activeConversationId,
     activeConversation?.messages.length,
@@ -1262,7 +1245,12 @@ export default function AiPage() {
   }, []);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value);
+    const nextValue = event.target.value;
+    setInput(nextValue);
+    const queuedConversationId = activeConversationIdRef.current;
+    if (queuedConversationId && queuedConversationId in queuedPromptsRef.current) {
+      upsertQueuedPrompt(queuedConversationId, nextValue);
+    }
     if (voiceState === 'ready') {
       setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
     }
@@ -1273,6 +1261,10 @@ export default function AiPage() {
   const handleSuggestion = useCallback(
     (value: string) => {
       setInput(value);
+      const queuedConversationId = activeConversationIdRef.current;
+      if (queuedConversationId && queuedConversationId in queuedPromptsRef.current) {
+        upsertQueuedPrompt(queuedConversationId, value);
+      }
       requestAnimationFrame(() => {
         focusComposer();
         if (textareaRef.current) {
@@ -1281,7 +1273,7 @@ export default function AiPage() {
         }
       });
     },
-    [focusComposer],
+    [focusComposer, upsertQueuedPrompt],
   );
 
   const handleSelectConversation = useCallback(
@@ -1289,8 +1281,14 @@ export default function AiPage() {
       setConversationError('');
       setActiveConversationId(conversationId);
       setDrawerOpen(false);
-      setInput('');
-      resetComposerHeight();
+      setInput(queuedPromptsRef.current[conversationId] ?? '');
+      requestAnimationFrame(() => {
+        resetComposerHeight();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
     },
     [resetComposerHeight],
   );
@@ -1387,6 +1385,11 @@ export default function AiPage() {
         delete next[deleteTarget.id];
         return next;
       });
+      clearQueuedPrompt(deleteTarget.id);
+      if (activeConversationId === deleteTarget.id) {
+        setInput('');
+        resetComposerHeight();
+      }
       setActiveConversationId(nextActiveId);
       setDeleteTarget(null);
     } catch (error) {
@@ -1396,7 +1399,7 @@ export default function AiPage() {
     } finally {
       setModalBusy(false);
     }
-  }, [activeConversationId, conversations, deleteTarget]);
+  }, [activeConversationId, clearQueuedPrompt, conversations, deleteTarget, resetComposerHeight]);
 
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
@@ -1523,17 +1526,37 @@ export default function AiPage() {
   const sendMessage = useCallback(async (options?: {
     text?: string;
     confirmationToken?: string;
+    conversationIdOverride?: string;
+    bypassQueue?: boolean;
   }) => {
     const confirmationToken = options?.confirmationToken;
     const text = (options?.text ?? input).trim();
-    if (!text || !selectedModel || isStreaming) return;
+    const conversationIdOverride = options?.conversationIdOverride ?? activeConversationId;
+    const bypassQueue = options?.bypassQueue === true;
+    const canQueueFollowUp =
+      !confirmationToken &&
+      !bypassQueue &&
+      isStreaming &&
+      Boolean(conversationIdOverride) &&
+      conversationIdOverride === streamingConversationId;
+
+    if (!text || !selectedModel) return;
     if (inferenceAvailable !== true || !modelStorageAvailable) return;
+    if (canQueueFollowUp && conversationIdOverride) {
+      setConversationError('');
+      upsertQueuedPrompt(conversationIdOverride, text);
+      setVoiceState('idle');
+      setVoiceError(null);
+      setVoiceNotice('Queued follow-up ready. It will send automatically when this answer finishes.');
+      return;
+    }
+    if (isStreaming) return;
     if (activeConversation?.archived) {
       setConversationError('Restore this archived conversation before sending a new message.');
       return;
     }
 
-    let conversationId = activeConversationId;
+    let conversationId = conversationIdOverride;
     let conversationTitle = activeConversation?.title ?? DEFAULT_CONVERSATION_TITLE;
 
     try {
@@ -1546,6 +1569,18 @@ export default function AiPage() {
 
       if (!conversationId) {
         throw new Error('No conversation is available for this message.');
+      }
+
+      const savedQueuedPrompt = queuedPromptsRef.current[conversationId]?.trim();
+      if ((bypassQueue || savedQueuedPrompt === text) && savedQueuedPrompt) {
+        clearQueuedPrompt(conversationId);
+        if (
+          activeConversationIdRef.current === conversationId &&
+          input.trim() === text
+        ) {
+          setInput('');
+          resetComposerHeight();
+        }
       }
 
       const sentTs = nowTsSeconds();
@@ -1628,6 +1663,8 @@ export default function AiPage() {
 
       let completed = false;
       let latestAssistantContent = '';
+      let requiresConfirmation = false;
+      let streamFailed = false;
 
       stopRef.current = streamConversationMessage(
         conversationId,
@@ -1660,6 +1697,7 @@ export default function AiPage() {
           }
 
           if (event.type === 'confirmation_required') {
+            requiresConfirmation = true;
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
               pending_action: {
@@ -1699,6 +1737,7 @@ export default function AiPage() {
           }
 
           if (event.type === 'error') {
+            streamFailed = true;
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
               isStreaming: false,
@@ -1735,6 +1774,13 @@ export default function AiPage() {
 
           if (completed) {
             void loadConversationDetail(conversationId!);
+            const queuedText = queuedPromptsRef.current[conversationId!]?.trim();
+            if (queuedText && !requiresConfirmation && !streamFailed) {
+              setAutoSendRequest({
+                conversationId: conversationId!,
+                text: queuedText,
+              });
+            }
           }
         },
       );
@@ -1755,9 +1801,12 @@ export default function AiPage() {
     loadConversationDetail,
     loadRuntime,
     modelStorageAvailable,
+    clearQueuedPrompt,
     resetComposerHeight,
     selectedModel,
+    streamingConversationId,
     updateAssistantTurn,
+    upsertQueuedPrompt,
   ]);
 
   const handleConfirmPendingAction = useCallback(
@@ -1778,6 +1827,17 @@ export default function AiPage() {
     },
     [sendMessage],
   );
+
+  useEffect(() => {
+    if (!autoSendRequest || isStreaming) return;
+    const { conversationId, text } = autoSendRequest;
+    setAutoSendRequest(null);
+    void sendMessage({
+      text,
+      conversationIdOverride: conversationId,
+      bypassQueue: true,
+    });
+  }, [autoSendRequest, isStreaming, sendMessage]);
 
   const handleStop = useCallback(() => {
     stopRef.current?.();
@@ -1821,21 +1881,41 @@ export default function AiPage() {
     return null;
   }
 
+  const canQueueActiveConversation =
+    isStreaming &&
+    Boolean(activeConversationId) &&
+    activeConversationId === streamingConversationId;
   const composerDisabled =
     serviceUnavailable ||
     inferenceAvailable !== true ||
     !modelStorageAvailable ||
     !selectedModel ||
-    isStreaming ||
+    streamingElsewhere ||
     Boolean(activeConversationId && !activeConversation) ||
     Boolean(activeConversation?.archived);
   const voiceControlDisabled =
-    composerDisabled || voiceState === 'transcribing' || voiceState === 'stopping';
+    composerDisabled ||
+    isStreaming ||
+    voiceState === 'transcribing' ||
+    voiceState === 'stopping';
+  const queueActionLabel = hasQueuedPrompt ? 'Update queued' : 'Queue';
+  const queueActionDisabled = composerDisabled || !input.trim();
+  const queuedNotice = hasQueuedPrompt
+    ? isStreaming
+      ? 'Queued follow-up will send automatically when this answer finishes.'
+      : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
+    : canQueueActiveConversation
+      ? 'You can queue the next prompt while Rustyfin finishes this answer.'
+      : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
     : !selectedModel
       ? 'No model available.'
+      : canQueueActiveConversation
+        ? hasQueuedPrompt
+          ? 'Edit the queued follow-up, then press Update queued.'
+          : 'Type the next prompt while Rustyfin finishes this answer.'
       : streamingElsewhere
         ? 'Rustyfin AI is still working in another chat.'
         : 'Ask Rustyfin AI something grounded in your server state…';
@@ -1851,67 +1931,30 @@ export default function AiPage() {
 
   return (
     <>
-      <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)] animate-rise">
-        <div className="hidden h-full shrink-0 sm:flex">
-          <AiConversationRail
-            conversations={liveConversations}
-            archivedConversations={archivedConversations}
-            activeConversationId={activeConversationId}
-            disabled={conversationsLoading}
-            onSelect={handleSelectConversation}
-            onNewChat={() => {
-              void handleNewChat();
-            }}
-            onRename={handleRenameConversation}
-            onArchiveToggle={(conversation) => {
-              void handleArchiveToggle(conversation);
-            }}
-            onDelete={handleDeleteConversation}
-          />
-        </div>
-
-        {drawerOpen ? (
-          <div
-            className="fixed inset-0 z-40 bg-black/60 sm:hidden"
-            onClick={() => setDrawerOpen(false)}
-          />
-        ) : null}
-
-        {runtimeDrawerOpen ? (
-          <div
-            className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-            onClick={() => setRuntimeDrawerOpen(false)}
-          />
-        ) : null}
-
+      {drawerOpen ? (
         <div
-          className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 sm:hidden ${
-            drawerOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
-        >
-          <div className="flex h-full w-[min(19rem,88vw)] flex-col">
-            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[rgba(10,14,24,0.96)] px-4 py-3">
-              <div>
-                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                  Conversations
-                </p>
-                <p className="mt-1 text-xs muted">Saved chats and history</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDrawerOpen(false)}
-                className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                aria-label="Close conversations"
-              >
-                ×
-              </button>
-            </div>
-            <div className="min-h-0 flex-1">
+          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          onClick={() => setDrawerOpen(false)}
+        />
+      ) : null}
+
+      {runtimeDrawerOpen ? (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 xl:hidden"
+          onClick={() => setRuntimeDrawerOpen(false)}
+        />
+      ) : null}
+
+      <div className="animate-rise pb-8">
+        <div className="grid gap-4 lg:grid-cols-[19rem_minmax(0,1fr)] xl:grid-cols-[19rem_minmax(0,1fr)_22rem]">
+          <div className="hidden lg:block">
+            <div className="sticky top-24 h-[calc(100dvh-8rem)] overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
               <AiConversationRail
                 conversations={liveConversations}
                 archivedConversations={archivedConversations}
                 activeConversationId={activeConversationId}
                 disabled={conversationsLoading}
+                className="h-full w-full border-r-0 bg-transparent backdrop-blur-none sm:w-full"
                 onSelect={handleSelectConversation}
                 onNewChat={() => {
                   void handleNewChat();
@@ -1924,172 +1967,232 @@ export default function AiPage() {
               />
             </div>
           </div>
-        </div>
 
-        <div
-          className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden rounded-t-[1.75rem] border border-[var(--border)] bg-[rgba(10,14,24,0.97)] shadow-2xl transition-transform duration-200 lg:hidden ${
-            runtimeDrawerOpen ? 'translate-y-0' : 'translate-y-full pointer-events-none'
-          }`}
-        >
-          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-            <div>
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                AI Runtime
-              </p>
-              <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setRuntimeDrawerOpen(false)}
-              className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-              aria-label="Close runtime panel"
+          <div className="min-w-0">
+            <div
+              className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 lg:hidden ${
+                drawerOpen ? 'translate-x-0' : '-translate-x-full'
+              }`}
             >
-              ×
-            </button>
-          </div>
-          <div className="overflow-y-auto p-4">
-            <RuntimePanel runtime={runtime} className="space-y-0" stacked />
-          </div>
-        </div>
-
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]">
-          <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--border)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none sm:hidden"
-                onClick={() => setDrawerOpen(true)}
-                aria-label="Open conversations"
-              >
-                ☰
-              </button>
-              <div className="min-w-0">
-                <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                  <span className="accent-logo">AI</span>
-                  <span className="text-base font-normal text-[var(--text-muted)]">
-                    Assistant
-                  </span>
-                </h1>
-                <p className="truncate text-xs muted">
-                  {headerSubtitle}
-                  {headerStatus ? ` · ${headerStatus}` : ''}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-              {showRuntimePanel ? (
-                <button
-                  type="button"
-                  onClick={() => setRuntimeDrawerOpen(true)}
-                  className="btn-ghost px-4 py-2 text-sm lg:hidden"
-                >
-                  Runtime
-                </button>
-              ) : null}
-              {inferenceAvailable === true && models.length > 0 ? (
-                <ModelSelector
-                  models={models}
-                  selected={selectedModel}
-                  onChange={setSelectedModel}
-                />
-              ) : null}
-              {activeConversation?.archived ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const summary = conversations.find(
-                      (conversation) => conversation.id === activeConversation.id,
-                    );
-                    if (summary) {
-                      void handleArchiveToggle(summary);
-                    }
-                  }}
-                  className="btn-primary px-4 py-2 text-sm sm:inline-flex"
-                >
-                  Restore
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {modelsError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              {modelsError}
-            </div>
-          ) : null}
-
-          {conversationError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)] px-4 py-2 text-sm text-[var(--danger)]">
-              {conversationError}
-            </div>
-          ) : null}
-
-          {runtimeError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              {runtimeError}
-            </div>
-          ) : null}
-
-          {streamingElsewhere && streamingConversationId ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              Rustyfin AI is still responding in another chat.
-              <button
-                type="button"
-                onClick={() => handleSelectConversation(streamingConversationId)}
-                className="ml-3 font-medium text-[var(--text-main)] underline underline-offset-4"
-              >
-                Jump back
-              </button>
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex flex-1 overflow-hidden">
-            <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {serviceUnavailable ? (
-                  <InferenceUnavailable
-                    serviceUnavailable
-                    showRecommendation={false}
-                  />
-                ) : inferenceAvailable === false ? (
-                  <InferenceUnavailable
-                    title="AI unavailable on this host"
-                    description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
-                    showRecommendation={false}
-                  />
-                ) : inferenceAvailable === null ? (
-                  <div className="flex h-full items-center justify-center">
-                    <span className="muted">Loading AI models…</span>
+              <div className="flex h-full w-[min(19rem,88vw)] flex-col border-r border-[var(--border)] bg-[rgba(16,20,31,0.96)] shadow-2xl">
+                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+                  <div>
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                      Conversations
+                    </p>
+                    <p className="mt-1 text-xs muted">Saved chats and history</p>
                   </div>
-                ) : !modelStorageAvailable ? (
-                  <InferenceUnavailable
-                    title="AI model storage is unavailable"
-                    description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
-                    showRecommendation={false}
-                  />
-                ) : !selectedModel ? (
-                  <InferenceUnavailable />
-                ) : activeConversationId && loadingConversationId === activeConversationId && !activeConversation ? (
-                  <div className="flex h-full items-center justify-center">
-                    <span className="muted">Loading conversation…</span>
-                  </div>
-                ) : !activeConversation || activeConversation.messages.length === 0 ? (
-                  <EmptyState
-                    model={selectedModel}
-                    isAdmin={me.role === 'admin'}
-                    hasConversation={Boolean(activeConversation)}
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpen(false)}
+                    className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+                    aria-label="Close conversations"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1">
+                  <AiConversationRail
+                    conversations={liveConversations}
+                    archivedConversations={archivedConversations}
+                    activeConversationId={activeConversationId}
+                    disabled={conversationsLoading}
+                    className="h-full border-r-0 bg-transparent backdrop-blur-none sm:w-full"
+                    onSelect={handleSelectConversation}
                     onNewChat={() => {
                       void handleNewChat();
                     }}
-                    onSuggest={handleSuggestion}
+                    onRename={handleRenameConversation}
+                    onArchiveToggle={(conversation) => {
+                      void handleArchiveToggle(conversation);
+                    }}
+                    onDelete={handleDeleteConversation}
                   />
-                ) : (
-                  <div
-                    ref={threadRef}
-                    className="h-full overflow-y-auto px-3 py-4 sm:px-5 sm:py-5"
-                  >
-                    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden rounded-t-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.96)] shadow-2xl transition-transform duration-200 xl:hidden ${
+                runtimeDrawerOpen ? 'translate-y-0' : 'pointer-events-none translate-y-full'
+              }`}
+            >
+              <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+                <div>
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                    AI Runtime
+                  </p>
+                  <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRuntimeDrawerOpen(false)}
+                  className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+                  aria-label="Close runtime panel"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="overflow-y-auto p-4">
+                <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+              </div>
+            </div>
+
+            <section className="min-w-0">
+              <div className="border-b border-[var(--border)] bg-[rgba(16,20,31,0.94)] backdrop-blur-xl">
+                <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none lg:hidden"
+                      onClick={() => setDrawerOpen(true)}
+                      aria-label="Open conversations"
+                    >
+                      ☰
+                    </button>
+                    <div className="min-w-0">
+                      <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
+                        <span className="accent-logo">AI</span>
+                        <span className="text-base font-normal text-[var(--text-muted)]">
+                          Assistant
+                        </span>
+                      </h1>
+                      <p className="truncate text-xs muted">
+                        {headerSubtitle}
+                        {headerStatus ? ` · ${headerStatus}` : ''}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:justify-end">
+                    {showRuntimePanel ? (
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeDrawerOpen(true)}
+                        className="btn-ghost px-4 py-2 text-sm xl:hidden"
+                      >
+                        Runtime
+                      </button>
+                    ) : null}
+                    {inferenceAvailable === true && models.length > 0 ? (
+                      <ModelSelector
+                        models={models}
+                        selected={selectedModel}
+                        onChange={setSelectedModel}
+                      />
+                    ) : null}
+                    {activeConversation?.archived ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const summary = conversations.find(
+                            (conversation) => conversation.id === activeConversation.id,
+                          );
+                          if (summary) {
+                            void handleArchiveToggle(summary);
+                          }
+                        }}
+                        className="btn-primary px-4 py-2 text-sm sm:inline-flex"
+                      >
+                        Restore
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              {modelsError ? (
+                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                    {modelsError}
+                  </div>
+                </div>
+              ) : null}
+
+              {conversationError ? (
+                <div className="border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)]">
+                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
+                    {conversationError}
+                  </div>
+                </div>
+              ) : null}
+
+              {runtimeError ? (
+                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                  <div className="mx-auto w-full max-w-4xl px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                    {runtimeError}
+                  </div>
+                </div>
+              ) : null}
+
+              {streamingElsewhere && streamingConversationId ? (
+                <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                  <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                    <span>Rustyfin AI is still responding in another chat.</span>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectConversation(streamingConversationId)}
+                      className="font-medium text-[var(--text-main)] underline underline-offset-4"
+                    >
+                      Jump back
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="px-3 pb-6 pt-5 sm:px-5 sm:pt-6">
+                <div className="mx-auto w-full max-w-4xl">
+                  {serviceUnavailable ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <InferenceUnavailable
+                        serviceUnavailable
+                        showRecommendation={false}
+                      />
+                    </div>
+                  ) : inferenceAvailable === false ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <InferenceUnavailable
+                        title="AI unavailable on this host"
+                        description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
+                        showRecommendation={false}
+                      />
+                    </div>
+                  ) : inferenceAvailable === null ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <span className="muted">Loading AI models…</span>
+                    </div>
+                  ) : !modelStorageAvailable ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <InferenceUnavailable
+                        title="AI model storage is unavailable"
+                        description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
+                        showRecommendation={false}
+                      />
+                    </div>
+                  ) : !selectedModel ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <InferenceUnavailable />
+                    </div>
+                  ) : activeConversationId &&
+                    loadingConversationId === activeConversationId &&
+                    !activeConversation ? (
+                    <div className="flex min-h-[48vh] items-center justify-center">
+                      <span className="muted">Loading conversation…</span>
+                    </div>
+                  ) : !activeConversation || activeConversation.messages.length === 0 ? (
+                    <div className="min-h-[48vh]">
+                      <EmptyState
+                        model={selectedModel}
+                        isAdmin={me.role === 'admin'}
+                        hasConversation={Boolean(activeConversation)}
+                        onNewChat={() => {
+                          void handleNewChat();
+                        }}
+                        onSuggest={handleSuggestion}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-4">
                       {activeConversation.messages.map((message) => (
                         <MessageBubble
                           key={message.id}
@@ -2100,88 +2203,108 @@ export default function AiPage() {
                         />
                       ))}
                     </div>
-                  </div>
-                )}
+                  )}
+                  <div ref={messageEndRef} />
+                </div>
               </div>
 
-              <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(13,17,28,0.92)] px-3 py-3 sm:px-5">
-                <div className="mx-auto w-full max-w-4xl">
-                  <div
-                    className="panel-soft flex items-end gap-3 rounded-2xl border border-[var(--border)] px-3 py-3"
-                    style={{ background: 'rgba(19,24,38,0.9)' }}
-                  >
+              <div className="sticky bottom-0 z-20 border-t border-[var(--border)] bg-[rgba(16,20,31,0.94)] backdrop-blur-xl shadow-[0_-10px_28px_rgba(0,0,0,0.18)]">
+                <div className="mx-auto w-full max-w-4xl px-3 py-3 sm:px-5">
+                  <div className="flex items-end gap-3 rounded-[1.6rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] px-3 py-3 shadow-[0_14px_40px_rgba(0,0,0,0.2)]">
                     <textarea
                       ref={textareaRef}
                       value={input}
                       onChange={handleInputChange}
                       onKeyDown={handleKeyDown}
                       placeholder={placeholder}
-                      className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                      className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:outline-offset-0 focus-visible:ring-0 disabled:opacity-50"
                       disabled={composerDisabled}
                       rows={1}
                     />
 
-                    {isStreaming ? (
-                      <button
-                        type="button"
-                        onClick={handleStop}
-                        className="btn-secondary h-10 px-4 text-sm"
-                      >
-                        Stop
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (voiceState === 'recording') {
-                              stopVoiceInput();
-                            } else {
-                              void startVoiceInput();
-                            }
-                          }}
-                          className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={voiceControlDisabled}
-                          aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
-                        >
-                          <svg
-                            className="h-4 w-4"
-                            viewBox="0 0 24 24"
-                            fill={voiceState === 'recording' ? 'currentColor' : 'none'}
-                            stroke="currentColor"
-                            strokeWidth="1.9"
+                    <div className="flex shrink-0 items-center gap-2">
+                      {isStreaming ? (
+                        <>
+                          {canQueueActiveConversation ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void sendMessage();
+                              }}
+                              className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                              disabled={queueActionDisabled}
+                            >
+                              {queueActionLabel}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={handleStop}
+                            className="btn-secondary h-10 px-4 text-sm"
                           >
-                            <rect x="9" y="3" width="6" height="12" rx="3" />
-                            <path d="M6 11a6 6 0 0 0 12 0" />
-                            <path d="M12 17v4" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void sendMessage();
-                          }}
-                          className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={composerDisabled || !input.trim()}
-                          aria-label="Send message"
-                        >
-                          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-                            <path d="M5 12h12" />
-                            <path d="m13 6 6 6-6 6" />
-                          </svg>
-                        </button>
-                      </>
-                    )}
+                            Stop
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (voiceState === 'recording') {
+                                stopVoiceInput();
+                              } else {
+                                void startVoiceInput();
+                              }
+                            }}
+                            className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={voiceControlDisabled}
+                            aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                          >
+                            <svg
+                              className="h-4 w-4"
+                              viewBox="0 0 24 24"
+                              fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                              stroke="currentColor"
+                              strokeWidth="1.9"
+                            >
+                              <rect x="9" y="3" width="6" height="12" rx="3" />
+                              <path d="M6 11a6 6 0 0 0 12 0" />
+                              <path d="M12 17v4" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void sendMessage();
+                            }}
+                            className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={composerDisabled || !input.trim()}
+                            aria-label="Send message"
+                          >
+                            <svg
+                              className="h-4 w-4"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.9"
+                            >
+                              <path d="M5 12h12" />
+                              <path d="m13 6 6 6-6 6" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
-                  {voiceError || voiceNotice || voiceState !== 'idle' ? (
-                    <div className="mt-2 px-1 text-xs">
+                  {voiceError || voiceNotice || voiceState !== 'idle' || queuedNotice ? (
+                    <div className="mt-2 space-y-1.5 px-1 text-xs">
                       {voiceError ? (
-                        <span className="text-[var(--danger)]">{voiceError}</span>
+                        <div className="text-[var(--danger)]">{voiceError}</div>
                       ) : voiceNotice ? (
-                        <span className="text-[var(--orange-soft)]">{voiceNotice}</span>
-                      ) : (
-                        <span className="muted">
+                        <div className="text-[var(--orange-soft)]">{voiceNotice}</div>
+                      ) : voiceState !== 'idle' ? (
+                        <div className="muted">
                           {voiceState === 'recording'
                             ? 'Listening…'
                             : voiceState === 'stopping'
@@ -2189,28 +2312,51 @@ export default function AiPage() {
                               : voiceState === 'transcribing'
                                 ? 'Transcribing…'
                                 : null}
-                        </span>
-                      )}
+                        </div>
+                      ) : null}
+
+                      {queuedNotice ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <span className="muted">{queuedNotice}</span>
+                          {hasQueuedPrompt ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (activeConversationId) {
+                                  clearQueuedPrompt(activeConversationId);
+                                }
+                              }}
+                              className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                            >
+                              Cancel queued
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
               </div>
-            </div>
+            </section>
+          </div>
 
-            {showRuntimePanel ? (
-              <aside className="hidden lg:flex lg:w-[22rem] xl:w-[24rem] shrink-0 border-l border-[var(--border)] bg-[rgba(8,12,20,0.6)]">
-                <div className="min-h-0 flex-1 overflow-y-auto">
+          {showRuntimePanel ? (
+            <aside className="hidden xl:block">
+              <div className="sticky top-24 h-[calc(100dvh-8rem)] overflow-hidden rounded-[1.75rem] border border-[var(--border)] bg-[rgba(16,20,31,0.84)] shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
+                <div className="flex h-full min-h-0 flex-col">
                   <div className="border-b border-[var(--border)] px-4 py-3">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
                       AI Runtime
                     </p>
                     <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
                   </div>
-                  <RuntimePanel runtime={runtime} className="p-4" stacked />
+                  <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                    <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+                  </div>
                 </div>
-              </aside>
-            ) : null}
-          </div>
+              </div>
+            </aside>
+          ) : null}
         </div>
       </div>
 
