@@ -17,14 +17,14 @@ mod distro;
 mod utils;
 
 use crate::utils::{
-    command_exists, default_native_linux_target, detect_default_ai_backend, detect_host_platform,
-    detect_native_user_context, ensure_command_available, ensure_success, has_cuda_build_support,
-    id_value, resolve_ai_gpu_backend, resolve_command_path, resolve_user_home,
-    run_as_native_user_shell, run_command_capture, run_command_in_dir_as_user,
-    run_command_in_dir_as_user_allow_failure, run_command_in_dir_as_user_capture, run_root_command,
-    run_root_command_allow_failure, run_root_command_capture, run_script, run_script_as_repo_owner,
-    server_features_for_ai_backend, stat_value, trim_os_release_value, uname_value, user_home_dir,
-    HostPlatform, NativeUserContext,
+    HostPlatform, NativeUserContext, command_exists, default_native_linux_target,
+    detect_default_ai_backend, detect_host_platform, detect_native_user_context,
+    ensure_command_available, ensure_success, has_cuda_build_support, id_value,
+    resolve_ai_gpu_backend, resolve_command_path, resolve_user_home, run_as_native_user_shell,
+    run_command_capture, run_command_in_dir_as_user, run_command_in_dir_as_user_allow_failure,
+    run_command_in_dir_as_user_capture, run_root_command, run_root_command_allow_failure,
+    run_root_command_capture, run_script, run_script_as_repo_owner, server_features_for_ai_backend,
+    stat_value, trim_os_release_value, uname_value, user_home_dir,
 };
 
 const SERVERS_AGENT_BIND: &str = "127.0.0.1:8103";
@@ -37,8 +37,6 @@ const INSTALL_MANIFEST_PATH: &str = "/var/lib/rustyfin/install-manifest.json";
 const MANAGED_JAVA_ROOT: &str = "/opt/rustyfin/java";
 const MANAGED_JAVA_CURRENT: &str = "/opt/rustyfin/java/current";
 const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
-
-
 
 const DIRECTORY_PICKER_HELPER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import json
@@ -203,10 +201,6 @@ struct NativeBinaryBuildPolicy {
 struct Cli {
     command: CliCommand,
 }
-
-
-
-
 
 #[derive(Debug, Clone)]
 struct SystemdInstallConfig {
@@ -863,8 +857,6 @@ fn repo_root() -> anyhow::Result<PathBuf> {
         .context("failed to resolve repository root from CARGO_MANIFEST_DIR")
 }
 
-
-
 fn build_systemd_config(repo_root: &Path) -> SystemdInstallConfig {
     let main_service_name =
         env::var("RUSTFIN_SYSTEMD_SERVICE").unwrap_or_else(|_| "rustyfin-native.service".into());
@@ -917,7 +909,10 @@ fn install(
         "[rustfin-installer] Native runtime user: {} ({})",
         user_context.name, user_context.home
     );
-    println!("[rustfin-installer] Using distro adapter: {}", adapter.name());
+    println!(
+        "[rustfin-installer] Using distro adapter: {}",
+        adapter.name()
+    );
 
     if !options.skip_prereqs {
         println!("[rustfin-installer] Installing runtime packages...");
@@ -985,10 +980,6 @@ fn install_native_systemd_command(
     println!("[rustfin-installer] Native systemd install completed.");
     Ok(())
 }
-
-
-
-
 
 fn ensure_native_user_rust_toolchain(user_context: &NativeUserContext) -> anyhow::Result<()> {
     let cargo_bin = Path::new(&user_context.home).join(".cargo/bin/cargo");
@@ -2455,7 +2446,6 @@ fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
 
 /// Returns true when a CUDA build toolchain is detectable on this host.
 
-
 fn is_ipv4(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     if parts.len() != 4 {
@@ -2889,20 +2879,49 @@ fn process_cmdline(pid: &str) -> Option<String> {
 
 fn cmdline_matches_pidfile_name(file_name: &str, cmdline: &str) -> bool {
     match file_name {
-        "rustfin.pid" => cmdline.contains("rustfin-server"),
-        "rustfin-calendar.pid" => cmdline.contains("rustfin-calendar"),
-        "rustfin-tmdb-agent.pid" => cmdline.contains("rustfin-tmdb-agent"),
-        "rustfin-youtube-agent.pid" => cmdline.contains("rustfin-youtube-agent"),
-        "rustfin-transcription-agent.pid" => cmdline.contains("rustfin-transcription-agent"),
-        "rustfin-servers-agent.pid" => cmdline.contains("rustfin-servers-agent"),
+        "rustfin.pid" => cmdline_has_executable(cmdline, "rustfin-server"),
+        "rustfin-calendar.pid" => cmdline_has_executable(cmdline, "rustfin-calendar"),
+        "rustfin-tmdb-agent.pid" => cmdline_has_executable(cmdline, "rustfin-tmdb-agent"),
+        "rustfin-youtube-agent.pid" => cmdline_has_executable(cmdline, "rustfin-youtube-agent"),
+        "rustfin-transcription-agent.pid" => {
+            cmdline_has_executable(cmdline, "rustfin-transcription-agent")
+        }
+        "rustfin-servers-agent.pid" => cmdline_has_executable(cmdline, "rustfin-servers-agent"),
         "rustfin-ui.pid" => {
-            (cmdline.contains("node") && cmdline.contains("server.js"))
+            (cmdline_has_executable(cmdline, "node") && cmdline_has_argument(cmdline, "server.js"))
                 || cmdline.contains("next-server")
         }
-        "rustfin-edge.pid" => cmdline.contains("caddy") && cmdline.contains("Caddyfile.native"),
-        "directory-picker-helper.pid" => cmdline.contains("directory-picker-helper.py"),
+        "rustfin-edge.pid" => {
+            cmdline_has_executable(cmdline, "caddy") && cmdline.contains("Caddyfile.native")
+        }
+        "directory-picker-helper.pid" => {
+            cmdline_has_argument(cmdline, "directory-picker-helper.py")
+        }
         _ => false,
     }
+}
+
+fn cmdline_has_executable(cmdline: &str, expected: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|arg| cmdline_arg_matches(arg, expected))
+}
+
+fn cmdline_has_argument(cmdline: &str, expected: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|arg| cmdline_arg_matches(arg, expected))
+}
+
+fn cmdline_arg_matches(arg: &str, expected: &str) -> bool {
+    let trimmed = arg.trim_matches(|ch| ch == '"' || ch == '\'');
+    if trimmed == expected {
+        return true;
+    }
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(expected)
 }
 
 fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
@@ -2950,6 +2969,18 @@ mod tests {
         assert!(!cmdline_matches_pidfile_name(
             "rustfin-tmdb-agent.pid",
             "cargo run -p rustfin-installer -- plan-native-runtime"
+        ));
+    }
+
+    #[test]
+    fn pidfile_match_distinguishes_backend_from_servers_agent() {
+        assert!(cmdline_matches_pidfile_name(
+            "rustfin.pid",
+            "/home/tempo/Rustyfin/.native-bins/x86_64-unknown-linux-gnu/dev/rustfin-server"
+        ));
+        assert!(!cmdline_matches_pidfile_name(
+            "rustfin.pid",
+            "/home/tempo/Rustyfin/.native-bins/x86_64-unknown-linux-gnu/dev/rustfin-servers-agent"
         ));
     }
 
@@ -3584,10 +3615,6 @@ fn temp_file_path(destination: &Path) -> PathBuf {
     env::temp_dir().join(format!("{name}.{nonce}.tmp"))
 }
 
-
-
-
-
 fn run_postgres_command(
     program: &str,
     args: &[&str],
@@ -3658,8 +3685,6 @@ fn run_postgres_command_allow_failure(
         .status()
         .with_context(|| format!("failed to execute runuser -u postgres -- {program}"))
 }
-
-
 
 #[derive(Debug, Clone)]
 struct RustToolchainCommand {
@@ -3953,10 +3978,6 @@ fn generate_secret_hex() -> String {
     hex::encode(bytes)
 }
 
-
-
-
-
 fn validate_sql_identifier(var_name: &str, value: &str) -> anyhow::Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -3974,5 +3995,3 @@ fn validate_sql_identifier(var_name: &str, value: &str) -> anyhow::Result<()> {
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
-
-

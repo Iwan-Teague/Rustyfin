@@ -140,6 +140,8 @@ Runtime behavior:
   - the Rust deploy path stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
 - `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
   - the supervisor keeps the native child-process set under `systemd` observation
+  - keep supervisor child matching exact-binary-aware so `rustfin-servers-agent` can never be mistaken for `rustfin-server`
+  - keep supervisor backend/edge health checks active so a dead API process cannot leave `/login` and `/ai` serving UI shells against a broken upstream
   - if a core child process dies, the service exits and `systemd` restarts the stack
 - `rustyfin-post-healthcheck.service` is installed alongside the native runtime
   - it verifies backend/UI/agent readiness after startup
