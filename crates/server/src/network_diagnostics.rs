@@ -1,20 +1,18 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
-#[cfg(target_os = "linux")]
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAddressSummary {
     pub family: String,
     pub address: String,
     pub scope: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkNodeSummary {
     pub name: String,
     pub status: String,
@@ -22,11 +20,12 @@ pub struct NetworkNodeSummary {
     pub addresses: Vec<NetworkAddressSummary>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RustyfinNetworkAccess {
     pub ui_port: u16,
     pub backend_port: u16,
     pub calendar_port: u16,
+    pub preferred_local_interface: Option<String>,
     pub preferred_local_ipv4: Option<String>,
     pub preferred_local_url: Option<String>,
     pub login_url: Option<String>,
@@ -34,7 +33,7 @@ pub struct RustyfinNetworkAccess {
     pub public_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkTopologySnapshot {
     pub available: bool,
     pub reason: Option<String>,
@@ -227,7 +226,11 @@ fn build_rustyfin_network_access(
     backend_port: u16,
     calendar_port: u16,
 ) -> RustyfinNetworkAccess {
-    let preferred_local_ipv4 = preferred_local_ipv4(nodes);
+    let preferred_local_access = preferred_local_access_candidate(nodes);
+    let preferred_local_interface = preferred_local_access
+        .as_ref()
+        .map(|candidate| candidate.interface.clone());
+    let preferred_local_ipv4 = preferred_local_access.map(|candidate| candidate.address);
     let preferred_local_url = preferred_local_ipv4
         .as_deref()
         .map(|ip| format!("https://{ip}:{ui_port}"));
@@ -237,12 +240,15 @@ fn build_rustyfin_network_access(
     let ai_url = preferred_local_url
         .as_deref()
         .map(|base| format!("{base}/ai"));
-    let public_url = public_host.map(|host| format!("https://{host}:{ui_port}"));
+    let public_url = public_host
+        .filter(|host| should_expose_public_host(host, preferred_local_ipv4.as_deref()))
+        .map(|host| format!("https://{host}:{ui_port}"));
 
     RustyfinNetworkAccess {
         ui_port,
         backend_port,
         calendar_port,
+        preferred_local_interface,
         preferred_local_ipv4,
         preferred_local_url,
         login_url,
@@ -251,31 +257,122 @@ fn build_rustyfin_network_access(
     }
 }
 
+#[derive(Debug, Clone)]
+struct PreferredLocalAccessCandidate {
+    interface: String,
+    address: String,
+}
+
+#[cfg(test)]
 fn preferred_local_ipv4(nodes: &[NetworkNodeSummary]) -> Option<String> {
-    let mut fallback = None;
+    preferred_local_access_candidate(nodes).map(|candidate| candidate.address)
+}
+
+fn preferred_local_access_candidate(
+    nodes: &[NetworkNodeSummary],
+) -> Option<PreferredLocalAccessCandidate> {
+    let mut best: Option<(u8, u8, &str, Ipv4Addr)> = None;
 
     for node in nodes
         .iter()
         .filter(|node| node.status == "online" && !node.is_loopback)
     {
-        for address in node
-            .addresses
-            .iter()
-            .filter(|address| address.family == "inet")
-        {
+        for address in node.addresses.iter().filter(|address| {
+            address.family == "inet" && !matches!(address.scope.as_deref(), Some("host" | "link"))
+        }) {
             let Ok(ip) = address.address.parse::<Ipv4Addr>() else {
                 continue;
             };
-            if ip.is_private() {
-                return Some(ip.to_string());
+            if ip.is_loopback() {
+                continue;
             }
-            if !ip.is_loopback() && fallback.is_none() {
-                fallback = Some(ip.to_string());
+
+            let candidate = (
+                interface_preference_rank(&node.name),
+                ipv4_preference_rank(ip),
+                node.name.as_str(),
+                ip,
+            );
+            let should_replace = best.as_ref().is_none_or(|current| candidate < *current);
+            if should_replace {
+                best = Some(candidate);
             }
         }
     }
 
-    fallback
+    best.map(|(_, _, interface, ip)| PreferredLocalAccessCandidate {
+        interface: interface.to_string(),
+        address: ip.to_string(),
+    })
+}
+
+fn should_expose_public_host(public_host: &str, preferred_local_ipv4: Option<&str>) -> bool {
+    let trimmed = public_host.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if preferred_local_ipv4.is_some_and(|preferred| preferred == trimmed) {
+        return false;
+    }
+
+    match trimmed.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => !ip.is_private() && !ip.is_loopback() && !ip.is_link_local(),
+        Ok(IpAddr::V6(ip)) => !ip.is_loopback() && !ip.is_unicast_link_local(),
+        Err(_) => true,
+    }
+}
+
+fn interface_preference_rank(name: &str) -> u8 {
+    if is_preferred_lan_interface_name(name) {
+        0
+    } else if is_overlay_interface_name(name) {
+        2
+    } else if is_container_or_virtual_interface_name(name) {
+        3
+    } else {
+        1
+    }
+}
+
+fn ipv4_preference_rank(ip: Ipv4Addr) -> u8 {
+    if ip.is_private() {
+        0
+    } else if ip.is_link_local() {
+        2
+    } else {
+        1
+    }
+}
+
+fn is_preferred_lan_interface_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("en")
+        || lower.starts_with("eth")
+        || lower.starts_with("wl")
+        || lower.starts_with("wwan")
+        || lower.starts_with("bond")
+}
+
+fn is_overlay_interface_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("tailscale")
+        || lower.starts_with("wg")
+        || lower.starts_with("tun")
+        || lower.starts_with("tap")
+        || lower.starts_with("zt")
+}
+
+fn is_container_or_virtual_interface_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "docker0"
+        || lower.starts_with("br-")
+        || lower.starts_with("veth")
+        || lower.starts_with("virbr")
+        || lower.starts_with("cni")
+        || lower.starts_with("flannel")
+        || lower.starts_with("podman")
+        || lower.starts_with("vboxnet")
+        || lower.starts_with("vmnet")
 }
 
 #[cfg(target_os = "linux")]
@@ -394,8 +491,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::{
-        IpAddressShowRow, classify_network_node_status, is_loopback_address,
-        parse_linux_network_rows, preferred_local_ipv4, status_rank,
+        IpAddressShowRow, NetworkAddressSummary, NetworkNodeSummary,
+        classify_network_node_status, is_loopback_address, parse_linux_network_rows,
+        preferred_local_ipv4, status_rank,
     };
 
     #[test]
@@ -515,6 +613,45 @@ mod tests {
                 }],
             },
         ]);
+        assert_eq!(ip.as_deref(), Some("192.168.0.36"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn preferred_local_ipv4_ignores_container_bridges_when_lan_nic_exists() {
+        let ip = preferred_local_ipv4(&[
+            NetworkNodeSummary {
+                name: "br-76e2dd24505e".to_string(),
+                status: "online".to_string(),
+                is_loopback: false,
+                addresses: vec![NetworkAddressSummary {
+                    family: "inet".to_string(),
+                    address: "192.168.112.1".to_string(),
+                    scope: Some("global".to_string()),
+                }],
+            },
+            NetworkNodeSummary {
+                name: "tailscale0".to_string(),
+                status: "online".to_string(),
+                is_loopback: false,
+                addresses: vec![NetworkAddressSummary {
+                    family: "inet".to_string(),
+                    address: "100.123.146.3".to_string(),
+                    scope: Some("global".to_string()),
+                }],
+            },
+            NetworkNodeSummary {
+                name: "enp5s0".to_string(),
+                status: "online".to_string(),
+                is_loopback: false,
+                addresses: vec![NetworkAddressSummary {
+                    family: "inet".to_string(),
+                    address: "192.168.0.36".to_string(),
+                    scope: Some("global".to_string()),
+                }],
+            },
+        ]);
+
         assert_eq!(ip.as_deref(), Some("192.168.0.36"));
     }
 }

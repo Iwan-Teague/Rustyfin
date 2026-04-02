@@ -38,7 +38,6 @@ struct GroundedBirthdaySummary {
 #[derive(Debug, Deserialize)]
 struct GroundedNetworkEnvelope {
     host_label: Option<String>,
-    public_host: Option<String>,
     remote_access_enabled: bool,
     access: GroundedNetworkAccess,
     nodes: Vec<GroundedNetworkNode>,
@@ -49,6 +48,7 @@ struct GroundedNetworkAccess {
     ui_port: u16,
     backend_port: u16,
     calendar_port: u16,
+    preferred_local_interface: Option<String>,
     preferred_local_ipv4: Option<String>,
     preferred_local_url: Option<String>,
     login_url: Option<String>,
@@ -101,13 +101,9 @@ pub fn deterministic_network_reply(
     message: &str,
     grounding_blocks: &[AssistantToolContextBlock],
 ) -> Option<String> {
-    if grounding_blocks.len() != 1 {
-        return None;
-    }
-    let block = grounding_blocks.first()?;
-    if block.tool != "network_get_topology_summary" {
-        return None;
-    }
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "network_get_topology_summary")?;
 
     Some(if block.status == "ok" {
         format_network_reply(
@@ -199,24 +195,16 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
     let lower = message.to_ascii_lowercase();
     let local_connect_question = lower.contains("local network")
         || lower.contains("lan")
+        || lower.contains("another device")
+        || lower.contains("same network")
         || (lower.contains("connect") && lower.contains("rustyfin"))
+        || (lower.contains("what ip") && lower.contains("rustyfin"))
         || lower.contains("what ip would i use")
         || lower.contains("which ip would i use");
 
-    let preferred_local_url = envelope
-        .access
-        .preferred_local_url
-        .clone()
-        .or_else(|| envelope.access.public_url.clone());
-    let preferred_local_ip = envelope
-        .access
-        .preferred_local_ipv4
-        .clone()
-        .or_else(|| envelope.public_host.clone());
-
     if local_connect_question {
         let mut parts = Vec::new();
-        if let Some(url) = preferred_local_url {
+        if let Some(url) = envelope.access.preferred_local_url.clone() {
             parts.push(format!("On your local network, open Rustyfin at {url}."));
         } else {
             parts.push(format!(
@@ -224,8 +212,11 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
                 envelope.access.ui_port
             ));
         }
-        if let Some(ip) = preferred_local_ip {
+        if let Some(ip) = envelope.access.preferred_local_ipv4.clone() {
             parts.push(format!("The preferred local IP is {ip}."));
+        }
+        if let Some(interface) = envelope.access.preferred_local_interface.clone() {
+            parts.push(format!("The primary LAN interface is {interface}."));
         }
         if let Some(login_url) = envelope.access.login_url {
             parts.push(format!("Login page: {login_url}."));
@@ -245,10 +236,11 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
         return parts.join(" ");
     }
 
-    let interface_summary = envelope
+    let mut interface_summary = envelope
         .nodes
         .iter()
         .filter(|node| node.status == "online")
+        .filter(|node| is_notable_user_facing_interface(&node.name))
         .take(3)
         .map(|node| {
             let addresses = node
@@ -265,6 +257,28 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
             }
         })
         .collect::<Vec<_>>();
+    if interface_summary.is_empty() {
+        interface_summary = envelope
+            .nodes
+            .iter()
+            .filter(|node| node.status == "online")
+            .take(3)
+            .map(|node| {
+                let addresses = node
+                    .addresses
+                    .iter()
+                    .filter(|address| address.family == "inet")
+                    .map(|address| address.address.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if addresses.is_empty() {
+                    node.name.clone()
+                } else {
+                    format!("{} ({})", node.name, addresses)
+                }
+            })
+            .collect::<Vec<_>>();
+    }
 
     let host_label = envelope
         .host_label
@@ -273,6 +287,9 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
     let mut parts = vec![format!("Rustyfin network summary for {host_label}.")];
     if let Some(url) = envelope.access.preferred_local_url {
         parts.push(format!("Preferred local URL: {url}."));
+    }
+    if let Some(interface) = envelope.access.preferred_local_interface {
+        parts.push(format!("Primary LAN interface: {interface}."));
     }
     if let Some(public_url) = envelope.access.public_url {
         parts.push(format!("Configured public host URL: {public_url}."));
@@ -293,6 +310,17 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
         ));
     }
     parts.join(" ")
+}
+
+fn is_notable_user_facing_interface(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !(lower == "docker0"
+        || lower.starts_with("br-")
+        || lower.starts_with("veth")
+        || lower.starts_with("virbr")
+        || lower.starts_with("cni")
+        || lower.starts_with("flannel")
+        || lower.starts_with("podman"))
 }
 
 fn birthday_display_name(title: &str) -> String {
@@ -427,6 +455,7 @@ mod tests {
                         "ui_port": 3008,
                         "backend_port": 8097,
                         "calendar_port": 8099,
+                        "preferred_local_interface": "enp3s0",
                         "preferred_local_ipv4": "192.168.0.36",
                         "preferred_local_url": "https://192.168.0.36:3008",
                         "login_url": "https://192.168.0.36:3008/login",
@@ -449,7 +478,65 @@ mod tests {
 
         assert!(reply.contains("https://192.168.0.36:3008"));
         assert!(reply.contains("preferred local IP is 192.168.0.36"));
+        assert!(reply.contains("primary LAN interface is enp3s0"));
         assert!(reply.contains("port is 3008"));
         assert!(reply.contains("8097"));
+    }
+
+    #[test]
+    fn deterministic_network_reply_uses_network_block_even_with_extra_grounding() {
+        let reply = deterministic_network_reply(
+            "How do I connect to Rustyfin on this network from another device?",
+            &[
+                AssistantToolContextBlock {
+                    tool: "downloads_list_available_artifacts",
+                    label: "Available downloads".to_string(),
+                    status: "ok",
+                    data: json!({ "artifacts": [] }),
+                },
+                AssistantToolContextBlock {
+                    tool: "network_get_topology_summary",
+                    label: "Rustyfin network topology summary".to_string(),
+                    status: "ok",
+                    data: json!({
+                        "host_label": "server",
+                        "public_host": "example.rustyfin.local",
+                        "remote_access_enabled": false,
+                        "access": {
+                            "ui_port": 3008,
+                            "backend_port": 8097,
+                            "calendar_port": 8099,
+                            "preferred_local_interface": "enp5s0",
+                            "preferred_local_ipv4": "192.168.0.36",
+                            "preferred_local_url": "https://192.168.0.36:3008",
+                            "login_url": "https://192.168.0.36:3008/login",
+                            "ai_url": "https://192.168.0.36:3008/ai",
+                            "public_url": "https://example.rustyfin.local:3008"
+                        },
+                        "nodes": [
+                            {
+                                "name": "br-76e2dd24505e",
+                                "status": "online",
+                                "addresses": [
+                                    { "family": "inet", "address": "192.168.112.1" }
+                                ]
+                            },
+                            {
+                                "name": "enp5s0",
+                                "status": "online",
+                                "addresses": [
+                                    { "family": "inet", "address": "192.168.0.36" }
+                                ]
+                            }
+                        ]
+                    }),
+                },
+            ],
+        )
+        .expect("expected deterministic network reply");
+
+        assert!(reply.contains("https://192.168.0.36:3008"));
+        assert!(reply.contains("192.168.0.36"));
+        assert!(!reply.contains("192.168.112.1"));
     }
 }
