@@ -517,8 +517,22 @@ function PendingActionCard({
   );
 }
 
-function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
-  if (!runtime) return null;
+function RuntimePanel({
+  runtime,
+  className = '',
+  stacked = false,
+}: {
+  runtime: AiRuntimeResponse | null;
+  className?: string;
+  stacked?: boolean;
+}) {
+  if (!runtime) {
+    return (
+      <div className={className}>
+        <p className="text-sm muted">Loading runtime telemetry…</p>
+      </div>
+    );
+  }
   const configuredGpuCount = runtime.model.device_indices.length;
   const configuredDevices = runtimeDeviceSummary(runtime.model.device_indices);
   const gpuSummary =
@@ -529,8 +543,8 @@ function RuntimePanel({ runtime }: { runtime: AiRuntimeResponse | null }) {
         : 'CPU mode';
 
   return (
-    <div className="shrink-0 border-b border-[var(--border)] px-3 py-3 sm:px-5">
-      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+    <div className={className}>
+      <div className={stacked ? 'grid gap-2' : 'grid gap-2 md:grid-cols-2 xl:grid-cols-4'}>
         <div className="panel-soft rounded-2xl px-3 py-3">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Model</p>
           <p className="mt-1 text-sm font-semibold">
@@ -901,6 +915,7 @@ export default function AiPage() {
   const [conversationDetails, setConversationDetails] = useState<Record<string, UiConversationDetail>>({});
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -1093,15 +1108,21 @@ export default function AiPage() {
   ]);
 
   useEffect(() => {
-    if (!drawerOpen) return;
+    if (!drawerOpen && !runtimeDrawerOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDrawerOpen(false);
+        setRuntimeDrawerOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [drawerOpen]);
+  }, [drawerOpen, runtimeDrawerOpen]);
+
+  useEffect(() => {
+    if (inferenceAvailable === true && selectedModel) return;
+    setRuntimeDrawerOpen(false);
+  }, [inferenceAvailable, selectedModel]);
 
   useEffect(() => {
     return () => {
@@ -1763,6 +1784,7 @@ export default function AiPage() {
     : streamingElsewhere
       ? 'Active response in another chat'
       : null;
+  const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
 
   return (
     <>
@@ -1789,6 +1811,13 @@ export default function AiPage() {
           <div
             className="fixed inset-0 z-40 bg-black/60 sm:hidden"
             onClick={() => setDrawerOpen(false)}
+          />
+        ) : null}
+
+        {runtimeDrawerOpen ? (
+          <div
+            className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+            onClick={() => setRuntimeDrawerOpen(false)}
           />
         ) : null}
 
@@ -1824,6 +1853,32 @@ export default function AiPage() {
           </div>
         </div>
 
+        <div
+          className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden rounded-t-[1.75rem] border border-[var(--border)] bg-[rgba(10,14,24,0.97)] shadow-2xl transition-transform duration-200 lg:hidden ${
+            runtimeDrawerOpen ? 'translate-y-0' : 'translate-y-full pointer-events-none'
+          }`}
+        >
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+            <div>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                AI Runtime
+              </p>
+              <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRuntimeDrawerOpen(false)}
+              className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+              aria-label="Close runtime panel"
+            >
+              ×
+            </button>
+          </div>
+          <div className="overflow-y-auto p-4">
+            <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+          </div>
+        </div>
+
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]">
           <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--border)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
             <div className="flex min-w-0 items-center gap-3">
@@ -1850,6 +1905,15 @@ export default function AiPage() {
             </div>
 
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+              {showRuntimePanel ? (
+                <button
+                  type="button"
+                  onClick={() => setRuntimeDrawerOpen(true)}
+                  className="btn-ghost px-4 py-2 text-sm lg:hidden"
+                >
+                  Runtime
+                </button>
+              ) : null}
               {inferenceAvailable === true && models.length > 0 ? (
                 <ModelSelector
                   models={models}
@@ -1907,165 +1971,172 @@ export default function AiPage() {
             </div>
           ) : null}
 
-          {inferenceAvailable === true && selectedModel ? (
-            <RuntimePanel runtime={runtime} />
-          ) : null}
-
-          <div className="min-h-0 flex-1 overflow-hidden">
-            {serviceUnavailable ? (
-              <InferenceUnavailable
-                serviceUnavailable
-                showRecommendation={false}
-              />
-            ) : inferenceAvailable === false ? (
-              <InferenceUnavailable
-                title="AI unavailable on this host"
-                description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
-                showRecommendation={false}
-              />
-            ) : inferenceAvailable === null ? (
-              <div className="flex h-full items-center justify-center">
-                <span className="muted">Loading AI models…</span>
-              </div>
-            ) : !modelStorageAvailable ? (
-              <InferenceUnavailable
-                title="AI model storage is unavailable"
-                description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
-                showRecommendation={false}
-              />
-            ) : !selectedModel ? (
-              <InferenceUnavailable />
-            ) : activeConversationId && loadingConversationId === activeConversationId && !activeConversation ? (
-              <div className="flex h-full items-center justify-center">
-                <span className="muted">Loading conversation…</span>
-              </div>
-            ) : !activeConversation || activeConversation.messages.length === 0 ? (
-              <EmptyState
-                model={selectedModel}
-                isAdmin={me.role === 'admin'}
-                hasConversation={Boolean(activeConversation)}
-                onNewChat={() => {
-                  void handleNewChat();
-                }}
-                onSuggest={handleSuggestion}
-              />
-            ) : (
-              <div
-                ref={threadRef}
-                className="h-full overflow-y-auto px-3 py-4 sm:px-5 sm:py-5"
-              >
-                <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-                  {activeConversation.messages.map((message) => (
-                    <MessageBubble
-                      key={message.id}
-                      entry={message}
-                      onConfirmPendingAction={handleConfirmPendingAction}
-                      confirmingToken={confirmingToken}
-                      interactionDisabled={isStreaming}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(13,17,28,0.92)] px-3 py-3 sm:px-5">
-            <div className="mx-auto w-full max-w-4xl">
-              <div
-                className="panel-soft flex items-end gap-3 rounded-2xl border border-[var(--border)] px-3 py-3"
-                style={{ background: 'rgba(19,24,38,0.9)' }}
-              >
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  placeholder={placeholder}
-                  className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
-                  disabled={composerDisabled}
-                  rows={1}
-                />
-
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    onClick={handleStop}
-                    className="btn-secondary h-10 px-4 text-sm"
-                  >
-                    Stop
-                  </button>
+          <div className="min-h-0 flex flex-1 overflow-hidden">
+            <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {serviceUnavailable ? (
+                  <InferenceUnavailable
+                    serviceUnavailable
+                    showRecommendation={false}
+                  />
+                ) : inferenceAvailable === false ? (
+                  <InferenceUnavailable
+                    title="AI unavailable on this host"
+                    description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
+                    showRecommendation={false}
+                  />
+                ) : inferenceAvailable === null ? (
+                  <div className="flex h-full items-center justify-center">
+                    <span className="muted">Loading AI models…</span>
+                  </div>
+                ) : !modelStorageAvailable ? (
+                  <InferenceUnavailable
+                    title="AI model storage is unavailable"
+                    description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
+                    showRecommendation={false}
+                  />
+                ) : !selectedModel ? (
+                  <InferenceUnavailable />
+                ) : activeConversationId && loadingConversationId === activeConversationId && !activeConversation ? (
+                  <div className="flex h-full items-center justify-center">
+                    <span className="muted">Loading conversation…</span>
+                  </div>
+                ) : !activeConversation || activeConversation.messages.length === 0 ? (
+                  <EmptyState
+                    model={selectedModel}
+                    isAdmin={me.role === 'admin'}
+                    hasConversation={Boolean(activeConversation)}
+                    onNewChat={() => {
+                      void handleNewChat();
+                    }}
+                    onSuggest={handleSuggestion}
+                  />
                 ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (voiceState === 'recording') {
-                          stopVoiceInput();
-                        } else {
-                          void startVoiceInput();
-                        }
-                      }}
-                      className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={voiceControlDisabled}
-                      aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
-                    >
-                      <svg
-                        className="h-4 w-4"
-                        viewBox="0 0 24 24"
-                        fill={voiceState === 'recording' ? 'currentColor' : 'none'}
-                        stroke="currentColor"
-                        strokeWidth="1.9"
-                      >
-                        <rect x="9" y="3" width="6" height="12" rx="3" />
-                        <path d="M6 11a6 6 0 0 0 12 0" />
-                        <path d="M12 17v4" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void sendMessage();
-                      }}
-                      className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                      disabled={composerDisabled || !input.trim()}
-                      aria-label="Send message"
-                    >
-                      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-                        <path d="M5 12h12" />
-                        <path d="m13 6 6 6-6 6" />
-                      </svg>
-                    </button>
-                  </>
+                  <div
+                    ref={threadRef}
+                    className="h-full overflow-y-auto px-3 py-4 sm:px-5 sm:py-5"
+                  >
+                    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
+                      {activeConversation.messages.map((message) => (
+                        <MessageBubble
+                          key={message.id}
+                          entry={message}
+                          onConfirmPendingAction={handleConfirmPendingAction}
+                          confirmingToken={confirmingToken}
+                          interactionDisabled={isStreaming}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
 
-              {voiceError || voiceNotice || voiceState !== 'idle' ? (
-                <div className="mt-2 px-1 text-xs">
-                  {voiceError ? (
-                    <span className="text-[var(--danger)]">{voiceError}</span>
-                  ) : voiceNotice ? (
-                    <span className="text-[var(--orange-soft)]">{voiceNotice}</span>
-                  ) : (
-                    <span className="muted">
-                      {voiceState === 'recording'
-                        ? 'Listening…'
-                        : voiceState === 'stopping'
-                          ? 'Stopping…'
-                          : voiceState === 'transcribing'
-                            ? 'Transcribing…'
-                            : null}
-                    </span>
-                  )}
-                </div>
-              ) : null}
+              <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(13,17,28,0.92)] px-3 py-3 sm:px-5">
+                <div className="mx-auto w-full max-w-4xl">
+                  <div
+                    className="panel-soft flex items-end gap-3 rounded-2xl border border-[var(--border)] px-3 py-3"
+                    style={{ background: 'rgba(19,24,38,0.9)' }}
+                  >
+                    <textarea
+                      ref={textareaRef}
+                      value={input}
+                      onChange={handleInputChange}
+                      onKeyDown={handleKeyDown}
+                      placeholder={placeholder}
+                      className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                      disabled={composerDisabled}
+                      rows={1}
+                    />
 
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-[0.68rem] muted">
-                <span>
-                  Saved chats, voice input, confirmed calendar writes, and live runtime telemetry are available here.
-                </span>
-                <span>Press Ctrl/Command + Enter to send</span>
+                    {isStreaming ? (
+                      <button
+                        type="button"
+                        onClick={handleStop}
+                        className="btn-secondary h-10 px-4 text-sm"
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (voiceState === 'recording') {
+                              stopVoiceInput();
+                            } else {
+                              void startVoiceInput();
+                            }
+                          }}
+                          className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={voiceControlDisabled}
+                          aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                        >
+                          <svg
+                            className="h-4 w-4"
+                            viewBox="0 0 24 24"
+                            fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                            stroke="currentColor"
+                            strokeWidth="1.9"
+                          >
+                            <rect x="9" y="3" width="6" height="12" rx="3" />
+                            <path d="M6 11a6 6 0 0 0 12 0" />
+                            <path d="M12 17v4" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void sendMessage();
+                          }}
+                          className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={composerDisabled || !input.trim()}
+                          aria-label="Send message"
+                        >
+                          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
+                            <path d="M5 12h12" />
+                            <path d="m13 6 6 6-6 6" />
+                          </svg>
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  {voiceError || voiceNotice || voiceState !== 'idle' ? (
+                    <div className="mt-2 px-1 text-xs">
+                      {voiceError ? (
+                        <span className="text-[var(--danger)]">{voiceError}</span>
+                      ) : voiceNotice ? (
+                        <span className="text-[var(--orange-soft)]">{voiceNotice}</span>
+                      ) : (
+                        <span className="muted">
+                          {voiceState === 'recording'
+                            ? 'Listening…'
+                            : voiceState === 'stopping'
+                              ? 'Stopping…'
+                              : voiceState === 'transcribing'
+                                ? 'Transcribing…'
+                                : null}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
+
+            {showRuntimePanel ? (
+              <aside className="hidden lg:flex lg:w-[22rem] xl:w-[24rem] shrink-0 border-l border-[var(--border)] bg-[rgba(8,12,20,0.6)]">
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <div className="border-b border-[var(--border)] px-4 py-3">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                      AI Runtime
+                    </p>
+                    <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
+                  </div>
+                  <RuntimePanel runtime={runtime} className="p-4" stacked />
+                </div>
+              </aside>
+            ) : null}
           </div>
         </div>
       </div>
