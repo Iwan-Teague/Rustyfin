@@ -64,7 +64,7 @@ type ConversationStatsSummary = {
 
 type QueuedPromptMap = Record<string, string>;
 
-type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'ready' | 'error';
+type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
 
 type BrowserSpeechRecognitionResult = {
   isFinal: boolean;
@@ -1008,6 +1008,10 @@ export default function AiPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
   const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false);
+  const [compactViewport, setCompactViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  );
+  const [workspaceHeight, setWorkspaceHeight] = useState<number | null>(null);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
@@ -1026,7 +1030,6 @@ export default function AiPage() {
 
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
@@ -1037,6 +1040,7 @@ export default function AiPage() {
   const queuedPromptsRef = useRef<QueuedPromptMap>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -1073,6 +1077,20 @@ export default function AiPage() {
 
   const focusComposer = useCallback(() => {
     textareaRef.current?.focus();
+  }, []);
+
+  const measureWorkspace = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const isCompact = window.innerWidth < 768;
+    setCompactViewport(isCompact);
+    const node = workspaceRef.current;
+    if (!node) return;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const nextHeight = Math.max(
+      isCompact ? 480 : 608,
+      Math.round(viewportHeight - node.getBoundingClientRect().top),
+    );
+    setWorkspaceHeight((current) => (current === nextHeight ? current : nextHeight));
   }, []);
 
   const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
@@ -1253,6 +1271,24 @@ export default function AiPage() {
   }, [activeConversationId, loadConversationDetail, me]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleViewportChange = () => {
+      window.requestAnimationFrame(measureWorkspace);
+    };
+    handleViewportChange();
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('orientationchange', handleViewportChange);
+    window.visualViewport?.addEventListener('resize', handleViewportChange);
+    window.visualViewport?.addEventListener('scroll', handleViewportChange);
+    return () => {
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('orientationchange', handleViewportChange);
+      window.visualViewport?.removeEventListener('resize', handleViewportChange);
+      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+    };
+  }, [measureWorkspace]);
+
+  useEffect(() => {
     if (!autoStickToBottomRef.current) return;
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom('auto');
@@ -1342,9 +1378,8 @@ export default function AiPage() {
         return;
       }
       setInput(next);
-      setVoiceState('ready');
+      setVoiceState('idle');
       setVoiceError(null);
-      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
       requestAnimationFrame(() => {
         focusComposer();
         if (textareaRef.current) {
@@ -1369,9 +1404,6 @@ export default function AiPage() {
     const queuedConversationId = activeConversationIdRef.current;
     if (queuedConversationId && queuedConversationId in queuedPromptsRef.current) {
       upsertQueuedPrompt(queuedConversationId, nextValue);
-    }
-    if (voiceState === 'ready') {
-      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
     }
     event.target.style.height = 'auto';
     event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
@@ -1526,7 +1558,6 @@ export default function AiPage() {
     }
 
     setVoiceError(null);
-    setVoiceNotice(null);
 
     const SpeechRecognitionCtor =
       typeof window !== 'undefined'
@@ -1666,7 +1697,6 @@ export default function AiPage() {
       upsertQueuedPrompt(conversationIdOverride, text);
       setVoiceState('idle');
       setVoiceError(null);
-      setVoiceNotice('Queued follow-up ready. It will send automatically when this answer finishes.');
       return;
     }
     if (isStreaming) return;
@@ -1779,7 +1809,6 @@ export default function AiPage() {
       setDrawerOpen(false);
       setVoiceState('idle');
       setVoiceError(null);
-      setVoiceNotice(null);
 
       let completed = false;
       let latestAssistantContent = '';
@@ -2073,6 +2102,16 @@ export default function AiPage() {
   const desktopGridClass = showDesktopRuntimePanel
     ? 'md:grid-cols-[15rem_minmax(0,1fr)_16rem] lg:grid-cols-[17rem_minmax(0,1fr)_18rem] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]'
     : 'md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[17rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)]';
+  const workspaceShellHeight = workspaceHeight
+    ? `${workspaceHeight}px`
+    : 'calc(100dvh - 8.5rem)';
+  const workspaceShellStyle = compactViewport
+    ? { minHeight: workspaceShellHeight }
+    : {
+        minHeight: workspaceShellHeight,
+        height: workspaceShellHeight,
+        maxHeight: workspaceShellHeight,
+      };
 
   return (
     <>
@@ -2090,10 +2129,14 @@ export default function AiPage() {
         />
       ) : null}
 
-      <div className="animate-rise relative left-1/2 right-1/2 -mb-[var(--page-pad-bottom)] w-screen -translate-x-1/2">
+      <div
+        ref={workspaceRef}
+        className="animate-rise relative left-1/2 right-1/2 -mb-[var(--page-pad-bottom)] w-screen -translate-x-1/2"
+      >
         <div className="px-[var(--page-pad-inline)]">
           <div
-            className={`grid min-h-[calc(100dvh-8.5rem)] md:h-[calc(100dvh-8.5rem)] md:max-h-[calc(100dvh-8.5rem)] md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
+            className={`grid md:min-h-[38rem] md:overflow-hidden ${desktopGridClass}`}
+            style={workspaceShellStyle}
           >
             <div className="hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden md:border-r md:border-[var(--border)]">
               <div className="flex h-full min-h-0 flex-col">
@@ -2195,18 +2238,20 @@ export default function AiPage() {
                 </div>
               </div>
 
-              <section className="flex min-h-[calc(100dvh-8.5rem)] min-w-0 flex-1 flex-col md:min-h-0 md:h-full md:overflow-hidden">
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col md:h-full md:overflow-hidden">
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
                   <div className="flex flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4 md:flex-row md:items-center md:justify-between">
                     <div className="flex min-w-0 items-center gap-3">
-                      <button
-                        type="button"
-                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none md:hidden"
-                        onClick={() => setDrawerOpen(true)}
-                        aria-label="Open conversations"
-                      >
-                        ☰
-                      </button>
+                      {compactViewport ? (
+                        <button
+                          type="button"
+                          className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none"
+                          onClick={() => setDrawerOpen(true)}
+                          aria-label="Open conversations"
+                        >
+                          ☰
+                        </button>
+                      ) : null}
                       <div className="min-w-0">
                         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
                           <span className="accent-logo">AI</span>
@@ -2376,15 +2421,15 @@ export default function AiPage() {
                 </div>
 
                 <div className="sticky bottom-0 z-10 shrink-0 border-t border-[var(--border)] bg-[linear-gradient(180deg,rgba(36,43,60,0)_0%,rgba(36,43,60,0.7)_18%,rgba(36,43,60,0.94)_100%)] backdrop-blur-sm">
-                  <div className="w-full px-3 pb-0 pt-4 sm:px-5">
-                    <div className="flex items-end gap-3">
+                  <div className="w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-4 sm:px-5">
+                    <div className="flex min-h-[3.25rem] items-center gap-3">
                       <textarea
                         ref={textareaRef}
                         value={input}
                         onChange={handleInputChange}
                         onKeyDown={handleKeyDown}
                         placeholder={placeholder}
-                        className="ai-composer-textarea min-h-[2.8rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                        className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
                         disabled={composerDisabled}
                         rows={1}
                       />
@@ -2465,22 +2510,10 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    {voiceError || voiceNotice || voiceState !== 'idle' || queuedNotice ? (
+                    {voiceError || queuedNotice ? (
                       <div className="mt-2 space-y-1.5 px-1 text-xs">
                         {voiceError ? (
                           <div className="text-[var(--danger)]">{voiceError}</div>
-                        ) : voiceNotice ? (
-                          <div className="text-[var(--orange-soft)]">{voiceNotice}</div>
-                        ) : voiceState !== 'idle' ? (
-                          <div className="muted">
-                            {voiceState === 'recording'
-                              ? 'Listening…'
-                              : voiceState === 'stopping'
-                                ? 'Stopping…'
-                                : voiceState === 'transcribing'
-                                  ? 'Transcribing…'
-                                  : null}
-                          </div>
                         ) : null}
 
                         {queuedNotice ? (
