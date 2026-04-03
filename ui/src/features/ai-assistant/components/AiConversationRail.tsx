@@ -1,8 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
+import { type DragEvent, useEffect, useRef, useState } from 'react';
 
 import { type AiConversationSummary } from '@/lib/aiApi';
 
 const COLLAPSED_GROUPS_STORAGE_KEY = 'rustyfin-ai-collapsed-groups-v1';
+
+export type AiConversationDropTarget =
+  | {
+      kind: 'row';
+      archived: boolean;
+      targetConversationId: string;
+      groupName: string | null;
+      placement: 'before' | 'after';
+    }
+  | {
+      kind: 'group';
+      archived: boolean;
+      groupName: string;
+    }
+  | {
+      kind: 'section';
+      archived: boolean;
+    };
 
 type RailConversationItem = {
   conversation: AiConversationSummary;
@@ -41,6 +59,11 @@ function formatUpdated(updatedTs: number): string {
 function normalizedGroupName(value?: string | null): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+function rowDropPlacement(event: DragEvent<HTMLDivElement>): 'before' | 'after' {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
 }
 
 function buildRailEntries(
@@ -138,6 +161,8 @@ function ConversationRow({
   disabled,
   archiveLabel,
   indent = false,
+  isDragging,
+  dropPlacement,
   onSelect,
   onRename,
   onMoveToGroup,
@@ -145,12 +170,18 @@ function ConversationRow({
   onMoveDown,
   onArchive,
   onDelete,
+  onDragStart,
+  onDragEnd,
+  onDragOverRow,
+  onDropOnRow,
 }: {
   item: RailConversationItem;
   active: boolean;
   disabled: boolean;
   archiveLabel: string;
   indent?: boolean;
+  isDragging: boolean;
+  dropPlacement: 'before' | 'after' | null;
   onSelect: () => void;
   onRename: () => void;
   onMoveToGroup: () => void;
@@ -158,6 +189,14 @@ function ConversationRow({
   onMoveDown: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
+  onDragEnd: () => void;
+  onDragOverRow: (
+    event: DragEvent<HTMLDivElement>,
+    conversation: AiConversationSummary,
+    placement: 'before' | 'after',
+  ) => void;
+  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
 }) {
   const { conversation, canMoveUp, canMoveDown } = item;
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -182,8 +221,32 @@ function ConversationRow({
   return (
     <div
       data-ai-conversation-row-id={conversation.id}
-      className={`group relative ${indent ? 'pl-5' : ''}`}
+      draggable={!disabled}
+      onDragStart={(event) => onDragStart(event, conversation)}
+      onDragEnd={onDragEnd}
+      onDragOver={(event) =>
+        onDragOverRow(event, conversation, rowDropPlacement(event))
+      }
+      onDrop={(event) =>
+        onDropOnRow(event, {
+          kind: 'row',
+          archived: conversation.archived,
+          targetConversationId: conversation.id,
+          groupName: normalizedGroupName(conversation.group_name),
+          placement: rowDropPlacement(event),
+        })
+      }
+      className={`group relative ${indent ? 'pl-5' : ''} ${
+        isDragging ? 'opacity-45' : ''
+      }`}
     >
+      {dropPlacement ? (
+        <div
+          className={`pointer-events-none absolute left-1 right-1 z-10 h-px bg-[rgba(233,236,255,0.55)] ${
+            dropPlacement === 'before' ? 'top-0' : 'bottom-0'
+          }`}
+        />
+      ) : null}
       <div
         className={`flex items-center gap-1.5 rounded-[0.95rem] px-1 py-0.5 transition-colors ${
           active
@@ -195,7 +258,8 @@ function ConversationRow({
           type="button"
           onClick={onSelect}
           disabled={disabled}
-          className="min-w-0 flex-1 rounded-[0.8rem] px-2.5 py-1.5 text-left disabled:opacity-60"
+          draggable={false}
+          className="min-w-0 flex-1 cursor-grab rounded-[0.8rem] px-2.5 py-1.5 text-left active:cursor-grabbing disabled:opacity-60"
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 truncate text-[0.82rem] font-medium text-[var(--text-main)]">
@@ -212,6 +276,7 @@ function ConversationRow({
             type="button"
             onClick={() => setMenuOpen((current) => !current)}
             disabled={disabled}
+            draggable={false}
             className={`flex h-7 w-7 items-center justify-center rounded-full p-0 text-base leading-none transition-colors disabled:opacity-40 ${
               menuOpen
                 ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)]'
@@ -282,6 +347,9 @@ function GroupEntry({
   activeConversationId,
   collapsed,
   disabled,
+  dropActive,
+  draggedConversationId,
+  rowDropTarget,
   onToggle,
   onSelect,
   onRename,
@@ -290,11 +358,20 @@ function GroupEntry({
   onMoveDown,
   onArchiveToggle,
   onDelete,
+  onDragStart,
+  onDragEnd,
+  onDragOverRow,
+  onDropOnRow,
+  onDragOverGroup,
+  onDropOnGroup,
 }: {
   entry: Extract<RailEntry, { kind: 'group' }>;
   activeConversationId: string | null;
   collapsed: boolean;
   disabled: boolean;
+  dropActive: boolean;
+  draggedConversationId: string | null;
+  rowDropTarget: Extract<AiConversationDropTarget, { kind: 'row' }> | null;
   onToggle: () => void;
   onSelect: (conversationId: string) => void;
   onRename: (conversation: AiConversationSummary) => void;
@@ -303,13 +380,33 @@ function GroupEntry({
   onMoveDown: (conversation: AiConversationSummary) => void;
   onArchiveToggle: (conversation: AiConversationSummary) => void;
   onDelete: (conversation: AiConversationSummary) => void;
+  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
+  onDragEnd: () => void;
+  onDragOverRow: (
+    event: DragEvent<HTMLDivElement>,
+    conversation: AiConversationSummary,
+    placement: 'before' | 'after',
+  ) => void;
+  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
+  onDragOverGroup: (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => void;
+  onDropOnGroup: (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => void;
 }) {
   return (
     <div className="space-y-1">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded-[0.95rem] px-2 py-1.5 text-left transition-colors hover:bg-[rgba(255,255,255,0.03)]"
+        onDragOver={(event) => onDragOverGroup(event, entry)}
+        onDrop={(event) => onDropOnGroup(event, entry)}
+        className={`flex w-full items-center gap-2 rounded-[0.95rem] px-2 py-1.5 text-left transition-colors hover:bg-[rgba(255,255,255,0.03)] ${
+          dropActive ? 'bg-[rgba(233,236,255,0.08)]' : ''
+        }`}
         aria-expanded={!collapsed}
       >
         <span className="shrink-0 text-[var(--text-muted)]">
@@ -333,6 +430,12 @@ function GroupEntry({
               disabled={disabled}
               archiveLabel={entry.archived ? 'Restore' : 'Archive'}
               indent
+              isDragging={draggedConversationId === item.conversation.id}
+              dropPlacement={
+                rowDropTarget?.targetConversationId === item.conversation.id
+                  ? rowDropTarget.placement
+                  : null
+              }
               onSelect={() => onSelect(item.conversation.id)}
               onRename={() => onRename(item.conversation)}
               onMoveToGroup={() => onMoveToGroup(item.conversation)}
@@ -340,6 +443,10 @@ function GroupEntry({
               onMoveDown={() => onMoveDown(item.conversation)}
               onArchive={() => onArchiveToggle(item.conversation)}
               onDelete={() => onDelete(item.conversation)}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onDragOverRow={onDragOverRow}
+              onDropOnRow={onDropOnRow}
             />
           ))}
         </div>
@@ -350,10 +457,15 @@ function GroupEntry({
 
 function RailSection({
   title,
+  archived,
   entries,
   activeConversationId,
   disabled,
   collapsedGroups,
+  sectionDropActive,
+  draggedConversationId,
+  groupDropTarget,
+  rowDropTarget,
   onToggleGroup,
   onSelect,
   onRename,
@@ -362,12 +474,25 @@ function RailSection({
   onMoveDown,
   onArchiveToggle,
   onDelete,
+  onDragStart,
+  onDragEnd,
+  onDragOverRow,
+  onDropOnRow,
+  onDragOverGroup,
+  onDropOnGroup,
+  onDragOverSection,
+  onDropOnSection,
 }: {
   title: string;
+  archived: boolean;
   entries: RailEntry[];
   activeConversationId: string | null;
   disabled: boolean;
   collapsedGroups: Record<string, boolean>;
+  sectionDropActive: boolean;
+  draggedConversationId: string | null;
+  groupDropTarget: Extract<AiConversationDropTarget, { kind: 'group' }> | null;
+  rowDropTarget: Extract<AiConversationDropTarget, { kind: 'row' }> | null;
   onToggleGroup: (groupId: string) => void;
   onSelect: (conversationId: string) => void;
   onRename: (conversation: AiConversationSummary) => void;
@@ -376,12 +501,36 @@ function RailSection({
   onMoveDown: (conversation: AiConversationSummary) => void;
   onArchiveToggle: (conversation: AiConversationSummary) => void;
   onDelete: (conversation: AiConversationSummary) => void;
+  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
+  onDragEnd: () => void;
+  onDragOverRow: (
+    event: DragEvent<HTMLDivElement>,
+    conversation: AiConversationSummary,
+    placement: 'before' | 'after',
+  ) => void;
+  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
+  onDragOverGroup: (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => void;
+  onDropOnGroup: (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => void;
+  onDragOverSection: (event: DragEvent<HTMLDivElement>, archived: boolean) => void;
+  onDropOnSection: (event: DragEvent<HTMLDivElement>, archived: boolean) => void;
 }) {
   if (entries.length === 0) return null;
 
   return (
     <section className="space-y-2">
-      <div className="px-2 text-[0.74rem] font-semibold text-[var(--text-muted)]">
+      <div
+        onDragOver={(event) => onDragOverSection(event, archived)}
+        onDrop={(event) => onDropOnSection(event, archived)}
+        className={`rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)] transition-colors ${
+          sectionDropActive ? 'bg-[rgba(233,236,255,0.08)] text-[var(--text-main)]' : ''
+        }`}
+      >
         {title}
       </div>
       <div className="space-y-1">
@@ -393,6 +542,14 @@ function RailSection({
               activeConversationId={activeConversationId}
               collapsed={Boolean(collapsedGroups[entry.id])}
               disabled={disabled}
+              dropActive={Boolean(
+                !sectionDropActive &&
+                  groupDropTarget &&
+                  groupDropTarget.archived === entry.archived &&
+                  groupDropTarget.groupName === entry.title,
+              )}
+              draggedConversationId={draggedConversationId}
+              rowDropTarget={rowDropTarget}
               onToggle={() => onToggleGroup(entry.id)}
               onSelect={onSelect}
               onRename={onRename}
@@ -401,6 +558,12 @@ function RailSection({
               onMoveDown={onMoveDown}
               onArchiveToggle={onArchiveToggle}
               onDelete={onDelete}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onDragOverRow={onDragOverRow}
+              onDropOnRow={onDropOnRow}
+              onDragOverGroup={onDragOverGroup}
+              onDropOnGroup={onDropOnGroup}
             />
           ) : (
             <ConversationRow
@@ -409,6 +572,12 @@ function RailSection({
               active={entry.item.conversation.id === activeConversationId}
               disabled={disabled}
               archiveLabel={entry.item.conversation.archived ? 'Restore' : 'Archive'}
+              isDragging={draggedConversationId === entry.item.conversation.id}
+              dropPlacement={
+                rowDropTarget?.targetConversationId === entry.item.conversation.id
+                  ? rowDropTarget.placement
+                  : null
+              }
               onSelect={() => onSelect(entry.item.conversation.id)}
               onRename={() => onRename(entry.item.conversation)}
               onMoveToGroup={() => onMoveToGroup(entry.item.conversation)}
@@ -416,6 +585,10 @@ function RailSection({
               onMoveDown={() => onMoveDown(entry.item.conversation)}
               onArchive={() => onArchiveToggle(entry.item.conversation)}
               onDelete={() => onDelete(entry.item.conversation)}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onDragOverRow={onDragOverRow}
+              onDropOnRow={onDropOnRow}
             />
           ),
         )}
@@ -438,6 +611,7 @@ export default function AiConversationRail({
   onMoveDown,
   onArchiveToggle,
   onDelete,
+  onDropConversation,
 }: {
   conversations: AiConversationSummary[];
   archivedConversations: AiConversationSummary[];
@@ -452,6 +626,10 @@ export default function AiConversationRail({
   onMoveDown: (conversation: AiConversationSummary) => void;
   onArchiveToggle: (conversation: AiConversationSummary) => void;
   onDelete: (conversation: AiConversationSummary) => void;
+  onDropConversation: (
+    conversationId: string,
+    target: AiConversationDropTarget,
+  ) => void;
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
     if (typeof window === 'undefined') {
@@ -468,6 +646,8 @@ export default function AiConversationRail({
       return {};
     }
   });
+  const [draggedConversationId, setDraggedConversationId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<AiConversationDropTarget | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -479,6 +659,15 @@ export default function AiConversationRail({
 
   const liveEntries = buildRailEntries(conversations, false);
   const archivedEntries = buildRailEntries(archivedConversations, true);
+  const allConversations = [...conversations, ...archivedConversations];
+  const draggedConversation = draggedConversationId
+    ? allConversations.find((conversation) => conversation.id === draggedConversationId) ?? null
+    : null;
+
+  const clearDragState = () => {
+    setDraggedConversationId(null);
+    setDropTarget(null);
+  };
 
   const toggleGroup = (groupId: string) => {
     setCollapsedGroups((current) => ({
@@ -486,6 +675,136 @@ export default function AiConversationRail({
       [groupId]: !current[groupId],
     }));
   };
+
+  const handleConversationDragStart = (
+    event: DragEvent<HTMLDivElement>,
+    conversation: AiConversationSummary,
+  ) => {
+    if (disabled) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', conversation.id);
+    setDraggedConversationId(conversation.id);
+    setDropTarget(null);
+  };
+
+  const handleConversationDragEnd = () => {
+    clearDragState();
+  };
+
+  const handleDragOverRow = (
+    event: DragEvent<HTMLDivElement>,
+    conversation: AiConversationSummary,
+    placement: 'before' | 'after',
+  ) => {
+    if (!draggedConversation || draggedConversation.id === conversation.id) return;
+    if (draggedConversation.archived !== conversation.archived) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTarget({
+      kind: 'row',
+      archived: conversation.archived,
+      targetConversationId: conversation.id,
+      groupName: normalizedGroupName(conversation.group_name),
+      placement,
+    });
+  };
+
+  const handleDropOnRow = (
+    event: DragEvent<HTMLDivElement>,
+    target: AiConversationDropTarget,
+  ) => {
+    event.preventDefault();
+    if (!draggedConversationId || !draggedConversation) {
+      clearDragState();
+      return;
+    }
+    if (target.kind !== 'row' || draggedConversationId === target.targetConversationId) {
+      clearDragState();
+      return;
+    }
+    if (draggedConversation.archived !== target.archived) {
+      clearDragState();
+      return;
+    }
+    onDropConversation(draggedConversationId, target);
+    clearDragState();
+  };
+
+  const handleDragOverGroup = (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => {
+    if (!draggedConversation || draggedConversation.archived !== entry.archived) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTarget({
+      kind: 'group',
+      archived: entry.archived,
+      groupName: entry.title,
+    });
+  };
+
+  const handleDropOnGroup = (
+    event: DragEvent<HTMLButtonElement>,
+    entry: Extract<RailEntry, { kind: 'group' }>,
+  ) => {
+    event.preventDefault();
+    if (!draggedConversationId || !draggedConversation) {
+      clearDragState();
+      return;
+    }
+    if (draggedConversation.archived !== entry.archived) {
+      clearDragState();
+      return;
+    }
+    onDropConversation(draggedConversationId, {
+      kind: 'group',
+      archived: entry.archived,
+      groupName: entry.title,
+    });
+    clearDragState();
+  };
+
+  const handleDragOverSection = (
+    event: DragEvent<HTMLDivElement>,
+    archived: boolean,
+  ) => {
+    if (!draggedConversation || draggedConversation.archived !== archived) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTarget({
+      kind: 'section',
+      archived,
+    });
+  };
+
+  const handleDropOnSection = (
+    event: DragEvent<HTMLDivElement>,
+    archived: boolean,
+  ) => {
+    event.preventDefault();
+    if (!draggedConversationId || !draggedConversation) {
+      clearDragState();
+      return;
+    }
+    if (draggedConversation.archived !== archived) {
+      clearDragState();
+      return;
+    }
+    onDropConversation(draggedConversationId, {
+      kind: 'section',
+      archived,
+    });
+    clearDragState();
+  };
+
+  const activeRowDropTarget =
+    dropTarget?.kind === 'row' ? dropTarget : null;
+  const activeGroupDropTarget =
+    dropTarget?.kind === 'group' ? dropTarget : null;
 
   return (
     <aside
@@ -511,10 +830,15 @@ export default function AiConversationRail({
           <div className="space-y-5">
             <RailSection
               title="Threads"
+              archived={false}
               entries={liveEntries}
               activeConversationId={activeConversationId}
               disabled={disabled}
               collapsedGroups={collapsedGroups}
+              sectionDropActive={dropTarget?.kind === 'section' && !dropTarget.archived}
+              draggedConversationId={draggedConversationId}
+              groupDropTarget={activeGroupDropTarget}
+              rowDropTarget={activeRowDropTarget}
               onToggleGroup={toggleGroup}
               onSelect={onSelect}
               onRename={onRename}
@@ -523,13 +847,26 @@ export default function AiConversationRail({
               onMoveDown={onMoveDown}
               onArchiveToggle={onArchiveToggle}
               onDelete={onDelete}
+              onDragStart={handleConversationDragStart}
+              onDragEnd={handleConversationDragEnd}
+              onDragOverRow={handleDragOverRow}
+              onDropOnRow={handleDropOnRow}
+              onDragOverGroup={handleDragOverGroup}
+              onDropOnGroup={handleDropOnGroup}
+              onDragOverSection={handleDragOverSection}
+              onDropOnSection={handleDropOnSection}
             />
             <RailSection
               title="Archived"
+              archived
               entries={archivedEntries}
               activeConversationId={activeConversationId}
               disabled={disabled}
               collapsedGroups={collapsedGroups}
+              sectionDropActive={dropTarget?.kind === 'section' && dropTarget.archived}
+              draggedConversationId={draggedConversationId}
+              groupDropTarget={activeGroupDropTarget}
+              rowDropTarget={activeRowDropTarget}
               onToggleGroup={toggleGroup}
               onSelect={onSelect}
               onRename={onRename}
@@ -538,6 +875,14 @@ export default function AiConversationRail({
               onMoveDown={onMoveDown}
               onArchiveToggle={onArchiveToggle}
               onDelete={onDelete}
+              onDragStart={handleConversationDragStart}
+              onDragEnd={handleConversationDragEnd}
+              onDragOverRow={handleDragOverRow}
+              onDropOnRow={handleDropOnRow}
+              onDragOverGroup={handleDragOverGroup}
+              onDropOnGroup={handleDropOnGroup}
+              onDragOverSection={handleDragOverSection}
+              onDropOnSection={handleDropOnSection}
             />
           </div>
         )}

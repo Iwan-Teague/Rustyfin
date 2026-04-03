@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 
 import ConfirmModal from '@/app/components/ConfirmModal';
 import AiAssistantActivity from '@/features/ai-assistant/components/AiAssistantActivity';
-import AiConversationRail from '@/features/ai-assistant/components/AiConversationRail';
+import AiConversationRail, {
+  type AiConversationDropTarget,
+} from '@/features/ai-assistant/components/AiConversationRail';
 import { useAuth } from '@/lib/auth';
 import {
   type AiActivityTraceItem,
@@ -163,6 +165,161 @@ function chooseConversationId(
   }
   const preferredVisible = conversations.find((conversation) => !conversation.archived);
   return preferredVisible?.id ?? conversations[0]?.id ?? null;
+}
+
+function normalizedConversationGroupName(value?: string | null): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+type ConversationReorderUpdate = {
+  id: string;
+  group_name: string | null;
+  sort_order: number;
+};
+
+function buildConversationReorderUpdates(
+  conversations: AiConversationSummary[],
+  draggedConversationId: string,
+  target: AiConversationDropTarget,
+): ConversationReorderUpdate[] {
+  const draggedConversation = conversations.find(
+    (conversation) => conversation.id === draggedConversationId,
+  );
+  if (!draggedConversation || draggedConversation.archived !== target.archived) {
+    return [];
+  }
+
+  const bucket = sortConversationSummaries(
+    conversations.filter(
+      (conversation) => conversation.archived === draggedConversation.archived,
+    ),
+  );
+  const remaining = bucket.filter((conversation) => conversation.id !== draggedConversationId);
+
+  const targetGroupName =
+    target.kind === 'section'
+      ? null
+      : normalizedConversationGroupName(target.groupName);
+
+  let insertIndex = 0;
+  if (target.kind === 'row') {
+    const targetIndex = remaining.findIndex(
+      (conversation) => conversation.id === target.targetConversationId,
+    );
+    if (targetIndex < 0) {
+      return [];
+    }
+    insertIndex = targetIndex + (target.placement === 'after' ? 1 : 0);
+  } else if (target.kind === 'group') {
+    const firstGroupIndex = remaining.findIndex(
+      (conversation) =>
+        normalizedConversationGroupName(conversation.group_name) === targetGroupName,
+    );
+    insertIndex = firstGroupIndex >= 0 ? firstGroupIndex : remaining.length;
+  } else {
+    insertIndex = 0;
+  }
+
+  const reorderedBucket = [...remaining];
+  reorderedBucket.splice(insertIndex, 0, {
+    ...draggedConversation,
+    group_name: targetGroupName,
+  });
+
+  const orderUnchanged =
+    bucket.length === reorderedBucket.length &&
+    bucket.every((conversation, index) => conversation.id === reorderedBucket[index]?.id);
+  if (
+    orderUnchanged &&
+    normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+  ) {
+    return [];
+  }
+
+  const above = insertIndex > 0 ? reorderedBucket[insertIndex - 1] : null;
+  const below =
+    insertIndex + 1 < reorderedBucket.length ? reorderedBucket[insertIndex + 1] : null;
+
+  if (above && below) {
+    const aboveSort = above.sort_order ?? 0;
+    const belowSort = below.sort_order ?? 0;
+    const gap = aboveSort - belowSort;
+    if (gap > 1) {
+      const sortOrder = belowSort + Math.floor(gap / 2);
+      if (
+        (draggedConversation.sort_order ?? 0) === sortOrder &&
+        normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: draggedConversation.id,
+          group_name: targetGroupName,
+          sort_order: sortOrder,
+        },
+      ];
+    }
+  } else if (above) {
+    const sortOrder = (above.sort_order ?? 0) - 1024;
+    if (
+      (draggedConversation.sort_order ?? 0) === sortOrder &&
+      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: sortOrder,
+      },
+    ];
+  } else if (below) {
+    const sortOrder = (below.sort_order ?? 0) + 1024;
+    if (
+      (draggedConversation.sort_order ?? 0) === sortOrder &&
+      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: sortOrder,
+      },
+    ];
+  } else if (
+    (draggedConversation.sort_order ?? 0) !== 1024 ||
+    normalizedConversationGroupName(draggedConversation.group_name) !== targetGroupName
+  ) {
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: 1024,
+      },
+    ];
+  }
+
+  return reorderedBucket
+    .map((conversation, index) => ({
+      id: conversation.id,
+      group_name:
+        conversation.id === draggedConversation.id
+          ? targetGroupName
+          : normalizedConversationGroupName(conversation.group_name),
+      sort_order: (reorderedBucket.length - index) * 1024,
+    }))
+    .filter((update) => {
+      const current = conversations.find((conversation) => conversation.id === update.id);
+      return (
+        (current?.sort_order ?? 0) !== update.sort_order ||
+        normalizedConversationGroupName(current?.group_name) !== update.group_name
+      );
+    });
 }
 
 function buildConversationSummary(
@@ -1942,6 +2099,45 @@ export default function AiPage() {
     [loadConversationList],
   );
 
+  const handleDropConversation = useCallback(
+    async (conversationId: string, target: AiConversationDropTarget) => {
+      const updates = buildConversationReorderUpdates(conversations, conversationId, target);
+      if (updates.length === 0) {
+        return;
+      }
+
+      setConversationsLoading(true);
+      try {
+        setConversationError('');
+        const details: AiConversationDetail[] = [];
+        for (const update of updates) {
+          const detail = await updateConversation(update.id, {
+            group_name: update.group_name,
+            sort_order: update.sort_order,
+          });
+          details.push(detail);
+        }
+        for (const detail of details) {
+          storeConversationDetail(detail);
+        }
+        const nextConversations = sortConversationSummaries(
+          await listConversations(true),
+        );
+        setConversations(nextConversations);
+        setActiveConversationId((current) =>
+          chooseConversationId(nextConversations, activeConversationIdRef.current ?? current),
+        );
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to reorder this conversation.'),
+        );
+      } finally {
+        setConversationsLoading(false);
+      }
+    },
+    [conversations, storeConversationDetail],
+  );
+
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
       return;
@@ -2546,6 +2742,9 @@ export default function AiPage() {
                 void handleArchiveToggle(conversation);
               }}
               onDelete={handleDeleteConversation}
+              onDropConversation={(conversationId, target) => {
+                void handleDropConversation(conversationId, target);
+              }}
             />
           </div>
         </div>
@@ -2628,6 +2827,9 @@ export default function AiPage() {
                       void handleArchiveToggle(conversation);
                     }}
                     onDelete={handleDeleteConversation}
+                    onDropConversation={(conversationId, target) => {
+                      void handleDropConversation(conversationId, target);
+                    }}
                   />
                 </div>
               </div>
