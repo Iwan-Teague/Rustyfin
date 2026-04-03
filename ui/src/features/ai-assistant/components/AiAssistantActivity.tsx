@@ -4,6 +4,18 @@ function phaseDetailLabel(phase: 'planning' | 'generating'): string {
   return phase === 'planning' ? 'Planning response' : 'Generating answer';
 }
 
+function formatThoughtDurationSeconds(
+  startedTsMs: number,
+  finishedTsMs?: number | null,
+): string | undefined {
+  if (!finishedTsMs || finishedTsMs <= startedTsMs) {
+    return undefined;
+  }
+
+  const durationSeconds = Math.max(1, Math.round((finishedTsMs - startedTsMs) / 1000));
+  return `${durationSeconds}s`;
+}
+
 type ActivityRow = {
   key: string;
   primary: string;
@@ -21,11 +33,17 @@ export default function AiAssistantActivity({
 }) {
   const rows: ActivityRow[] = activityTrace.map((item) => {
     if (item.kind === 'phase') {
+      const durationLabel = formatThoughtDurationSeconds(
+        item.started_ts_ms,
+        item.finished_ts_ms,
+      );
+      const isComplete = Boolean(item.finished_ts_ms);
       return {
         key: `phase-${item.phase}-${item.started_ts_ms}`,
-        primary: item.label?.trim() || phaseDetailLabel(item.phase),
-        state: item.finished_ts_ms ? 'complete' : 'running',
-        active: !item.finished_ts_ms,
+        primary: isComplete ? 'Thoughts' : item.label?.trim() || phaseDetailLabel(item.phase),
+        meta: isComplete ? durationLabel : undefined,
+        state: isComplete ? 'complete' : 'running',
+        active: !isComplete,
       };
     }
 
@@ -61,10 +79,14 @@ export default function AiAssistantActivity({
           data-state={row.state}
         >
           <div className="ai-activity-line">
-            <span className="ai-activity-primary">{row.primary}</span>
+            <span
+              className="ai-activity-primary"
+              data-active={row.active ? 'true' : 'false'}
+            >
+              {row.primary}
+            </span>
             {row.meta ? <span className="ai-activity-meta">{row.meta}</span> : null}
           </div>
-          {row.active ? <span className="ai-activity-shimmer" aria-hidden="true" /> : null}
         </div>
       ))}
     </div>
