@@ -2519,16 +2519,12 @@ export default function AiPage() {
                         ☰
                       </button>
                       <div className="min-w-0">
-                        <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                          <span className="accent-logo">AI</span>
-                          <span className="text-base font-normal text-[var(--text-muted)]">
-                            Assistant
-                          </span>
-                        </h1>
-                        <p className="truncate text-xs muted">
+                        <h1 className="truncate text-base font-semibold tracking-tight text-[var(--text-main)] sm:text-lg">
                           {headerSubtitle}
-                          {headerStatus ? ` · ${headerStatus}` : ''}
-                        </p>
+                        </h1>
+                        {headerStatus ? (
+                          <p className="mt-0.5 truncate text-xs muted">{headerStatus}</p>
+                        ) : null}
                       </div>
                     </div>
 
@@ -2547,22 +2543,6 @@ export default function AiPage() {
                           className="btn-ghost px-4 py-2 text-sm"
                         >
                           {desktopRuntimeOpen ? 'Hide runtime' : 'Runtime'}
-                        </button>
-                      ) : null}
-                      {activeConversation?.archived ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const summary = conversations.find(
-                              (conversation) => conversation.id === activeConversation.id,
-                            );
-                            if (summary) {
-                              void handleArchiveToggle(summary);
-                            }
-                          }}
-                          className="btn-primary px-4 py-2 text-sm sm:inline-flex"
-                        >
-                          Restore
                         </button>
                       ) : null}
                     </div>
@@ -2683,10 +2663,6 @@ export default function AiPage() {
                       </div>
                     )}
                     <div
-                      aria-hidden="true"
-                      className="ai-message-bottom-mask sticky bottom-0 -mt-5 h-5 w-full"
-                    />
-                    <div
                       ref={messageEndRef}
                       aria-hidden="true"
                       className="h-px w-full"
@@ -2767,7 +2743,7 @@ export default function AiPage() {
                         />
                       </div>
 
-                      <div className="flex min-h-[3.25rem] items-center gap-3">
+                      <div className="flex min-h-[3.25rem] items-start gap-3">
                         <textarea
                           ref={textareaRef}
                           value={input}
@@ -2779,7 +2755,7 @@ export default function AiPage() {
                           rows={1}
                         />
 
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div className="flex shrink-0 items-center gap-2 pt-1">
                           {isStreaming ? (
                             <>
                               {canQueueActiveConversation ? (
