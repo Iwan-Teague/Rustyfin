@@ -97,10 +97,12 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
         && calls.iter().all(|call| {
             matches!(
                 call.tool,
-                AssistantToolName::WeatherGetCurrent
+                AssistantToolName::CalendarListEvents
+                    | AssistantToolName::WeatherGetCurrent
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::SystemGetCurrentDateTime
+                    | AssistantToolName::SystemGetHostRuntimeSummary
                     | AssistantToolName::NetworkGetTopologySummary
                     | AssistantToolName::CalendarGetNextEvent
                     | AssistantToolName::CalendarUpcomingBirthdays
@@ -253,7 +255,7 @@ Rules:\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
 - Use system_get_current_datetime for current date/time questions, including named locations like Italy or France, or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
-- Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
+- Use system_get_host_runtime_summary only for host/runtime resource questions or explicit AI runtime status questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
 - Use system_get_transcode_summary for transcoding, ffmpeg, hardware acceleration, or transcode-failure questions.\n\
@@ -558,6 +560,7 @@ fn normalize_model_tool_input(
     response: &ModelPlannerTool,
     message: &str,
 ) -> Option<AssistantToolInput> {
+    let lower = message.to_ascii_lowercase();
     match tool {
         AssistantToolName::CalendarCreateEvent
         | AssistantToolName::CalendarCreateBirthday
@@ -572,8 +575,16 @@ fn normalize_model_tool_input(
         | AssistantToolName::SystemGetServiceHealth
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
-        | AssistantToolName::SystemGetRecentErrors => Some(AssistantToolInput::None),
+        | AssistantToolName::SystemGetRecentErrors => {
+            inputless_model_tool_matches_message(tool, message).then_some(AssistantToolInput::None)
+        }
         AssistantToolName::SystemGetCurrentDateTime => {
+            if !is_current_datetime_query(&lower)
+                && !message_has_current_datetime_follow_up_hint(message)
+                && !message_has_current_datetime_tool_follow_up_hint(message)
+            {
+                return None;
+            }
             Some(extract_current_datetime_input(message))
         }
         AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7, None)),
@@ -675,6 +686,46 @@ fn normalize_model_tool_input(
                     .or_else(|| extract_server_availability(message)),
             })
         }
+    }
+}
+
+fn inputless_model_tool_matches_message(tool: AssistantToolName, message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    match tool {
+        AssistantToolName::AccountGetProfileSummary => has_any(
+            &lower,
+            &[
+                "who am i",
+                "my account",
+                "my profile",
+                "what can i access",
+                "what is my role",
+            ],
+        ),
+        AssistantToolName::LibrariesListAccessible => {
+            extract_library_search_query(message).is_none()
+                && !is_recent_library_query(&lower)
+                && has_any(
+                    &lower,
+                    &[
+                        "library",
+                        "libraries",
+                        "media library",
+                        "media libraries",
+                        "what media",
+                        "what libraries",
+                    ],
+                )
+        }
+        AssistantToolName::NetworkGetTopologySummary => is_network_query(&lower),
+        AssistantToolName::CalendarGetNextEvent => is_next_calendar_event_query(&lower),
+        AssistantToolName::SystemGetHostRuntimeSummary => is_host_runtime_query(&lower),
+        AssistantToolName::SystemGetBackupSummary => is_backup_query(&lower),
+        AssistantToolName::SystemGetServiceHealth => is_service_health_query(&lower),
+        AssistantToolName::SystemGetTranscodeSummary => is_transcode_query(&lower),
+        AssistantToolName::SystemGetStorageSummary => is_storage_query(&lower),
+        AssistantToolName::SystemGetRecentErrors => is_recent_errors_query(&lower),
+        _ => false,
     }
 }
 
@@ -3414,9 +3465,15 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "host stats",
             "system stats",
             "runtime stats",
+            "runtime status",
             "runtime diagnostics",
             "server stats",
             "server diagnostics",
+            "ai runtime",
+            "assistant runtime",
+            "model runtime",
+            "ai status",
+            "assistant status",
         ],
     );
     let resource_keywords = has_any(
@@ -3427,7 +3484,6 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "swap",
             "cpu",
             "load average",
-            "load",
             "uptime",
             "thread",
             "threads",
@@ -3436,11 +3492,12 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "utilization",
             "usage",
         ],
-    );
+    ) || has_standalone_phrase(message_lower, &["load"]);
     let host_scope = has_any(
         message_lower,
         &["host", "system", "server", "machine", "rustyfin"],
     );
+    let ai_scope = has_any(message_lower, &["ai", "assistant", "model"]);
     let standalone_host_usage = has_any(
         message_lower,
         &[
@@ -3453,7 +3510,9 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
         ],
     );
 
-    explicit_host_stats || (resource_keywords && (host_scope || standalone_host_usage))
+    explicit_host_stats
+        || ((message_lower.contains("runtime") || message_lower.contains("status")) && ai_scope)
+        || (resource_keywords && (host_scope || standalone_host_usage || ai_scope))
 }
 
 fn is_backup_query(message_lower: &str) -> bool {
@@ -3525,6 +3584,10 @@ fn is_storage_query(message_lower: &str) -> bool {
 }
 
 fn is_current_datetime_query(message_lower: &str) -> bool {
+    if is_geographic_distance_query(message_lower) {
+        return false;
+    }
+
     let simple_current_datetime = has_any(
         message_lower,
         &[
@@ -3601,6 +3664,23 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
                 "calendar date",
             ],
         )
+}
+
+fn is_geographic_distance_query(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "distance between",
+            "how far away",
+            "how far is",
+            "how close is",
+            "how near is",
+            "how far from",
+            "far away from",
+            "distance from",
+            "travel distance",
+        ],
+    )
 }
 
 fn extract_current_datetime_input(message: &str) -> AssistantToolInput {
@@ -4693,6 +4773,17 @@ mod tests {
     }
 
     #[test]
+    fn planner_detects_ai_runtime_status_query() {
+        let tools = plan_tool_calls("What is the AI runtime status right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].tool,
+            AssistantToolName::SystemGetHostRuntimeSummary
+        );
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
     fn planner_extracts_downloads_filter() {
         let tools = plan_tool_calls("What downloads are available right now?");
         assert_eq!(tools.len(), 1);
@@ -4941,6 +5032,36 @@ mod tests {
     }
 
     #[test]
+    fn model_planner_rejects_transcode_for_ai_runtime_question() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_transcode_summary\"}]}",
+        )
+        .expect("expected planner response");
+        let tools = normalize_model_plan(
+            &response,
+            &auth_user("admin"),
+            "What is the AI runtime status right now?",
+            &[],
+        );
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn model_planner_rejects_datetime_for_geographic_distance_query() {
+        let response: ModelPlannerResponse = serde_json::from_str(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_current_datetime\"}]}",
+        )
+        .expect("expected planner response");
+        let tools = normalize_model_plan(
+            &response,
+            &auth_user("user"),
+            "How far away is Italy from Spain?",
+            &[],
+        );
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn planner_extracts_calendar_today_window() {
         let tools = plan_tool_calls("What events do I have today?");
         assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
@@ -5012,6 +5133,12 @@ mod tests {
             }
             _ => panic!("expected current datetime input"),
         }
+    }
+
+    #[test]
+    fn planner_does_not_route_geographic_distance_queries_to_datetime() {
+        let tools = plan_tool_calls("How far away is Italy from Spain?");
+        assert!(tools.is_empty());
     }
 
     #[test]

@@ -90,6 +90,14 @@ fn next_occurrence_on_or_after(
     Ok(with_year_safe(source_date, current_year + 1))
 }
 
+fn occurrence_within_window(
+    row: &CalendarEventRow,
+    from_date: NaiveDate,
+    to_date: NaiveDate,
+) -> Result<Option<NaiveDate>, sqlx::Error> {
+    Ok(next_occurrence_on_or_after(row, from_date)?.filter(|date| *date <= to_date))
+}
+
 fn next_event_scope_rank(scope: &str) -> u8 {
     match scope {
         "personal" => 0,
@@ -270,6 +278,8 @@ pub async fn list_visible_events(
     from_date: &str,
     to_date: &str,
 ) -> Result<Vec<CalendarEventRow>, sqlx::Error> {
+    let from_date = parse_calendar_date(from_date)?;
+    let to_date = parse_calendar_date(to_date)?;
     let rows: Vec<(
         String,
         String,
@@ -310,7 +320,27 @@ pub async fn list_visible_events(
     .fetch_all(pool)
     .await?;
 
-    rows.into_iter().map(map_row).collect()
+    let mut filtered = rows
+        .into_iter()
+        .map(map_row)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|row| {
+            occurrence_within_window(&row, from_date, to_date)
+                .transpose()
+                .map(|next_occurs_on| next_occurs_on.map(|date| (date, row)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    filtered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.title.cmp(&right.1.title))
+            .then_with(|| left.1.created_ts.cmp(&right.1.created_ts))
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+
+    Ok(filtered.into_iter().map(|(_, row)| row).collect())
 }
 
 pub async fn list_personal_events(
@@ -318,6 +348,8 @@ pub async fn list_personal_events(
     from_date: &str,
     to_date: &str,
 ) -> Result<Vec<CalendarEventRow>, sqlx::Error> {
+    let from_date = parse_calendar_date(from_date)?;
+    let to_date = parse_calendar_date(to_date)?;
     let rows: Vec<(
         String,
         String,
@@ -352,7 +384,27 @@ pub async fn list_personal_events(
     .fetch_all(pool)
     .await?;
 
-    rows.into_iter().map(map_row).collect()
+    let mut filtered = rows
+        .into_iter()
+        .map(map_row)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|row| {
+            occurrence_within_window(&row, from_date, to_date)
+                .transpose()
+                .map(|next_occurs_on| next_occurs_on.map(|date| (date, row)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    filtered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.title.cmp(&right.1.title))
+            .then_with(|| left.1.created_ts.cmp(&right.1.created_ts))
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+
+    Ok(filtered.into_iter().map(|(_, row)| row).collect())
 }
 
 pub async fn find_next_visible_event(
@@ -394,7 +446,7 @@ pub async fn find_next_visible_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{map_row, next_occurrence_on_or_after};
+    use super::{map_row, next_occurrence_on_or_after, occurrence_within_window};
     use chrono::NaiveDate;
 
     #[test]
@@ -504,6 +556,69 @@ mod tests {
         assert_eq!(
             next,
             Some(NaiveDate::from_ymd_opt(2026, 6, 9).expect("valid date"))
+        );
+    }
+
+    #[test]
+    fn occurrence_within_window_excludes_yearly_events_outside_requested_range() {
+        let row = map_row((
+            "event-3".to_string(),
+            "personal".to_string(),
+            Some("user-1".to_string()),
+            Some("alpha".to_string()),
+            "Iwan birthday".to_string(),
+            None,
+            "2003-06-09".to_string(),
+            "birthday".to_string(),
+            "yearly".to_string(),
+            Some(2003_i64),
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect("calendar row should decode");
+
+        let occurrence = occurrence_within_window(
+            &row,
+            NaiveDate::from_ymd_opt(2026, 4, 3).expect("valid date"),
+            NaiveDate::from_ymd_opt(2026, 4, 10).expect("valid date"),
+        )
+        .expect("occurrence should compute");
+
+        assert_eq!(occurrence, None);
+    }
+
+    #[test]
+    fn occurrence_within_window_keeps_yearly_events_inside_requested_range() {
+        let row = map_row((
+            "event-4".to_string(),
+            "personal".to_string(),
+            Some("user-1".to_string()),
+            Some("alpha".to_string()),
+            "Soon birthday".to_string(),
+            None,
+            "2000-04-05".to_string(),
+            "birthday".to_string(),
+            "yearly".to_string(),
+            Some(2000_i64),
+            "user-1".to_string(),
+            Some("alpha".to_string()),
+            1,
+            2,
+        ))
+        .expect("calendar row should decode");
+
+        let occurrence = occurrence_within_window(
+            &row,
+            NaiveDate::from_ymd_opt(2026, 4, 3).expect("valid date"),
+            NaiveDate::from_ymd_opt(2026, 4, 10).expect("valid date"),
+        )
+        .expect("occurrence should compute");
+
+        assert_eq!(
+            occurrence,
+            Some(NaiveDate::from_ymd_opt(2026, 4, 5).expect("valid date"))
         );
     }
 }

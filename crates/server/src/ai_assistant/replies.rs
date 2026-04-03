@@ -24,6 +24,23 @@ struct GroundedBirthdayEnvelope {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedCalendarEventsEnvelope {
+    window: GroundedCalendarWindow,
+    events: Vec<GroundedCalendarEventSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedCalendarEventSummary {
+    title: String,
+    event_date: String,
+    #[serde(default)]
+    next_occurs_on: Option<String>,
+    scope: String,
+    event_type: String,
+    owner_username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedCalendarWindow {
     label: String,
 }
@@ -79,6 +96,22 @@ struct GroundedRoomsEnvelope {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedHostRuntimeEnvelope {
+    ai: GroundedHostRuntimeAiSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedHostRuntimeAiSummary {
+    phase: String,
+    active_request_count: u64,
+    queue_depth: u64,
+    tool_calls_in_flight: u64,
+    loaded_model: Option<String>,
+    model_loaded: bool,
+    context_length: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedRoomSummary {
     title: String,
     room_mode: String,
@@ -98,6 +131,14 @@ pub fn deterministic_calendar_reply(
     let block = grounding_blocks.first()?;
 
     match block.tool {
+        "calendar_list_events" => Some(if block.status == "ok" {
+            format_calendar_events_reply(
+                serde_json::from_value::<GroundedCalendarEventsEnvelope>(block.data.clone())
+                    .ok()?,
+            )
+        } else {
+            format_calendar_error(block, "I couldn't load the visible calendar events.")
+        }),
         "calendar_get_next_event" => Some(if block.status == "ok" {
             format_next_event_reply(
                 serde_json::from_value::<GroundedNextEventEnvelope>(block.data.clone()).ok()?,
@@ -163,6 +204,29 @@ pub fn deterministic_rooms_reply(
     })
 }
 
+pub fn deterministic_runtime_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "system_get_host_runtime_summary")?;
+
+    Some(if block.status == "ok" {
+        format_host_runtime_reply(
+            message,
+            serde_json::from_value::<GroundedHostRuntimeEnvelope>(block.data.clone()).ok()?,
+        )
+    } else {
+        block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load the Rustyfin AI runtime status. {message}"))
+            .unwrap_or_else(|| "I couldn't load the Rustyfin AI runtime status.".to_string())
+    })
+}
+
 fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
     let Some(next_event) = envelope.next_event else {
         return "You do not have any visible upcoming calendar events.".to_string();
@@ -191,6 +255,51 @@ fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
         "Your next visible calendar event is \"{}\" on {} in {}.{}",
         next_event.title, human_date, scope, timing
     )
+}
+
+fn format_calendar_events_reply(envelope: GroundedCalendarEventsEnvelope) -> String {
+    if envelope.events.is_empty() {
+        return format!(
+            "You do not have any visible calendar events for {}.",
+            envelope.window.label
+        );
+    }
+
+    let mut lines = vec![format!(
+        "You have {} visible calendar event{} for {}:",
+        envelope.events.len(),
+        plural_suffix(envelope.events.len()),
+        envelope.window.label
+    )];
+
+    for event in envelope.events.iter().take(8) {
+        let occurs_on = event.next_occurs_on.as_deref().unwrap_or(&event.event_date);
+        let human_date = parse_ymd(occurs_on)
+            .map(format_with_weekday)
+            .unwrap_or_else(|| occurs_on.to_string());
+        let title = if event.event_type == "birthday" {
+            birthday_display_name(&event.title)
+        } else {
+            event.title.clone()
+        };
+        let kind = if event.event_type == "birthday" {
+            "birthday"
+        } else {
+            "event"
+        };
+        let owner = event
+            .owner_username
+            .as_deref()
+            .filter(|owner| event.scope == "global" && !owner.is_empty())
+            .map(|owner| format!(" for {owner}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {title} ({kind}) on {human_date} in {}{owner}",
+            scope_label(&event.scope)
+        ));
+    }
+
+    lines.join("\n")
 }
 
 fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
@@ -232,6 +341,53 @@ fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
         lines.push(format!("- {name}: {date}{age}"));
     }
     lines.join("\n")
+}
+
+fn format_host_runtime_reply(message: &str, envelope: GroundedHostRuntimeEnvelope) -> String {
+    let lower = message.to_ascii_lowercase();
+    let model_summary = if envelope.ai.model_loaded {
+        match envelope.ai.loaded_model.as_deref() {
+            Some(model) => format!("Loaded model: {model}."),
+            None => "A model is loaded.".to_string(),
+        }
+    } else {
+        "No model is currently loaded.".to_string()
+    };
+    let context_summary = envelope
+        .ai
+        .context_length
+        .map(|value| format!(" Context window: {value} tokens."))
+        .unwrap_or_default();
+    let request_summary = format!(
+        "Active AI requests: {}. Queue depth: {}. Grounded AI tool calls in flight: {}.",
+        envelope.ai.active_request_count, envelope.ai.queue_depth, envelope.ai.tool_calls_in_flight
+    );
+    let meaning_summary =
+        " This request count reflects active assistant turns, not separate AI instances.";
+
+    if lower.contains("ai runtime")
+        || lower.contains("assistant runtime")
+        || lower.contains("runtime status")
+        || lower.contains("how many ai")
+        || lower.contains("how many requests")
+    {
+        return format!(
+            "Rustyfin AI runtime is currently {}. {} {}{}{}",
+            humanize_runtime_phase(&envelope.ai.phase),
+            model_summary,
+            request_summary,
+            context_summary,
+            meaning_summary
+        );
+    }
+
+    format!(
+        "Rustyfin runtime summary: AI phase is {}. {} {}{}",
+        humanize_runtime_phase(&envelope.ai.phase),
+        model_summary,
+        request_summary,
+        context_summary
+    )
 }
 
 fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> String {
@@ -497,6 +653,17 @@ fn describe_relative_timing(date: NaiveDate) -> String {
     }
 }
 
+fn humanize_runtime_phase(phase: &str) -> &str {
+    match phase {
+        "idle" => "idle",
+        "loading_model" => "loading a model",
+        "planning" => "planning a turn",
+        "grounding" => "running grounded tools",
+        "generating" => "generating a reply",
+        _ => "running",
+    }
+}
+
 fn parse_ymd(raw: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()
 }
@@ -522,6 +689,7 @@ fn plural_suffix(count: usize) -> &'static str {
 mod tests {
     use super::{
         deterministic_calendar_reply, deterministic_network_reply, deterministic_rooms_reply,
+        deterministic_runtime_reply,
     };
     use crate::ai_assistant::types::AssistantToolContextBlock;
     use serde_json::json;
@@ -582,6 +750,36 @@ mod tests {
         assert!(reply.contains("Tuesday, April 7, 2026"));
         assert!(reply.contains("turns 23"));
         assert!(reply.contains("Sam"));
+    }
+
+    #[test]
+    fn deterministic_calendar_reply_formats_visible_events_without_raw_birth_year() {
+        let reply = deterministic_calendar_reply(
+            "Show my visible calendar events for the next seven days.",
+            &[AssistantToolContextBlock {
+                tool: "calendar_list_events",
+                label: "Visible calendar events for the next 7 days".to_string(),
+                status: "ok",
+                data: json!({
+                    "window": { "label": "the next 7 days" },
+                    "events": [
+                        {
+                            "title": "Iwans birthday",
+                            "event_date": "2003-06-09",
+                            "next_occurs_on": "2026-04-05",
+                            "scope": "personal",
+                            "event_type": "birthday",
+                            "owner_username": null
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic calendar events reply");
+
+        assert!(reply.contains("the next 7 days"));
+        assert!(reply.contains("Sunday, April 5, 2026"));
+        assert!(!reply.contains("2003-06-09"));
     }
 
     #[test]
@@ -725,5 +923,34 @@ mod tests {
         assert!(reply.contains("public lobby"));
         assert!(reply.contains("Kitchen"));
         assert!(reply.contains("password required"));
+    }
+
+    #[test]
+    fn deterministic_runtime_reply_explains_ai_request_counts() {
+        let reply = deterministic_runtime_reply(
+            "What is the AI runtime status right now?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_host_runtime_summary",
+                label: "Rustyfin host runtime summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "ai": {
+                        "phase": "planning",
+                        "active_request_count": 1,
+                        "queue_depth": 0,
+                        "tool_calls_in_flight": 1,
+                        "loaded_model": "tiny.gguf",
+                        "model_loaded": true,
+                        "context_length": 8192
+                    }
+                }),
+            }],
+        )
+        .expect("expected deterministic runtime reply");
+
+        assert!(reply.contains("planning a turn"));
+        assert!(reply.contains("Active AI requests: 1"));
+        assert!(reply.contains("not separate AI instances"));
+        assert!(reply.contains("tiny.gguf"));
     }
 }

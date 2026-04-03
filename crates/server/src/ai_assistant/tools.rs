@@ -17,9 +17,9 @@ use super::orchestrator::plan_tool_calls_with_model_assist;
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-    AssistantGroundingSource, AssistantHistoryMessage, AssistantToolContextBlock,
-    AssistantToolInput, PlannedToolCall, ToolAccessMode, ToolConfirmationPolicy,
-    ToolRoleRequirement, decode_assistant_clarification_message,
+    AssistantGroundingSource, AssistantHistoryMessage, AssistantRuntimePhase,
+    AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, ToolAccessMode,
+    ToolConfirmationPolicy, ToolRoleRequirement, decode_assistant_clarification_message,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
@@ -152,6 +152,7 @@ struct ServerDetailSummary {
 struct CalendarEventSummary {
     title: String,
     event_date: String,
+    next_occurs_on: Option<String>,
     scope: String,
     event_type: String,
     owner_username: Option<String>,
@@ -273,6 +274,7 @@ struct JoinableRoomSummary {
 struct HostRuntimeAssistantSummary {
     host: crate::runtime_diagnostics::HostRuntimeSnapshot,
     rustyfin: HostRuntimeRustyfinSummary,
+    ai: HostRuntimeAiSummary,
     memory: Option<HostRuntimeMemorySummary>,
     swap: Option<HostRuntimeSwapSummary>,
 }
@@ -286,6 +288,17 @@ struct HostRuntimeRustyfinSummary {
     active_watch_party_websockets: u64,
     ai_chat_requests_in_flight: u64,
     ai_tool_calls_in_flight: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct HostRuntimeAiSummary {
+    phase: AssistantRuntimePhase,
+    active_request_count: u64,
+    queue_depth: u64,
+    tool_calls_in_flight: u64,
+    loaded_model: Option<String>,
+    model_loaded: bool,
+    context_length: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1326,6 +1339,10 @@ async fn calendar_list_events(
     call: &PlannedToolCall,
 ) -> Result<(String, serde_json::Value), String> {
     let (from, to, label) = calendar_window_for_call(call, 7);
+    let from_date = NaiveDate::parse_from_str(&from, "%Y-%m-%d")
+        .map_err(|error| format!("invalid calendar window start date {from}: {error}"))?;
+    let to_date = NaiveDate::parse_from_str(&to, "%Y-%m-%d")
+        .map_err(|error| format!("invalid calendar window end date {to}: {error}"))?;
     let events = rustfin_db::repo::calendar::list_visible_events(
         &state.db,
         &context.user_id,
@@ -1339,12 +1356,16 @@ async fn calendar_list_events(
     let events: Vec<_> = events
         .into_iter()
         .take(12)
-        .map(|event| CalendarEventSummary {
-            title: event.title,
-            event_date: event.event_date,
-            scope: event.scope,
-            event_type: event.event_type,
-            owner_username: event.owner_username,
+        .map(|event| {
+            let next_occurs_on = calendar_event_occurs_in_window(&event, from_date, to_date);
+            CalendarEventSummary {
+                title: event.title,
+                event_date: event.event_date,
+                next_occurs_on,
+                scope: event.scope,
+                event_type: event.event_type,
+                owner_username: event.owner_username,
+            }
         })
         .collect();
 
@@ -2293,6 +2314,16 @@ async fn system_get_host_runtime_summary(
     _context: &AssistantContext,
 ) -> Result<(String, serde_json::Value), String> {
     let diagnostics = crate::runtime_diagnostics::collect_runtime_diagnostics(state).await;
+    let (loaded_model, model_loaded, phase, context_length) = {
+        let guard = state.engine.lock().await;
+        (
+            guard.loaded_model.clone(),
+            guard.engine.is_some(),
+            guard.active_phase,
+            guard.engine.as_ref().map(|engine| engine.params().n_ctx),
+        )
+    };
+    let active_request_count = diagnostics.runtime.assistant.chats.calls_in_flight;
     let summary = HostRuntimeAssistantSummary {
         memory: diagnostics
             .host
@@ -2341,6 +2372,19 @@ async fn system_get_host_runtime_summary(
             active_watch_party_websockets: diagnostics.runtime.websockets.watch_party.active,
             ai_chat_requests_in_flight: diagnostics.runtime.assistant.chats.calls_in_flight,
             ai_tool_calls_in_flight: diagnostics.runtime.assistant.tools.calls_in_flight,
+        },
+        ai: HostRuntimeAiSummary {
+            phase,
+            active_request_count,
+            queue_depth: if phase == AssistantRuntimePhase::Idle {
+                0
+            } else {
+                active_request_count.saturating_sub(1)
+            },
+            tool_calls_in_flight: diagnostics.runtime.assistant.tools.calls_in_flight,
+            loaded_model,
+            model_loaded,
+            context_length,
         },
     };
 
@@ -3001,6 +3045,34 @@ fn next_birthday_occurrence(event_date: &str) -> String {
     }
 
     event_date.to_string()
+}
+
+fn calendar_event_occurs_in_window(
+    event: &rustfin_db::repo::calendar::CalendarEventRow,
+    from_date: NaiveDate,
+    to_date: NaiveDate,
+) -> Option<String> {
+    let date = chrono::NaiveDate::parse_from_str(&event.event_date, "%Y-%m-%d").ok()?;
+    if event.recurrence != "yearly" {
+        return (date >= from_date && date <= to_date).then(|| date.format("%F").to_string());
+    }
+
+    for year in [from_date.year(), from_date.year() + 1] {
+        let candidate = if date.month() == 2 && date.day() == 29 {
+            chrono::NaiveDate::from_ymd_opt(year, 2, 29)
+                .or_else(|| chrono::NaiveDate::from_ymd_opt(year, 2, 28))
+        } else {
+            chrono::NaiveDate::from_ymd_opt(year, date.month(), date.day())
+        };
+        if let Some(candidate) = candidate
+            && candidate >= from_date
+            && candidate <= to_date
+        {
+            return Some(candidate.format("%F").to_string());
+        }
+    }
+
+    None
 }
 
 fn channels_query_for_call(call: &PlannedToolCall) -> Option<String> {
@@ -4005,7 +4077,10 @@ fn follow_up_entities(
                             label: format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
-                                event.get("event_date")?.as_str()?
+                                event
+                                    .get("next_occurs_on")
+                                    .or_else(|| event.get("event_date"))?
+                                    .as_str()?
                             ),
                             identifier: None,
                         })
@@ -4053,7 +4128,10 @@ fn follow_up_entities(
                             label: format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
-                                event.get("event_date")?.as_str()?
+                                event
+                                    .get("next_occurs_on")
+                                    .or_else(|| event.get("event_date"))?
+                                    .as_str()?
                             ),
                             identifier: None,
                         })
