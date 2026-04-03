@@ -292,6 +292,7 @@ async fn assistant_grounding_for_message(
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: message.to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1301,6 +1302,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What libraries can I access?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1323,6 +1325,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Do I have \"Restricted AI Movie\" in my library?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1338,6 +1341,7 @@ async fn ai_assistant_grounding_respects_library_permissions() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Do I have \"Restricted AI Movie\" in my library?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1412,6 +1416,7 @@ async fn ai_assistant_grounding_only_lists_public_rooms() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What rooms are active right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1560,6 +1565,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What events are coming up this week?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1583,6 +1589,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Who has a birthday coming up soon?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1609,6 +1616,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "When is Rachel's birthday?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1637,6 +1645,7 @@ async fn ai_assistant_grounding_respects_calendar_visibility() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What events are coming up this week?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1707,6 +1716,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What Minecraft servers do I have access to?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1732,6 +1742,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "Is the Minecraft server called Hidden AI Server online?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1754,6 +1765,7 @@ async fn ai_assistant_grounding_respects_minecraft_server_access() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What Minecraft servers do I have access to?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1799,6 +1811,7 @@ async fn ai_assistant_grounding_lists_authenticated_downloads_catalog() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What downloads are there right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1866,6 +1879,7 @@ async fn ai_assistant_grounding_requires_admin_for_host_runtime_stats() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "How much RAM is the server using right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1886,6 +1900,7 @@ async fn ai_assistant_grounding_requires_admin_for_host_runtime_stats() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "How much RAM is the server using right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -1942,6 +1957,7 @@ async fn ai_assistant_grounding_lists_recently_added_accessible_items() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What was recently added to my library?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -2023,6 +2039,7 @@ async fn ai_assistant_grounding_lists_joinable_rooms() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What rooms can I join right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -2080,6 +2097,7 @@ async fn ai_assistant_grounding_requires_admin_for_service_health() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What services are down right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },
@@ -2096,6 +2114,7 @@ async fn ai_assistant_grounding_requires_admin_for_service_health() {
         rustfin_server::ai_assistant::AssistantChatRequest {
             model: "missing-model".to_string(),
             message: "What services are down right now?".to_string(),
+            response_mode: rustfin_server::ai_assistant::AssistantResponseMode::Thinking,
             confirmation_token: None,
             history: vec![],
         },

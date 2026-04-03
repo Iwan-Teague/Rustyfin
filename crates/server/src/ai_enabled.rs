@@ -1,8 +1,9 @@
 use std::convert::Infallible;
+use std::path::Path as StdPath;
 use std::time::Instant;
 
 use async_stream::stream;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -59,6 +60,27 @@ impl Default for EngineState {
 #[derive(Clone)]
 struct ConversationPersistence {
     conversation_id: String,
+}
+
+const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1024;
+const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 4096;
+const MAX_CONTEXT_WINDOW_TOKENS: u32 = 32768;
+const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 192;
+const COMPACTION_MAX_RECENT_HISTORY_MESSAGES: usize = 8;
+const COMPACTION_MIN_RECENT_HISTORY_MESSAGES: usize = 0;
+const COMPACTION_SUMMARY_TARGET_TOKENS: u32 = 320;
+const COMPACTION_SUMMARY_FALLBACK_TARGET_TOKENS: [u32; 3] = [320, 192, 128];
+const COMPACTION_SUMMARY_MAX_DURATION_MS: u64 = 15_000;
+const COMPACTION_MESSAGE_CHAR_LIMIT: usize = 1200;
+
+#[derive(Debug, Clone)]
+struct PreparedGenerationMessages {
+    messages: Vec<rustfin_ai_agent::ChatMessage>,
+    compacted: bool,
+    original_prompt_tokens: u32,
+    final_prompt_tokens: u32,
+    retained_history_messages: usize,
+    summarized_history_messages: usize,
 }
 
 pub fn ai_router() -> Router<AppState> {
@@ -131,7 +153,7 @@ async fn chat(
 async fn stream_conversation_message(
     user: AuthUser,
     State(state): State<AppState>,
-    Path(conversation_id): Path<String>,
+    AxumPath(conversation_id): AxumPath<String>,
     Json(req): Json<ConversationMessageRequest>,
 ) -> Result<Response, AppError> {
     let (_, _, history) = crate::ai_conversations::load_conversation_request_context(
@@ -1137,8 +1159,55 @@ fn stream_chat_response(
             },
         ));
 
-        let messages = build_assistant_messages(req.clone(), &grounding_blocks);
-        let raw_stream = engine.chat_stream(messages, sampling_params_for_response_mode(req.response_mode));
+        let prepared_messages = match prepare_generation_messages(&engine, &req, &grounding_blocks).await {
+            Ok(prepared) => prepared,
+            Err(error_message) => {
+                persist_chat_audit_event(
+                    &state,
+                    &user,
+                    &req,
+                    &trace_id,
+                    AiAssistantAuditResponseKind::ModelLoadError,
+                    &planned_tools,
+                    &grounding_blocks,
+                    &grounding_sources,
+                    Some(&error_message),
+                )
+                .await;
+                yield Ok::<Event, Infallible>(
+                    Event::default()
+                        .event("error")
+                        .data(json!({ "message": error_message }).to_string()),
+                );
+                set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+                warn!(
+                    trace_id = %trace_id,
+                    user_id = %user.user_id,
+                    model = %model_name,
+                    error = %error_message,
+                    "ai chat failed while preparing compacted context"
+                );
+                return;
+            }
+        };
+        if prepared_messages.compacted {
+            info!(
+                trace_id = %trace_id,
+                user_id = %user.user_id,
+                model = %model_name,
+                original_prompt_tokens = prepared_messages.original_prompt_tokens,
+                final_prompt_tokens = prepared_messages.final_prompt_tokens,
+                retained_history_messages = prepared_messages.retained_history_messages,
+                summarized_history_messages = prepared_messages.summarized_history_messages,
+                context_window_tokens = engine.params().n_ctx,
+                "ai chat compacted conversation history to fit context window"
+            );
+        }
+
+        let raw_stream = engine.chat_stream(
+            prepared_messages.messages,
+            sampling_params_for_response_mode(req.response_mode),
+        );
         futures::pin_mut!(raw_stream);
 
         while let Some(chunk) = raw_stream.next().await {
@@ -1331,8 +1400,11 @@ pub(crate) async fn load_engine_for_chat(
 
     let load_started = Instant::now();
     if needs_reload {
-        let engine = rustfin_ai_agent::LlamaEngine::load(gguf_path, engine_params_from_env())
-            .map_err(|error| format!("failed to load model {}: {error}", gguf_path.display()))?;
+        let engine =
+            rustfin_ai_agent::LlamaEngine::load(gguf_path, engine_params_for_model(gguf_path))
+                .map_err(|error| {
+                    format!("failed to load model {}: {error}", gguf_path.display())
+                })?;
         guard.loaded_model = Some(model_name.to_string());
         guard.engine = Some(engine);
     }
@@ -1356,6 +1428,25 @@ fn engine_params_from_env() -> rustfin_ai_agent::LlamaEngineParams {
     params.split_mode = parse_gpu_split_mode_from_env();
     params.main_gpu = parse_i32_env("RUSTFIN_AI_GPU_MAIN_DEVICE");
     params.device_indices = parse_device_indices_env("RUSTFIN_AI_GPU_DEVICES");
+    params
+}
+
+fn engine_params_for_model(gguf_path: &StdPath) -> rustfin_ai_agent::LlamaEngineParams {
+    let mut params = engine_params_from_env();
+    let requested_context = parse_u32_env("RUSTFIN_AI_CONTEXT_LENGTH");
+    let model_context = match rustfin_ai_agent::ModelStore::inspect_file(gguf_path) {
+        Ok(info) => info.context_length,
+        Err(error) => {
+            warn!(
+                model = %gguf_path.display(),
+                %error,
+                "failed to inspect model context length; falling back to host heuristics"
+            );
+            None
+        }
+    };
+    let host_memory = detect_host_total_memory_bytes();
+    params.n_ctx = resolve_effective_context_window(requested_context, model_context, host_memory);
     params
 }
 
@@ -1387,6 +1478,10 @@ fn parse_i32_env(name: &str) -> Option<i32> {
     parse_i32_override(name, std::env::var(name).ok().as_deref())
 }
 
+fn parse_u32_env(name: &str) -> Option<u32> {
+    parse_u32_override(name, std::env::var(name).ok().as_deref())
+}
+
 fn parse_i32_override(name: &str, value: Option<&str>) -> Option<i32> {
     let trimmed = value?.trim();
     if trimmed.is_empty() {
@@ -1400,6 +1495,60 @@ fn parse_i32_override(name: &str, value: Option<&str>) -> Option<i32> {
             None
         }
     }
+}
+
+fn parse_u32_override(name: &str, value: Option<&str>) -> Option<u32> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    match trimmed.parse::<u32>() {
+        Ok(parsed) => Some(parsed),
+        Err(error) => {
+            warn!(env = name, value = trimmed, %error, "ignoring invalid unsigned integer env override");
+            None
+        }
+    }
+}
+
+fn detect_host_total_memory_bytes() -> Option<u64> {
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    let total = system.total_memory();
+    (total > 0).then_some(total)
+}
+
+fn suggested_context_window_from_host_memory(total_memory_bytes: Option<u64>) -> Option<u32> {
+    let gib = total_memory_bytes? / (1024 * 1024 * 1024);
+    Some(match gib {
+        0..=15 => 4096,
+        16..=31 => 8192,
+        32..=63 => 16384,
+        _ => 32768,
+    })
+}
+
+fn resolve_effective_context_window(
+    requested_context: Option<u32>,
+    model_context: Option<u32>,
+    host_total_memory_bytes: Option<u64>,
+) -> u32 {
+    let hardware_cap = suggested_context_window_from_host_memory(host_total_memory_bytes);
+    let mut resolved = requested_context
+        .or(hardware_cap)
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW_TOKENS)
+        .clamp(MIN_CONTEXT_WINDOW_TOKENS, MAX_CONTEXT_WINDOW_TOKENS);
+
+    if let Some(hardware_cap) = hardware_cap {
+        resolved =
+            resolved.min(hardware_cap.clamp(MIN_CONTEXT_WINDOW_TOKENS, MAX_CONTEXT_WINDOW_TOKENS));
+    }
+    if let Some(model_context) = model_context {
+        resolved = resolved.min(model_context.max(MIN_CONTEXT_WINDOW_TOKENS));
+    }
+
+    resolved.clamp(MIN_CONTEXT_WINDOW_TOKENS, MAX_CONTEXT_WINDOW_TOKENS)
 }
 
 fn parse_device_indices_env(name: &str) -> Vec<usize> {
@@ -1437,6 +1586,375 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
         .collect()
 }
 
+fn response_mode_completion_reserve_tokens(
+    response_mode: AssistantResponseMode,
+    context_window_tokens: u32,
+) -> u32 {
+    let dynamic = match response_mode {
+        AssistantResponseMode::Instant => context_window_tokens / 6,
+        AssistantResponseMode::Thinking => context_window_tokens / 4,
+        AssistantResponseMode::Extended => context_window_tokens / 3,
+    };
+
+    match response_mode {
+        AssistantResponseMode::Instant => dynamic.clamp(384, 640),
+        AssistantResponseMode::Thinking => dynamic.clamp(768, 1536),
+        AssistantResponseMode::Extended => dynamic.clamp(1024, 4096),
+    }
+}
+
+fn prompt_budget_tokens(response_mode: AssistantResponseMode, context_window_tokens: u32) -> u32 {
+    context_window_tokens.saturating_sub(
+        response_mode_completion_reserve_tokens(response_mode, context_window_tokens)
+            + CONTEXT_SAFETY_MARGIN_TOKENS,
+    )
+}
+
+fn build_prompt_messages(
+    request: &AssistantChatRequest,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Vec<rustfin_ai_agent::ChatMessage> {
+    build_assistant_messages(request.clone(), grounding_blocks)
+}
+
+async fn prepare_generation_messages(
+    engine: &rustfin_ai_agent::LlamaEngine,
+    request: &AssistantChatRequest,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Result<PreparedGenerationMessages, String> {
+    let messages = build_prompt_messages(request, grounding_blocks);
+    let original_prompt_tokens = engine
+        .count_chat_tokens(&messages)
+        .map_err(|error| format!("failed to count prompt tokens: {error}"))?;
+    let budget = prompt_budget_tokens(request.response_mode, engine.params().n_ctx);
+
+    if original_prompt_tokens <= budget || request.history.is_empty() {
+        return Ok(PreparedGenerationMessages {
+            messages,
+            compacted: false,
+            original_prompt_tokens,
+            final_prompt_tokens: original_prompt_tokens,
+            retained_history_messages: request.history.len(),
+            summarized_history_messages: 0,
+        });
+    }
+
+    let mut recent_keep = request
+        .history
+        .len()
+        .min(COMPACTION_MAX_RECENT_HISTORY_MESSAGES);
+    let minimum_recent_keep = request
+        .history
+        .len()
+        .min(COMPACTION_MIN_RECENT_HISTORY_MESSAGES);
+
+    let mut best_candidate: Option<PreparedGenerationMessages> = None;
+
+    loop {
+        let summarized_history_messages = request.history.len().saturating_sub(recent_keep);
+        let summary_targets = if summarized_history_messages == 0 {
+            vec![COMPACTION_SUMMARY_TARGET_TOKENS]
+        } else {
+            COMPACTION_SUMMARY_FALLBACK_TARGET_TOKENS.to_vec()
+        };
+
+        for summary_target_tokens in summary_targets {
+            let summary = if summarized_history_messages == 0 {
+                None
+            } else {
+                Some(
+                    summarize_history_for_compaction(
+                        engine,
+                        &request.history[..summarized_history_messages],
+                        summary_target_tokens,
+                    )
+                    .await?,
+                )
+            };
+            let compacted_request =
+                build_compacted_request(request, summary.as_deref(), recent_keep);
+            let compacted_messages = build_prompt_messages(&compacted_request, grounding_blocks);
+            let final_prompt_tokens = engine
+                .count_chat_tokens(&compacted_messages)
+                .map_err(|error| format!("failed to count compacted prompt tokens: {error}"))?;
+
+            let candidate = PreparedGenerationMessages {
+                messages: compacted_messages,
+                compacted: true,
+                original_prompt_tokens,
+                final_prompt_tokens,
+                retained_history_messages: recent_keep,
+                summarized_history_messages,
+            };
+
+            if candidate.final_prompt_tokens <= budget {
+                return Ok(candidate);
+            }
+
+            let replace_best = best_candidate
+                .as_ref()
+                .map(|best| candidate.final_prompt_tokens < best.final_prompt_tokens)
+                .unwrap_or(true);
+            if replace_best {
+                best_candidate = Some(candidate);
+            }
+        }
+
+        if recent_keep == minimum_recent_keep {
+            break;
+        }
+
+        recent_keep = recent_keep.saturating_sub(1).max(minimum_recent_keep);
+    }
+
+    let best_candidate = best_candidate.ok_or_else(|| {
+        "failed to build any compacted prompt candidate for this conversation".to_string()
+    })?;
+    Err(format!(
+        "the conversation needs {} prompt tokens even after compaction, but only {} fit into the current {} token context window",
+        best_candidate.final_prompt_tokens,
+        budget,
+        engine.params().n_ctx
+    ))
+}
+
+fn build_compacted_request(
+    request: &AssistantChatRequest,
+    summary: Option<&str>,
+    recent_keep: usize,
+) -> AssistantChatRequest {
+    let retained_start = request.history.len().saturating_sub(recent_keep);
+    let mut history = Vec::new();
+
+    if let Some(summary) = summary.map(str::trim).filter(|summary| !summary.is_empty()) {
+        history.push(crate::ai_assistant::types::AssistantHistoryMessage {
+            role: "system".to_string(),
+            content: format!(
+                "Compacted Rustyfin conversation memory for earlier turns:\n{}",
+                summary
+            ),
+            grounding_tools: Vec::new(),
+            follow_up_contexts: Vec::new(),
+        });
+    }
+
+    history.extend_from_slice(&request.history[retained_start..]);
+
+    AssistantChatRequest {
+        model: request.model.clone(),
+        message: request.message.clone(),
+        response_mode: request.response_mode,
+        confirmation_token: request.confirmation_token.clone(),
+        history,
+    }
+}
+
+async fn summarize_history_for_compaction(
+    engine: &rustfin_ai_agent::LlamaEngine,
+    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
+    target_tokens: u32,
+) -> Result<String, String> {
+    if history.is_empty() {
+        return Ok(String::new());
+    }
+
+    let context_window = engine.params().n_ctx;
+    let segment_budget = context_window
+        .saturating_sub(target_tokens + CONTEXT_SAFETY_MARGIN_TOKENS)
+        .max(1024);
+    let segments = split_history_for_summary(engine, history, segment_budget)?;
+
+    let mut summaries = Vec::new();
+    for segment in segments {
+        let rendered = render_history_segment(&segment);
+        let summary = run_compaction_summary(engine, &rendered, target_tokens)
+            .await
+            .unwrap_or_else(|_| fallback_history_summary(&segment));
+        if !summary.trim().is_empty() {
+            summaries.push(summary.trim().to_string());
+        }
+    }
+
+    if summaries.is_empty() {
+        return Ok(fallback_history_summary(history));
+    }
+    if summaries.len() == 1 {
+        return Ok(summaries[0].clone());
+    }
+
+    let combined = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| format!("Chunk {} summary:\n{}", index + 1, summary))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    run_compaction_summary(engine, &combined, target_tokens)
+        .await
+        .or_else(|_| Ok(shorten_text(&combined, 1800)))
+}
+
+fn split_history_for_summary(
+    engine: &rustfin_ai_agent::LlamaEngine,
+    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
+    prompt_budget: u32,
+) -> Result<Vec<Vec<crate::ai_assistant::types::AssistantHistoryMessage>>, String> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+
+    for message in history.iter().cloned() {
+        current.push(message.clone());
+        let rendered = render_history_segment(&current);
+        let prompt = build_compaction_summary_messages(&rendered, COMPACTION_SUMMARY_TARGET_TOKENS);
+        let prompt_tokens = engine
+            .count_chat_tokens(&prompt)
+            .map_err(|error| format!("failed to count summary prompt tokens: {error}"))?;
+
+        if prompt_tokens > prompt_budget && current.len() > 1 {
+            current.pop();
+            segments.push(current);
+            current = vec![message];
+        }
+    }
+
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    Ok(segments)
+}
+
+fn render_history_segment(
+    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
+) -> String {
+    history
+        .iter()
+        .map(|message| {
+            let role = message.role.to_ascii_uppercase();
+            let content = shorten_text(
+                &message
+                    .content
+                    .replace('\n', " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                COMPACTION_MESSAGE_CHAR_LIMIT,
+            );
+            if message.grounding_tools.is_empty() {
+                format!("{role}: {content}")
+            } else {
+                format!(
+                    "{role}: {content}\nGrounded tools: {}",
+                    message.grounding_tools.join(", ")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn build_compaction_summary_messages(
+    rendered_history: &str,
+    target_tokens: u32,
+) -> Vec<rustfin_ai_agent::ChatMessage> {
+    vec![
+        rustfin_ai_agent::ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "You are compacting earlier Rustyfin chat history into a durable memory note for the next assistant turn. \
+Preserve user goals, decisions, constraints, names, dates, URLs, identifiers, tool findings, and open tasks. \
+Do not invent details. Use concise bullet lines. Keep the summary within about {target_tokens} tokens."
+            ),
+        },
+        rustfin_ai_agent::ChatMessage {
+            role: "user".to_string(),
+            content: format!("Earlier conversation to compact:\n{rendered_history}"),
+        },
+    ]
+}
+
+async fn run_compaction_summary(
+    engine: &rustfin_ai_agent::LlamaEngine,
+    rendered_history: &str,
+    target_tokens: u32,
+) -> Result<String, String> {
+    let messages = build_compaction_summary_messages(rendered_history, target_tokens);
+    let stream = engine.chat_stream(
+        messages,
+        rustfin_ai_agent::SamplingParams {
+            temperature: 0.2,
+            top_p: 0.9,
+            top_k: 24,
+            repeat_penalty: 1.05,
+            max_tokens: target_tokens,
+            max_duration_ms: Some(COMPACTION_SUMMARY_MAX_DURATION_MS),
+        },
+    );
+    futures::pin_mut!(stream);
+
+    let mut summary = String::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk.map_err(|error| error.to_string())? {
+            rustfin_ai_agent::ChatChunk::Token(text) => summary.push_str(&text),
+            rustfin_ai_agent::ChatChunk::Done => break,
+            rustfin_ai_agent::ChatChunk::Stats { .. } => {}
+        }
+    }
+
+    let summary = summary.trim().to_string();
+    if summary.is_empty() {
+        Err("history compaction produced an empty summary".to_string())
+    } else {
+        Ok(summary)
+    }
+}
+
+fn fallback_history_summary(
+    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
+) -> String {
+    history
+        .iter()
+        .rev()
+        .take(10)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|message| {
+            format!(
+                "- {}: {}",
+                message.role,
+                shorten_text(
+                    &message
+                        .content
+                        .replace('\n', " ")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    180
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn shorten_text(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut out = String::new();
+    for (index, ch) in trimmed.chars().enumerate() {
+        if index >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn sampling_params_for_response_mode(
     response_mode: AssistantResponseMode,
 ) -> rustfin_ai_agent::SamplingParams {
@@ -1472,7 +1990,9 @@ fn sampling_params_for_response_mode(
 mod tests {
     use super::{
         parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
-        sampling_params_for_response_mode,
+        prompt_budget_tokens, resolve_effective_context_window,
+        response_mode_completion_reserve_tokens, sampling_params_for_response_mode,
+        suggested_context_window_from_host_memory,
     };
     use crate::ai_assistant::types::AssistantResponseMode;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
@@ -1539,6 +2059,78 @@ mod tests {
         assert!(instant.top_k < thinking.top_k);
         assert!(thinking.max_tokens < extended.max_tokens);
         assert_eq!(extended.max_duration_ms, Some(30 * 60 * 1000));
+    }
+
+    #[test]
+    fn suggested_context_window_scales_with_host_memory() {
+        let gib = 1024_u64 * 1024 * 1024;
+        assert_eq!(
+            suggested_context_window_from_host_memory(Some(8 * gib)),
+            Some(4096)
+        );
+        assert_eq!(
+            suggested_context_window_from_host_memory(Some(24 * gib)),
+            Some(8192)
+        );
+        assert_eq!(
+            suggested_context_window_from_host_memory(Some(48 * gib)),
+            Some(16384)
+        );
+        assert_eq!(
+            suggested_context_window_from_host_memory(Some(96 * gib)),
+            Some(32768)
+        );
+    }
+
+    #[test]
+    fn context_window_resolution_respects_model_and_hardware_caps() {
+        let gib = 1024_u64 * 1024 * 1024;
+        assert_eq!(
+            resolve_effective_context_window(Some(32768), Some(8192), Some(24 * gib)),
+            8192
+        );
+        assert_eq!(
+            resolve_effective_context_window(Some(32768), Some(65536), Some(24 * gib)),
+            8192
+        );
+        assert_eq!(
+            resolve_effective_context_window(None, Some(65536), Some(48 * gib)),
+            16384
+        );
+        assert_eq!(
+            resolve_effective_context_window(Some(2048), Some(65536), Some(96 * gib)),
+            2048
+        );
+    }
+
+    #[test]
+    fn prompt_budget_reserves_more_space_for_slower_modes() {
+        let context_window = 8192;
+        let instant =
+            response_mode_completion_reserve_tokens(AssistantResponseMode::Instant, context_window);
+        let thinking = response_mode_completion_reserve_tokens(
+            AssistantResponseMode::Thinking,
+            context_window,
+        );
+        let extended = response_mode_completion_reserve_tokens(
+            AssistantResponseMode::Extended,
+            context_window,
+        );
+
+        assert!(instant < thinking);
+        assert!(thinking < extended);
+        assert_eq!(
+            prompt_budget_tokens(AssistantResponseMode::Instant, context_window),
+            context_window - instant - 192
+        );
+        assert_eq!(
+            prompt_budget_tokens(AssistantResponseMode::Thinking, context_window),
+            context_window - thinking - 192
+        );
+        assert_eq!(
+            prompt_budget_tokens(AssistantResponseMode::Extended, context_window),
+            context_window - extended - 192
+        );
     }
 }
 
