@@ -525,20 +525,6 @@ function mergeStatusFallback(
   return next;
 }
 
-function StreamingDots() {
-  return (
-    <span className="inline-flex items-center gap-1 ml-0.5">
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className="ai-streaming-dot"
-          style={{ animationDelay: `${index * 0.2}s` }}
-        />
-      ))}
-    </span>
-  );
-}
-
 function FallbackThinkingBlock({
   text,
   live,
@@ -899,6 +885,7 @@ function MessageBubble({
 
   const showFallbackThinking =
     Boolean(thinking) && entry.activity_trace.length === 0;
+  const showStreamingPlaceholder = entry.isStreaming && !entry.errorMessage && !content;
 
   return (
     <div className="flex justify-start">
@@ -915,17 +902,17 @@ function MessageBubble({
           />
         ) : null}
 
-        <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
-          {entry.errorMessage ? (
-            <span className="text-[var(--danger)]">{entry.errorMessage}</span>
-          ) : content ? (
-            <span className="whitespace-pre-wrap">{content}</span>
-          ) : entry.isStreaming ? (
-            <StreamingDots />
-          ) : null}
+        {!showStreamingPlaceholder ? (
+          <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+            {entry.errorMessage ? (
+              <span className="text-[var(--danger)]">{entry.errorMessage}</span>
+            ) : content ? (
+              <span className="whitespace-pre-wrap">{content}</span>
+            ) : null}
 
-          {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
-        </div>
+            {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
+          </div>
+        ) : null}
 
         {showStats && entry.stats ? <StatsBar stats={entry.stats} /> : null}
 
