@@ -769,7 +769,7 @@ fn normalize_server_availability(availability: Option<&str>) -> Option<String> {
     }
 }
 
-fn build_system_prompt() -> String {
+pub fn build_system_prompt() -> String {
     "You are the Rustyfin assistant — a helpful AI built into a personal home media server. \
 Be concise and genuinely helpful. Respond in plain text unless code or markdown lists add real clarity. \
 If authoritative Rustyfin grounding is supplied in another system message, treat it as the source of truth for this turn. \

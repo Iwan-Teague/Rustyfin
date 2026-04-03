@@ -4,6 +4,9 @@ use axum::http::StatusCode;
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 
+use crate::ai_assistant::memory::{
+    ConversationMemoryState, memory_state_json, parse_memory_state_json,
+};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingSource,
     AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus,
@@ -440,6 +443,34 @@ pub async fn persist_assistant_turn(
         &crate::ai_audit::normalize_message_preview(content),
         Some(model_name),
         Some(false),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    Ok(())
+}
+
+pub fn conversation_memory_state(
+    row: &rustfin_db::repo::ai_conversations::AiConversationRow,
+) -> ConversationMemoryState {
+    parse_memory_state_json(&row.memory_state_json)
+}
+
+pub async fn persist_conversation_memory(
+    state: &AppState,
+    user_id: &str,
+    conversation_id: &str,
+    memory_state: &ConversationMemoryState,
+    memory_turn_index: i64,
+) -> Result<(), AppError> {
+    let memory_updated_ts = chrono::Utc::now().timestamp();
+    rustfin_db::repo::ai_conversations::update_conversation_memory(
+        &state.db,
+        conversation_id,
+        user_id,
+        &memory_state_json(memory_state),
+        memory_turn_index,
+        memory_updated_ts,
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;

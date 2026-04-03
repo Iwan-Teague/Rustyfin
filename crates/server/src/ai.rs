@@ -26,6 +26,7 @@ pub async fn clear_loaded_model_state(state: &AppState) {
     let mut guard = state.engine.lock().await;
     guard.loaded_model = None;
     guard.engine = None;
+    guard.last_prompt_debug = None;
 }
 
 #[cfg(not(feature = "ai"))]
@@ -37,6 +38,7 @@ pub async fn clear_loaded_model_if_matching(state: &AppState, model_name: &str) 
     if guard.loaded_model.as_deref() == Some(model_name) {
         guard.loaded_model = None;
         guard.engine = None;
+        guard.last_prompt_debug = None;
     }
 }
 

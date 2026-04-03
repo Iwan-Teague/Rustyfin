@@ -17,23 +17,31 @@ use crate::ai_assistant::confirmation::{
     CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message_with_state,
 };
 use crate::ai_assistant::context::AssistantContext;
+use crate::ai_assistant::dates::assistant_local_now;
+use crate::ai_assistant::memory::{
+    ConversationMemoryState, ConversationPromptDebug, build_generation_prompt_messages,
+    build_memory_update_messages, fallback_memory_update, parse_memory_update_response,
+};
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
-    AssistantFollowUpContext, AssistantGroundingSource, AssistantPendingAction,
-    AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent, AssistantResponseMode,
-    AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
-    AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
+    AssistantFollowUpContext, AssistantGroundingSource, AssistantHistoryMessage,
+    AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
+    AssistantResponseMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
+    AssistantToolActivityEvent, AssistantToolActivityState, AssistantToolContextBlock,
+    AssistantToolInput, AssistantTurnStats,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
-    AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
+    AssistantChatRequest, build_system_prompt, deterministic_calendar_reply,
     deterministic_current_datetime_reply, deterministic_network_reply, deterministic_rooms_reply,
     deterministic_runtime_reply, immediate_response_for_message, plan_tool_calls_with_model_assist,
     status_label_for_tool_call, unsupported_write_response_for_message,
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
-use crate::ai_conversations::ConversationMessageRequest;
+use crate::ai_conversations::{
+    ConversationMessageRequest, conversation_memory_state, persist_conversation_memory,
+};
 use crate::ai_storage::{
     AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
 };
@@ -45,6 +53,7 @@ pub struct EngineState {
     pub loaded_model: Option<String>,
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
     pub active_phase: AssistantRuntimePhase,
+    pub last_prompt_debug: Option<ConversationPromptDebug>,
 }
 
 impl Default for EngineState {
@@ -53,6 +62,7 @@ impl Default for EngineState {
             loaded_model: None,
             engine: None,
             active_phase: AssistantRuntimePhase::Idle,
+            last_prompt_debug: None,
         }
     }
 }
@@ -60,28 +70,15 @@ impl Default for EngineState {
 #[derive(Clone)]
 struct ConversationPersistence {
     conversation_id: String,
+    memory_state: ConversationMemoryState,
+    memory_turn_index: i64,
 }
 
 const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1024;
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 4096;
 const MAX_CONTEXT_WINDOW_TOKENS: u32 = 32768;
 const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 192;
-const COMPACTION_MAX_RECENT_HISTORY_MESSAGES: usize = 8;
-const COMPACTION_MIN_RECENT_HISTORY_MESSAGES: usize = 0;
-const COMPACTION_SUMMARY_TARGET_TOKENS: u32 = 320;
-const COMPACTION_SUMMARY_FALLBACK_TARGET_TOKENS: [u32; 3] = [320, 192, 128];
-const COMPACTION_SUMMARY_MAX_DURATION_MS: u64 = 15_000;
-const COMPACTION_MESSAGE_CHAR_LIMIT: usize = 1200;
-
-#[derive(Debug, Clone)]
-struct PreparedGenerationMessages {
-    messages: Vec<rustfin_ai_agent::ChatMessage>,
-    compacted: bool,
-    original_prompt_tokens: u32,
-    final_prompt_tokens: u32,
-    retained_history_messages: usize,
-    summarized_history_messages: usize,
-}
+const MEMORY_SUMMARY_MAX_DURATION_MS: u64 = 15_000;
 
 pub fn ai_router() -> Router<AppState> {
     Router::new()
@@ -156,7 +153,7 @@ async fn stream_conversation_message(
     AxumPath(conversation_id): AxumPath<String>,
     Json(req): Json<ConversationMessageRequest>,
 ) -> Result<Response, AppError> {
-    let (_, _, history) = crate::ai_conversations::load_conversation_request_context(
+    let (conversation, _, history) = crate::ai_conversations::load_conversation_request_context(
         &state,
         &user.user_id,
         &conversation_id,
@@ -181,7 +178,11 @@ async fn stream_conversation_message(
             confirmation_token: req.confirmation_token,
             history,
         },
-        Some(ConversationPersistence { conversation_id }),
+        Some(ConversationPersistence {
+            conversation_id,
+            memory_state: conversation_memory_state(&conversation),
+            memory_turn_index: conversation.memory_turn_index,
+        }),
     ))
 }
 
@@ -197,6 +198,7 @@ fn stream_chat_response(
         let trace_id = uuid::Uuid::new_v4().to_string();
         let turn_started = Instant::now();
         let chat_metrics = state.runtime_metrics.start_ai_chat_request();
+        set_last_prompt_debug(&state, None).await;
         let mut audit_written = false;
         let mut assistant_content = String::new();
         let mut activity_trace = Vec::<AssistantActivityTraceItem>::new();
@@ -1275,7 +1277,15 @@ fn stream_chat_response(
             },
         ));
 
-        let prepared_messages = match prepare_generation_messages(&engine, &req, &grounding_blocks).await {
+        let (messages, prompt_debug, completion_budget) = match prepare_generation_messages(
+            &state,
+            &user,
+            persistence.as_ref(),
+            &engine,
+            &req,
+            &grounding_blocks,
+        )
+        .await {
             Ok(prepared) => prepared,
             Err(error_message) => {
                 persist_chat_audit_event(
@@ -1283,7 +1293,7 @@ fn stream_chat_response(
                     &user,
                     &req,
                     &trace_id,
-                    AiAssistantAuditResponseKind::ModelLoadError,
+                    AiAssistantAuditResponseKind::StreamError,
                     &planned_tools,
                     &grounding_blocks,
                     &grounding_sources,
@@ -1306,24 +1316,23 @@ fn stream_chat_response(
                 return;
             }
         };
-        if prepared_messages.compacted {
+        set_last_prompt_debug(&state, Some(prompt_debug.clone())).await;
+        if prompt_debug.summarized_turns > 0 {
             info!(
                 trace_id = %trace_id,
                 user_id = %user.user_id,
                 model = %model_name,
-                original_prompt_tokens = prepared_messages.original_prompt_tokens,
-                final_prompt_tokens = prepared_messages.final_prompt_tokens,
-                retained_history_messages = prepared_messages.retained_history_messages,
-                summarized_history_messages = prepared_messages.summarized_history_messages,
-                context_window_tokens = engine.params().n_ctx,
+                prompt_tokens = prompt_debug.prompt_tokens_estimate,
+                retained_raw_turns = prompt_debug.retained_raw_turns,
+                summarized_turns = prompt_debug.summarized_turns,
+                context_window_tokens = prompt_debug.context_length,
                 "ai chat compacted conversation history to fit context window"
             );
         }
 
-        let raw_stream = engine.chat_stream(
-            prepared_messages.messages,
-            sampling_params_for_response_mode(req.response_mode),
-        );
+        let mut sampling = sampling_params_for_response_mode(req.response_mode);
+        sampling.max_tokens = sampling.max_tokens.min(completion_budget);
+        let raw_stream = engine.chat_stream(messages, sampling);
         futures::pin_mut!(raw_stream);
 
         while let Some(chunk) = raw_stream.next().await {
@@ -1726,349 +1735,180 @@ fn prompt_budget_tokens(response_mode: AssistantResponseMode, context_window_tok
     )
 }
 
-fn build_prompt_messages(
-    request: &AssistantChatRequest,
-    grounding_blocks: &[AssistantToolContextBlock],
-) -> Vec<rustfin_ai_agent::ChatMessage> {
-    build_assistant_messages(request.clone(), grounding_blocks)
-}
-
 async fn prepare_generation_messages(
+    state: &AppState,
+    user: &AuthUser,
+    persistence: Option<&ConversationPersistence>,
     engine: &rustfin_ai_agent::LlamaEngine,
     request: &AssistantChatRequest,
     grounding_blocks: &[AssistantToolContextBlock],
-) -> Result<PreparedGenerationMessages, String> {
-    let messages = build_prompt_messages(request, grounding_blocks);
-    let original_prompt_tokens = engine
-        .count_chat_tokens(&messages)
-        .map_err(|error| format!("failed to count prompt tokens: {error}"))?;
-    let budget = prompt_budget_tokens(request.response_mode, engine.params().n_ctx);
+) -> Result<
+    (
+        Vec<rustfin_ai_agent::ChatMessage>,
+        ConversationPromptDebug,
+        u32,
+    ),
+    String,
+> {
+    let context_length = engine.params().n_ctx;
+    let reserved_completion_tokens =
+        response_mode_completion_reserve_tokens(request.response_mode, context_length);
+    let prompt_budget = prompt_budget_tokens(request.response_mode, context_length);
+    let system_prompt = build_system_prompt();
+    let local_now_text = format!(
+        "Current Rustyfin host local date/time for this turn: {}. Use this when interpreting relative dates like today, tomorrow, and next Tuesday.",
+        assistant_local_now().format("%Y-%m-%d %H:%M:%S %:z (%A)")
+    );
 
-    if original_prompt_tokens <= budget || request.history.is_empty() {
-        return Ok(PreparedGenerationMessages {
-            messages,
-            compacted: false,
-            original_prompt_tokens,
-            final_prompt_tokens: original_prompt_tokens,
-            retained_history_messages: request.history.len(),
-            summarized_history_messages: 0,
-        });
-    }
+    let mut memory_state = persistence
+        .map(|value| value.memory_state.clone())
+        .unwrap_or_default();
+    let mut memory_turn_index = persistence
+        .map(|value| value.memory_turn_index)
+        .unwrap_or(-1);
 
-    let mut recent_keep = request
-        .history
-        .len()
-        .min(COMPACTION_MAX_RECENT_HISTORY_MESSAGES);
-    let minimum_recent_keep = request
-        .history
-        .len()
-        .min(COMPACTION_MIN_RECENT_HISTORY_MESSAGES);
+    for _ in 0..3 {
+        let assembly = build_generation_prompt_messages(
+            &system_prompt,
+            &local_now_text,
+            grounding_blocks,
+            &request.history,
+            &request.message,
+            &memory_state,
+            memory_turn_index,
+            context_length,
+            prompt_budget,
+            reserved_completion_tokens,
+            |messages| engine.count_chat_tokens(messages).unwrap_or(u32::MAX),
+        );
 
-    let mut best_candidate: Option<PreparedGenerationMessages> = None;
-
-    loop {
-        let summarized_history_messages = request.history.len().saturating_sub(recent_keep);
-        let summary_targets = if summarized_history_messages == 0 {
-            vec![COMPACTION_SUMMARY_TARGET_TOKENS]
-        } else {
-            COMPACTION_SUMMARY_FALLBACK_TARGET_TOKENS.to_vec()
-        };
-
-        for summary_target_tokens in summary_targets {
-            let summary = if summarized_history_messages == 0 {
-                None
-            } else {
-                Some(
-                    summarize_history_for_compaction(
-                        engine,
-                        &request.history[..summarized_history_messages],
-                        summary_target_tokens,
-                    )
-                    .await?,
-                )
-            };
-            let compacted_request =
-                build_compacted_request(request, summary.as_deref(), recent_keep);
-            let compacted_messages = build_prompt_messages(&compacted_request, grounding_blocks);
-            let final_prompt_tokens = engine
-                .count_chat_tokens(&compacted_messages)
-                .map_err(|error| format!("failed to count compacted prompt tokens: {error}"))?;
-
-            let candidate = PreparedGenerationMessages {
-                messages: compacted_messages,
-                compacted: true,
-                original_prompt_tokens,
-                final_prompt_tokens,
-                retained_history_messages: recent_keep,
-                summarized_history_messages,
-            };
-
-            if candidate.final_prompt_tokens <= budget {
-                return Ok(candidate);
+        if assembly.pending_summary_turns.is_empty() || persistence.is_none() {
+            let remaining_tokens = context_length
+                .saturating_sub(assembly.debug.prompt_tokens_estimate.saturating_add(8));
+            if remaining_tokens == 0 {
+                return Err(
+                    "AI prompt exhausted the model context window after compaction.".to_string(),
+                );
             }
-
-            let replace_best = best_candidate
-                .as_ref()
-                .map(|best| candidate.final_prompt_tokens < best.final_prompt_tokens)
-                .unwrap_or(true);
-            if replace_best {
-                best_candidate = Some(candidate);
-            }
+            return Ok((
+                assembly.messages,
+                assembly.debug,
+                remaining_tokens.min(reserved_completion_tokens.max(1)),
+            ));
         }
 
-        if recent_keep == minimum_recent_keep {
-            break;
-        }
-
-        recent_keep = recent_keep.saturating_sub(1).max(minimum_recent_keep);
+        let persistence = persistence.expect("checked is_some above");
+        let updated_memory = refresh_conversation_memory(
+            state,
+            user,
+            persistence,
+            engine,
+            &memory_state,
+            &assembly.pending_summary_turns,
+            assembly
+                .pending_summary_last_turn_index
+                .expect("missing summary boundary"),
+        )
+        .await?;
+        memory_state = updated_memory;
+        memory_turn_index = assembly
+            .pending_summary_last_turn_index
+            .unwrap_or(memory_turn_index);
     }
 
-    let best_candidate = best_candidate.ok_or_else(|| {
-        "failed to build any compacted prompt candidate for this conversation".to_string()
-    })?;
-    Err(format!(
-        "the conversation needs {} prompt tokens even after compaction, but only {} fit into the current {} token context window",
-        best_candidate.final_prompt_tokens,
-        budget,
-        engine.params().n_ctx
+    let assembly = build_generation_prompt_messages(
+        &system_prompt,
+        &local_now_text,
+        grounding_blocks,
+        &request.history,
+        &request.message,
+        &memory_state,
+        memory_turn_index,
+        context_length,
+        prompt_budget,
+        reserved_completion_tokens,
+        |messages| engine.count_chat_tokens(messages).unwrap_or(u32::MAX),
+    );
+    let remaining_tokens =
+        context_length.saturating_sub(assembly.debug.prompt_tokens_estimate.saturating_add(8));
+    if remaining_tokens == 0 {
+        return Err("AI prompt exhausted the model context window after compaction.".to_string());
+    }
+
+    Ok((
+        assembly.messages,
+        assembly.debug,
+        remaining_tokens.min(reserved_completion_tokens.max(1)),
     ))
 }
 
-fn build_compacted_request(
-    request: &AssistantChatRequest,
-    summary: Option<&str>,
-    recent_keep: usize,
-) -> AssistantChatRequest {
-    let retained_start = request.history.len().saturating_sub(recent_keep);
-    let mut history = Vec::new();
-
-    if let Some(summary) = summary.map(str::trim).filter(|summary| !summary.is_empty()) {
-        history.push(crate::ai_assistant::types::AssistantHistoryMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Compacted Rustyfin conversation memory for earlier turns:\n{}",
-                summary
-            ),
-            grounding_tools: Vec::new(),
-            follow_up_contexts: Vec::new(),
-        });
-    }
-
-    history.extend_from_slice(&request.history[retained_start..]);
-
-    AssistantChatRequest {
-        model: request.model.clone(),
-        message: request.message.clone(),
-        response_mode: request.response_mode,
-        confirmation_token: request.confirmation_token.clone(),
-        history,
-    }
-}
-
-async fn summarize_history_for_compaction(
+async fn refresh_conversation_memory(
+    state: &AppState,
+    user: &AuthUser,
+    persistence: &ConversationPersistence,
     engine: &rustfin_ai_agent::LlamaEngine,
-    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
-    target_tokens: u32,
-) -> Result<String, String> {
-    if history.is_empty() {
-        return Ok(String::new());
+    existing_memory: &ConversationMemoryState,
+    turns: &[AssistantHistoryMessage],
+    memory_turn_index: i64,
+) -> Result<ConversationMemoryState, String> {
+    if turns.is_empty() {
+        return Ok(existing_memory.clone());
     }
 
-    let context_window = engine.params().n_ctx;
-    let segment_budget = context_window
-        .saturating_sub(target_tokens + CONTEXT_SAFETY_MARGIN_TOKENS)
-        .max(1024);
-    let segments = split_history_for_summary(engine, history, segment_budget)?;
+    let updated_memory = generate_memory_state_with_model(engine, existing_memory, turns).await;
+    persist_conversation_memory(
+        state,
+        &user.user_id,
+        &persistence.conversation_id,
+        &updated_memory,
+        memory_turn_index,
+    )
+    .await
+    .map_err(|error| format!("{error:?}"))?;
 
-    let mut summaries = Vec::new();
-    for segment in segments {
-        let rendered = render_history_segment(&segment);
-        let summary = run_compaction_summary(engine, &rendered, target_tokens)
-            .await
-            .unwrap_or_else(|_| fallback_history_summary(&segment));
-        if !summary.trim().is_empty() {
-            summaries.push(summary.trim().to_string());
-        }
-    }
-
-    if summaries.is_empty() {
-        return Ok(fallback_history_summary(history));
-    }
-    if summaries.len() == 1 {
-        return Ok(summaries[0].clone());
-    }
-
-    let combined = summaries
-        .iter()
-        .enumerate()
-        .map(|(index, summary)| format!("Chunk {} summary:\n{}", index + 1, summary))
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    run_compaction_summary(engine, &combined, target_tokens)
-        .await
-        .or_else(|_| Ok(shorten_text(&combined, 1800)))
+    Ok(updated_memory)
 }
 
-fn split_history_for_summary(
+async fn generate_memory_state_with_model(
     engine: &rustfin_ai_agent::LlamaEngine,
-    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
-    prompt_budget: u32,
-) -> Result<Vec<Vec<crate::ai_assistant::types::AssistantHistoryMessage>>, String> {
-    let mut segments = Vec::new();
-    let mut current = Vec::new();
-
-    for message in history.iter().cloned() {
-        current.push(message.clone());
-        let rendered = render_history_segment(&current);
-        let prompt = build_compaction_summary_messages(&rendered, COMPACTION_SUMMARY_TARGET_TOKENS);
-        let prompt_tokens = engine
-            .count_chat_tokens(&prompt)
-            .map_err(|error| format!("failed to count summary prompt tokens: {error}"))?;
-
-        if prompt_tokens > prompt_budget && current.len() > 1 {
-            current.pop();
-            segments.push(current);
-            current = vec![message];
-        }
+    existing_memory: &ConversationMemoryState,
+    turns: &[AssistantHistoryMessage],
+) -> ConversationMemoryState {
+    if turns.is_empty() {
+        return existing_memory.clone();
     }
 
-    if !current.is_empty() {
-        segments.push(current);
-    }
-
-    Ok(segments)
-}
-
-fn render_history_segment(
-    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
-) -> String {
-    history
-        .iter()
-        .map(|message| {
-            let role = message.role.to_ascii_uppercase();
-            let content = shorten_text(
-                &message
-                    .content
-                    .replace('\n', " ")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                COMPACTION_MESSAGE_CHAR_LIMIT,
-            );
-            if message.grounding_tools.is_empty() {
-                format!("{role}: {content}")
-            } else {
-                format!(
-                    "{role}: {content}\nGrounded tools: {}",
-                    message.grounding_tools.join(", ")
-                )
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn build_compaction_summary_messages(
-    rendered_history: &str,
-    target_tokens: u32,
-) -> Vec<rustfin_ai_agent::ChatMessage> {
-    vec![
-        rustfin_ai_agent::ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "You are compacting earlier Rustyfin chat history into a durable memory note for the next assistant turn. \
-Preserve user goals, decisions, constraints, names, dates, URLs, identifiers, tool findings, and open tasks. \
-Do not invent details. Use concise bullet lines. Keep the summary within about {target_tokens} tokens."
-            ),
-        },
-        rustfin_ai_agent::ChatMessage {
-            role: "user".to_string(),
-            content: format!("Earlier conversation to compact:\n{rendered_history}"),
-        },
-    ]
-}
-
-async fn run_compaction_summary(
-    engine: &rustfin_ai_agent::LlamaEngine,
-    rendered_history: &str,
-    target_tokens: u32,
-) -> Result<String, String> {
-    let messages = build_compaction_summary_messages(rendered_history, target_tokens);
+    let messages = build_memory_update_messages(existing_memory, turns);
     let stream = engine.chat_stream(
         messages,
         rustfin_ai_agent::SamplingParams {
             temperature: 0.2,
             top_p: 0.9,
-            top_k: 24,
+            top_k: 20,
             repeat_penalty: 1.05,
-            max_tokens: target_tokens,
-            max_duration_ms: Some(COMPACTION_SUMMARY_MAX_DURATION_MS),
+            max_tokens: 384,
+            max_duration_ms: Some(MEMORY_SUMMARY_MAX_DURATION_MS),
         },
     );
     futures::pin_mut!(stream);
 
-    let mut summary = String::new();
+    let mut content = String::new();
     while let Some(chunk) = stream.next().await {
-        match chunk.map_err(|error| error.to_string())? {
-            rustfin_ai_agent::ChatChunk::Token(text) => summary.push_str(&text),
-            rustfin_ai_agent::ChatChunk::Done => break,
-            rustfin_ai_agent::ChatChunk::Stats { .. } => {}
+        match chunk {
+            Ok(rustfin_ai_agent::ChatChunk::Token(text)) => content.push_str(&text),
+            Ok(rustfin_ai_agent::ChatChunk::Stats { .. })
+            | Ok(rustfin_ai_agent::ChatChunk::Done) => {}
+            Err(_) => return fallback_memory_update(existing_memory, turns),
         }
     }
 
-    let summary = summary.trim().to_string();
-    if summary.is_empty() {
-        Err("history compaction produced an empty summary".to_string())
-    } else {
-        Ok(summary)
-    }
+    parse_memory_update_response(&content)
+        .unwrap_or_else(|| fallback_memory_update(existing_memory, turns))
 }
 
-fn fallback_history_summary(
-    history: &[crate::ai_assistant::types::AssistantHistoryMessage],
-) -> String {
-    history
-        .iter()
-        .rev()
-        .take(10)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|message| {
-            format!(
-                "- {}: {}",
-                message.role,
-                shorten_text(
-                    &message
-                        .content
-                        .replace('\n', " ")
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    180
-                )
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn shorten_text(value: &str, max_chars: usize) -> String {
-    let trimmed = value.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
-    }
-
-    let mut out = String::new();
-    for (index, ch) in trimmed.chars().enumerate() {
-        if index >= max_chars {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out
+async fn set_last_prompt_debug(state: &AppState, debug: Option<ConversationPromptDebug>) {
+    let mut guard = state.engine.lock().await;
+    guard.last_prompt_debug = debug;
 }
 
 fn sampling_params_for_response_mode(

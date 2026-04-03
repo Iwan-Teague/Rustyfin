@@ -796,6 +796,33 @@ function RuntimePanel({
         </section>
 
         <section className="border-b border-[var(--border)] pb-4">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Memory</p>
+          {runtime.turn.prompt ? (
+            <div className="mt-2 space-y-1 text-xs muted">
+              <p>
+                {runtime.turn.prompt.retained_raw_turns} raw turns ·{' '}
+                {runtime.turn.prompt.summarized_turns} summarized
+              </p>
+              <p>
+                Prompt {runtime.turn.prompt.prompt_tokens_estimate} /{' '}
+                {runtime.turn.prompt.prompt_budget_tokens}
+              </p>
+              <p>
+                History {runtime.turn.prompt.loaded_history_turns} · contexts{' '}
+                {runtime.turn.prompt.recent_grounded_context_count}
+              </p>
+              <p>
+                {runtime.turn.prompt.used_memory_summary
+                  ? `Persisted memory on · ${runtime.turn.prompt.memory_summary_chars} chars`
+                  : 'Persisted memory off'}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs muted">No prompt-assembly telemetry captured yet.</p>
+          )}
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Resources</p>
           <div className="mt-2 space-y-1 text-xs muted">
             <p>Process RSS {runtime.resources.process_rss_human ?? '—'}</p>

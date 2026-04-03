@@ -32,6 +32,23 @@ pub struct AiRuntimeTurnSummary {
     pub phase: AssistantRuntimePhase,
     pub queue_depth: u64,
     pub active_request_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<AiRuntimePromptSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimePromptSummary {
+    pub context_length: u32,
+    pub prompt_budget_tokens: u32,
+    pub reserved_completion_tokens: u32,
+    pub prompt_tokens_estimate: u32,
+    pub loaded_history_turns: u32,
+    pub retained_raw_turns: u32,
+    pub summarized_turns: u32,
+    pub recent_grounded_context_count: u32,
+    pub used_memory_summary: bool,
+    pub memory_turn_index: i64,
+    pub memory_summary_chars: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +107,7 @@ pub async fn get_ai_runtime(
         n_gpu_layers,
         split_mode,
         device_indices,
+        prompt_debug,
     ) = {
         let guard = state.engine.lock().await;
         let loaded_model = guard.loaded_model.clone();
@@ -108,6 +126,7 @@ pub async fn get_ai_runtime(
             params.n_gpu_layers,
             params.split_mode.as_str().to_string(),
             params.device_indices,
+            guard.last_prompt_debug.clone(),
         )
     };
 
@@ -134,6 +153,19 @@ pub async fn get_ai_runtime(
             phase,
             queue_depth,
             active_request_count,
+            prompt: prompt_debug.map(|value| AiRuntimePromptSummary {
+                context_length: value.context_length,
+                prompt_budget_tokens: value.prompt_budget_tokens,
+                reserved_completion_tokens: value.reserved_completion_tokens,
+                prompt_tokens_estimate: value.prompt_tokens_estimate,
+                loaded_history_turns: value.loaded_history_turns,
+                retained_raw_turns: value.retained_raw_turns,
+                summarized_turns: value.summarized_turns,
+                recent_grounded_context_count: value.recent_grounded_context_count,
+                used_memory_summary: value.used_memory_summary,
+                memory_turn_index: value.memory_turn_index,
+                memory_summary_chars: value.memory_summary_chars,
+            }),
         },
         resources: AiRuntimeResourcesSummary {
             process_rss_human: process_rss_bytes.map(human_bytes),
@@ -381,6 +413,19 @@ mod tests {
             let mut engine = state.engine.lock().await;
             engine.loaded_model = Some("tiny.gguf".to_string());
             engine.active_phase = AssistantRuntimePhase::Grounding;
+            engine.last_prompt_debug = Some(crate::ai_assistant::memory::ConversationPromptDebug {
+                context_length: 4096,
+                prompt_budget_tokens: 3072,
+                reserved_completion_tokens: 1024,
+                prompt_tokens_estimate: 1200,
+                loaded_history_turns: 12,
+                retained_raw_turns: 4,
+                summarized_turns: 8,
+                recent_grounded_context_count: 2,
+                used_memory_summary: true,
+                memory_turn_index: 7,
+                memory_summary_chars: 240,
+            });
         }
         let _chat_1 = state.runtime_metrics.start_ai_chat_request();
         let _chat_2 = state.runtime_metrics.start_ai_chat_request();
@@ -416,6 +461,15 @@ mod tests {
         assert_eq!(body["turn"]["phase"].as_str(), Some("grounding"));
         assert_eq!(body["turn"]["active_request_count"].as_u64(), Some(2));
         assert_eq!(body["turn"]["queue_depth"].as_u64(), Some(1));
+        assert_eq!(
+            body["turn"]["prompt"]["loaded_history_turns"].as_u64(),
+            Some(12)
+        );
+        assert_eq!(body["turn"]["prompt"]["summarized_turns"].as_u64(), Some(8));
+        assert_eq!(
+            body["turn"]["prompt"]["used_memory_summary"].as_bool(),
+            Some(true)
+        );
         assert!(body["resources"].is_object());
         #[cfg(target_os = "linux")]
         {
