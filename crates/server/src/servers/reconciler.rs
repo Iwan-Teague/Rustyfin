@@ -6,7 +6,9 @@ use tracing::{error, info, warn};
 use super::runtime::{query_unit_status, run_lifecycle_action};
 use crate::state::AppState;
 use rustfin_core::servers_agent::ServerLifecycleAction;
-use rustfin_db::repo::servers::{CreateServerInstanceEventParams, UpdateMinecraftServerRuntimeParams};
+use rustfin_db::repo::servers::{
+    CreateServerInstanceEventParams, UpdateMinecraftServerRuntimeParams,
+};
 
 const RECONCILE_INTERVAL_SECS: u64 = 60;
 const STATUS_REFRESH_OLDER_THAN_SECS: i64 = 120;
@@ -95,7 +97,9 @@ async fn refresh_stale_servers(state: &AppState) {
                 max_player_count: server.max_player_count,
                 last_ready_ts: server.last_ready_ts,
                 last_started_ts: server.last_started_ts,
-                last_stopped_ts: if observed_state == "stopped" && server.observed_state == "running" {
+                last_stopped_ts: if observed_state == "stopped"
+                    && server.observed_state == "running"
+                {
                     Some(now)
                 } else {
                     server.last_stopped_ts
@@ -142,9 +146,12 @@ async fn enforce_auto_stop(state: &AppState) {
             idle_minutes
         );
 
-        if let Err(e) =
-            run_lifecycle_action(state, &server.systemd_unit_name, ServerLifecycleAction::Stop)
-                .await
+        if let Err(e) = run_lifecycle_action(
+            state,
+            &server.systemd_unit_name,
+            ServerLifecycleAction::Stop,
+        )
+        .await
         {
             warn!("auto-stop failed for {}: {e}", server.display_name);
             continue;

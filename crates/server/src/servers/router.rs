@@ -50,8 +50,7 @@ pub fn servers_router() -> Router<AppState> {
         )
         .route(
             "/minecraft/instances/{id}/members",
-            get(super::handlers::list_server_members)
-                .post(super::handlers::add_server_member),
+            get(super::handlers::list_server_members).post(super::handlers::add_server_member),
         )
         .route(
             "/minecraft/instances/{id}/members/{user_id}",

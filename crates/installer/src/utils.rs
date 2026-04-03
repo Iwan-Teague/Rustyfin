@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HostPlatform {
@@ -142,11 +142,7 @@ pub fn resolve_command_path(name: &str) -> String {
     name.to_string()
 }
 
-pub fn run_root_command(
-    cmd: &str,
-    args: &[&str],
-    user_context: &NativeUserContext,
-) -> Result<()> {
+pub fn run_root_command(cmd: &str, args: &[&str], user_context: &NativeUserContext) -> Result<()> {
     let mut command = if user_context.uses_sudo_for_privileged_steps {
         let mut c = Command::new("sudo");
         c.arg("-n").arg(cmd);
@@ -154,13 +150,13 @@ pub fn run_root_command(
     } else {
         Command::new(cmd)
     };
-    
+
     command.args(args);
-    
+
     let status = command
         .status()
         .with_context(|| format!("failed to execute {cmd}"))?;
-        
+
     if !status.success() {
         bail!("command failed: {cmd} {:?}", args);
     }
@@ -172,15 +168,15 @@ pub fn run_command_capture(cmd: &str, args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .with_context(|| format!("failed to execute {cmd}"))?;
-        
+
     if !output.status.success() {
         bail!(
-            "command failed: {cmd} {:?}\nstderr: {}", 
-            args, 
+            "command failed: {cmd} {:?}\nstderr: {}",
+            args,
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    
+
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -435,9 +431,9 @@ pub fn run_root_command_allow_failure(
     } else {
         Command::new(cmd)
     };
-    
+
     command.args(args);
-    
+
     command
         .status()
         .with_context(|| format!("failed to execute {cmd}"))
@@ -604,7 +600,11 @@ pub fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) -> Result<()> 
         if src.exists() && !dst.exists() {
             let _ = run_root_command(
                 "ln",
-                &["-sf", src.to_str().unwrap_or(""), dst.to_str().unwrap_or("")],
+                &[
+                    "-sf",
+                    src.to_str().unwrap_or(""),
+                    dst.to_str().unwrap_or(""),
+                ],
                 user_context,
             )?;
         }
@@ -624,11 +624,7 @@ pub fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) -> Result<()> 
                 "bash",
                 &[
                     "-c",
-                    &format!(
-                        "printf '%s' '{}' > {}",
-                        env_content,
-                        env_file.display()
-                    ),
+                    &format!("printf '%s' '{}' > {}", env_content, env_file.display()),
                 ],
                 user_context,
             )?;

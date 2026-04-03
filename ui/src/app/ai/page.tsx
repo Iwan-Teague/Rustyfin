@@ -5,19 +5,17 @@ import { useRouter } from 'next/navigation';
 
 import ConfirmModal from '@/app/components/ConfirmModal';
 import AiAssistantActivity from '@/features/ai-assistant/components/AiAssistantActivity';
-import AiConversationRail, {
-  type AiConversationDropTarget,
-} from '@/features/ai-assistant/components/AiConversationRail';
+import AiConversationRail from '@/features/ai-assistant/components/AiConversationRail';
 import { useAuth } from '@/lib/auth';
 import {
   type AiActivityTraceItem,
   type AiConversationDetail,
   type AiConversationSummary,
   type AiConversationTurn,
+  type AiGroundingCitation,
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
-  type AiResponseMode,
   type AiRuntimeResponse,
   type AiStatusUpdate,
   type AiToolActivityEvent,
@@ -28,7 +26,6 @@ import {
   fetchAiRuntime,
   getConversation,
   listConversations,
-  moveConversation,
   streamConversationMessage,
   transcribeAiInput,
   updateConversation,
@@ -69,7 +66,7 @@ type ConversationStatsSummary = {
 type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
-type ComposerResponseMode = AiResponseMode;
+type ComposerResponseMode = 'instant' | 'thinking';
 type ComposerAttachmentKind = 'document' | 'image';
 
 type BrowserSpeechRecognitionResult = {
@@ -141,14 +138,6 @@ function sortConversationSummaries(
   conversations: AiConversationSummary[],
 ): AiConversationSummary[] {
   return [...conversations].sort((left, right) => {
-    if (left.archived !== right.archived) {
-      return Number(left.archived) - Number(right.archived);
-    }
-    const rightSort = right.sort_order ?? 0;
-    const leftSort = left.sort_order ?? 0;
-    if (rightSort !== leftSort) {
-      return rightSort - leftSort;
-    }
     if (right.updated_ts !== left.updated_ts) {
       return right.updated_ts - left.updated_ts;
     }
@@ -167,179 +156,15 @@ function chooseConversationId(
   return preferredVisible?.id ?? conversations[0]?.id ?? null;
 }
 
-function normalizedConversationGroupName(value?: string | null): string | null {
-  const normalized = value?.trim();
-  return normalized ? normalized : null;
-}
-
-type ConversationReorderUpdate = {
-  id: string;
-  group_name: string | null;
-  sort_order: number;
-};
-
-function buildConversationReorderUpdates(
-  conversations: AiConversationSummary[],
-  draggedConversationId: string,
-  target: AiConversationDropTarget,
-): ConversationReorderUpdate[] {
-  const draggedConversation = conversations.find(
-    (conversation) => conversation.id === draggedConversationId,
-  );
-  if (!draggedConversation || draggedConversation.archived !== target.archived) {
-    return [];
-  }
-
-  const bucket = sortConversationSummaries(
-    conversations.filter(
-      (conversation) => conversation.archived === draggedConversation.archived,
-    ),
-  );
-  const remaining = bucket.filter((conversation) => conversation.id !== draggedConversationId);
-
-  const targetGroupName =
-    target.kind === 'section'
-      ? null
-      : normalizedConversationGroupName(target.groupName);
-
-  let insertIndex = 0;
-  if (target.kind === 'row') {
-    const targetIndex = remaining.findIndex(
-      (conversation) => conversation.id === target.targetConversationId,
-    );
-    if (targetIndex < 0) {
-      return [];
-    }
-    insertIndex = targetIndex + (target.placement === 'after' ? 1 : 0);
-  } else if (target.kind === 'group') {
-    const firstGroupIndex = remaining.findIndex(
-      (conversation) =>
-        normalizedConversationGroupName(conversation.group_name) === targetGroupName,
-    );
-    insertIndex = firstGroupIndex >= 0 ? firstGroupIndex : remaining.length;
-  } else {
-    insertIndex = 0;
-  }
-
-  const reorderedBucket = [...remaining];
-  reorderedBucket.splice(insertIndex, 0, {
-    ...draggedConversation,
-    group_name: targetGroupName,
-  });
-
-  const orderUnchanged =
-    bucket.length === reorderedBucket.length &&
-    bucket.every((conversation, index) => conversation.id === reorderedBucket[index]?.id);
-  if (
-    orderUnchanged &&
-    normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
-  ) {
-    return [];
-  }
-
-  const above = insertIndex > 0 ? reorderedBucket[insertIndex - 1] : null;
-  const below =
-    insertIndex + 1 < reorderedBucket.length ? reorderedBucket[insertIndex + 1] : null;
-
-  if (above && below) {
-    const aboveSort = above.sort_order ?? 0;
-    const belowSort = below.sort_order ?? 0;
-    const gap = aboveSort - belowSort;
-    if (gap > 1) {
-      const sortOrder = belowSort + Math.floor(gap / 2);
-      if (
-        (draggedConversation.sort_order ?? 0) === sortOrder &&
-        normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
-      ) {
-        return [];
-      }
-      return [
-        {
-          id: draggedConversation.id,
-          group_name: targetGroupName,
-          sort_order: sortOrder,
-        },
-      ];
-    }
-  } else if (above) {
-    const sortOrder = (above.sort_order ?? 0) - 1024;
-    if (
-      (draggedConversation.sort_order ?? 0) === sortOrder &&
-      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
-    ) {
-      return [];
-    }
-    return [
-      {
-        id: draggedConversation.id,
-        group_name: targetGroupName,
-        sort_order: sortOrder,
-      },
-    ];
-  } else if (below) {
-    const sortOrder = (below.sort_order ?? 0) + 1024;
-    if (
-      (draggedConversation.sort_order ?? 0) === sortOrder &&
-      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
-    ) {
-      return [];
-    }
-    return [
-      {
-        id: draggedConversation.id,
-        group_name: targetGroupName,
-        sort_order: sortOrder,
-      },
-    ];
-  } else if (
-    (draggedConversation.sort_order ?? 0) !== 1024 ||
-    normalizedConversationGroupName(draggedConversation.group_name) !== targetGroupName
-  ) {
-    return [
-      {
-        id: draggedConversation.id,
-        group_name: targetGroupName,
-        sort_order: 1024,
-      },
-    ];
-  }
-
-  return reorderedBucket
-    .map((conversation, index) => ({
-      id: conversation.id,
-      group_name:
-        conversation.id === draggedConversation.id
-          ? targetGroupName
-          : normalizedConversationGroupName(conversation.group_name),
-      sort_order: (reorderedBucket.length - index) * 1024,
-    }))
-    .filter((update) => {
-      const current = conversations.find((conversation) => conversation.id === update.id);
-      return (
-        (current?.sort_order ?? 0) !== update.sort_order ||
-        normalizedConversationGroupName(current?.group_name) !== update.group_name
-      );
-    });
-}
-
 function buildConversationSummary(
   detail: Pick<
     UiConversationDetail,
-    | 'id'
-    | 'title'
-    | 'archived'
-    | 'group_name'
-    | 'sort_order'
-    | 'last_message_preview'
-    | 'last_model_name'
-    | 'updated_ts'
+    'id' | 'title' | 'archived' | 'last_message_preview' | 'last_model_name' | 'updated_ts'
   >,
 ): AiConversationSummary {
   return {
     id: detail.id,
     title: detail.title,
-    group_name: detail.group_name ?? null,
-    sort_order: detail.sort_order ?? 0,
     last_message_preview: detail.last_message_preview ?? null,
     last_model_name: detail.last_model_name ?? null,
     updated_ts: detail.updated_ts,
@@ -353,17 +178,6 @@ function upsertConversationSummary(
 ): AiConversationSummary[] {
   const remaining = conversations.filter((conversation) => conversation.id !== summary.id);
   return sortConversationSummaries([summary, ...remaining]);
-}
-
-function isUnusedNewConversation(
-  conversation: AiConversationSummary | undefined,
-  detail?: UiConversationDetail | null,
-): boolean {
-  if (!conversation || conversation.archived) return false;
-  if (conversation.title !== DEFAULT_CONVERSATION_TITLE) return false;
-  if (conversation.last_message_preview?.trim()) return false;
-  if (detail && detail.messages.length > 0) return false;
-  return true;
 }
 
 function toUiTurn(turn: AiConversationTurn): UiConversationTurn {
@@ -390,6 +204,17 @@ function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
 }
 
+function groundingCitationSummary(citation: AiGroundingCitation): string {
+  const parts = [citation.citation_id];
+  if (citation.label?.trim()) {
+    parts.push(citation.label.trim());
+  }
+  if (citation.source_sub_id?.trim()) {
+    parts.push(citation.source_sub_id.trim());
+  }
+  return parts.join(' · ');
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -400,6 +225,14 @@ function formatBytes(bytes: number): string {
     unitIndex += 1;
   }
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 }
 
 function isTextLikeDocument(file: File): boolean {
@@ -712,6 +545,20 @@ function mergeStatusFallback(
   return next;
 }
 
+function StreamingDots() {
+  return (
+    <span className="inline-flex items-center gap-1 ml-0.5">
+      {[0, 1, 2].map((index) => (
+        <span
+          key={index}
+          className="ai-streaming-dot"
+          style={{ animationDelay: `${index * 0.2}s` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function FallbackThinkingBlock({
   text,
   live,
@@ -953,30 +800,29 @@ function RuntimePanel({
         </section>
 
         <section className="border-b border-[var(--border)] pb-4">
-          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Memory</p>
-          {runtime.turn.prompt ? (
-            <div className="mt-2 space-y-1 text-xs muted">
-              <p>
-                {runtime.turn.prompt.retained_raw_turns} raw turns ·{' '}
-                {runtime.turn.prompt.summarized_turns} summarized
-              </p>
-              <p>
-                Prompt {runtime.turn.prompt.prompt_tokens_estimate} /{' '}
-                {runtime.turn.prompt.prompt_budget_tokens}
-              </p>
-              <p>
-                History {runtime.turn.prompt.loaded_history_turns} · contexts{' '}
-                {runtime.turn.prompt.recent_grounded_context_count}
-              </p>
-              <p>
-                {runtime.turn.prompt.used_memory_summary
-                  ? `Persisted memory on · ${runtime.turn.prompt.memory_summary_chars} chars`
-                  : 'Persisted memory off'}
-              </p>
-            </div>
-          ) : (
-            <p className="mt-2 text-xs muted">No prompt-assembly telemetry captured yet.</p>
-          )}
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Scheduler</p>
+          <p className="mt-1 text-sm font-semibold">
+            {titleCase(runtime.scheduler.overload_state)}
+          </p>
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>
+              {runtime.scheduler.active_turns} active · {runtime.scheduler.queued_turns} queued
+            </p>
+            <p>Queue limit {runtime.scheduler.queue_limit}</p>
+            <p>
+              Warm pool {formatBytes(runtime.scheduler.warm_pool_bytes)} /{' '}
+              {formatBytes(runtime.scheduler.warm_pool_budget_bytes)}
+            </p>
+            <p>
+              Hot models:{' '}
+              {runtime.scheduler.warm_models.length > 0
+                ? runtime.scheduler.warm_models
+                    .slice(0, 3)
+                    .map((model) => model.model_name)
+                    .join(', ')
+                : 'none'}
+            </p>
+          </div>
         </section>
 
         <section className="border-b border-[var(--border)] pb-4">
@@ -1099,7 +945,6 @@ function MessageBubble({
 
   const showFallbackThinking =
     Boolean(thinking) && entry.activity_trace.length === 0;
-  const showStreamingPlaceholder = entry.isStreaming && !entry.errorMessage && !content;
 
   return (
     <div className="flex justify-start">
@@ -1116,15 +961,46 @@ function MessageBubble({
           />
         ) : null}
 
-        {!showStreamingPlaceholder ? (
-          <div className="px-0 py-0 text-sm leading-relaxed text-[var(--text-main)]">
-            {entry.errorMessage ? (
-              <span className="text-[var(--danger)]">{entry.errorMessage}</span>
-            ) : content ? (
-              <span className="whitespace-pre-wrap break-words">{content}</span>
-            ) : null}
+        <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+          {entry.errorMessage ? (
+            <span className="text-[var(--danger)]">{entry.errorMessage}</span>
+          ) : content ? (
+            <span className="whitespace-pre-wrap">{content}</span>
+          ) : entry.isStreaming ? (
+            <StreamingDots />
+          ) : null}
 
-            {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
+          {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
+        </div>
+
+        {entry.grounding_chunks.length > 0 ? (
+          <div className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] muted">Sources</p>
+              <p className="text-[11px] muted">
+                {entry.grounding_chunks.length} chunk
+                {entry.grounding_chunks.length === 1 ? '' : 's'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              {entry.grounding_chunks.map((chunk) => (
+                <div key={chunk.id} className="rounded-xl border border-[var(--border)]/70 px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                      {chunk.source_kind}
+                    </span>
+                    <p className="text-sm font-medium text-[var(--text-main)]">{chunk.title}</p>
+                    <span className="text-[11px] muted">{chunk.id}</span>
+                  </div>
+                  <p className="mt-1 text-xs muted">{chunk.excerpt}</p>
+                  {chunk.citation ? (
+                    <p className="mt-1 text-[11px] muted">
+                      {groundingCitationSummary(chunk.citation)}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -1325,34 +1201,33 @@ function ModelSelector({
   );
 }
 
-function ResponseModeDropdown({
+function ResponseModeSelector({
   value,
   onChange,
-  className = '',
 }: {
   value: ComposerResponseMode;
   onChange: (value: ComposerResponseMode) => void;
-  className?: string;
 }) {
   return (
-    <div className={`relative min-w-[7.5rem] ${className}`}>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
-        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
-        aria-label="AI response mode"
-      >
-        <option value="instant">Instant</option>
-        <option value="thinking">Thinking</option>
-        <option value="extended">Extended</option>
-      </select>
-      <svg
-        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
-        viewBox="0 0 16 16"
-        fill="currentColor"
-      >
-        <path d="M8 11L2 5h12z" />
-      </svg>
+    <div className="inline-flex h-10 items-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] p-1">
+      {(['instant', 'thinking'] as const).map((mode) => {
+        const active = value === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => onChange(mode)}
+            className={`rounded-full px-3 py-1.5 text-sm font-medium transition-all ${
+              active
+                ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-main)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+            }`}
+            aria-pressed={active}
+          >
+            {mode === 'instant' ? 'Instant' : 'Thinking'}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1402,8 +1277,6 @@ export default function AiPage() {
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [groupTarget, setGroupTarget] = useState<AiConversationSummary | null>(null);
-  const [groupValue, setGroupValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
 
@@ -1426,7 +1299,6 @@ export default function AiPage() {
     conversationId: string;
     queuedText: string | null;
   } | null>(null);
-  const creatingConversationRef = useRef(false);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -1915,28 +1787,6 @@ export default function AiPage() {
   );
 
   const handleNewChat = useCallback(async () => {
-    const latestConversation = liveConversations[0];
-    if (
-      isUnusedNewConversation(
-        latestConversation,
-        latestConversation ? conversationDetails[latestConversation.id] : null,
-      )
-    ) {
-      setConversationError('');
-      setDrawerOpen(false);
-      if (latestConversation && latestConversation.id !== activeConversationId) {
-        handleSelectConversation(latestConversation.id);
-      } else {
-        requestAnimationFrame(() => focusComposer());
-      }
-      return;
-    }
-
-    if (creatingConversationRef.current) {
-      return;
-    }
-
-    creatingConversationRef.current = true;
     try {
       setConversationError('');
       setInput('');
@@ -1947,18 +1797,8 @@ export default function AiPage() {
       setConversationError(
         clientErrorMessage(error, 'Failed to create a new conversation.'),
       );
-    } finally {
-      creatingConversationRef.current = false;
     }
-  }, [
-    activeConversationId,
-    conversationDetails,
-    createConversationRecord,
-    focusComposer,
-    handleSelectConversation,
-    liveConversations,
-    resetComposerHeight,
-  ]);
+  }, [createConversationRecord, focusComposer, resetComposerHeight]);
 
   const handleArchiveToggle = useCallback(
     async (conversation: AiConversationSummary) => {
@@ -1981,14 +1821,6 @@ export default function AiPage() {
     setRenameTarget(conversation);
     setRenameValue(conversation.title);
   }, []);
-
-  const handleMoveConversationToGroup = useCallback(
-    (conversation: AiConversationSummary) => {
-      setGroupTarget(conversation);
-      setGroupValue((conversation.group_name ?? '').trim());
-    },
-    [],
-  );
 
   const confirmRenameConversation = useCallback(async () => {
     if (!renameTarget) return;
@@ -2013,28 +1845,6 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [renameTarget, renameValue, storeConversationDetail]);
-
-  const confirmMoveConversationToGroup = useCallback(async () => {
-    if (!groupTarget) return;
-
-    setModalBusy(true);
-    try {
-      setConversationError('');
-      const normalizedGroup = groupValue.trim();
-      const detail = await updateConversation(groupTarget.id, {
-        group_name: normalizedGroup ? normalizedGroup : null,
-      });
-      storeConversationDetail(detail);
-      setGroupTarget(null);
-      setGroupValue('');
-    } catch (error) {
-      setConversationError(
-        clientErrorMessage(error, 'Failed to move this conversation.'),
-      );
-    } finally {
-      setModalBusy(false);
-    }
-  }, [groupTarget, groupValue, storeConversationDetail]);
 
   const handleDeleteConversation = useCallback((conversation: AiConversationSummary) => {
     if (isStreaming && streamingConversationId === conversation.id) {
@@ -2083,60 +1893,6 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [activeConversationId, clearQueuedPrompt, conversations, deleteTarget, resetComposerHeight]);
-
-  const handleMoveConversation = useCallback(
-    async (conversation: AiConversationSummary, direction: 'up' | 'down') => {
-      try {
-        setConversationError('');
-        await moveConversation(conversation.id, direction);
-        await loadConversationList(activeConversationIdRef.current);
-      } catch (error) {
-        setConversationError(
-          clientErrorMessage(error, 'Failed to reorder this conversation.'),
-        );
-      }
-    },
-    [loadConversationList],
-  );
-
-  const handleDropConversation = useCallback(
-    async (conversationId: string, target: AiConversationDropTarget) => {
-      const updates = buildConversationReorderUpdates(conversations, conversationId, target);
-      if (updates.length === 0) {
-        return;
-      }
-
-      setConversationsLoading(true);
-      try {
-        setConversationError('');
-        const details: AiConversationDetail[] = [];
-        for (const update of updates) {
-          const detail = await updateConversation(update.id, {
-            group_name: update.group_name,
-            sort_order: update.sort_order,
-          });
-          details.push(detail);
-        }
-        for (const detail of details) {
-          storeConversationDetail(detail);
-        }
-        const nextConversations = sortConversationSummaries(
-          await listConversations(true),
-        );
-        setConversations(nextConversations);
-        setActiveConversationId((current) =>
-          chooseConversationId(nextConversations, activeConversationIdRef.current ?? current),
-        );
-      } catch (error) {
-        setConversationError(
-          clientErrorMessage(error, 'Failed to reorder this conversation.'),
-        );
-      } finally {
-        setConversationsLoading(false);
-      }
-    },
-    [conversations, storeConversationDetail],
-  );
 
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
@@ -2281,10 +2037,6 @@ export default function AiPage() {
     if (canQueueFollowUp && conversationIdOverride) {
       setConversationError('');
       upsertQueuedPrompt(conversationIdOverride, text);
-      if (activeConversationIdRef.current === conversationIdOverride) {
-        setInput('');
-        resetComposerHeight();
-      }
       setVoiceState('idle');
       setVoiceError(null);
       return;
@@ -2339,6 +2091,7 @@ export default function AiPage() {
         model_name: null,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -2354,6 +2107,7 @@ export default function AiPage() {
         model_name: selectedModel,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -2461,6 +2215,7 @@ export default function AiPage() {
           if (event.type === 'grounding') {
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
+              grounding_chunks: event.chunks,
               grounding_sources: event.sources,
               follow_up_contexts: event.followUpContexts,
               grounding_tools: event.sources.map((source) => source.tool),
@@ -2661,6 +2416,11 @@ export default function AiPage() {
     voiceState === 'stopping';
   const queueActionLabel = hasQueuedPrompt ? 'Update queued' : 'Queue';
   const queueActionDisabled = composerDisabled || !input.trim();
+  const queuedNotice = hasQueuedPrompt
+    ? isStreaming
+      ? 'Queued follow-up will send automatically when this answer finishes.'
+      : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
+    : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
@@ -2731,20 +2491,10 @@ export default function AiPage() {
                 void handleNewChat();
               }}
               onRename={handleRenameConversation}
-              onMoveToGroup={handleMoveConversationToGroup}
-              onMoveUp={(conversation) => {
-                void handleMoveConversation(conversation, 'up');
-              }}
-              onMoveDown={(conversation) => {
-                void handleMoveConversation(conversation, 'down');
-              }}
               onArchiveToggle={(conversation) => {
                 void handleArchiveToggle(conversation);
               }}
               onDelete={handleDeleteConversation}
-              onDropConversation={(conversationId, target) => {
-                void handleDropConversation(conversationId, target);
-              }}
             />
           </div>
         </div>
@@ -2816,20 +2566,10 @@ export default function AiPage() {
                       void handleNewChat();
                     }}
                     onRename={handleRenameConversation}
-                    onMoveToGroup={handleMoveConversationToGroup}
-                    onMoveUp={(conversation) => {
-                      void handleMoveConversation(conversation, 'up');
-                    }}
-                    onMoveDown={(conversation) => {
-                      void handleMoveConversation(conversation, 'down');
-                    }}
                     onArchiveToggle={(conversation) => {
                       void handleArchiveToggle(conversation);
                     }}
                     onDelete={handleDeleteConversation}
-                    onDropConversation={(conversationId, target) => {
-                      void handleDropConversation(conversationId, target);
-                    }}
                   />
                 </div>
               </div>
@@ -2869,19 +2609,7 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start md:self-auto">
-                      {inferenceAvailable === true && models.length > 0 ? (
-                        <ModelSelector
-                          models={models}
-                          selected={selectedModel}
-                          onChange={setSelectedModel}
-                          className="w-full min-w-[12rem] sm:w-auto"
-                        />
-                      ) : null}
-                      <ResponseModeDropdown
-                        value={responseMode}
-                        onChange={setResponseMode}
-                      />
+                    <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
                       {showRuntimePanel ? (
                         <button
                           type="button"
@@ -3026,104 +2754,89 @@ export default function AiPage() {
 
                 <div
                   ref={composerShellRef}
-                  className="ai-composer-shell sticky bottom-0 z-20 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
+                  className="ai-composer-shell sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
                 >
-                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-2.5 sm:px-5">
-                    {hasQueuedPrompt ? (
-                      <div className="mb-2.5 rounded-2xl border border-[rgba(215,223,255,0.12)] bg-[rgba(255,255,255,0.03)] px-3.5 py-3">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                              Queued prompt
-                            </p>
-                            <p className="mt-1 text-xs muted">
-                              {isStreaming
-                                ? 'This follow-up will send automatically when the current answer finishes.'
-                                : 'This queued follow-up is saved here until you send or cancel it.'}
-                            </p>
-                            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--text-main)]">
-                              {queuedPrompt}
-                            </p>
-                          </div>
+                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div ref={composerMenuRef} className="relative">
                           <button
                             type="button"
-                            onClick={() => {
-                              if (activeConversationId) {
-                                clearQueuedPrompt(activeConversationId);
-                              }
-                            }}
-                            className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                            onClick={() => setComposerMenuOpen((current) => !current)}
+                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={composerDisabled}
+                            aria-label="Add media or prompt controls"
                           >
-                            Cancel queued
+                            +
                           </button>
+                          {composerMenuOpen ? (
+                            <div className="absolute bottom-[calc(100%+0.55rem)] left-0 z-30 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                              <button
+                                type="button"
+                                onClick={() => documentInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add document
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => imageInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add image
+                              </button>
+                            </div>
+                          ) : null}
+                          <input
+                            ref={documentInputRef}
+                            type="file"
+                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleDocumentFilesSelected(event);
+                            }}
+                          />
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleImageFilesSelected(event);
+                            }}
+                          />
                         </div>
-                      </div>
-                    ) : null}
 
-                    <div className="flex flex-wrap items-start gap-2.5">
-                      <div ref={composerMenuRef} className="relative z-20 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setComposerMenuOpen((current) => !current)}
-                          className="btn-secondary ai-composer-icon-btn h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={composerDisabled}
-                          aria-label="Add media or prompt controls"
-                        >
-                          +
-                        </button>
-                        {composerMenuOpen ? (
-                          <div className="absolute bottom-full left-0 z-40 mb-2.5 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                            <button
-                              type="button"
-                              onClick={() => documentInputRef.current?.click()}
-                              className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                            >
-                              Add document
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => imageInputRef.current?.click()}
-                              className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                            >
-                              Add image
-                            </button>
-                          </div>
+                        {inferenceAvailable === true && models.length > 0 ? (
+                          <ModelSelector
+                            models={models}
+                            selected={selectedModel}
+                            onChange={setSelectedModel}
+                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
+                          />
                         ) : null}
-                        <input
-                          ref={documentInputRef}
-                          type="file"
-                          accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
-                          multiple
-                          className="sr-only"
-                          onChange={(event) => {
-                            void handleDocumentFilesSelected(event);
-                          }}
-                        />
-                        <input
-                          ref={imageInputRef}
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          className="sr-only"
-                          onChange={(event) => {
-                            void handleImageFilesSelected(event);
-                          }}
+
+                        <ResponseModeSelector
+                          value={responseMode}
+                          onChange={setResponseMode}
                         />
                       </div>
 
-                      <div className="flex min-h-[3.25rem] min-w-0 flex-1 basis-[15rem] items-start gap-3">
+                      <div className="flex min-h-[3.25rem] items-start gap-3">
                         <textarea
                           ref={textareaRef}
                           value={input}
                           onChange={handleInputChange}
                           onKeyDown={handleKeyDown}
                           placeholder={placeholder}
-                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-[0.55rem] text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
                           disabled={composerDisabled}
                           rows={1}
                         />
 
-                        <div className="flex shrink-0 items-start gap-2">
+                        <div className="flex shrink-0 items-center gap-2 pt-1">
                           {isStreaming ? (
                             <>
                               {canQueueActiveConversation ? (
@@ -3158,7 +2871,7 @@ export default function AiPage() {
                                     void startVoiceInput();
                                   }
                                 }}
-                                className="btn-secondary ai-composer-icon-btn flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                className="btn-secondary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
                                 disabled={voiceControlDisabled}
                                 aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
                               >
@@ -3200,10 +2913,29 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    {voiceError ? (
+                    {voiceError || queuedNotice ? (
                       <div className="mt-2 space-y-1.5 px-1 text-xs">
                         {voiceError ? (
                           <div className="text-[var(--danger)]">{voiceError}</div>
+                        ) : null}
+
+                        {queuedNotice ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <span className="muted">{queuedNotice}</span>
+                            {hasQueuedPrompt ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (activeConversationId) {
+                                    clearQueuedPrompt(activeConversationId);
+                                  }
+                                }}
+                                className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                              >
+                                Cancel queued
+                              </button>
+                            ) : null}
+                          </div>
                         ) : null}
                       </div>
                     ) : null}
@@ -3258,33 +2990,6 @@ export default function AiPage() {
           className="panel w-full rounded-xl px-3 py-2 text-sm"
           placeholder="Conversation title"
           maxLength={80}
-          autoFocus
-        />
-      </ConfirmModal>
-
-      <ConfirmModal
-        open={Boolean(groupTarget)}
-        title="Move conversation"
-        description="Assign this chat to a group. Leave the field empty to remove it from a group."
-        confirmLabel="Save"
-        onConfirm={() => {
-          void confirmMoveConversationToGroup();
-        }}
-        onCancel={() => {
-          if (!modalBusy) {
-            setGroupTarget(null);
-            setGroupValue('');
-          }
-        }}
-        confirmDisabled={modalBusy}
-        cancelDisabled={modalBusy}
-      >
-        <input
-          value={groupValue}
-          onChange={(event) => setGroupValue(event.target.value)}
-          className="panel w-full rounded-xl px-3 py-2 text-sm"
-          placeholder="Group name"
-          maxLength={48}
           autoFocus
         />
       </ConfirmModal>

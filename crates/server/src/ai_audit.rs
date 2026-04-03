@@ -25,6 +25,53 @@ pub struct AiAssistantAuditToolExecution {
     pub result_count: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiGroundingVisibility {
+    User,
+    Shared,
+    Admin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiGroundingCitation {
+    pub citation_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sub_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ts_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ts_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiGroundingChunk {
+    pub id: String,
+    pub source_kind: String,
+    pub title: String,
+    pub excerpt: String,
+    pub score: f64,
+    pub visibility: AiGroundingVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sub_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<AiGroundingCitation>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiAssistantAuditEventResponse {
     pub id: String,
@@ -38,6 +85,7 @@ pub struct AiAssistantAuditEventResponse {
     pub response_kind: String,
     pub planned_tools: Vec<String>,
     pub executed_tools: Vec<AiAssistantAuditToolExecution>,
+    pub grounding_chunks: Vec<AiGroundingChunk>,
     pub grounding_sources: Vec<AiAssistantAuditGroundingSource>,
     pub error_message: Option<String>,
     pub created_ts: i64,
@@ -58,6 +106,7 @@ pub fn parse_audit_event_row(
         response_kind: row.response_kind,
         planned_tools: serde_json::from_str(&row.planned_tools_json).unwrap_or_default(),
         executed_tools: serde_json::from_str(&row.executed_tools_json).unwrap_or_default(),
+        grounding_chunks: serde_json::from_str(&row.grounding_chunks_json).unwrap_or_default(),
         grounding_sources: serde_json::from_str(&row.grounding_sources_json).unwrap_or_default(),
         error_message: row.error_message,
         created_ts: row.created_ts,
@@ -189,6 +238,7 @@ pub async fn persist_chat_audit_event(
     response_kind: AiAssistantAuditResponseKind,
     planned_tools: &[crate::ai_assistant::types::PlannedToolCall],
     grounding_blocks: &[crate::ai_assistant::types::AssistantToolContextBlock],
+    grounding_chunks: &[crate::ai_assistant::types::AssistantGroundingChunk],
     grounding_sources: &[crate::ai_assistant::types::AssistantGroundingSource],
     error_message: Option<&str>,
 ) {
@@ -232,6 +282,8 @@ pub async fn persist_chat_audit_event(
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| "[]".to_string());
+    let grounding_chunks_json =
+        serde_json::to_string(grounding_chunks).unwrap_or_else(|_| "[]".to_string());
 
     let result = rustfin_db::repo::ai_assistant_audit::create_audit_event(
         &state.db,
@@ -246,6 +298,7 @@ pub async fn persist_chat_audit_event(
             response_kind: response_kind.as_str(),
             planned_tools_json: &planned_tools_json,
             executed_tools_json: &executed_tools_json,
+            grounding_chunks_json: &grounding_chunks_json,
             grounding_sources_json: &grounding_sources_json,
             error_message,
         },
@@ -478,12 +531,14 @@ mod tests {
                 response_kind: "completed".to_string(),
                 planned_tools_json: "{bad json".to_string(),
                 executed_tools_json: "{bad json".to_string(),
+                grounding_chunks_json: "{bad json".to_string(),
                 grounding_sources_json: "{bad json".to_string(),
                 error_message: Some("oops".to_string()),
                 created_ts: 123,
             });
         assert!(parsed.planned_tools.is_empty());
         assert!(parsed.executed_tools.is_empty());
+        assert!(parsed.grounding_chunks.is_empty());
         assert!(parsed.grounding_sources.is_empty());
         assert_eq!(parsed.error_message.as_deref(), Some("oops"));
     }

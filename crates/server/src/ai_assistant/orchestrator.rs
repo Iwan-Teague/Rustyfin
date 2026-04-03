@@ -2,9 +2,11 @@ use std::collections::HashSet;
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use futures::{StreamExt, future::join_all};
-use rustfin_ai_agent::{ChatChunk, ChatMessage, LlamaEngine};
+use rustfin_ai_agent::{ChatChunk, ChatMessage, PromptCacheHint, SamplingParams};
 use serde::Deserialize;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use sha2::{Digest, Sha256};
+
+use rustfin_ai_agent::backends::PromptBackend;
 
 use super::confirmation::{
     is_supported_calendar_create_intent, is_supported_calendar_delete_intent,
@@ -12,14 +14,14 @@ use super::confirmation::{
 };
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
-use super::profiles::{PLANNER_SCHEMA_VERSION, planner_sampling_params};
+use super::memory::{augment_history_with_entity_graph, build_grounding_chunks_for_turn};
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
     AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-    AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode,
+    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerMode,
     AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
-    PreparedAssistantTurn, decode_assistant_clarification_message,
+    PreparedAssistantTurn,
 };
 use super::web::public_web_tools_enabled;
 use crate::auth::AuthUser;
@@ -41,56 +43,50 @@ struct ModelPlannerTool {
     #[serde(alias = "name")]
     tool: String,
     #[serde(default)]
-    arguments: JsonMap<String, JsonValue>,
+    query: Option<String>,
     #[serde(default)]
-    query: Option<JsonValue>,
+    url: Option<String>,
     #[serde(default)]
-    url: Option<JsonValue>,
+    availability: Option<String>,
     #[serde(default)]
-    availability: Option<JsonValue>,
-    #[serde(default)]
-    room_mode: Option<JsonValue>,
+    room_mode: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct PlannerValidationResult {
-    calls: Vec<PlannedToolCall>,
-    debug: AssistantPlannerDebug,
-}
-
-pub async fn plan_tool_calls_with_model_assist(
-    engine: &LlamaEngine,
+pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
+    backend: &B,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> PlannedToolSet {
+    if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return PlannedToolSet {
+            mode: AssistantPlannerMode::DeterministicFallback,
+            calls: Vec::new(),
+        };
+    }
+
     if extract_follow_up_entity_reference(message).is_some() {
         let calls = plan_tool_calls_with_history(message, history);
         if !calls.is_empty() {
             return PlannedToolSet {
                 mode: AssistantPlannerMode::DeterministicEntityFollowUp,
                 calls,
-                debug: AssistantPlannerDebug {
-                    schema_version: PLANNER_SCHEMA_VERSION,
-                    ..AssistantPlannerDebug::default()
-                },
             };
         }
     }
 
     let deterministic = plan_tool_calls_with_history(message, history);
-    let raw_response = run_model_planner(engine, user, message, history).await;
-    let validated_plan = raw_response
+    let raw_response = run_model_planner(backend, user, message, history).await;
+    let model_calls = raw_response
         .as_deref()
-        .map(|raw| validate_model_planner_response(raw, user, message, history))
-        .unwrap_or_else(default_planner_validation_result);
-    let model_calls = validated_plan.calls.clone();
+        .and_then(parse_model_planner_response)
+        .map(|response| normalize_model_plan(&response, user, message, history))
+        .unwrap_or_default();
 
     if should_prefer_deterministic_plan(&deterministic) {
         return PlannedToolSet {
             mode: AssistantPlannerMode::DeterministicFallback,
             calls: deterministic,
-            debug: validated_plan.debug,
         };
     }
 
@@ -98,14 +94,12 @@ pub async fn plan_tool_calls_with_model_assist(
         return PlannedToolSet {
             mode: AssistantPlannerMode::ModelStructured,
             calls: model_calls,
-            debug: validated_plan.debug,
         };
     }
 
     PlannedToolSet {
         mode: AssistantPlannerMode::DeterministicFallback,
         calls: deterministic,
-        debug: validated_plan.debug,
     }
 }
 
@@ -114,12 +108,10 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
         && calls.iter().all(|call| {
             matches!(
                 call.tool,
-                AssistantToolName::CalendarListEvents
-                    | AssistantToolName::WeatherGetCurrent
+                AssistantToolName::WeatherGetCurrent
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::SystemGetCurrentDateTime
-                    | AssistantToolName::SystemGetHostRuntimeSummary
                     | AssistantToolName::NetworkGetTopologySummary
                     | AssistantToolName::CalendarGetNextEvent
                     | AssistantToolName::CalendarUpcomingBirthdays
@@ -162,6 +154,14 @@ pub async fn prepare_assistant_turn(
         };
     }
 
+    if let Some(tool_inventory) = deterministic_tool_inventory_reply(user, &request.message) {
+        return PreparedAssistantTurn {
+            messages: Vec::new(),
+            sources: Vec::new(),
+            immediate_response: Some(tool_inventory),
+        };
+    }
+
     if let Some(clarification) = immediate_response_for_message(&request.message) {
         return PreparedAssistantTurn {
             messages: Vec::new(),
@@ -188,7 +188,24 @@ pub async fn prepare_assistant_turn(
         .collect();
     let grounding_sources: Vec<_> = tool_results.into_iter().map(|(_, source)| source).collect();
 
-    let messages = build_assistant_messages(request, &grounding_blocks);
+    let augmented_history =
+        augment_history_with_entity_graph(state, &context, &request.history, &request.message)
+            .await;
+    let grounding_chunks = build_grounding_chunks_for_turn(
+        state,
+        &context,
+        &request,
+        &planned_tools,
+        &grounding_blocks,
+        &grounding_sources,
+        &augmented_history,
+    )
+    .await;
+    let prompt_request = AssistantChatRequest {
+        history: augmented_history,
+        ..request
+    };
+    let messages = build_assistant_messages(prompt_request, &grounding_chunks);
 
     PreparedAssistantTurn {
         messages,
@@ -197,14 +214,30 @@ pub async fn prepare_assistant_turn(
     }
 }
 
-async fn run_model_planner(
-    engine: &LlamaEngine,
+async fn run_model_planner<B: PromptBackend>(
+    backend: &B,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> Option<String> {
     let planner_messages = build_model_planner_messages(user, message, history);
-    let planner_stream = engine.chat_stream(planner_messages, planner_sampling_params());
+    let prompt_cache = planner_prompt_cache_hint(
+        backend.capabilities().supports_prompt_cache,
+        user,
+        message,
+        history,
+    );
+    let planner_stream = backend.chat_stream_boxed(
+        planner_messages,
+        SamplingParams {
+            temperature: 0.1,
+            top_p: 0.9,
+            top_k: 20,
+            repeat_penalty: 1.05,
+            max_tokens: 320,
+        },
+        prompt_cache,
+    );
     futures::pin_mut!(planner_stream);
 
     let mut response = String::new();
@@ -217,6 +250,33 @@ async fn run_model_planner(
     }
 
     Some(response)
+}
+
+fn planner_prompt_cache_hint(
+    enabled: bool,
+    user: &AuthUser,
+    message: &str,
+    history: &[AssistantHistoryMessage],
+) -> Option<PromptCacheHint> {
+    if !enabled {
+        return None;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(user.user_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(user.role.as_bytes());
+    hasher.update(b"|");
+    hasher.update(message.trim().as_bytes());
+    hasher.update(b"|");
+    hasher.update(planner_history_summary(history).as_bytes());
+    let cache_key = format!("{:x}", hasher.finalize());
+
+    Some(PromptCacheHint {
+        cache_key: Some(cache_key),
+        cache_scope: Some("planner".to_string()),
+        enabled: true,
+    })
 }
 
 fn build_model_planner_messages(
@@ -241,7 +301,7 @@ fn build_model_planner_messages(
                 "You are the Rustyfin assistant tool planner. Choose zero to three grounded read-only tools. \
 Return JSON only with no markdown, no prose, and no code fences.\n\
 Schema:\n\
-{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"arguments\":{{\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
+{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}]}}\n\
 or\n\
 {{\"mode\":\"none\",\"tools\":[]}}\n\
 Rules:\n\
@@ -261,8 +321,8 @@ Rules:\n\
 - Use weather_get_forecast for forecast, tomorrow, weekend, this week, next few days, rain chance, or weather planning questions.\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
-- Use system_get_current_datetime for current date/time questions, including named locations like Italy or France, or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
-- Use system_get_host_runtime_summary only for host/runtime resource questions or explicit AI runtime status questions.\n\
+- Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
+- Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
 - Use system_get_transcode_summary for transcoding, ffmpeg, hardware acceleration, or transcode-failure questions.\n\
@@ -365,9 +425,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::RoomsListActive => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
-        AssistantToolName::SystemGetCurrentDateTime => {
-            " Args: optional location; the backend resolves named places to a timezone when needed."
-        }
+        AssistantToolName::SystemGetCurrentDateTime => " Args: none.",
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
         }
@@ -483,169 +541,27 @@ fn extract_json_object(raw: &str) -> Option<String> {
     None
 }
 
-fn default_planner_validation_result() -> PlannerValidationResult {
-    PlannerValidationResult {
-        calls: Vec::new(),
-        debug: AssistantPlannerDebug {
-            schema_version: PLANNER_SCHEMA_VERSION,
-            ..AssistantPlannerDebug::default()
-        },
-    }
-}
-
-fn validate_model_planner_response(
-    raw: &str,
-    user: &AuthUser,
-    message: &str,
-    history: &[AssistantHistoryMessage],
-) -> PlannerValidationResult {
-    let mut debug = AssistantPlannerDebug {
-        schema_version: PLANNER_SCHEMA_VERSION,
-        raw_response: Some(raw.trim().to_string()),
-        ..AssistantPlannerDebug::default()
-    };
-
-    let Some(parsed) = parse_model_planner_response(raw) else {
-        debug
-            .validation_errors
-            .push("planner output did not contain valid JSON".to_string());
-        return PlannerValidationResult {
-            calls: Vec::new(),
-            debug,
-        };
-    };
-
-    let canonical = repair_model_planner_response(&parsed, &mut debug);
-    debug.validated_call_count = canonical.tools.len() as u32;
-    let (calls, validation_errors) =
-        normalize_model_plan_with_errors(&canonical, user, message, history);
-    if !validation_errors.is_empty() {
-        debug.validation_errors.extend(validation_errors);
-    }
-    debug.validated_call_count = calls.len() as u32;
-
-    PlannerValidationResult { calls, debug }
-}
-
-fn repair_model_planner_response(
-    response: &ModelPlannerResponse,
-    debug: &mut AssistantPlannerDebug,
-) -> ModelPlannerResponse {
-    let repaired_mode = response
-        .mode
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .or_else(|| {
-            if response.tools.is_empty() {
-                Some("none".to_string())
-            } else {
-                Some("tool_plan".to_string())
-            }
-        });
-
-    let mut repaired_tools = Vec::with_capacity(response.tools.len());
-    let mut used_repair = response.mode.is_none();
-
-    for tool in &response.tools {
-        let mut arguments = tool.arguments.clone();
-        used_repair |= merge_legacy_argument(&mut arguments, "query", tool.query.as_ref(), debug);
-        used_repair |= merge_legacy_argument(&mut arguments, "url", tool.url.as_ref(), debug);
-        used_repair |= merge_legacy_argument(
-            &mut arguments,
-            "availability",
-            tool.availability.as_ref(),
-            debug,
-        );
-        used_repair |=
-            merge_legacy_argument(&mut arguments, "room_mode", tool.room_mode.as_ref(), debug);
-        repaired_tools.push(ModelPlannerTool {
-            tool: tool.tool.clone(),
-            arguments,
-            query: None,
-            url: None,
-            availability: None,
-            room_mode: None,
-        });
-    }
-
-    let repaired = ModelPlannerResponse {
-        mode: repaired_mode,
-        tools: repaired_tools,
-    };
-    if used_repair {
-        debug.used_repaired_response = true;
-        debug.repair_attempt_count = debug.repair_attempt_count.saturating_add(1);
-        debug.repaired_response = serde_json::to_string(&serde_json::json!({
-            "mode": repaired.mode,
-            "tools": repaired
-                .tools
-                .iter()
-                .map(|tool| serde_json::json!({
-                    "tool": tool.tool,
-                    "arguments": tool.arguments,
-                }))
-                .collect::<Vec<_>>(),
-        }))
-        .ok();
-    }
-    repaired
-}
-
-fn merge_legacy_argument(
-    arguments: &mut JsonMap<String, JsonValue>,
-    key: &str,
-    legacy_value: Option<&JsonValue>,
-    debug: &mut AssistantPlannerDebug,
-) -> bool {
-    let Some(value) = legacy_value else {
-        return false;
-    };
-
-    match value {
-        JsonValue::String(_) => {
-            arguments
-                .entry(key.to_string())
-                .or_insert_with(|| value.clone());
-            true
-        }
-        JsonValue::Null => false,
-        _ => {
-            debug.validation_errors.push(format!(
-                "planner argument \"{key}\" must be a string when provided"
-            ));
-            true
-        }
-    }
-}
-
-fn normalize_model_plan_with_errors(
+fn normalize_model_plan(
     response: &ModelPlannerResponse,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
-) -> (Vec<PlannedToolCall>, Vec<String>) {
+) -> Vec<PlannedToolCall> {
+    if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return Vec::new();
+    }
+
     if response.mode.as_deref() == Some("none") {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     }
 
     let mut planned = Vec::new();
     let mut seen = HashSet::new();
-    let mut errors = Vec::new();
     for tool in response.tools.iter().take(MAX_TOOL_CALLS_PER_TURN) {
         let Some(parsed_tool) = AssistantToolName::from_str(&tool.tool.to_ascii_lowercase()) else {
-            errors.push(format!(
-                "planner selected unsupported tool \"{}\"",
-                tool.tool
-            ));
             continue;
         };
         if !tool_visible_to_user(parsed_tool, user) {
-            errors.push(format!(
-                "planner selected tool \"{}\" that is not visible to this user",
-                parsed_tool.as_str()
-            ));
             continue;
         }
         if matches!(
@@ -655,52 +571,28 @@ fn normalize_model_plan_with_errors(
                 | AssistantToolName::WeatherGetHistory
         ) {
             if !message_allows_weather_tool(message, history) {
-                errors.push(format!(
-                    "planner selected weather tool \"{}\" for a non-weather prompt",
-                    parsed_tool.as_str()
-                ));
                 continue;
             }
-            let Some(location) = planner_argument_string(tool, "query", &mut errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            let Some(location) = normalize_optional_query(tool.query.clone())
                 .or_else(|| extract_weather_location(message))
             else {
-                errors.push(format!(
-                    "planner selected weather tool \"{}\" without a valid location",
-                    parsed_tool.as_str()
-                ));
                 continue;
             };
             let Some((weather_tool, weather_input)) =
                 weather_tool_call_for_location(message, location)
             else {
-                errors.push(format!(
-                    "planner selected weather tool \"{}\" but the backend could not normalize its location input",
-                    parsed_tool.as_str()
-                ));
                 continue;
             };
             push_tool(&mut planned, &mut seen, weather_tool, weather_input);
             continue;
         }
-        let Some(input) = normalize_model_tool_input(parsed_tool, tool, message, &mut errors)
-        else {
+        let Some(input) = normalize_model_tool_input(parsed_tool, tool, message) else {
             continue;
         };
         push_tool(&mut planned, &mut seen, parsed_tool, input);
     }
 
-    (planned, errors)
-}
-
-#[cfg(test)]
-fn normalize_model_plan(
-    response: &ModelPlannerResponse,
-    user: &AuthUser,
-    message: &str,
-    history: &[AssistantHistoryMessage],
-) -> Vec<PlannedToolCall> {
-    normalize_model_plan_with_errors(response, user, message, history).0
+    planned
 }
 
 fn message_allows_weather_tool(message: &str, history: &[AssistantHistoryMessage]) -> bool {
@@ -736,9 +628,7 @@ fn normalize_model_tool_input(
     tool: AssistantToolName,
     response: &ModelPlannerTool,
     message: &str,
-    errors: &mut Vec<String>,
 ) -> Option<AssistantToolInput> {
-    let lower = message.to_ascii_lowercase();
     match tool {
         AssistantToolName::CalendarCreateEvent
         | AssistantToolName::CalendarCreateBirthday
@@ -748,195 +638,112 @@ fn normalize_model_tool_input(
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::SystemGetCurrentDateTime
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
-        | AssistantToolName::SystemGetRecentErrors => {
-            inputless_model_tool_matches_message(tool, message).then_some(AssistantToolInput::None)
-        }
-        AssistantToolName::SystemGetCurrentDateTime => {
-            if !is_current_datetime_query(&lower)
-                && !message_has_current_datetime_follow_up_hint(message)
-                && !message_has_current_datetime_tool_follow_up_hint(message)
-            {
-                return None;
-            }
-            Some(extract_current_datetime_input(message))
-        }
+        | AssistantToolName::SystemGetRecentErrors => Some(AssistantToolInput::None),
         AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7, None)),
         AssistantToolName::CalendarUpcomingBirthdays => Some(extract_calendar_window(
             message,
             30,
-            planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            normalize_optional_query(response.query.clone())
                 .or_else(|| extract_birthday_query(message)),
         )),
         AssistantToolName::CalendarGetEventDetails => Some(extract_calendar_window(
             message,
             30,
-            planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            normalize_optional_query(response.query.clone())
                 .or_else(|| extract_calendar_event_detail_query(message)),
         )),
         AssistantToolName::ChannelsListUnreadActivity => Some(AssistantToolInput::ChannelsFilter {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_channel_query(message)),
         }),
         AssistantToolName::ChannelsGetTranscriptSummary => {
             Some(AssistantToolInput::ChannelsFilter {
-                query: planner_argument_string(response, "query", errors)
-                    .and_then(|value| normalize_optional_query(Some(value)))
+                query: normalize_optional_query(response.query.clone())
                     .or_else(|| extract_transcript_channel_query(message)),
             })
         }
         AssistantToolName::DownloadsListAvailableArtifacts => {
             Some(AssistantToolInput::DownloadsFilter {
-                query: planner_argument_string(response, "query", errors)
-                    .and_then(|value| normalize_optional_query(Some(value)))
+                query: normalize_optional_query(response.query.clone())
                     .or_else(|| extract_downloads_follow_up_query(message))
                     .or_else(|| extract_downloads_query(message)),
-                availability: planner_argument_string(response, "availability", errors)
-                    .as_deref()
-                    .and_then(|value| normalize_downloads_availability(Some(value)))
+                availability: normalize_downloads_availability(response.availability.as_deref())
                     .or_else(|| extract_downloads_availability(message)),
             })
         }
         AssistantToolName::LibrarySearchTitles => Some(AssistantToolInput::LibrarySearch {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_library_search_query(message))
                 .or_else(|| extract_library_follow_up_query(message))?,
         }),
         AssistantToolName::LibraryGetItemSummary => Some(AssistantToolInput::LibrarySearch {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_quoted_phrase(message))
                 .or_else(|| extract_library_follow_up_query(message))
                 .or_else(|| extract_library_search_query(message))?,
         }),
         AssistantToolName::LibrariesGetRecentlyAdded => Some(AssistantToolInput::LibraryRecent {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_recent_library_query(message)),
         }),
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
-        | AssistantToolName::WeatherGetHistory => {
-            planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
-                .or_else(|| extract_weather_location(message))
-                .and_then(|location| weather_tool_input_for_location(message, location))
-        }
+        | AssistantToolName::WeatherGetHistory => normalize_optional_query(response.query.clone())
+            .or_else(|| extract_weather_location(message))
+            .and_then(|location| weather_tool_input_for_location(message, location)),
         AssistantToolName::WebSearchPublicWeb => Some(AssistantToolInput::WebSearch {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_public_web_search_query(message))?,
         }),
         AssistantToolName::WebFetchPublicPageSummary => Some(AssistantToolInput::WebFetch {
-            url: planner_argument_string(response, "url", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
-                .or_else(|| {
-                    planner_argument_string(response, "query", errors)
-                        .and_then(|value| normalize_optional_query(Some(value)))
-                })
+            url: normalize_optional_query(response.url.clone())
+                .or_else(|| normalize_optional_query(response.query.clone()))
                 .or_else(|| extract_public_web_url(message))?,
         }),
         AssistantToolName::RoomsListActive => Some(AssistantToolInput::RoomsFilter {
-            room_mode: planner_argument_string(response, "room_mode", errors)
-                .as_deref()
-                .and_then(|value| normalize_room_mode(Some(value)))
+            room_mode: normalize_room_mode(response.room_mode.as_deref())
                 .or_else(|| detect_room_mode(message)),
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value))),
+            query: normalize_optional_query(response.query.clone()),
         }),
         AssistantToolName::RoomsListJoinable => Some(AssistantToolInput::RoomsFilter {
-            room_mode: planner_argument_string(response, "room_mode", errors)
-                .as_deref()
-                .and_then(|value| normalize_room_mode(Some(value)))
+            room_mode: normalize_room_mode(response.room_mode.as_deref())
                 .or_else(|| detect_room_mode(message)),
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_room_query(message)),
         }),
         AssistantToolName::RoomsGetRoomSummary => Some(AssistantToolInput::RoomsFilter {
-            room_mode: planner_argument_string(response, "room_mode", errors)
-                .as_deref()
-                .and_then(|value| normalize_room_mode(Some(value)))
+            room_mode: normalize_room_mode(response.room_mode.as_deref())
                 .or_else(|| detect_room_mode(message)),
             query: Some(
-                planner_argument_string(response, "query", errors)
-                    .and_then(|value| normalize_optional_query(Some(value)))
+                normalize_optional_query(response.query.clone())
                     .or_else(|| extract_room_query(message))
                     .or_else(|| extract_quoted_phrase(message))?,
             ),
         }),
         AssistantToolName::ServersListMinecraftStatus => Some(AssistantToolInput::ServerFilter {
-            query: planner_argument_string(response, "query", errors)
-                .and_then(|value| normalize_optional_query(Some(value)))
+            query: normalize_optional_query(response.query.clone())
                 .or_else(|| extract_server_query(message)),
-            availability: planner_argument_string(response, "availability", errors)
-                .as_deref()
-                .and_then(|value| normalize_server_availability(Some(value)))
+            availability: normalize_server_availability(response.availability.as_deref())
                 .or_else(|| extract_server_availability(message)),
         }),
         AssistantToolName::ServersGetMinecraftServerSummary => {
             Some(AssistantToolInput::ServerFilter {
                 query: Some(
-                    planner_argument_string(response, "query", errors)
-                        .and_then(|value| normalize_optional_query(Some(value)))
+                    normalize_optional_query(response.query.clone())
                         .or_else(|| extract_server_query(message))
                         .or_else(|| extract_quoted_phrase(message))
                         .filter(|query| !query.is_empty())?,
                 ),
-                availability: planner_argument_string(response, "availability", errors)
-                    .as_deref()
-                    .and_then(|value| normalize_server_availability(Some(value)))
+                availability: normalize_server_availability(response.availability.as_deref())
                     .or_else(|| extract_server_availability(message)),
             })
         }
-    }
-}
-
-fn inputless_model_tool_matches_message(tool: AssistantToolName, message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    match tool {
-        AssistantToolName::AccountGetProfileSummary => has_any(
-            &lower,
-            &[
-                "who am i",
-                "my account",
-                "my profile",
-                "what can i access",
-                "what is my role",
-            ],
-        ),
-        AssistantToolName::LibrariesListAccessible => {
-            extract_library_search_query(message).is_none()
-                && !is_recent_library_query(&lower)
-                && has_any(
-                    &lower,
-                    &[
-                        "library",
-                        "libraries",
-                        "media library",
-                        "media libraries",
-                        "what media",
-                        "what libraries",
-                    ],
-                )
-        }
-        AssistantToolName::NetworkGetTopologySummary => is_network_query(&lower),
-        AssistantToolName::CalendarGetNextEvent => is_next_calendar_event_query(&lower),
-        AssistantToolName::SystemGetHostRuntimeSummary => is_host_runtime_query(&lower),
-        AssistantToolName::SystemGetBackupSummary => is_backup_query(&lower),
-        AssistantToolName::SystemGetServiceHealth => is_service_health_query(&lower),
-        AssistantToolName::SystemGetTranscodeSummary => is_transcode_query(&lower),
-        AssistantToolName::SystemGetStorageSummary => is_storage_query(&lower),
-        AssistantToolName::SystemGetRecentErrors => is_recent_errors_query(&lower),
-        _ => false,
     }
 }
 
@@ -944,25 +751,6 @@ fn normalize_optional_query(query: Option<String>) -> Option<String> {
     query
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn planner_argument_string(
-    tool: &ModelPlannerTool,
-    key: &str,
-    errors: &mut Vec<String>,
-) -> Option<String> {
-    let value = tool.arguments.get(key)?;
-    match value {
-        JsonValue::String(text) => Some(text.trim().to_string()).filter(|value| !value.is_empty()),
-        JsonValue::Null => None,
-        _ => {
-            errors.push(format!(
-                "planner argument \"{key}\" for tool \"{}\" must be a string",
-                tool.tool
-            ));
-            None
-        }
-    }
 }
 
 fn normalize_room_mode(room_mode: Option<&str>) -> Option<String> {
@@ -999,27 +787,13 @@ fn normalize_server_availability(availability: Option<&str>) -> Option<String> {
     }
 }
 
-pub fn build_system_prompt() -> String {
+fn build_system_prompt() -> String {
     "You are the Rustyfin assistant — a helpful AI built into a personal home media server. \
 Be concise and genuinely helpful. Respond in plain text unless code or markdown lists add real clarity. \
 If authoritative Rustyfin grounding is supplied in another system message, treat it as the source of truth for this turn. \
 Do not invent data that was not grounded. If a grounded tool reports an error or missing data, say so plainly. \
 Do not claim to have created, updated, deleted, or changed anything in Rustyfin unless a confirmed server-side write tool actually ran and the backend verified the result."
         .to_string()
-}
-
-fn response_mode_prompt(response_mode: AssistantResponseMode) -> &'static str {
-    match response_mode {
-        AssistantResponseMode::Instant => {
-            "Response mode is instant. Favor the fastest useful grounded answer. Keep the reply compact, direct, and short unless extra detail is required to answer correctly. Avoid filler, repetition, and unnecessary caveats."
-        }
-        AssistantResponseMode::Thinking => {
-            "Response mode is thinking. Take a more deliberate approach before answering. Check ambiguity against the grounded context, explain the conclusion clearly when that helps, and allow a fuller answer when it materially improves quality. Keep the final answer readable and do not expose hidden chain-of-thought."
-        }
-        AssistantResponseMode::Extended => {
-            "Response mode is extended. Use the larger response budget for substantial work such as drafting documents, writing or reviewing code, checking your own work, and producing structured multi-step outputs. Be deliberate, verify the grounded facts you rely on, self-check before concluding, and return a complete polished final answer without exposing hidden chain-of-thought."
-        }
-    }
 }
 
 pub fn immediate_response_for_message(message: &str) -> Option<String> {
@@ -1222,6 +996,9 @@ pub fn plan_tool_calls_with_history(
     history: &[AssistantHistoryMessage],
 ) -> Vec<PlannedToolCall> {
     let lower = message.to_ascii_lowercase();
+    if is_tool_inventory_query(&lower) {
+        return Vec::new();
+    }
     let mut planned = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1387,7 +1164,7 @@ pub fn plan_tool_calls_with_history(
             &mut planned,
             &mut seen,
             AssistantToolName::SystemGetCurrentDateTime,
-            extract_current_datetime_input(message),
+            AssistantToolInput::None,
         );
     }
 
@@ -1533,7 +1310,7 @@ pub fn plan_tool_calls_with_history(
 
 pub fn build_assistant_messages(
     request: AssistantChatRequest,
-    grounding_blocks: &[AssistantToolContextBlock],
+    grounding_chunks: &[AssistantGroundingChunk],
 ) -> Vec<ChatMessage> {
     let local_now = assistant_local_now();
     let mut messages = vec![ChatMessage {
@@ -1549,17 +1326,12 @@ pub fn build_assistant_messages(
         ),
     });
 
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: response_mode_prompt(request.response_mode).to_string(),
-    });
-
-    if !grounding_blocks.is_empty() {
+    if !grounding_chunks.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
                 "Authoritative Rustyfin grounding for this turn:\n{}",
-                serde_json::to_string(grounding_blocks).unwrap_or_else(|_| "[]".to_string())
+                super::replies::grounding_chunks_prompt(grounding_chunks)
             ),
         });
     }
@@ -1615,22 +1387,6 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         ) => format!("Loading calendar details for \"{query}\""),
         (AssistantToolName::CalendarGetEventDetails, _) => {
             "Loading calendar event details".to_string()
-        }
-        (
-            AssistantToolName::CalendarDeleteEvent,
-            AssistantToolInput::CalendarDeleteEvent {
-                title, event_date, ..
-            },
-        ) => format!("Deleting calendar event \"{title}\" on {event_date}"),
-        (AssistantToolName::CalendarDeleteEvent, _) => "Deleting a calendar event".to_string(),
-        (
-            AssistantToolName::DocumentCreateDownload,
-            AssistantToolInput::DocumentCreateDownload {
-                file_name, format, ..
-            },
-        ) => format!("Generating downloadable {format} document \"{file_name}\""),
-        (AssistantToolName::DocumentCreateDownload, _) => {
-            "Generating a downloadable document".to_string()
         }
         (
             AssistantToolName::ChannelsListUnreadActivity,
@@ -1695,12 +1451,6 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         (AssistantToolName::LibrariesListAccessible, _) => {
             "Checking accessible libraries".to_string()
         }
-        (
-            AssistantToolName::SystemGetCurrentDateTime,
-            AssistantToolInput::CurrentDateTime {
-                location: Some(location),
-            },
-        ) => format!("Checking the current local time for \"{location}\""),
         (AssistantToolName::SystemGetCurrentDateTime, _) => {
             "Checking the Rustyfin host date and time".to_string()
         }
@@ -1862,10 +1612,7 @@ fn apply_follow_up_tool_hints(
 
     for tool in recent_tools {
         match tool {
-            AssistantToolName::CalendarCreateEvent
-            | AssistantToolName::CalendarCreateBirthday
-            | AssistantToolName::CalendarDeleteEvent
-            | AssistantToolName::DocumentCreateDownload => {}
+            AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -2087,7 +1834,7 @@ fn apply_follow_up_tool_hints(
                         planned,
                         seen,
                         AssistantToolName::SystemGetCurrentDateTime,
-                        extract_current_datetime_input(message),
+                        AssistantToolInput::None,
                     );
                 }
             }
@@ -2392,8 +2139,6 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
         "system_get_current_datetime" => {
             is_current_datetime_query(&lower)
                 || message_has_current_datetime_tool_follow_up_hint(message)
-                || (context.input_hint.current_datetime_location.is_some()
-                    && extract_current_datetime_location(message).is_some())
         }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
         "system_get_backup_summary" => is_backup_query(&lower),
@@ -3695,15 +3440,9 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "host stats",
             "system stats",
             "runtime stats",
-            "runtime status",
             "runtime diagnostics",
             "server stats",
             "server diagnostics",
-            "ai runtime",
-            "assistant runtime",
-            "model runtime",
-            "ai status",
-            "assistant status",
         ],
     );
     let resource_keywords = has_any(
@@ -3714,6 +3453,7 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "swap",
             "cpu",
             "load average",
+            "load",
             "uptime",
             "thread",
             "threads",
@@ -3722,12 +3462,11 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
             "utilization",
             "usage",
         ],
-    ) || has_standalone_phrase(message_lower, &["load"]);
+    );
     let host_scope = has_any(
         message_lower,
         &["host", "system", "server", "machine", "rustyfin"],
     );
-    let ai_scope = has_any(message_lower, &["ai", "assistant", "model"]);
     let standalone_host_usage = has_any(
         message_lower,
         &[
@@ -3740,9 +3479,7 @@ fn is_host_runtime_query(message_lower: &str) -> bool {
         ],
     );
 
-    explicit_host_stats
-        || ((message_lower.contains("runtime") || message_lower.contains("status")) && ai_scope)
-        || (resource_keywords && (host_scope || standalone_host_usage || ai_scope))
+    explicit_host_stats || (resource_keywords && (host_scope || standalone_host_usage))
 }
 
 fn is_backup_query(message_lower: &str) -> bool {
@@ -3814,10 +3551,6 @@ fn is_storage_query(message_lower: &str) -> bool {
 }
 
 fn is_current_datetime_query(message_lower: &str) -> bool {
-    if is_geographic_distance_query(message_lower) {
-        return false;
-    }
-
     let simple_current_datetime = has_any(
         message_lower,
         &[
@@ -3845,20 +3578,6 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "host time",
             "fetch the time",
             "get the time",
-        ],
-    ) || has_standalone_phrase(
-        message_lower,
-        &[
-            "time in ",
-            "time for ",
-            "time is it in ",
-            "date in ",
-            "date for ",
-            "date is it in ",
-            "day in ",
-            "day for ",
-            "local time in ",
-            "local time for ",
         ],
     );
     if simple_current_datetime {
@@ -3894,114 +3613,6 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
                 "calendar date",
             ],
         )
-}
-
-fn is_geographic_distance_query(message_lower: &str) -> bool {
-    has_any(
-        message_lower,
-        &[
-            "distance between",
-            "how far away",
-            "how far is",
-            "how close is",
-            "how near is",
-            "how far from",
-            "far away from",
-            "distance from",
-            "travel distance",
-        ],
-    )
-}
-
-fn extract_current_datetime_input(message: &str) -> AssistantToolInput {
-    AssistantToolInput::CurrentDateTime {
-        location: extract_current_datetime_location(message),
-    }
-}
-
-fn extract_current_datetime_location(message: &str) -> Option<String> {
-    let lower = message.to_ascii_lowercase();
-    if !has_any(
-        &lower,
-        &[
-            "time",
-            "date",
-            "day",
-            "right now",
-            "currently",
-            "local time",
-            "clock",
-        ],
-    ) {
-        return None;
-    }
-
-    for marker in [
-        "time in ",
-        "time for ",
-        "time is it in ",
-        "date in ",
-        "date for ",
-        "date is it in ",
-        "day in ",
-        "day for ",
-        "local time in ",
-        "local time for ",
-        "clock in ",
-        "right now in ",
-        "currently in ",
-    ] {
-        let Some(index) = find_standalone_phrase_index(&lower, marker) else {
-            continue;
-        };
-        let raw = message[index + marker.len()..].trim();
-        let candidate =
-            raw.trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch));
-        if candidate.is_empty() {
-            continue;
-        }
-        let lowered_candidate = candidate.to_ascii_lowercase();
-        let mut end = candidate.len();
-        for suffix in [
-            " right now",
-            " currently",
-            " today",
-            " tomorrow",
-            " yesterday",
-            " please",
-        ] {
-            if let Some(found) = lowered_candidate.find(suffix) {
-                end = end.min(found);
-            }
-        }
-        let normalized = candidate[..end]
-            .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
-            .trim();
-        if !normalized.is_empty() {
-            return Some(normalized.to_string());
-        }
-    }
-
-    None
-}
-
-fn has_standalone_phrase(message_lower: &str, phrases: &[&str]) -> bool {
-    phrases
-        .iter()
-        .copied()
-        .any(|phrase| find_standalone_phrase_index(message_lower, phrase).is_some())
-}
-
-fn find_standalone_phrase_index(message_lower: &str, phrase: &str) -> Option<usize> {
-    message_lower.match_indices(phrase).find_map(|(index, _)| {
-        let has_boundary = index == 0
-            || message_lower[..index]
-                .chars()
-                .next_back()
-                .map(|ch| !ch.is_ascii_alphabetic())
-                .unwrap_or(true);
-        if has_boundary { Some(index) } else { None }
-    })
 }
 
 fn contains_weekday_name(message_lower: &str) -> bool {
@@ -4077,10 +3688,6 @@ struct GroundedCurrentDateTimeSummary {
     local_date: String,
     local_time: String,
     timezone_offset: String,
-    #[serde(default)]
-    timezone_name: Option<String>,
-    #[serde(default)]
-    resolved_location: Option<String>,
 }
 
 pub fn deterministic_current_datetime_reply(
@@ -4096,41 +3703,7 @@ pub fn deterministic_current_datetime_reply(
         return None;
     }
     if block.status != "ok" {
-        if block.status == "clarification" {
-            return block
-                .data
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .or_else(|| {
-                    block
-                        .data
-                        .get("message")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(decode_assistant_clarification_message)
-                        .map(str::to_string)
-                });
-        }
-        return Some(
-            block
-                .data
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .and_then(decode_assistant_clarification_message)
-                .map(str::to_string)
-                .or_else(|| {
-                    block
-                        .data
-                        .get("message")
-                        .and_then(serde_json::Value::as_str)
-                        .map(|message| {
-                            format!("I couldn't load the current date and time: {message}.")
-                        })
-                })
-                .unwrap_or_else(|| {
-                    "I couldn't load the current Rustyfin host date and time.".to_string()
-                }),
-        );
+        return Some("I couldn't load the current Rustyfin host date and time.".to_string());
     }
 
     let summary =
@@ -4139,54 +3712,15 @@ pub fn deterministic_current_datetime_reply(
     if let Some((resolved_date, phrase)) =
         resolve_current_datetime_reference(message, history, today)
     {
-        return Some(
-            summary
-                .resolved_location
-                .as_deref()
-                .map(|location| {
-                    format!(
-                        "From the current local date in {}, {}, {} is {}.",
-                        location,
-                        format_with_weekday(today),
-                        phrase,
-                        format_with_weekday(resolved_date),
-                    )
-                })
-                .unwrap_or_else(|| {
-                    format!(
-                        "From Rustyfin's current local date, {}, {} is {}.",
-                        format_with_weekday(today),
-                        phrase,
-                        format_with_weekday(resolved_date),
-                    )
-                }),
-        );
-    }
-
-    let lower = message.to_ascii_lowercase();
-    if let Some(location) = summary.resolved_location.as_deref() {
-        let timezone = summary
-            .timezone_name
-            .as_deref()
-            .map(|name| format!("{name} (UTC{})", summary.timezone_offset))
-            .unwrap_or_else(|| format!("UTC{}", summary.timezone_offset));
-        if lower.contains("time") && !lower.contains("date") && !lower.contains("day") {
-            return Some(format!(
-                "The current local time in {} is {} on {} ({timezone}).",
-                location,
-                summary.local_time,
-                format_without_weekday(today),
-            ));
-        }
-
         return Some(format!(
-            "In {}, today is {}. The current local time there is {} ({timezone}).",
-            location,
+            "From Rustyfin's current local date, {}, {} is {}.",
             format_with_weekday(today),
-            summary.local_time,
+            phrase,
+            format_with_weekday(resolved_date),
         ));
     }
 
+    let lower = message.to_ascii_lowercase();
     if lower.contains("time") && !lower.contains("date") && !lower.contains("day") {
         return Some(format!(
             "The current Rustyfin host local time is {} on {} (UTC{}).",
@@ -4254,6 +3788,108 @@ fn is_recent_errors_query(message_lower: &str) -> bool {
             "failure summary",
         ],
     )
+}
+
+fn is_tool_inventory_query(message_lower: &str) -> bool {
+    if message_lower.contains("list of all the functions")
+        || message_lower.contains("list all the functions")
+        || message_lower.contains("available functions")
+        || message_lower.contains("available tools")
+        || message_lower.contains("tool list")
+        || message_lower.contains("function list")
+        || message_lower.contains("grounded tools")
+        || message_lower.contains("what tools do you have access")
+        || message_lower.contains("what functions do you have access")
+        || message_lower.contains("what tools can you use")
+        || message_lower.contains("what functions can you use")
+    {
+        return true;
+    }
+
+    let mentions_inventory_target = has_any(
+        message_lower,
+        &["tool", "tools", "function", "functions", "capabilities"],
+    );
+    let asks_for_inventory = has_any(
+        message_lower,
+        &[
+            "what are",
+            "which are",
+            "list",
+            "show",
+            "available",
+            "access to",
+            "have access",
+            "can you use",
+            "can you access",
+        ],
+    );
+    let points_at_assistant = has_any(
+        message_lower,
+        &[
+            "you",
+            "your",
+            "this environment",
+            "rustyfin ai",
+            "assistant",
+        ],
+    );
+
+    mentions_inventory_target && asks_for_inventory && points_at_assistant
+}
+
+pub fn deterministic_tool_inventory_reply(user: &AuthUser, message: &str) -> Option<String> {
+    if !is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        return None;
+    }
+
+    let visible_tools = AssistantToolName::all()
+        .iter()
+        .copied()
+        .filter(|tool| tool_visible_to_user(*tool, user))
+        .collect::<Vec<_>>();
+
+    let mut lines = vec![format!(
+        "I can use these grounded Rustyfin functions in this environment for your account ({} total):",
+        visible_tools.len()
+    )];
+    if user.role == "admin" {
+        lines.push(
+            "Admin-only host diagnostics are included because your account has admin access."
+                .to_string(),
+        );
+    }
+
+    for tool in visible_tools {
+        let spec = tool.spec();
+        let mut notes = vec![match spec.access_mode {
+            super::types::ToolAccessMode::ReadOnly => "read-only".to_string(),
+            super::types::ToolAccessMode::Write => "write".to_string(),
+            super::types::ToolAccessMode::DestructiveWrite => "destructive-write".to_string(),
+        }];
+        match spec.confirmation {
+            super::types::ToolConfirmationPolicy::None => {}
+            super::types::ToolConfirmationPolicy::ExplicitUserConfirm => {
+                notes.push("confirmation required".to_string())
+            }
+            super::types::ToolConfirmationPolicy::ProtectedAction => {
+                notes.push("protected action".to_string())
+            }
+        }
+        lines.push(format!(
+            "- {}: {} [{}]",
+            spec.name,
+            spec.summary,
+            notes.join(", ")
+        ));
+    }
+
+    lines.push(
+        "I do not have arbitrary shell, database, or filesystem access. I can only use the backend-owned Rustyfin functions listed above."
+            .to_string(),
+    );
+
+    Some(lines.join("\n"))
 }
 
 fn is_network_query(message_lower: &str) -> bool {
@@ -4670,82 +4306,15 @@ fn extract_next_numbered_window(message_lower: &str, singular: &str, plural: &st
     let marker = "next ";
     let idx = message_lower.find(marker)?;
     let rest = &message_lower[idx + marker.len()..];
-    let parts: Vec<&str> = rest.split_whitespace().take(4).collect();
-    let unit_index = parts.iter().position(|part| {
-        let cleaned = part.trim_matches(|c: char| !c.is_ascii_alphabetic());
-        cleaned == singular || cleaned == plural
-    })?;
-    if unit_index == 0 {
-        return None;
-    }
-    let number = parse_number_window_phrase(&parts[..unit_index].join(" "))?;
-    let unit = parts[unit_index].trim_matches(|c: char| !c.is_ascii_alphabetic());
+    let mut parts = rest.split_whitespace();
+    let number = parts.next()?.parse::<i64>().ok()?;
+    let unit = parts
+        .next()?
+        .trim_matches(|c: char| !c.is_ascii_alphabetic());
     if unit == singular || unit == plural {
         Some(number.clamp(1, 90))
     } else {
         None
-    }
-}
-
-fn parse_number_window_phrase(raw: &str) -> Option<i64> {
-    let normalized = raw
-        .trim()
-        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != ' ')
-        .to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    if let Ok(number) = normalized.parse::<i64>() {
-        return Some(number);
-    }
-
-    let normalized_words = normalized.replace('-', " ");
-    let parts: Vec<&str> = normalized_words.split_whitespace().collect();
-    match parts.as_slice() {
-        [single] => number_word_value(single),
-        [tens, ones] => Some(tens_word_value(tens)? + number_word_value(ones)?),
-        _ => None,
-    }
-}
-
-fn number_word_value(word: &str) -> Option<i64> {
-    match word {
-        "zero" => Some(0),
-        "one" => Some(1),
-        "two" => Some(2),
-        "three" => Some(3),
-        "four" => Some(4),
-        "five" => Some(5),
-        "six" => Some(6),
-        "seven" => Some(7),
-        "eight" => Some(8),
-        "nine" => Some(9),
-        "ten" => Some(10),
-        "eleven" => Some(11),
-        "twelve" => Some(12),
-        "thirteen" => Some(13),
-        "fourteen" => Some(14),
-        "fifteen" => Some(15),
-        "sixteen" => Some(16),
-        "seventeen" => Some(17),
-        "eighteen" => Some(18),
-        "nineteen" => Some(19),
-        _ => None,
-    }
-}
-
-fn tens_word_value(word: &str) -> Option<i64> {
-    match word {
-        "twenty" => Some(20),
-        "thirty" => Some(30),
-        "forty" => Some(40),
-        "fifty" => Some(50),
-        "sixty" => Some(60),
-        "seventy" => Some(70),
-        "eighty" => Some(80),
-        "ninety" => Some(90),
-        _ => None,
     }
 }
 
@@ -4818,19 +4387,19 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantToolName, ModelPlannerResponse, build_assistant_messages,
-        clarification_for_message, deterministic_current_datetime_reply, normalize_model_plan,
-        parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
-        status_label_for_tool_call, unsupported_write_response_for_message,
-        validate_model_planner_response,
+        AssistantToolName, ModelPlannerResponse, clarification_for_message,
+        deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
+        normalize_model_plan, parse_model_planner_response, plan_tool_calls,
+        plan_tool_calls_with_history, status_label_for_tool_call,
+        unsupported_write_response_for_message,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
-        AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-        AssistantFollowUpInputHint, AssistantHistoryMessage, AssistantResponseMode,
-        AssistantToolContextBlock, AssistantToolInput,
+        AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
+        AssistantHistoryMessage, AssistantToolContextBlock, AssistantToolInput,
     };
     use crate::auth::AuthUser;
+    use serde_json::json;
 
     fn auth_user(role: &str) -> AuthUser {
         AuthUser {
@@ -4846,6 +4415,7 @@ mod tests {
             content: "Grounded answer".to_string(),
             grounding_tools: tool_names.iter().map(|tool| (*tool).to_string()).collect(),
             follow_up_contexts: Vec::new(),
+            grounding_chunks: Vec::new(),
         }]
     }
 
@@ -4869,9 +4439,11 @@ mod tests {
                         ordinal: index + 1,
                         label: (*label).to_string(),
                         identifier: None,
+                        ..Default::default()
                     })
                     .collect(),
             }],
+            grounding_chunks: Vec::new(),
         }]
     }
 
@@ -4880,7 +4452,7 @@ mod tests {
             tool: "system_get_current_datetime",
             label: format!("Rustyfin host local date and time: {local_date} ({weekday})"),
             status: "ok",
-            data: serde_json::json!({
+            data: json!({
                 "local_timestamp": format!("{local_date} 12:00:00 +00:00"),
                 "local_date": local_date,
                 "local_time": "12:00:00",
@@ -4925,12 +4497,6 @@ mod tests {
     #[test]
     fn clarification_does_not_trigger_for_relative_weekday_calendar_window() {
         let message = "What events do I have next Tuesday?";
-        assert!(clarification_for_message(message).is_none());
-    }
-
-    #[test]
-    fn clarification_does_not_trigger_for_worded_number_calendar_window() {
-        let message = "Show my visible calendar events for the next seven days.";
         assert!(clarification_for_message(message).is_none());
     }
 
@@ -4980,32 +4546,12 @@ mod tests {
             AssistantToolInput::CalendarCreateBirthday { .. } => {
                 panic!("unexpected calendar create birthday input")
             }
-            AssistantToolInput::CalendarDeleteEvent { .. } => {
-                panic!("unexpected calendar delete event input")
-            }
-            AssistantToolInput::CurrentDateTime { .. } => {
-                panic!("unexpected current datetime input")
-            }
-            AssistantToolInput::DocumentCreateDownload { .. } => {
-                panic!("unexpected document create download input")
-            }
         }
     }
 
     #[test]
     fn planner_detects_host_runtime_query() {
         let tools = plan_tool_calls("How much RAM is the server using right now?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(
-            tools[0].tool,
-            AssistantToolName::SystemGetHostRuntimeSummary
-        );
-        assert!(matches!(tools[0].input, AssistantToolInput::None));
-    }
-
-    #[test]
-    fn planner_detects_ai_runtime_status_query() {
-        let tools = plan_tool_calls("What is the AI runtime status right now?");
         assert_eq!(tools.len(), 1);
         assert_eq!(
             tools[0].tool,
@@ -5050,6 +4596,14 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::NetworkGetTopologySummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_keeps_tool_inventory_queries_off_grounded_tools() {
+        let tools = plan_tool_calls(
+            "Give me a list of all the functions you have access to in this environment",
+        );
+        assert!(tools.is_empty());
     }
 
     #[test]
@@ -5151,13 +4705,7 @@ mod tests {
         assert_eq!(parsed.mode.as_deref(), Some("tool_plan"));
         assert_eq!(parsed.tools.len(), 1);
         assert_eq!(parsed.tools[0].tool, "library_search_titles");
-        assert_eq!(
-            parsed.tools[0]
-                .query
-                .as_ref()
-                .and_then(serde_json::Value::as_str),
-            Some("Dune")
-        );
+        assert_eq!(parsed.tools[0].query.as_deref(), Some("Dune"));
     }
 
     #[test]
@@ -5174,39 +4722,6 @@ mod tests {
     #[test]
     fn model_planner_parser_rejects_non_json_output() {
         assert!(parse_model_planner_response("no usable planner json here").is_none());
-    }
-
-    #[test]
-    fn model_planner_validation_rejects_missing_required_arguments() {
-        let validated = validate_model_planner_response(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"weather_get_current\",\"arguments\":{}}]}",
-            &auth_user("user"),
-            "What's the weather like?",
-            &[],
-        );
-
-        assert!(validated.calls.is_empty());
-        assert!(!validated.debug.validation_errors.is_empty());
-        assert_eq!(validated.debug.validated_call_count, 0);
-    }
-
-    #[test]
-    fn model_planner_validation_repairs_legacy_argument_shape() {
-        let validated = validate_model_planner_response(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
-            &auth_user("user"),
-            "Find Dune in my libraries",
-            &[],
-        );
-
-        assert_eq!(validated.calls.len(), 1);
-        assert!(validated.debug.repair_attempt_count >= 1);
-        assert!(validated.debug.used_repaired_response);
-        assert_eq!(validated.debug.validated_call_count, 1);
-        match &validated.calls[0].input {
-            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Dune"),
-            other => panic!("expected library search input, got {other:?}"),
-        }
     }
 
     #[test]
@@ -5302,36 +4817,6 @@ mod tests {
     }
 
     #[test]
-    fn model_planner_rejects_transcode_for_ai_runtime_question() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_transcode_summary\"}]}",
-        )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("admin"),
-            "What is the AI runtime status right now?",
-            &[],
-        );
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn model_planner_rejects_datetime_for_geographic_distance_query() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_current_datetime\"}]}",
-        )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("user"),
-            "How far away is Italy from Spain?",
-            &[],
-        );
-        assert!(tools.is_empty());
-    }
-
-    #[test]
     fn planner_extracts_calendar_today_window() {
         let tools = plan_tool_calls("What events do I have today?");
         assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
@@ -5364,10 +4849,7 @@ mod tests {
         let tools = plan_tool_calls("What date is next Tuesday?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(
-            tools[0].input,
-            AssistantToolInput::CurrentDateTime { location: None }
-        ));
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
@@ -5375,10 +4857,7 @@ mod tests {
         let tools = plan_tool_calls("Fetch the time on the Rustyfin host");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(
-            tools[0].input,
-            AssistantToolInput::CurrentDateTime { location: None }
-        ));
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
@@ -5386,29 +4865,7 @@ mod tests {
         let tools = plan_tool_calls("What day next Tuesday would be?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(
-            tools[0].input,
-            AssistantToolInput::CurrentDateTime { location: None }
-        ));
-    }
-
-    #[test]
-    fn planner_routes_location_current_datetime_queries() {
-        let tools = plan_tool_calls("What is the time in Italy right now?");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        match &tools[0].input {
-            AssistantToolInput::CurrentDateTime { location } => {
-                assert_eq!(location.as_deref(), Some("Italy"));
-            }
-            _ => panic!("expected current datetime input"),
-        }
-    }
-
-    #[test]
-    fn planner_does_not_route_geographic_distance_queries_to_datetime() {
-        let tools = plan_tool_calls("How far away is Italy from Spain?");
-        assert!(tools.is_empty());
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
@@ -5417,31 +4874,7 @@ mod tests {
         let tools = plan_tool_calls_with_history("Surely it would be the 7th", &history);
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        assert!(matches!(
-            tools[0].input,
-            AssistantToolInput::CurrentDateTime { location: None }
-        ));
-    }
-
-    #[test]
-    fn planner_prefers_datetime_over_weather_follow_up_for_location_time_query() {
-        let history = history_with_follow_up_context(
-            "weather_get_current",
-            &[],
-            AssistantFollowUpInputHint {
-                weather_location: Some("Campile, County Wexford, Ireland".to_string()),
-                ..AssistantFollowUpInputHint::default()
-            },
-        );
-        let tools = plan_tool_calls_with_history("and the time in france?", &history);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::SystemGetCurrentDateTime);
-        match &tools[0].input {
-            AssistantToolInput::CurrentDateTime { location } => {
-                assert_eq!(location.as_deref(), Some("france"));
-            }
-            _ => panic!("expected current datetime input"),
-        }
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 
     #[test]
@@ -5464,6 +4897,7 @@ mod tests {
             content: "What day next Tuesday would be?".to_string(),
             grounding_tools: Vec::new(),
             follow_up_contexts: Vec::new(),
+            grounding_chunks: Vec::new(),
         }];
         let reply = deterministic_current_datetime_reply(
             "Surely it would be the 7th",
@@ -5476,102 +4910,27 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_current_datetime_reply_formats_location_time() {
-        let reply = deterministic_current_datetime_reply(
-            "and the time in france?",
-            &[],
-            &[AssistantToolContextBlock {
-                tool: "system_get_current_datetime",
-                label: "Current date and time for France".to_string(),
-                status: "ok",
-                data: serde_json::json!({
-                    "local_timestamp": "2026-04-02 22:53:06 +02:00",
-                    "local_date": "2026-04-02",
-                    "local_time": "22:53:06",
-                    "weekday": "Thursday",
-                    "timezone_offset": "+02:00",
-                    "timezone_name": "Europe/Paris",
-                    "location_query": "france",
-                    "resolved_location": "France",
-                    "unix_timestamp": 1775163186_i64,
-                }),
-            }],
+    fn deterministic_tool_inventory_reply_lists_user_visible_tools() {
+        let reply = deterministic_tool_inventory_reply(
+            &auth_user("user"),
+            "Give me a list of all the functions you have access to in this environment",
         )
-        .expect("expected deterministic reply");
-        assert!(reply.contains("France"));
-        assert!(reply.contains("22:53:06"));
-        assert!(reply.contains("Europe/Paris"));
+        .expect("expected deterministic tool inventory reply");
+        assert!(reply.contains("network_get_topology_summary"));
+        assert!(reply.contains("system_get_current_datetime"));
+        assert!(reply.contains("calendar_create_event"));
+        assert!(!reply.contains("system_get_service_health"));
     }
 
     #[test]
-    fn deterministic_current_datetime_reply_returns_clarification_message() {
-        let reply = deterministic_current_datetime_reply(
-            "What time is it in Galway right now?",
-            &[],
-            &[AssistantToolContextBlock {
-                tool: "system_get_current_datetime",
-                label: "Needs clarification before continuing".to_string(),
-                status: "clarification",
-                data: serde_json::json!({
-                    "message": "I found multiple locations matching \"Galway\": Galway, Connacht, Ireland; Galway, Saratoga, New York, United States. Which one did you mean?"
-                }),
-            }],
+    fn deterministic_tool_inventory_reply_lists_admin_tools_for_admins() {
+        let reply = deterministic_tool_inventory_reply(
+            &auth_user("admin"),
+            "What tools can you use in this environment?",
         )
-        .expect("expected clarification reply");
-        assert!(reply.contains("Which one did you mean?"));
-        assert!(reply.contains("Galway, Connacht, Ireland"));
-        assert!(reply.contains("Galway, Saratoga, New York, United States"));
-    }
-
-    #[test]
-    fn build_assistant_messages_includes_instant_mode_guidance() {
-        let messages = build_assistant_messages(
-            AssistantChatRequest {
-                model: "model.gguf".to_string(),
-                message: "hello".to_string(),
-                response_mode: AssistantResponseMode::Instant,
-                confirmation_token: None,
-                history: Vec::new(),
-            },
-            &[],
-        );
-        assert!(messages.iter().any(|message| {
-            message.role == "system" && message.content.contains("Response mode is instant")
-        }));
-    }
-
-    #[test]
-    fn build_assistant_messages_includes_thinking_mode_guidance() {
-        let messages = build_assistant_messages(
-            AssistantChatRequest {
-                model: "model.gguf".to_string(),
-                message: "hello".to_string(),
-                response_mode: AssistantResponseMode::Thinking,
-                confirmation_token: None,
-                history: Vec::new(),
-            },
-            &[],
-        );
-        assert!(messages.iter().any(|message| {
-            message.role == "system" && message.content.contains("Response mode is thinking")
-        }));
-    }
-
-    #[test]
-    fn build_assistant_messages_includes_extended_mode_guidance() {
-        let messages = build_assistant_messages(
-            AssistantChatRequest {
-                model: "model.gguf".to_string(),
-                message: "hello".to_string(),
-                response_mode: AssistantResponseMode::Extended,
-                confirmation_token: None,
-                history: Vec::new(),
-            },
-            &[],
-        );
-        assert!(messages.iter().any(|message| {
-            message.role == "system" && message.content.contains("Response mode is extended")
-        }));
+        .expect("expected deterministic tool inventory reply");
+        assert!(reply.contains("system_get_service_health"));
+        assert!(reply.contains("system_get_host_runtime_summary"));
     }
 
     #[test]
@@ -5591,18 +4950,6 @@ mod tests {
         match &tools[0].input {
             AssistantToolInput::CalendarWindow { label, .. } => {
                 assert_eq!(label, "the next 10 days")
-            }
-            _ => panic!("expected calendar window"),
-        }
-    }
-
-    #[test]
-    fn planner_extracts_worded_day_window() {
-        let tools = plan_tool_calls("Show my visible calendar events for the next seven days.");
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
-        match &tools[0].input {
-            AssistantToolInput::CalendarWindow { label, .. } => {
-                assert_eq!(label, "the next 7 days")
             }
             _ => panic!("expected calendar window"),
         }
