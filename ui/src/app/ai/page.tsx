@@ -2792,7 +2792,7 @@ export default function AiPage() {
                         <button
                           type="button"
                           onClick={() => setComposerMenuOpen((current) => !current)}
-                          className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                          className="btn-secondary ai-composer-icon-btn h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
                           disabled={composerDisabled}
                           aria-label="Add media or prompt controls"
                         >
@@ -2885,7 +2885,7 @@ export default function AiPage() {
                                     void startVoiceInput();
                                   }
                                 }}
-                                className="btn-secondary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                className="btn-secondary ai-composer-icon-btn flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
                                 disabled={voiceControlDisabled}
                                 aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
                               >
