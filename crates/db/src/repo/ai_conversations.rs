@@ -10,6 +10,9 @@ pub struct AiConversationRow {
     pub sort_order: i64,
     pub last_message_preview: Option<String>,
     pub last_model_name: Option<String>,
+    pub memory_state_json: String,
+    pub memory_turn_index: i64,
+    pub memory_updated_ts: Option<i64>,
     pub created_ts: i64,
     pub updated_ts: i64,
 }
@@ -69,6 +72,9 @@ fn map_conversation_row(
         i64,
         Option<String>,
         Option<String>,
+        String,
+        i64,
+        Option<i64>,
         i64,
         i64,
     ),
@@ -82,6 +88,9 @@ fn map_conversation_row(
         sort_order,
         last_message_preview,
         last_model_name,
+        memory_state_json,
+        memory_turn_index,
+        memory_updated_ts,
         created_ts,
         updated_ts,
     ) = row;
@@ -95,6 +104,9 @@ fn map_conversation_row(
         sort_order,
         last_message_preview,
         last_model_name,
+        memory_state_json,
+        memory_turn_index,
+        memory_updated_ts,
         created_ts,
         updated_ts,
     }
@@ -159,10 +171,14 @@ async fn list_conversations_in_scope(
         i64,
         Option<String>,
         Option<String>,
+        String,
+        i64,
+        Option<i64>,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name,
+                memory_state_json, memory_turn_index, memory_updated_ts, created_ts, updated_ts
          FROM ai_conversation
          WHERE user_id = $1
            AND archived = $2
@@ -279,10 +295,14 @@ pub async fn list_conversations_for_user(
         i64,
         Option<String>,
         Option<String>,
+        String,
+        i64,
+        Option<i64>,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name,
+                memory_state_json, memory_turn_index, memory_updated_ts, created_ts, updated_ts
          FROM ai_conversation
          WHERE user_id = $1
            AND ($2 = TRUE OR archived = FALSE)
@@ -312,10 +332,14 @@ pub async fn get_conversation_for_user(
         i64,
         Option<String>,
         Option<String>,
+        String,
+        i64,
+        Option<i64>,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name,
+                memory_state_json, memory_turn_index, memory_updated_ts, created_ts, updated_ts
          FROM ai_conversation
          WHERE id = $1 AND user_id = $2",
     )
@@ -435,6 +459,32 @@ pub async fn move_conversation_for_user(
     tx.commit().await?;
 
     Ok(Some(true))
+}
+
+pub async fn update_conversation_memory(
+    pool: &DbPool,
+    conversation_id: &str,
+    user_id: &str,
+    memory_state_json: &str,
+    memory_turn_index: i64,
+    memory_updated_ts: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE ai_conversation
+         SET memory_state_json = $1,
+             memory_turn_index = $2,
+             memory_updated_ts = $3
+         WHERE id = $4 AND user_id = $5",
+    )
+    .bind(memory_state_json)
+    .bind(memory_turn_index)
+    .bind(memory_updated_ts)
+    .bind(conversation_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn delete_conversation_for_user(

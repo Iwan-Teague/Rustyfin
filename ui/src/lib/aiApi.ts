@@ -203,6 +203,19 @@ export interface AiRuntimeResponse {
     phase: AiRuntimePhase;
     queue_depth: number;
     active_request_count: number;
+    prompt?: {
+      context_length: number;
+      prompt_budget_tokens: number;
+      reserved_completion_tokens: number;
+      prompt_tokens_estimate: number;
+      loaded_history_turns: number;
+      retained_raw_turns: number;
+      summarized_turns: number;
+      recent_grounded_context_count: number;
+      used_memory_summary: boolean;
+      memory_turn_index: number;
+      memory_summary_chars: number;
+    } | null;
   };
   resources: {
     process_rss_bytes?: number | null;

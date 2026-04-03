@@ -176,37 +176,7 @@ impl LlamaEngine {
     }
 
     pub fn count_chat_tokens(&self, messages: &[ChatMessage]) -> Result<u32, AiError> {
-        let template = match self.model.chat_template(None) {
-            Ok(template) => template,
-            Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
-                AiError::ContextError(format!("failed to create chat template: {error}"))
-            })?,
-        };
-
-        let chat_messages = messages
-            .iter()
-            .cloned()
-            .map(|message| {
-                LlamaChatMessage::new(message.role, message.content).map_err(|error| {
-                    AiError::ContextError(format!("invalid chat message: {error}"))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let prompt = self
-            .model
-            .apply_chat_template(&template, &chat_messages, true)
-            .map_err(|error| {
-                AiError::ContextError(format!("failed to apply chat template: {error}"))
-            })?;
-
-        let prompt_tokens = self
-            .model
-            .str_to_token(&prompt, AddBos::Never)
-            .map_err(|error| {
-                AiError::ContextError(format!("failed to tokenize prompt: {error}"))
-            })?;
-
+        let prompt_tokens = build_prompt_tokens(&self.model, messages)?;
         u32::try_from(prompt_tokens.len())
             .map_err(|_| AiError::ContextError("prompt token count exceeded u32 range".to_string()))
     }
@@ -263,30 +233,7 @@ fn run_decode_loop(
     sampling: SamplingParams,
     tx: &mpsc::UnboundedSender<Result<ChatChunk, AiError>>,
 ) -> Result<(), AiError> {
-    let template = match model.chat_template(None) {
-        Ok(template) => template,
-        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
-            AiError::ContextError(format!("failed to create chat template: {error}"))
-        })?,
-    };
-
-    let chat_messages = messages
-        .into_iter()
-        .map(|message| {
-            LlamaChatMessage::new(message.role, message.content)
-                .map_err(|error| AiError::ContextError(format!("invalid chat message: {error}")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let prompt = model
-        .apply_chat_template(&template, &chat_messages, true)
-        .map_err(|error| {
-            AiError::ContextError(format!("failed to apply chat template: {error}"))
-        })?;
-
-    let prompt_tokens = model
-        .str_to_token(&prompt, AddBos::Never)
-        .map_err(|error| AiError::ContextError(format!("failed to tokenize prompt: {error}")))?;
+    let prompt_tokens = build_prompt_tokens(model, &messages)?;
 
     if prompt_tokens.is_empty() {
         return Err(AiError::ContextError(
@@ -440,6 +387,37 @@ fn run_decode_loop(
 
 fn prompt_decode_batch_capacity(prompt_token_count: usize) -> usize {
     prompt_token_count.clamp(1, MAX_PROMPT_DECODE_BATCH_TOKENS)
+}
+
+fn build_prompt_tokens(
+    model: &LlamaModel,
+    messages: &[ChatMessage],
+) -> Result<Vec<llama_cpp_2::token::LlamaToken>, AiError> {
+    let template = match model.chat_template(None) {
+        Ok(template) => template,
+        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
+            AiError::ContextError(format!("failed to create chat template: {error}"))
+        })?,
+    };
+
+    let chat_messages = messages
+        .iter()
+        .cloned()
+        .map(|message| {
+            LlamaChatMessage::new(message.role, message.content)
+                .map_err(|error| AiError::ContextError(format!("invalid chat message: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let prompt = model
+        .apply_chat_template(&template, &chat_messages, true)
+        .map_err(|error| {
+            AiError::ContextError(format!("failed to apply chat template: {error}"))
+        })?;
+
+    model
+        .str_to_token(&prompt, AddBos::Never)
+        .map_err(|error| AiError::ContextError(format!("failed to tokenize prompt: {error}")))
 }
 
 #[cfg(test)]
