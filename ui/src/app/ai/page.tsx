@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 
 import ConfirmModal from '@/app/components/ConfirmModal';
 import AiAssistantActivity from '@/features/ai-assistant/components/AiAssistantActivity';
-import AiConversationRail from '@/features/ai-assistant/components/AiConversationRail';
+import AiConversationRail, {
+  type AiConversationDropTarget,
+} from '@/features/ai-assistant/components/AiConversationRail';
 import { useAuth } from '@/lib/auth';
 import {
   type AiActivityTraceItem,
@@ -26,6 +28,7 @@ import {
   fetchAiRuntime,
   getConversation,
   listConversations,
+  moveConversation,
   streamConversationMessage,
   transcribeAiInput,
   updateConversation,
@@ -138,6 +141,14 @@ function sortConversationSummaries(
   conversations: AiConversationSummary[],
 ): AiConversationSummary[] {
   return [...conversations].sort((left, right) => {
+    if (left.archived !== right.archived) {
+      return Number(left.archived) - Number(right.archived);
+    }
+    const rightSort = right.sort_order ?? 0;
+    const leftSort = left.sort_order ?? 0;
+    if (rightSort !== leftSort) {
+      return rightSort - leftSort;
+    }
     if (right.updated_ts !== left.updated_ts) {
       return right.updated_ts - left.updated_ts;
     }
@@ -156,15 +167,179 @@ function chooseConversationId(
   return preferredVisible?.id ?? conversations[0]?.id ?? null;
 }
 
+function normalizedConversationGroupName(value?: string | null): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+type ConversationReorderUpdate = {
+  id: string;
+  group_name: string | null;
+  sort_order: number;
+};
+
+function buildConversationReorderUpdates(
+  conversations: AiConversationSummary[],
+  draggedConversationId: string,
+  target: AiConversationDropTarget,
+): ConversationReorderUpdate[] {
+  const draggedConversation = conversations.find(
+    (conversation) => conversation.id === draggedConversationId,
+  );
+  if (!draggedConversation || draggedConversation.archived !== target.archived) {
+    return [];
+  }
+
+  const bucket = sortConversationSummaries(
+    conversations.filter(
+      (conversation) => conversation.archived === draggedConversation.archived,
+    ),
+  );
+  const remaining = bucket.filter((conversation) => conversation.id !== draggedConversationId);
+
+  const targetGroupName =
+    target.kind === 'section'
+      ? null
+      : normalizedConversationGroupName(target.groupName);
+
+  let insertIndex = 0;
+  if (target.kind === 'row') {
+    const targetIndex = remaining.findIndex(
+      (conversation) => conversation.id === target.targetConversationId,
+    );
+    if (targetIndex < 0) {
+      return [];
+    }
+    insertIndex = targetIndex + (target.placement === 'after' ? 1 : 0);
+  } else if (target.kind === 'group') {
+    const firstGroupIndex = remaining.findIndex(
+      (conversation) =>
+        normalizedConversationGroupName(conversation.group_name) === targetGroupName,
+    );
+    insertIndex = firstGroupIndex >= 0 ? firstGroupIndex : remaining.length;
+  } else {
+    insertIndex = 0;
+  }
+
+  const reorderedBucket = [...remaining];
+  reorderedBucket.splice(insertIndex, 0, {
+    ...draggedConversation,
+    group_name: targetGroupName,
+  });
+
+  const orderUnchanged =
+    bucket.length === reorderedBucket.length &&
+    bucket.every((conversation, index) => conversation.id === reorderedBucket[index]?.id);
+  if (
+    orderUnchanged &&
+    normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+  ) {
+    return [];
+  }
+
+  const above = insertIndex > 0 ? reorderedBucket[insertIndex - 1] : null;
+  const below =
+    insertIndex + 1 < reorderedBucket.length ? reorderedBucket[insertIndex + 1] : null;
+
+  if (above && below) {
+    const aboveSort = above.sort_order ?? 0;
+    const belowSort = below.sort_order ?? 0;
+    const gap = aboveSort - belowSort;
+    if (gap > 1) {
+      const sortOrder = belowSort + Math.floor(gap / 2);
+      if (
+        (draggedConversation.sort_order ?? 0) === sortOrder &&
+        normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+      ) {
+        return [];
+      }
+      return [
+        {
+          id: draggedConversation.id,
+          group_name: targetGroupName,
+          sort_order: sortOrder,
+        },
+      ];
+    }
+  } else if (above) {
+    const sortOrder = (above.sort_order ?? 0) - 1024;
+    if (
+      (draggedConversation.sort_order ?? 0) === sortOrder &&
+      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: sortOrder,
+      },
+    ];
+  } else if (below) {
+    const sortOrder = (below.sort_order ?? 0) + 1024;
+    if (
+      (draggedConversation.sort_order ?? 0) === sortOrder &&
+      normalizedConversationGroupName(draggedConversation.group_name) === targetGroupName
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: sortOrder,
+      },
+    ];
+  } else if (
+    (draggedConversation.sort_order ?? 0) !== 1024 ||
+    normalizedConversationGroupName(draggedConversation.group_name) !== targetGroupName
+  ) {
+    return [
+      {
+        id: draggedConversation.id,
+        group_name: targetGroupName,
+        sort_order: 1024,
+      },
+    ];
+  }
+
+  return reorderedBucket
+    .map((conversation, index) => ({
+      id: conversation.id,
+      group_name:
+        conversation.id === draggedConversation.id
+          ? targetGroupName
+          : normalizedConversationGroupName(conversation.group_name),
+      sort_order: (reorderedBucket.length - index) * 1024,
+    }))
+    .filter((update) => {
+      const current = conversations.find((conversation) => conversation.id === update.id);
+      return (
+        (current?.sort_order ?? 0) !== update.sort_order ||
+        normalizedConversationGroupName(current?.group_name) !== update.group_name
+      );
+    });
+}
+
 function buildConversationSummary(
   detail: Pick<
     UiConversationDetail,
-    'id' | 'title' | 'archived' | 'last_message_preview' | 'last_model_name' | 'updated_ts'
+    | 'id'
+    | 'title'
+    | 'archived'
+    | 'group_name'
+    | 'sort_order'
+    | 'last_message_preview'
+    | 'last_model_name'
+    | 'updated_ts'
   >,
 ): AiConversationSummary {
   return {
     id: detail.id,
     title: detail.title,
+    group_name: detail.group_name ?? null,
+    sort_order: detail.sort_order ?? 0,
     last_message_preview: detail.last_message_preview ?? null,
     last_model_name: detail.last_model_name ?? null,
     updated_ts: detail.updated_ts,
@@ -178,6 +353,17 @@ function upsertConversationSummary(
 ): AiConversationSummary[] {
   const remaining = conversations.filter((conversation) => conversation.id !== summary.id);
   return sortConversationSummaries([summary, ...remaining]);
+}
+
+function isUnusedNewConversation(
+  conversation: AiConversationSummary | undefined,
+  detail?: UiConversationDetail | null,
+): boolean {
+  if (!conversation || conversation.archived) return false;
+  if (conversation.title !== DEFAULT_CONVERSATION_TITLE) return false;
+  if (conversation.last_message_preview?.trim()) return false;
+  if (detail && detail.messages.length > 0) return false;
+  return true;
 }
 
 function toUiTurn(turn: AiConversationTurn): UiConversationTurn {
@@ -1303,6 +1489,8 @@ export default function AiPage() {
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [groupTarget, setGroupTarget] = useState<AiConversationSummary | null>(null);
+  const [groupValue, setGroupValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
 
@@ -1325,6 +1513,7 @@ export default function AiPage() {
     conversationId: string;
     queuedText: string | null;
   } | null>(null);
+  const creatingConversationRef = useRef(false);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -1813,6 +2002,28 @@ export default function AiPage() {
   );
 
   const handleNewChat = useCallback(async () => {
+    const latestConversation = liveConversations[0];
+    if (
+      isUnusedNewConversation(
+        latestConversation,
+        latestConversation ? conversationDetails[latestConversation.id] : null,
+      )
+    ) {
+      setConversationError('');
+      setDrawerOpen(false);
+      if (latestConversation && latestConversation.id !== activeConversationId) {
+        handleSelectConversation(latestConversation.id);
+      } else {
+        requestAnimationFrame(() => focusComposer());
+      }
+      return;
+    }
+
+    if (creatingConversationRef.current) {
+      return;
+    }
+
+    creatingConversationRef.current = true;
     try {
       setConversationError('');
       setInput('');
@@ -1823,8 +2034,18 @@ export default function AiPage() {
       setConversationError(
         clientErrorMessage(error, 'Failed to create a new conversation.'),
       );
+    } finally {
+      creatingConversationRef.current = false;
     }
-  }, [createConversationRecord, focusComposer, resetComposerHeight]);
+  }, [
+    activeConversationId,
+    conversationDetails,
+    createConversationRecord,
+    focusComposer,
+    handleSelectConversation,
+    liveConversations,
+    resetComposerHeight,
+  ]);
 
   const handleArchiveToggle = useCallback(
     async (conversation: AiConversationSummary) => {
@@ -1847,6 +2068,14 @@ export default function AiPage() {
     setRenameTarget(conversation);
     setRenameValue(conversation.title);
   }, []);
+
+  const handleMoveConversationToGroup = useCallback(
+    (conversation: AiConversationSummary) => {
+      setGroupTarget(conversation);
+      setGroupValue((conversation.group_name ?? '').trim());
+    },
+    [],
+  );
 
   const confirmRenameConversation = useCallback(async () => {
     if (!renameTarget) return;
@@ -1871,6 +2100,28 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [renameTarget, renameValue, storeConversationDetail]);
+
+  const confirmMoveConversationToGroup = useCallback(async () => {
+    if (!groupTarget) return;
+
+    setModalBusy(true);
+    try {
+      setConversationError('');
+      const normalizedGroup = groupValue.trim();
+      const detail = await updateConversation(groupTarget.id, {
+        group_name: normalizedGroup ? normalizedGroup : null,
+      });
+      storeConversationDetail(detail);
+      setGroupTarget(null);
+      setGroupValue('');
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to move this conversation.'),
+      );
+    } finally {
+      setModalBusy(false);
+    }
+  }, [groupTarget, groupValue, storeConversationDetail]);
 
   const handleDeleteConversation = useCallback((conversation: AiConversationSummary) => {
     if (isStreaming && streamingConversationId === conversation.id) {
@@ -1919,6 +2170,60 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [activeConversationId, clearQueuedPrompt, conversations, deleteTarget, resetComposerHeight]);
+
+  const handleMoveConversation = useCallback(
+    async (conversation: AiConversationSummary, direction: 'up' | 'down') => {
+      try {
+        setConversationError('');
+        await moveConversation(conversation.id, direction);
+        await loadConversationList(activeConversationIdRef.current);
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to reorder this conversation.'),
+        );
+      }
+    },
+    [loadConversationList],
+  );
+
+  const handleDropConversation = useCallback(
+    async (conversationId: string, target: AiConversationDropTarget) => {
+      const updates = buildConversationReorderUpdates(conversations, conversationId, target);
+      if (updates.length === 0) {
+        return;
+      }
+
+      setConversationsLoading(true);
+      try {
+        setConversationError('');
+        const details: AiConversationDetail[] = [];
+        for (const update of updates) {
+          const detail = await updateConversation(update.id, {
+            group_name: update.group_name,
+            sort_order: update.sort_order,
+          });
+          details.push(detail);
+        }
+        for (const detail of details) {
+          storeConversationDetail(detail);
+        }
+        const nextConversations = sortConversationSummaries(
+          await listConversations(true),
+        );
+        setConversations(nextConversations);
+        setActiveConversationId((current) =>
+          chooseConversationId(nextConversations, activeConversationIdRef.current ?? current),
+        );
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to reorder this conversation.'),
+        );
+      } finally {
+        setConversationsLoading(false);
+      }
+    },
+    [conversations, storeConversationDetail],
+  );
 
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
@@ -2272,16 +2577,21 @@ export default function AiPage() {
             finalizeAssistantTurn(conversationId!, assistantTurnId);
             if (latestAssistantContent.trim()) {
               const finishedTs = nowTsSeconds();
-              setConversations((current) =>
-                upsertConversationSummary(current, {
+              setConversations((current) => {
+                const existing = current.find(
+                  (conversation) => conversation.id === conversationId!,
+                );
+                return upsertConversationSummary(current, {
                   id: conversationId!,
                   title: nextTitle,
+                  group_name: existing?.group_name ?? null,
+                  sort_order: existing?.sort_order ?? 0,
                   last_message_preview: normalizePreview(latestAssistantContent),
                   last_model_name: selectedModel,
                   updated_ts: finishedTs,
-                  archived: false,
-                }),
-              );
+                  archived: existing?.archived ?? false,
+                });
+              });
             }
           }
         },
@@ -2517,10 +2827,20 @@ export default function AiPage() {
                 void handleNewChat();
               }}
               onRename={handleRenameConversation}
+              onMoveToGroup={handleMoveConversationToGroup}
+              onMoveUp={(conversation) => {
+                void handleMoveConversation(conversation, 'up');
+              }}
+              onMoveDown={(conversation) => {
+                void handleMoveConversation(conversation, 'down');
+              }}
               onArchiveToggle={(conversation) => {
                 void handleArchiveToggle(conversation);
               }}
               onDelete={handleDeleteConversation}
+              onDropConversation={(conversationId, target) => {
+                void handleDropConversation(conversationId, target);
+              }}
             />
           </div>
         </div>
@@ -2592,10 +2912,20 @@ export default function AiPage() {
                       void handleNewChat();
                     }}
                     onRename={handleRenameConversation}
+                    onMoveToGroup={handleMoveConversationToGroup}
+                    onMoveUp={(conversation) => {
+                      void handleMoveConversation(conversation, 'up');
+                    }}
+                    onMoveDown={(conversation) => {
+                      void handleMoveConversation(conversation, 'down');
+                    }}
                     onArchiveToggle={(conversation) => {
                       void handleArchiveToggle(conversation);
                     }}
                     onDelete={handleDeleteConversation}
+                    onDropConversation={(conversationId, target) => {
+                      void handleDropConversation(conversationId, target);
+                    }}
                   />
                 </div>
               </div>
@@ -3016,6 +3346,33 @@ export default function AiPage() {
           className="panel w-full rounded-xl px-3 py-2 text-sm"
           placeholder="Conversation title"
           maxLength={80}
+          autoFocus
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={Boolean(groupTarget)}
+        title="Move conversation"
+        description="Assign this chat to a group. Leave the field empty to remove it from a group."
+        confirmLabel="Save"
+        onConfirm={() => {
+          void confirmMoveConversationToGroup();
+        }}
+        onCancel={() => {
+          if (!modalBusy) {
+            setGroupTarget(null);
+            setGroupValue('');
+          }
+        }}
+        confirmDisabled={modalBusy}
+        cancelDisabled={modalBusy}
+      >
+        <input
+          value={groupValue}
+          onChange={(event) => setGroupValue(event.target.value)}
+          className="panel w-full rounded-xl px-3 py-2 text-sm"
+          placeholder="Group name"
+          maxLength={48}
           autoFocus
         />
       </ConfirmModal>
