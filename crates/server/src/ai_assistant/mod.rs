@@ -16,6 +16,7 @@ pub use orchestrator::{
 };
 pub use replies::{
     deterministic_calendar_reply, deterministic_network_reply, deterministic_rooms_reply,
+    deterministic_runtime_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantConfirmationPayload,

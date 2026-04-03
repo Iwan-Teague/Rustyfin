@@ -29,8 +29,8 @@ use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
     deterministic_current_datetime_reply, deterministic_network_reply, deterministic_rooms_reply,
-    immediate_response_for_message, plan_tool_calls_with_model_assist, status_label_for_tool_call,
-    unsupported_write_response_for_message,
+    deterministic_runtime_reply, immediate_response_for_message, plan_tool_calls_with_model_assist,
+    status_label_for_tool_call, unsupported_write_response_for_message,
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
 use crate::ai_conversations::ConversationMessageRequest;
@@ -1026,6 +1026,64 @@ fn stream_chat_response(
             deterministic_network_reply(&req.message, &grounding_blocks)
         {
             assistant_content = network_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            let grounding_tools = planned_tools
+                .iter()
+                .map(|call| call.tool.as_str().to_string())
+                .collect::<Vec<_>>();
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        } else if let Some(runtime_reply) =
+            deterministic_runtime_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = runtime_reply;
             stats = Some(build_turn_stats(
                 0,
                 0,

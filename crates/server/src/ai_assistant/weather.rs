@@ -532,6 +532,7 @@ fn geocoding_query_variants(query: &str) -> Vec<String> {
     {
         push_unique_variant(&mut variants, core_name);
     }
+    push_progressive_prefix_variants(&mut variants, query);
     variants
 }
 
@@ -541,6 +542,21 @@ fn push_unique_variant(variants: &mut Vec<String>, candidate: &str) {
         return;
     }
     variants.push(normalized);
+}
+
+fn push_progressive_prefix_variants(variants: &mut Vec<String>, query: &str) {
+    let tokens = query
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.len() <= 2 {
+        return;
+    }
+
+    for keep in (1..tokens.len()).rev() {
+        push_unique_variant(variants, &tokens[..keep].join(" "));
+    }
 }
 
 fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
@@ -1162,6 +1178,14 @@ mod tests {
     }
 
     #[test]
+    fn geocoding_query_variants_reduce_multi_part_follow_up_to_core_name() {
+        let variants = geocoding_query_variants("Cork Muster Ireland");
+        assert!(variants.contains(&"Cork Muster Ireland".to_string()));
+        assert!(variants.contains(&"Cork Muster".to_string()));
+        assert!(variants.contains(&"Cork".to_string()));
+    }
+
+    #[test]
     fn geocoding_result_selection_prefers_matching_admin_area() {
         let selected = select_best_geocoding_result(
             "Campile, Wexford, Ireland",
@@ -1226,6 +1250,39 @@ mod tests {
         .expect("expected geocoding selection");
         assert_eq!(selected.country.as_deref(), Some("Italy"));
         assert_eq!(selected.timezone.as_deref(), Some("Europe/Rome"));
+    }
+
+    #[test]
+    fn geocoding_result_selection_prefers_country_match_for_typoed_region_query() {
+        let selected = select_best_geocoding_result(
+            "Cork Muster Ireland",
+            vec![
+                GeocodingResult {
+                    name: "Cork".to_string(),
+                    latitude: 51.8985,
+                    longitude: -8.4756,
+                    timezone: Some("Europe/Dublin".to_string()),
+                    country: Some("Ireland".to_string()),
+                    admin1: Some("Munster".to_string()),
+                    admin2: Some("County Cork".to_string()),
+                    admin3: None,
+                    admin4: None,
+                },
+                GeocodingResult {
+                    name: "Cork".to_string(),
+                    latitude: 33.1040,
+                    longitude: -83.9690,
+                    timezone: Some("America/New_York".to_string()),
+                    country: Some("United States".to_string()),
+                    admin1: Some("Georgia".to_string()),
+                    admin2: Some("Butts".to_string()),
+                    admin3: None,
+                    admin4: None,
+                },
+            ],
+        )
+        .expect("expected geocoding selection");
+        assert_eq!(selected.country.as_deref(), Some("Ireland"));
     }
 
     #[test]
