@@ -736,7 +736,15 @@ textarea:focus-visible {
 }
 
 .ai-composer-icon-btn {
+  background: transparent;
   border-color: transparent;
+  box-shadow: none;
+}
+
+.ai-composer-icon-btn:hover,
+.ai-composer-icon-btn:focus-visible,
+.ai-composer-icon-btn:active {
+  background: transparent;
   box-shadow: none;
 }
 
