@@ -922,11 +922,11 @@ function MessageBubble({
         ) : null}
 
         {!showStreamingPlaceholder ? (
-          <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+          <div className="px-0 py-0 text-sm leading-relaxed text-[var(--text-main)]">
             {entry.errorMessage ? (
               <span className="text-[var(--danger)]">{entry.errorMessage}</span>
             ) : content ? (
-              <span className="whitespace-pre-wrap">{content}</span>
+              <span className="whitespace-pre-wrap break-words">{content}</span>
             ) : null}
 
             {entry.isStreaming && content ? <span className="ai-cursor" /> : null}

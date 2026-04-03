@@ -69,6 +69,25 @@ struct GroundedNetworkAddress {
     address: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GroundedRoomsEnvelope {
+    total_count: usize,
+    room_mode_filter: Option<String>,
+    room_mode: Option<String>,
+    query: Option<String>,
+    rooms: Vec<GroundedRoomSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedRoomSummary {
+    title: String,
+    room_mode: String,
+    host_username: String,
+    password_required: bool,
+    joinable_via: Option<String>,
+    member_count: Option<i64>,
+}
+
 pub fn deterministic_calendar_reply(
     _message: &str,
     grounding_blocks: &[AssistantToolContextBlock],
@@ -117,6 +136,30 @@ pub fn deterministic_network_reply(
             .and_then(serde_json::Value::as_str)
             .map(|message| format!("I couldn't load the Rustyfin network details. {message}"))
             .unwrap_or_else(|| "I couldn't load the Rustyfin network details.".to_string())
+    })
+}
+
+pub fn deterministic_rooms_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| matches!(block.tool, "rooms_list_joinable" | "rooms_list_active"))?;
+
+    Some(if block.status == "ok" {
+        format_rooms_reply(
+            message,
+            block.tool,
+            serde_json::from_value::<GroundedRoomsEnvelope>(block.data.clone()).ok()?,
+        )
+    } else {
+        block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load the room details. {message}"))
+            .unwrap_or_else(|| "I couldn't load the room details.".to_string())
     })
 }
 
@@ -312,6 +355,102 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
     parts.join(" ")
 }
 
+fn format_rooms_reply(message: &str, tool: &str, envelope: GroundedRoomsEnvelope) -> String {
+    let lower = message.to_ascii_lowercase();
+    let active_only = tool == "rooms_list_active";
+    let room_mode_filter = envelope
+        .room_mode_filter
+        .clone()
+        .or(envelope.room_mode.clone());
+    let query = envelope.query.clone();
+
+    if envelope.rooms.is_empty() {
+        return if active_only {
+            match (room_mode_filter.as_deref(), query.as_deref()) {
+                (Some(mode), Some(query)) => {
+                    format!("There are no active {mode} rooms matching \"{query}\" right now.")
+                }
+                (Some(mode), None) => format!("There are no active {mode} rooms right now."),
+                (None, Some(query)) => {
+                    format!("There are no active rooms matching \"{query}\" right now.")
+                }
+                (None, None) => "There are no active rooms right now.".to_string(),
+            }
+        } else if lower.contains("invite") {
+            match query.as_deref() {
+                Some(query) => {
+                    format!(
+                        "You do not have any usable room invites matching \"{query}\" right now."
+                    )
+                }
+                None => "You do not have any usable room invites right now.".to_string(),
+            }
+        } else {
+            match (room_mode_filter.as_deref(), query.as_deref()) {
+                (Some(mode), Some(query)) => {
+                    format!("There are no joinable {mode} rooms matching \"{query}\" right now.")
+                }
+                (Some(mode), None) => format!("There are no joinable {mode} rooms right now."),
+                (None, Some(query)) => {
+                    format!("There are no joinable rooms matching \"{query}\" right now.")
+                }
+                (None, None) => "There are no rooms you can join right now.".to_string(),
+            }
+        };
+    }
+
+    let mut lines = if active_only {
+        vec![format!(
+            "{} active room{} right now:",
+            envelope.total_count,
+            plural_suffix(envelope.total_count)
+        )]
+    } else if lower.contains("invite") {
+        vec![format!(
+            "{} invite{} you can use right now:",
+            envelope.total_count,
+            plural_suffix(envelope.total_count)
+        )]
+    } else {
+        vec![format!(
+            "{} room{} you can join right now:",
+            envelope.total_count,
+            plural_suffix(envelope.total_count)
+        )]
+    };
+
+    for room in envelope.rooms.iter().take(8) {
+        let joinable_via = match room.joinable_via.as_deref() {
+            Some("invite") => "invite",
+            Some("public_lobby") => "public lobby",
+            Some(other) => other,
+            None => "room",
+        };
+        let room_mode = if room.room_mode.eq_ignore_ascii_case("invite") {
+            "invite".to_string()
+        } else {
+            room.room_mode.replace('_', " ")
+        };
+        let mut details = vec![format!("hosted by {}", room.host_username)];
+        if let Some(count) = room.member_count {
+            details.push(format!("{} member{}", count, plural_suffix(count as usize)));
+        }
+        if room.password_required {
+            details.push("password required".to_string());
+        }
+        if !active_only {
+            details.push(format!("join via {joinable_via}"));
+        }
+        lines.push(format!(
+            "- {} ({room_mode}; {})",
+            room.title,
+            details.join(", ")
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn is_notable_user_facing_interface(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     !(lower == "docker0"
@@ -375,9 +514,15 @@ fn format_calendar_error(block: &AssistantToolContextBlock, fallback: &str) -> S
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{deterministic_calendar_reply, deterministic_network_reply};
+    use super::{
+        deterministic_calendar_reply, deterministic_network_reply, deterministic_rooms_reply,
+    };
     use crate::ai_assistant::types::AssistantToolContextBlock;
     use serde_json::json;
 
@@ -538,5 +683,47 @@ mod tests {
         assert!(reply.contains("https://192.168.0.36:3008"));
         assert!(reply.contains("192.168.0.36"));
         assert!(!reply.contains("192.168.112.1"));
+    }
+
+    #[test]
+    fn deterministic_rooms_reply_formats_joinable_invites() {
+        let reply = deterministic_rooms_reply(
+            "Which invites can I use right now?",
+            &[AssistantToolContextBlock {
+                tool: "rooms_list_joinable",
+                label: "Joinable rooms".to_string(),
+                status: "ok",
+                data: json!({
+                    "room_mode": null,
+                    "query": null,
+                    "total_count": 2,
+                    "rooms": [
+                        {
+                            "title": "Living Room",
+                            "room_mode": "watch",
+                            "host_username": "User1",
+                            "password_required": false,
+                            "joinable_via": "public_lobby",
+                            "member_count": 0
+                        },
+                        {
+                            "title": "Kitchen",
+                            "room_mode": "invite",
+                            "host_username": "User1",
+                            "password_required": true,
+                            "joinable_via": "invite",
+                            "member_count": null
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic room reply");
+
+        assert!(reply.contains("2 invites"));
+        assert!(reply.contains("Living Room"));
+        assert!(reply.contains("public lobby"));
+        assert!(reply.contains("Kitchen"));
+        assert!(reply.contains("password required"));
     }
 }
