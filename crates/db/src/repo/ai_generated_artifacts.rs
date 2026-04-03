@@ -10,6 +10,10 @@ pub struct AiGeneratedArtifactRow {
     pub media_type: String,
     pub content_text: String,
     pub byte_size: i64,
+    pub verification_status: String,
+    pub verification_attempts: i32,
+    pub verification_notes_json: String,
+    pub verified_ts: Option<i64>,
     pub trace_id: Option<String>,
     pub created_ts: i64,
 }
@@ -22,6 +26,10 @@ pub struct CreateAiGeneratedArtifactParams<'a> {
     pub media_type: &'a str,
     pub content_text: &'a str,
     pub byte_size: i64,
+    pub verification_status: &'a str,
+    pub verification_attempts: i32,
+    pub verification_notes_json: &'a str,
+    pub verified_ts: Option<i64>,
     pub trace_id: Option<&'a str>,
 }
 
@@ -35,6 +43,10 @@ fn map_row(
         String,
         String,
         i64,
+        String,
+        i32,
+        String,
+        Option<i64>,
         Option<String>,
         i64,
     ),
@@ -48,6 +60,10 @@ fn map_row(
         media_type,
         content_text,
         byte_size,
+        verification_status,
+        verification_attempts,
+        verification_notes_json,
+        verified_ts,
         trace_id,
         created_ts,
     ) = row;
@@ -61,6 +77,10 @@ fn map_row(
         media_type,
         content_text,
         byte_size,
+        verification_status,
+        verification_attempts,
+        verification_notes_json,
+        verified_ts,
         trace_id,
         created_ts,
     }
@@ -75,8 +95,10 @@ pub async fn create_artifact(
 
     sqlx::query(
         "INSERT INTO ai_generated_artifact (
-            id, user_id, conversation_id, title, file_name, media_type, content_text, byte_size, trace_id, created_ts
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            id, user_id, conversation_id, title, file_name, media_type, content_text, byte_size,
+            verification_status, verification_attempts, verification_notes_json, verified_ts,
+            trace_id, created_ts
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(&id)
     .bind(params.user_id)
@@ -86,6 +108,10 @@ pub async fn create_artifact(
     .bind(params.media_type)
     .bind(params.content_text)
     .bind(params.byte_size)
+    .bind(params.verification_status)
+    .bind(params.verification_attempts)
+    .bind(params.verification_notes_json)
+    .bind(params.verified_ts)
     .bind(params.trace_id)
     .bind(created_ts)
     .execute(pool)
@@ -110,10 +136,16 @@ pub async fn get_artifact_for_user(
         String,
         String,
         i64,
+        String,
+        i32,
+        String,
+        Option<i64>,
         Option<String>,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, conversation_id, title, file_name, media_type, content_text, byte_size, trace_id, created_ts
+        "SELECT id, user_id, conversation_id, title, file_name, media_type, content_text, byte_size,
+                verification_status, verification_attempts, verification_notes_json, verified_ts,
+                trace_id, created_ts
          FROM ai_generated_artifact
          WHERE id = $1 AND user_id = $2",
     )

@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
 
-use crate::ai_assistant::types::AssistantRuntimePhase;
+use crate::ai_assistant::types::{AssistantRuntimePhase, AssistantTurnStats};
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -34,6 +34,8 @@ pub struct AiRuntimeTurnSummary {
     pub active_request_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<AiRuntimePromptSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_stats: Option<AssistantTurnStats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +51,8 @@ pub struct AiRuntimePromptSummary {
     pub used_memory_summary: bool,
     pub memory_turn_index: i64,
     pub memory_summary_chars: usize,
+    pub compact_boundary_count: u32,
+    pub recovered_from_compact_boundary: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +112,7 @@ pub async fn get_ai_runtime(
         split_mode,
         device_indices,
         prompt_debug,
+        last_turn_stats,
     ) = {
         let guard = state.engine.lock().await;
         let loaded_model = guard.loaded_model.clone();
@@ -127,6 +132,7 @@ pub async fn get_ai_runtime(
             params.split_mode.as_str().to_string(),
             params.device_indices,
             guard.last_prompt_debug.clone(),
+            guard.last_turn_stats.clone(),
         )
     };
 
@@ -165,7 +171,10 @@ pub async fn get_ai_runtime(
                 used_memory_summary: value.used_memory_summary,
                 memory_turn_index: value.memory_turn_index,
                 memory_summary_chars: value.memory_summary_chars,
+                compact_boundary_count: value.compact_boundary_count,
+                recovered_from_compact_boundary: value.recovered_from_compact_boundary,
             }),
+            last_stats: last_turn_stats,
         },
         resources: AiRuntimeResourcesSummary {
             process_rss_human: process_rss_bytes.map(human_bytes),
@@ -425,6 +434,8 @@ mod tests {
                 used_memory_summary: true,
                 memory_turn_index: 7,
                 memory_summary_chars: 240,
+                compact_boundary_count: 1,
+                recovered_from_compact_boundary: true,
             });
         }
         let _chat_1 = state.runtime_metrics.start_ai_chat_request();

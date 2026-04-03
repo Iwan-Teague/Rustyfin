@@ -7,19 +7,22 @@ use std::os::unix::ffi::OsStrExt;
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 use futures::{StreamExt, future::join_all};
-use rustfin_ai_agent::{ChatChunk, ChatMessage, SamplingParams};
+use rustfin_ai_agent::{ChatChunk, ChatMessage};
 use serde::Serialize;
 use serde_json::json;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
+use super::document_verify::verify_or_repair_document;
 use super::orchestrator::plan_tool_calls_with_model_assist;
+use super::profiles::answer_sampling_params;
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-    AssistantGroundingSource, AssistantHistoryMessage, AssistantRuntimePhase,
-    AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, ToolAccessMode,
-    ToolConfirmationPolicy, ToolRoleRequirement, decode_assistant_clarification_message,
+    AssistantGroundingSource, AssistantHistoryMessage, AssistantResponseMode,
+    AssistantRuntimePhase, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
+    ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
+    decode_assistant_clarification_message,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
@@ -1697,10 +1700,18 @@ async fn document_create_download(
 
     let messages =
         build_document_generation_messages(format, &request_prompt, &history, &grounding_blocks);
-    let content = collect_generated_document_text(&engine, messages)
+    let draft_content = collect_generated_document_text(&engine, messages)
         .await
         .and_then(|content| finalize_generated_document_content(&content))?;
-    let byte_size = i64::try_from(content.as_bytes().len())
+    let verification = verify_or_repair_document(
+        &engine,
+        format.label(),
+        &request_prompt,
+        &grounding_blocks,
+        draft_content,
+    )
+    .await?;
+    let byte_size = i64::try_from(verification.content.as_bytes().len())
         .map_err(|_| "generated document is too large to store".to_string())?;
 
     let artifact = rustfin_db::repo::ai_generated_artifacts::create_artifact(
@@ -1711,8 +1722,12 @@ async fn document_create_download(
             title: &title,
             file_name: &file_name,
             media_type: format.media_type(),
-            content_text: &content,
+            content_text: &verification.content,
             byte_size,
+            verification_status: &verification.debug.status,
+            verification_attempts: i32::try_from(verification.debug.attempts).unwrap_or(i32::MAX),
+            verification_notes_json: &verification.notes_json,
+            verified_ts: Some(chrono::Utc::now().timestamp()),
             trace_id: Some(context.trace_id.as_str()),
         },
     )
@@ -1736,6 +1751,7 @@ async fn document_create_download(
         ),
         json!({
             "verified": true,
+            "verification": verification.debug,
             "artifact": artifact,
         }),
     ))
@@ -1913,18 +1929,10 @@ async fn collect_generated_document_text(
     engine: &rustfin_ai_agent::LlamaEngine,
     messages: Vec<ChatMessage>,
 ) -> Result<String, String> {
+    let mut sampling = answer_sampling_params(AssistantResponseMode::Extended);
+    sampling.max_tokens = sampling.max_tokens.min(2048);
     let mut output = String::new();
-    let stream = engine.chat_stream(
-        messages,
-        SamplingParams {
-            temperature: 0.2,
-            top_p: 0.9,
-            top_k: 30,
-            repeat_penalty: 1.05,
-            max_tokens: 1200,
-            max_duration_ms: None,
-        },
-    );
+    let stream = engine.chat_stream(messages, sampling);
     futures::pin_mut!(stream);
 
     while let Some(chunk) = stream.next().await {

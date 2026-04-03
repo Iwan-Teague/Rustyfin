@@ -1,8 +1,10 @@
 pub mod confirmation;
 pub mod context;
 pub mod dates;
+pub mod document_verify;
 pub mod memory;
 pub mod orchestrator;
+pub mod profiles;
 pub mod registry;
 pub mod replies;
 pub mod tools;
@@ -17,14 +19,15 @@ pub use orchestrator::{
     unsupported_write_response_for_message,
 };
 pub use replies::{
-    deterministic_calendar_reply, deterministic_network_reply, deterministic_rooms_reply,
-    deterministic_runtime_reply,
+    deterministic_calendar_reply, deterministic_downloads_reply, deterministic_network_reply,
+    deterministic_profile_reply, deterministic_rooms_reply, deterministic_runtime_reply,
+    deterministic_service_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantConfirmationPayload,
     AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantPendingAction,
     AssistantPendingActionKind, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantPlannerMode, AssistantResponseMode, AssistantRuntimePhase, AssistantStatusEvent,
-    AssistantStatusKind, AssistantToolActivityEvent, AssistantToolActivityState,
-    AssistantTurnStats,
+    AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode, AssistantRuntimePhase,
+    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
+    AssistantToolActivityState, AssistantTurnStats,
 };

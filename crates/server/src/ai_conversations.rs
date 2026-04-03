@@ -341,8 +341,8 @@ pub async fn persist_user_turn(
     user_id: &str,
     conversation_id: &str,
     message: &str,
-) -> Result<(), AppError> {
-    rustfin_db::repo::ai_conversations::create_turn(
+) -> Result<rustfin_db::repo::ai_conversations::AiConversationTurnRow, AppError> {
+    let row = rustfin_db::repo::ai_conversations::create_turn(
         &state.db,
         rustfin_db::repo::ai_conversations::CreateAiConversationTurnParams {
             conversation_id,
@@ -382,7 +382,7 @@ pub async fn persist_user_turn(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    Ok(())
+    Ok(row)
 }
 
 pub async fn persist_assistant_turn(
@@ -450,10 +450,62 @@ pub async fn persist_assistant_turn(
     Ok(())
 }
 
-pub fn conversation_memory_state(
+pub async fn load_conversation_memory_checkpoint(
+    state: &AppState,
+    user_id: &str,
     row: &rustfin_db::repo::ai_conversations::AiConversationRow,
-) -> ConversationMemoryState {
-    parse_memory_state_json(&row.memory_state_json)
+) -> Result<(ConversationMemoryState, i64, bool), AppError> {
+    let boundary =
+        rustfin_db::repo::ai_compact_boundaries::latest_compact_boundary_for_conversation(
+            &state.db, &row.id, user_id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    let (memory_state, memory_turn_index, recovered_from_boundary) =
+        recover_conversation_memory_checkpoint(
+            &row.memory_state_json,
+            row.memory_turn_index,
+            boundary.as_ref(),
+        );
+
+    if recovered_from_boundary {
+        let _ =
+            persist_conversation_memory(state, user_id, &row.id, &memory_state, memory_turn_index)
+                .await;
+    }
+
+    Ok((memory_state, memory_turn_index, recovered_from_boundary))
+}
+
+fn recover_conversation_memory_checkpoint(
+    row_memory_state_json: &str,
+    row_memory_turn_index: i64,
+    boundary: Option<&rustfin_db::repo::ai_compact_boundaries::AiConversationCompactBoundaryRow>,
+) -> (ConversationMemoryState, i64, bool) {
+    let parsed = parse_memory_state_json(row_memory_state_json);
+    if !parsed.is_empty() || row_memory_turn_index >= 0 {
+        return (parsed, row_memory_turn_index, false);
+    }
+
+    let Some(boundary) = boundary else {
+        return (
+            ConversationMemoryState::default(),
+            row_memory_turn_index,
+            false,
+        );
+    };
+
+    let recovered = parse_memory_state_json(&boundary.memory_state_json);
+    if recovered.is_empty() {
+        return (
+            ConversationMemoryState::default(),
+            row_memory_turn_index,
+            false,
+        );
+    }
+
+    (recovered, boundary.to_turn_index, true)
 }
 
 pub async fn persist_conversation_memory(
@@ -629,4 +681,46 @@ async fn load_conversation_detail(
         updated_ts: conversation.updated_ts,
         messages,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recover_conversation_memory_checkpoint;
+
+    #[test]
+    fn recover_conversation_memory_checkpoint_prefers_stored_row_memory() {
+        let (memory, turn_index, recovered) = recover_conversation_memory_checkpoint(
+            r#"{"summary":"Keep this","durable_facts":["fact"],"user_preferences":[],"open_loops":[],"active_topics":[]}"#,
+            4,
+            None,
+        );
+        assert_eq!(memory.summary, "Keep this");
+        assert_eq!(memory.durable_facts, vec!["fact".to_string()]);
+        assert_eq!(turn_index, 4);
+        assert!(!recovered);
+    }
+
+    #[test]
+    fn recover_conversation_memory_checkpoint_uses_compact_boundary_snapshot() {
+        let boundary = rustfin_db::repo::ai_compact_boundaries::AiConversationCompactBoundaryRow {
+            id: "boundary-1".to_string(),
+            conversation_id: "conversation-1".to_string(),
+            user_id: "user-1".to_string(),
+            trace_id: Some("trace-1".to_string()),
+            from_turn_index: 0,
+            to_turn_index: 9,
+            summarized_turn_count: 10,
+            memory_state_json: r#"{"summary":"Recovered","durable_facts":["fact"],"user_preferences":["pref"],"open_loops":[],"active_topics":["topic"]}"#.to_string(),
+            created_ts: 0,
+        };
+
+        let (memory, turn_index, recovered) =
+            recover_conversation_memory_checkpoint("{}", -1, Some(&boundary));
+
+        assert_eq!(memory.summary, "Recovered");
+        assert_eq!(memory.user_preferences, vec!["pref".to_string()]);
+        assert_eq!(memory.active_topics, vec!["topic".to_string()]);
+        assert_eq!(turn_index, 9);
+        assert!(recovered);
+    }
 }
