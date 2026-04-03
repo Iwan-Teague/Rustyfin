@@ -1,10 +1,29 @@
 use rustfin_ai_agent::ChatMessage;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantResponseMode {
+    #[default]
+    Instant,
+    Thinking,
+}
+
+impl AssistantResponseMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Instant => "instant",
+            Self::Thinking => "thinking",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssistantChatRequest {
     pub model: String,
     pub message: String,
+    #[serde(default)]
+    pub response_mode: AssistantResponseMode,
     #[serde(default)]
     pub confirmation_token: Option<String>,
     #[serde(default)]

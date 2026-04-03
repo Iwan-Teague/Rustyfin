@@ -19,6 +19,7 @@ pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantConfirmationPayload,
     AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantPendingAction,
     AssistantPendingActionKind, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantPlannerMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
-    AssistantToolActivityEvent, AssistantToolActivityState, AssistantTurnStats,
+    AssistantPlannerMode, AssistantResponseMode, AssistantRuntimePhase, AssistantStatusEvent,
+    AssistantStatusKind, AssistantToolActivityEvent, AssistantToolActivityState,
+    AssistantTurnStats,
 };

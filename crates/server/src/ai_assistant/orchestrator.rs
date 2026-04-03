@@ -15,8 +15,9 @@ use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
     AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-    AssistantHistoryMessage, AssistantPlannerMode, AssistantToolContextBlock, AssistantToolInput,
-    PlannedToolCall, PlannedToolSet, PreparedAssistantTurn,
+    AssistantHistoryMessage, AssistantPlannerMode, AssistantResponseMode,
+    AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
+    PreparedAssistantTurn,
 };
 use super::web::public_web_tools_enabled;
 use crate::auth::AuthUser;
@@ -725,6 +726,17 @@ Do not claim to have created, updated, deleted, or changed anything in Rustyfin 
         .to_string()
 }
 
+fn response_mode_prompt(response_mode: AssistantResponseMode) -> &'static str {
+    match response_mode {
+        AssistantResponseMode::Instant => {
+            "Response mode is instant. Favor the fastest useful grounded answer. Keep the reply compact, direct, and short unless extra detail is required to answer correctly. Avoid filler, repetition, and unnecessary caveats."
+        }
+        AssistantResponseMode::Thinking => {
+            "Response mode is thinking. Take a more deliberate approach before answering. Check ambiguity against the grounded context, explain the conclusion clearly when that helps, and allow a fuller answer when it materially improves quality. Keep the final answer readable and do not expose hidden chain-of-thought."
+        }
+    }
+}
+
 pub fn immediate_response_for_message(message: &str) -> Option<String> {
     clarification_for_message(message)
 }
@@ -1250,6 +1262,11 @@ pub fn build_assistant_messages(
             "Current Rustyfin host local date/time for this turn: {}. Use this when interpreting relative dates like today, tomorrow, and next Tuesday.",
             local_now.format("%Y-%m-%d %H:%M:%S %:z (%A)")
         ),
+    });
+
+    messages.push(ChatMessage {
+        role: "system".to_string(),
+        content: response_mode_prompt(request.response_mode).to_string(),
     });
 
     if !grounding_blocks.is_empty() {
@@ -3531,6 +3548,10 @@ fn is_current_datetime_query(message_lower: &str) -> bool {
             "host time",
             "fetch the time",
             "get the time",
+        ],
+    ) || has_standalone_phrase(
+        message_lower,
+        &[
             "time in ",
             "time for ",
             "time is it in ",
@@ -3616,7 +3637,7 @@ fn extract_current_datetime_location(message: &str) -> Option<String> {
         "right now in ",
         "currently in ",
     ] {
-        let Some(index) = lower.find(marker) else {
+        let Some(index) = find_standalone_phrase_index(&lower, marker) else {
             continue;
         };
         let raw = message[index + marker.len()..].trim();
@@ -3648,6 +3669,25 @@ fn extract_current_datetime_location(message: &str) -> Option<String> {
     }
 
     None
+}
+
+fn has_standalone_phrase(message_lower: &str, phrases: &[&str]) -> bool {
+    phrases
+        .iter()
+        .copied()
+        .any(|phrase| find_standalone_phrase_index(message_lower, phrase).is_some())
+}
+
+fn find_standalone_phrase_index(message_lower: &str, phrase: &str) -> Option<usize> {
+    message_lower.match_indices(phrase).find_map(|(index, _)| {
+        let has_boundary = index == 0
+            || message_lower[..index]
+                .chars()
+                .next_back()
+                .map(|ch| !ch.is_ascii_alphabetic())
+                .unwrap_or(true);
+        if has_boundary { Some(index) } else { None }
+    })
 }
 
 fn contains_weekday_name(message_lower: &str) -> bool {
@@ -4363,15 +4403,16 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantToolName, ModelPlannerResponse, clarification_for_message,
-        deterministic_current_datetime_reply, normalize_model_plan, parse_model_planner_response,
-        plan_tool_calls, plan_tool_calls_with_history, status_label_for_tool_call,
-        unsupported_write_response_for_message,
+        AssistantToolName, ModelPlannerResponse, build_assistant_messages,
+        clarification_for_message, deterministic_current_datetime_reply, normalize_model_plan,
+        parse_model_planner_response, plan_tool_calls, plan_tool_calls_with_history,
+        status_label_for_tool_call, unsupported_write_response_for_message,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
-        AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-        AssistantHistoryMessage, AssistantToolContextBlock, AssistantToolInput,
+        AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
+        AssistantFollowUpInputHint, AssistantHistoryMessage, AssistantResponseMode,
+        AssistantToolContextBlock, AssistantToolInput,
     };
     use crate::auth::AuthUser;
 
@@ -4952,6 +4993,40 @@ mod tests {
         assert!(reply.contains("France"));
         assert!(reply.contains("22:53:06"));
         assert!(reply.contains("Europe/Paris"));
+    }
+
+    #[test]
+    fn build_assistant_messages_includes_instant_mode_guidance() {
+        let messages = build_assistant_messages(
+            AssistantChatRequest {
+                model: "model.gguf".to_string(),
+                message: "hello".to_string(),
+                response_mode: AssistantResponseMode::Instant,
+                confirmation_token: None,
+                history: Vec::new(),
+            },
+            &[],
+        );
+        assert!(messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("Response mode is instant")
+        }));
+    }
+
+    #[test]
+    fn build_assistant_messages_includes_thinking_mode_guidance() {
+        let messages = build_assistant_messages(
+            AssistantChatRequest {
+                model: "model.gguf".to_string(),
+                message: "hello".to_string(),
+                response_mode: AssistantResponseMode::Thinking,
+                confirmation_token: None,
+                history: Vec::new(),
+            },
+            &[],
+        );
+        assert!(messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("Response mode is thinking")
+        }));
     }
 
     #[test]

@@ -15,6 +15,7 @@ import {
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
+  type AiResponseMode,
   type AiRuntimeResponse,
   type AiStatusUpdate,
   type AiToolActivityEvent,
@@ -65,7 +66,7 @@ type ConversationStatsSummary = {
 type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
-type ComposerResponseMode = 'instant' | 'thinking';
+type ComposerResponseMode = AiResponseMode;
 type ComposerAttachmentKind = 'document' | 'image';
 
 type BrowserSpeechRecognitionResult = {
@@ -2073,6 +2074,7 @@ export default function AiPage() {
         conversationId,
         selectedModel,
         text,
+        responseMode,
         confirmationToken,
         (event) => {
           if (event.type === 'phase') {
