@@ -185,17 +185,17 @@ function ConversationRow({
       className={`group relative ${indent ? 'pl-5' : ''}`}
     >
       <div
-        className={`flex items-center gap-1.5 rounded-[1.2rem] border px-1.5 py-1 transition-all ${
+        className={`flex items-center gap-1.5 rounded-[0.95rem] px-1 py-0.5 transition-colors ${
           active
-            ? 'border-transparent bg-[rgba(222,230,255,0.11)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-            : 'border-transparent hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.04)]'
+            ? 'bg-[rgba(222,230,255,0.08)]'
+            : 'hover:bg-[rgba(255,255,255,0.03)]'
         }`}
       >
         <button
           type="button"
           onClick={onSelect}
           disabled={disabled}
-          className="min-w-0 flex-1 rounded-[1rem] px-2.5 py-1.5 text-left disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-[0.8rem] px-2.5 py-1.5 text-left disabled:opacity-60"
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 truncate text-[0.82rem] font-medium text-[var(--text-main)]">
@@ -309,7 +309,7 @@ function GroupEntry({
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-2 rounded-xl border border-transparent px-2 py-1.5 text-left transition-colors hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.03)]"
+        className="flex w-full items-center gap-2 rounded-[0.95rem] px-2 py-1.5 text-left transition-colors hover:bg-[rgba(255,255,255,0.03)]"
         aria-expanded={!collapsed}
       >
         <span className="shrink-0 text-[var(--text-muted)]">
@@ -496,7 +496,7 @@ export default function AiConversationRail({
           type="button"
           onClick={onNewChat}
           disabled={disabled}
-          className="w-full rounded-[1rem] border border-transparent px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.03)] disabled:opacity-40"
+          className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)] disabled:opacity-40"
         >
           New chat
         </button>
