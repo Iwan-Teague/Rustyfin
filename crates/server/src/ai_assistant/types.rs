@@ -7,6 +7,7 @@ pub enum AssistantResponseMode {
     #[default]
     Instant,
     Thinking,
+    Extended,
 }
 
 impl AssistantResponseMode {
@@ -14,6 +15,7 @@ impl AssistantResponseMode {
         match self {
             Self::Instant => "instant",
             Self::Thinking => "thinking",
+            Self::Extended => "extended",
         }
     }
 }

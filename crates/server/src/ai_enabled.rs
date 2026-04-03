@@ -1443,6 +1443,7 @@ fn sampling_params_for_response_mode(
             top_k: 24,
             repeat_penalty: 1.05,
             max_tokens: 640,
+            max_duration_ms: None,
         },
         AssistantResponseMode::Thinking => rustfin_ai_agent::SamplingParams {
             temperature: 0.72,
@@ -1450,6 +1451,15 @@ fn sampling_params_for_response_mode(
             top_k: 48,
             repeat_penalty: 1.08,
             max_tokens: 1536,
+            max_duration_ms: None,
+        },
+        AssistantResponseMode::Extended => rustfin_ai_agent::SamplingParams {
+            temperature: 0.58,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.1,
+            max_tokens: u32::MAX,
+            max_duration_ms: Some(30 * 60 * 1000),
         },
     }
 }
@@ -1519,9 +1529,12 @@ mod tests {
     fn instant_mode_uses_tighter_sampling_profile() {
         let instant = sampling_params_for_response_mode(AssistantResponseMode::Instant);
         let thinking = sampling_params_for_response_mode(AssistantResponseMode::Thinking);
+        let extended = sampling_params_for_response_mode(AssistantResponseMode::Extended);
         assert!(instant.max_tokens < thinking.max_tokens);
         assert!(instant.temperature < thinking.temperature);
         assert!(instant.top_k < thinking.top_k);
+        assert!(thinking.max_tokens < extended.max_tokens);
+        assert_eq!(extended.max_duration_ms, Some(30 * 60 * 1000));
     }
 }
 

@@ -1889,6 +1889,7 @@ async fn collect_generated_document_text(
             top_k: 30,
             repeat_penalty: 1.05,
             max_tokens: 1200,
+            max_duration_ms: None,
         },
     );
     futures::pin_mut!(stream);
