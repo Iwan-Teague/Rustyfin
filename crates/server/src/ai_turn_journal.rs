@@ -1,9 +1,9 @@
 use rustfin_core::error::ApiError;
 use serde::Serialize;
 
-use crate::ai_assistant::memory::ConversationPromptDebug;
 use crate::ai_assistant::types::{
     AssistantArtifactVerificationDebug, AssistantPlannerDebug, AssistantTurnStats,
+    ConversationPromptDebug,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -131,6 +131,7 @@ pub async fn create_turn_journal(
     .map_err(|e| ApiError::Internal(format!("db error: {e}")).into())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_turn_journal(
     state: &AppState,
     handle: &TurnJournalHandle,

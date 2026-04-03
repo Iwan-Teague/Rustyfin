@@ -937,11 +937,28 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
     });
     let wettest_summary = wettest.map(|day| {
         format!(
-            "Highest rain signal is {} on {}.",
+            "There is a {} chance of rain on {}.",
             format_percent(day.precipitation_probability_max_percent.unwrap_or(0.0)),
             day.date
         )
     });
+    let focus_condition = focus_day.condition.to_ascii_lowercase();
+    let focus_summary = if lower.contains("tomorrow") && forecast.forecast_days.len() >= 2 {
+        format!(
+            "Tomorrow looks like {} on {}.",
+            focus_condition, focus_day.date
+        )
+    } else if lower.contains("today") {
+        format!(
+            "Today looks like {} on {}.",
+            focus_condition, focus_day.date
+        )
+    } else {
+        format!(
+            "The forecast starts with {} on {}.",
+            focus_condition, focus_day.date
+        )
+    };
 
     format!(
         "Forecast for {} over the next {} days: highs up to {}, lows down to {}. {} {}",
@@ -950,10 +967,7 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         optional_temperature(warmest),
         optional_temperature(coldest),
         wettest_summary.unwrap_or_else(|| "No precipitation signal was returned.".to_string()),
-        format!(
-            "The first day shown is {} on {}.",
-            forecast.forecast_days[0].condition, forecast.forecast_days[0].date
-        )
+        focus_summary
     )
 }
 
@@ -1373,6 +1387,67 @@ mod tests {
         .expect("expected deterministic reply");
         assert!(reply.contains("Rain looks likely"));
         assert!(reply.contains("Galway, Connacht, Ireland"));
+    }
+
+    #[test]
+    fn deterministic_weather_reply_uses_natural_forecast_summary_for_tomorrow() {
+        let reply = deterministic_weather_reply(
+            "What will it be like tomorrow?",
+            &[super::AssistantToolContextBlock {
+                tool: "weather_get_forecast",
+                label: "2-day weather forecast for Campile, County Wexford, Leinster, Ireland"
+                    .to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicWeatherForecastSummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Campile, Wexford".to_string(),
+                    resolved_location: "Campile, County Wexford, Leinster, Ireland".to_string(),
+                    timezone: "Europe/Dublin".to_string(),
+                    current: PublicWeatherCurrentSummary {
+                        source: "open_meteo".to_string(),
+                        location_query: "Campile, Wexford".to_string(),
+                        resolved_location: "Campile, County Wexford, Leinster, Ireland".to_string(),
+                        timezone: "Europe/Dublin".to_string(),
+                        observed_at: "2026-04-02T10:00".to_string(),
+                        condition: "Cloudy".to_string(),
+                        temperature_c: 11.0,
+                        apparent_temperature_c: Some(10.0),
+                        humidity_percent: Some(84.0),
+                        wind_speed_kmh: Some(12.0),
+                    },
+                    forecast_days: vec![
+                        PublicWeatherForecastDay {
+                            date: "2026-04-03".to_string(),
+                            condition: "Drizzle".to_string(),
+                            temperature_min_c: Some(5.0),
+                            temperature_max_c: Some(11.0),
+                            precipitation_probability_max_percent: Some(45.0),
+                            precipitation_sum_mm: Some(1.2),
+                            precipitation_hours: Some(3.0),
+                            rain_sum_mm: Some(1.2),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-04".to_string(),
+                            condition: "Drizzle".to_string(),
+                            temperature_min_c: Some(4.0),
+                            temperature_max_c: Some(10.0),
+                            precipitation_probability_max_percent: Some(99.0),
+                            precipitation_sum_mm: Some(3.8),
+                            precipitation_hours: Some(6.0),
+                            rain_sum_mm: Some(3.8),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                    ],
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected deterministic reply");
+        assert!(reply.contains("There is a 99% chance of rain on 2026-04-04."));
+        assert!(reply.contains("Tomorrow looks like drizzle on 2026-04-04."));
     }
 
     #[test]

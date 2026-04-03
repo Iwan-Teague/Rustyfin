@@ -170,7 +170,7 @@ impl TurnScheduler {
                 let logical_threads = std::thread::available_parallelism()
                     .map(|value| value.get())
                     .unwrap_or(4);
-                logical_threads.max(2).min(4)
+                logical_threads.clamp(2, 4)
             });
         let queue_limit = std::env::var("RUSTFIN_AI_MAX_QUEUE_DEPTH")
             .ok()
@@ -311,6 +311,17 @@ impl TurnScheduler {
         };
 
         Ok((lease, engine, load_duration_ms, queue_wait_ms, decision))
+    }
+
+    pub async fn acquire_aux_model(
+        self: &Arc<Self>,
+        model_name: &str,
+        model_path: PathBuf,
+        params: LlamaEngineParams,
+        estimated_bytes: u64,
+    ) -> Result<(rustfin_ai_agent::LlamaEngine, u64), String> {
+        self.load_or_reuse_model(model_name, model_path, params, estimated_bytes)
+            .await
     }
 
     pub fn snapshot(&self) -> SchedulerSnapshot {

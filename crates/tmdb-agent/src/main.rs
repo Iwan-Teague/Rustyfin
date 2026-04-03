@@ -93,12 +93,12 @@ fn pick_best_search_provider_id(
 
     let normalized_item_title = normalize_title_for_match(item_title);
 
-    if let Some(year) = item_year {
-        if let Some(hit) = results.iter().find(|hit| {
+    if let Some(year) = item_year
+        && let Some(hit) = results.iter().find(|hit| {
             normalize_title_for_match(&hit.title) == normalized_item_title && hit.year == Some(year)
-        }) {
-            return Some(hit.provider_id.clone());
-        }
+        })
+    {
+        return Some(hit.provider_id.clone());
     }
 
     if let Some(hit) = results
@@ -108,10 +108,10 @@ fn pick_best_search_provider_id(
         return Some(hit.provider_id.clone());
     }
 
-    if let Some(year) = item_year {
-        if let Some(hit) = results.iter().find(|hit| hit.year == Some(year)) {
-            return Some(hit.provider_id.clone());
-        }
+    if let Some(year) = item_year
+        && let Some(hit) = results.iter().find(|hit| hit.year == Some(year))
+    {
+        return Some(hit.provider_id.clone());
     }
 
     results.first().map(|hit| hit.provider_id.clone())
@@ -404,28 +404,26 @@ async fn enrich_one_item(
     if settings.tmdb_fetch_posters {
         if let Some(local_existing) = find_existing_local_artwork(&art_dir, ImageSlot::Poster) {
             next_poster = Some(local_existing.to_string_lossy().to_string());
-        } else if let Some(poster_url) = provider_meta.poster_url.as_deref() {
-            if let Some(downloaded_path) =
+        } else if let Some(poster_url) = provider_meta.poster_url.as_deref()
+            && let Some(downloaded_path) =
                 download_image_to_disk(state, &art_dir, poster_url, ImageSlot::Poster, force)
                     .await?
-            {
-                downloaded_poster = true;
-                next_poster = Some(downloaded_path.to_string_lossy().to_string());
-            }
+        {
+            downloaded_poster = true;
+            next_poster = Some(downloaded_path.to_string_lossy().to_string());
         }
     }
 
     if settings.tmdb_fetch_backdrops {
         if let Some(local_existing) = find_existing_local_artwork(&art_dir, ImageSlot::Backdrop) {
             next_backdrop = Some(local_existing.to_string_lossy().to_string());
-        } else if let Some(backdrop_url) = provider_meta.backdrop_url.as_deref() {
-            if let Some(downloaded_path) =
+        } else if let Some(backdrop_url) = provider_meta.backdrop_url.as_deref()
+            && let Some(downloaded_path) =
                 download_image_to_disk(state, &art_dir, backdrop_url, ImageSlot::Backdrop, force)
                     .await?
-            {
-                downloaded_backdrop = true;
-                next_backdrop = Some(downloaded_path.to_string_lossy().to_string());
-            }
+        {
+            downloaded_backdrop = true;
+            next_backdrop = Some(downloaded_path.to_string_lossy().to_string());
         }
     }
 

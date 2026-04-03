@@ -497,6 +497,10 @@ async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState,
         let guard = state.engine.lock().await;
         guard.scheduler.clone()
     };
+    let role_routing = {
+        let guard = state.engine.lock().await;
+        guard.role_routing.clone()
+    };
     if let Some(remote) = load_remote_backend_config(state).await? {
         scheduler.set_remote_backend(Some(remote.clone()));
     }
@@ -541,6 +545,7 @@ async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState,
         scheduler: scheduler_state_from_snapshot(&scheduler_snapshot),
         model_benchmarks,
         model_profiles,
+        role_routing,
     })
 }
 
@@ -570,6 +575,7 @@ async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState,
         scheduler: empty_scheduler_state(),
         model_benchmarks: Vec::new(),
         model_profiles: Vec::new(),
+        role_routing: Vec::new(),
     })
 }
 

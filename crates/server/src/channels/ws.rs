@@ -376,6 +376,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let _ = socket.close().await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     state: &AppState,
     user_id: &str,

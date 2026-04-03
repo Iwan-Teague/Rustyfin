@@ -60,6 +60,15 @@ pub enum BackendKind {
     Remote,
 }
 
+impl BackendKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendCapabilities {
     pub kind: BackendKind,

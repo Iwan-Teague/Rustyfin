@@ -59,6 +59,7 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - Transcript summaries now keep citation backlinks to exact excerpts, and the Admin `AI` audit trail exposes the stored grounding chunks for review and debugging
   - `/ai` now renders a stored activity stack driven by server `phase` and `tool` events so the visible `Thinking...` state reflects structured backend progress rather than raw model-emitted chain-of-thought
   - Current grounded domains are account summary, visible calendar events/birthdays plus specific event details, confirmation-gated personal/shared calendar event creation and recurring birthday creation with read-after-write verification, calendar deletion with read-after-write verification, confirmation-gated markdown/plain-text document generation with authenticated download links, recent visible channel activity, transcript-based summaries of accessible completed voice calls, authenticated downloads catalog entries, host-visible network topology and Rustyfin network settings, accessible libraries, library title search, recently added accessible library items, active public rooms, joinable rooms and invites, authenticated public weather via a fixed provider, admin-only host runtime stats, admin-only backup/service/transcode/storage/recent-error summaries, admin-only constrained public web search/page summary when enabled, and accessible Minecraft server status
+  - Library search replies use compact server-authored summaries and grounded match lists instead of raw JSON payloads
   - Query understanding now supports calendar windows, deterministic `What is my next event?` prompts through `calendar_get_next_event`, broader next-up phrasing such as `What is the next thing coming up in my calendar?`, specific calendar-event detail prompts, named birthday lookups such as `When is Rachel's birthday?`, confirmation-gated delete prompts such as `Delete dentist appointment on 2026-06-09 from my calendar`, confirmation-gated document prompts such as `Create a markdown document summarizing my next event`, explicit grounded capability/tool-inventory prompts such as `What functions do you have access to in this environment?`, network questions such as interface/IP/hostname/remote-access prompts plus local-network connect prompts like `What IP should I use to connect to Rustyfin on my LAN?`, recent channel-activity prompts, transcript-summary prompts such as asking what a transcribed call was about, room-mode filtering such as YouTube or screen-share rooms, joinable-room and invite prompts, recently-added library prompts, authenticated public-weather prompts such as `What is the temperature in Dublin right now?`, `Will it rain in Galway today?`, `What is the weather like this week for Campile in County Wexford?`, and recent-history prompts such as `Did it rain yesterday in Galway?`, admin-only host-runtime/service-health/storage/transcode/recent-error prompts, explicit public URLs, and Minecraft server status/name filtering such as online, offline, healthy, or a named server
   - Calendar date understanding now resolves relative and natural-language prompts like `next Tuesday`, `today`, `tomorrow`, and `7th of April` against the Rustyfin host's local date instead of relying on model guesses
   - `/api/v1/ai/chat` can now ground explicit current-date/current-time questions through a host-local `system_get_current_datetime` tool so relative-date follow-ups have a deterministic server-side anchor
@@ -376,6 +377,14 @@ Focused RustyVault removability gate:
 ```
 
 This verifies the host can degrade the Vault surface cleanly while unrelated routes still respond, the backend still compiles without the `rustyvault` feature, and the host UI still builds with `NEXT_PUBLIC_RUSTYVAULT_ENABLED=0`.
+
+Database-backed server integration suite:
+
+```bash
+cargo test -p rustfin-server --test integration --features db-integration-tests
+```
+
+This suite is opt-in because it requires a live PostgreSQL target through `RUSTFIN_TEST_DATABASE_URL` or `RUSTFIN_DATABASE_URL`. The default `cargo test --workspace` path now stays portable on developer machines that do not have an integration database configured.
 
 Run the browser smoke independently if needed:
 

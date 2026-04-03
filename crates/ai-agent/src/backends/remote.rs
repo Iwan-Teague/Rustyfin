@@ -6,8 +6,9 @@ use futures::stream::BoxStream;
 use serde_json::Value;
 
 use crate::SamplingParams;
-use crate::backend::RemoteBackendConfig;
+use crate::backend::{InferenceBackend, RemoteBackendConfig, estimate_chat_tokens};
 use crate::error::AiError;
+use crate::roles::ModelRole;
 use crate::types::{BackendCapabilities, BackendKind, ChatChunk, ChatMessage, PromptCacheHint};
 
 pub struct RemotePromptBackend {
@@ -100,15 +101,15 @@ impl super::PromptBackend for RemotePromptBackend {
                 while let Some(boundary) = buffer.find("\n\n") {
                     let block = buffer[..boundary].to_string();
                     buffer = buffer[boundary + 2..].to_string();
-                    if let Some(text) = parse_stream_block(&block) {
-                        if !text.is_empty() {
-                            if first_token_ms.is_none() {
-                                first_token_ms = Some(started.elapsed().as_millis() as u64);
-                            }
-                            completion_tokens = completion_tokens.saturating_add(1);
-                            saw_token = true;
-                            yield Ok(ChatChunk::Token(text));
+                    if let Some(text) = parse_stream_block(&block)
+                        && !text.is_empty()
+                    {
+                        if first_token_ms.is_none() {
+                            first_token_ms = Some(started.elapsed().as_millis() as u64);
                         }
+                        completion_tokens = completion_tokens.saturating_add(1);
+                        saw_token = true;
+                        yield Ok(ChatChunk::Token(text));
                     }
                     if let Some((prompt, completion)) = parse_usage_block(&block) {
                         prompt_tokens = prompt_tokens.max(prompt);
@@ -158,6 +159,42 @@ impl super::PromptBackend for RemotePromptBackend {
     }
 }
 
+impl InferenceBackend for RemotePromptBackend {
+    fn backend_id(&self) -> &'static str {
+        "remote"
+    }
+
+    fn backend_kind(&self) -> BackendKind {
+        BackendKind::Remote
+    }
+
+    fn model_name(&self) -> Option<&str> {
+        Some(self.config.model.as_str())
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.config.capabilities()
+    }
+
+    fn count_chat_tokens(
+        &self,
+        _role: ModelRole,
+        messages: &[ChatMessage],
+    ) -> Result<u32, AiError> {
+        Ok(estimate_chat_tokens(messages))
+    }
+
+    fn chat_stream_boxed(
+        &self,
+        _role: ModelRole,
+        messages: Vec<ChatMessage>,
+        sampling: SamplingParams,
+        prompt_cache: Option<PromptCacheHint>,
+    ) -> BoxStream<'static, Result<ChatChunk, AiError>> {
+        <Self as super::PromptBackend>::chat_stream_boxed(self, messages, sampling, prompt_cache)
+    }
+}
+
 fn build_chat_request_body(
     config: &RemoteBackendConfig,
     messages: &[ChatMessage],
@@ -173,16 +210,17 @@ fn build_chat_request_body(
         "max_tokens": sampling.max_tokens,
     });
 
-    if let Some(cache_hint) = prompt_cache {
-        if cache_hint.enabled && config.supports_prompt_cache {
-            body["metadata"] = serde_json::json!({
-                "rustyfin_prompt_cache": {
-                    "cache_key": cache_hint.cache_key,
-                    "cache_scope": cache_hint.cache_scope,
-                    "enabled": cache_hint.enabled,
-                }
-            });
-        }
+    if let Some(cache_hint) = prompt_cache
+        && cache_hint.enabled
+        && config.supports_prompt_cache
+    {
+        body["metadata"] = serde_json::json!({
+            "rustyfin_prompt_cache": {
+                "cache_key": cache_hint.cache_key,
+                "cache_scope": cache_hint.cache_scope,
+                "enabled": cache_hint.enabled,
+            }
+        });
     }
 
     body

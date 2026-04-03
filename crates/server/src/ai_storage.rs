@@ -133,6 +133,7 @@ pub struct AiModelDirectoryState {
     pub scheduler: AiSchedulerState,
     pub model_benchmarks: Vec<AiModelBenchmarkSummary>,
     pub model_profiles: Vec<AiModelProfileSummary>,
+    pub role_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
 }
 
 #[derive(Debug, Clone)]
@@ -423,7 +424,7 @@ fn list_models_in_dir_blocking(model_dir: &Path) -> Result<Vec<AiModelSummary>, 
 fn derive_download_file_name(url: &reqwest::Url) -> Result<String, ApiError> {
     let file_name = url
         .path_segments()
-        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).last())
+        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
         .ok_or_else(|| ApiError::BadRequest("model URL must include a filename".into()))?;
 
     let file_name = file_name.trim();

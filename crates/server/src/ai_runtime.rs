@@ -14,6 +14,7 @@ pub struct AiRuntimeResponse {
     pub scheduler: AiRuntimeSchedulerSummary,
     pub resources: AiRuntimeResourcesSummary,
     pub gpus: Vec<AiRuntimeGpuSummary>,
+    pub role_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +123,8 @@ pub async fn get_ai_runtime(
         n_gpu_layers,
         split_mode,
         device_indices,
+        backend,
+        role_routing,
         scheduler_snapshot,
     ) = {
         let guard = state.engine.lock().await;
@@ -141,6 +144,12 @@ pub async fn get_ai_runtime(
             params.n_gpu_layers,
             params.split_mode.as_str().to_string(),
             params.device_indices,
+            guard
+                .role_models
+                .get(&rustfin_ai_agent::ModelRole::Answer)
+                .map(|loaded| loaded.backend_kind.as_str().to_string())
+                .unwrap_or_else(|| inferred_backend(&gpus)),
+            guard.role_routing.clone(),
             guard.scheduler.snapshot(),
         )
     };
@@ -156,7 +165,7 @@ pub async fn get_ai_runtime(
     Ok(Json(AiRuntimeResponse {
         model: AiRuntimeModelSummary {
             name: loaded_model,
-            backend: inferred_backend(&gpus),
+            backend,
             context_length,
             n_threads,
             n_gpu_layers,
@@ -218,6 +227,7 @@ pub async fn get_ai_runtime(
             host_ram_used_percent: host.memory_used_percent,
         },
         gpus,
+        role_routing,
     }))
 }
 
@@ -273,7 +283,7 @@ async fn collect_gpu_metrics() -> Vec<AiRuntimeGpuSummary> {
                 .and_then(|value| value.parse::<u64>().ok())
                 .map(|value| value.saturating_mul(1024 * 1024));
             Some(AiRuntimeGpuSummary {
-                index: columns.get(0).and_then(|value| value.parse::<u32>().ok()),
+                index: columns.first().and_then(|value| value.parse::<u32>().ok()),
                 name: columns.get(1).cloned().unwrap_or_else(|| "GPU".to_string()),
                 utilization_percent: columns.get(2).and_then(|value| value.parse::<f64>().ok()),
                 vram_used_human: used_bytes.map(human_bytes),

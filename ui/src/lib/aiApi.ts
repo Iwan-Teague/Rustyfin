@@ -321,6 +321,28 @@ export interface AiRuntimeResponse {
     vram_total_human?: string | null;
     temperature_celsius?: number | null;
   }>;
+  role_routing: Array<{
+    role: 'planner' | 'summarizer' | 'answer' | 'verifier' | 'worker' | string;
+    model_name: string;
+    backend_id: string;
+    backend_kind: 'local' | 'remote' | string;
+    selection_source:
+      | 'explicit_request'
+      | 'stored_recommendation'
+      | 'env_default'
+      | 'fallback'
+      | string;
+    recommendation_status:
+      | 'applied'
+      | 'missing'
+      | 'stale'
+      | 'model_missing'
+      | 'not_applicable'
+      | string;
+    recommendation_note?: string | null;
+    recommendation_model_name?: string | null;
+    recommendation_updated_ts?: number | null;
+  }>;
 }
 
 export type AiSseEvent =

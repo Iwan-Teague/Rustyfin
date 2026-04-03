@@ -1079,9 +1079,9 @@ fn jellyfin_guid_text_to_blob(guid: &str) -> Option<[u8; 16]> {
         return None;
     }
     let mut raw = [0_u8; 16];
-    for idx in 0..16 {
+    for (idx, byte) in raw.iter_mut().enumerate() {
         let start = idx * 2;
-        raw[idx] = u8::from_str_radix(&hex[start..start + 2], 16).ok()?;
+        *byte = u8::from_str_radix(&hex[start..start + 2], 16).ok()?;
     }
 
     // Jellyfin stores GUIDs in SQLite using the .NET byte layout:

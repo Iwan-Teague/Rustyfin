@@ -176,6 +176,18 @@ pub struct AssistantPlannerDebug {
     pub used_repaired_response: bool,
     #[serde(default)]
     pub validated_call_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_response_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(default)]
+    pub execution: PlannerExecutionStats,
+    #[serde(default)]
+    pub repair_records: Vec<PlannerRepairRecord>,
+    #[serde(default)]
+    pub final_selected_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,51 +317,68 @@ pub struct AssistantGroundingChunk {
     pub citation: Option<AssistantGroundingCitation>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AssistantGroundingVisibility {
-    User,
-    Shared,
-    Admin,
+pub enum PlannerFallbackReason {
+    ParseFailed,
+    ValidationFailed,
+    RepairExhausted,
+    ToolNotAllowed,
+    ArgumentInvalid,
+    ToolCountExceeded,
+    UnsupportedCombination,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantGroundingCitation {
-    pub citation_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_sub_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub excerpt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_ts_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ended_ts_ms: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+impl PlannerFallbackReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ParseFailed => "parse_failed",
+            Self::ValidationFailed => "validation_failed",
+            Self::RepairExhausted => "repair_exhausted",
+            Self::ToolNotAllowed => "tool_not_allowed",
+            Self::ArgumentInvalid => "argument_invalid",
+            Self::ToolCountExceeded => "tool_count_exceeded",
+            Self::UnsupportedCombination => "unsupported_combination",
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AssistantGroundingChunk {
-    pub id: String,
-    pub source_kind: String,
-    pub title: String,
-    pub excerpt: String,
-    pub score: f64,
-    pub visibility: AssistantGroundingVisibility,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlannerIssue {
+    pub code: String,
+    pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic_key: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlannerRepairRecord {
+    pub attempt_index: u8,
+    #[serde(default)]
+    pub issues: Vec<PlannerIssue>,
+    pub repaired_successfully: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlannerExecutionStats {
+    pub parse_attempts: u8,
+    pub validation_failures: u8,
+    pub repair_attempts: u8,
+    pub repair_successes: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_user_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_sub_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub citation: Option<AssistantGroundingCitation>,
+    pub fallback_reason: Option<PlannerFallbackReason>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConversationPromptDebug {
+    #[serde(default)]
+    pub system_message_count: u32,
+    #[serde(default)]
+    pub history_message_count: u32,
+    #[serde(default)]
+    pub grounding_chunk_count: u32,
+    #[serde(default)]
+    pub response_mode: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -388,6 +417,16 @@ pub struct AssistantTurnStats {
     pub planner_validation_error_count: u32,
     #[serde(default)]
     pub planner_repair_count: u32,
+    #[serde(default)]
+    pub planner_parse_attempts: u8,
+    #[serde(default)]
+    pub planner_validation_failures: u8,
+    #[serde(default)]
+    pub planner_repair_attempts: u8,
+    #[serde(default)]
+    pub planner_repair_successes: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_fallback_reason: Option<String>,
     #[serde(default)]
     pub journal_persisted: bool,
     #[serde(default)]

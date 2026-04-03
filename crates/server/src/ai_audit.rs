@@ -83,6 +83,8 @@ pub struct AiAssistantAuditEventResponse {
     pub message_preview: String,
     pub history_len: i64,
     pub response_kind: String,
+    pub planner: serde_json::Value,
+    pub model_routing: Vec<crate::ai_model_routing::RoleRoutingDecision>,
     pub planned_tools: Vec<String>,
     pub executed_tools: Vec<AiAssistantAuditToolExecution>,
     pub grounding_chunks: Vec<AiGroundingChunk>,
@@ -104,6 +106,8 @@ pub fn parse_audit_event_row(
         message_preview: row.message_preview,
         history_len: row.history_len,
         response_kind: row.response_kind,
+        planner: serde_json::from_str(&row.planner_json).unwrap_or_else(|_| serde_json::json!({})),
+        model_routing: serde_json::from_str(&row.model_routing_json).unwrap_or_default(),
         planned_tools: serde_json::from_str(&row.planned_tools_json).unwrap_or_default(),
         executed_tools: serde_json::from_str(&row.executed_tools_json).unwrap_or_default(),
         grounding_chunks: serde_json::from_str(&row.grounding_chunks_json).unwrap_or_default(),
@@ -230,6 +234,7 @@ impl AiAssistantAuditResponseKind {
 }
 
 #[cfg(feature = "ai")]
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_chat_audit_event(
     state: &crate::state::AppState,
     user: &crate::auth::AuthUser,
@@ -242,6 +247,46 @@ pub async fn persist_chat_audit_event(
     grounding_sources: &[crate::ai_assistant::types::AssistantGroundingSource],
     error_message: Option<&str>,
 ) {
+    persist_chat_audit_event_with_planner(
+        state,
+        user,
+        request,
+        trace_id,
+        response_kind,
+        planned_tools,
+        grounding_blocks,
+        grounding_chunks,
+        grounding_sources,
+        None,
+        error_message,
+    )
+    .await;
+}
+
+#[cfg(feature = "ai")]
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_chat_audit_event_with_planner(
+    state: &crate::state::AppState,
+    user: &crate::auth::AuthUser,
+    request: &crate::ai_assistant::AssistantChatRequest,
+    trace_id: &str,
+    response_kind: AiAssistantAuditResponseKind,
+    planned_tools: &[crate::ai_assistant::types::PlannedToolCall],
+    grounding_blocks: &[crate::ai_assistant::types::AssistantToolContextBlock],
+    grounding_chunks: &[crate::ai_assistant::types::AssistantGroundingChunk],
+    grounding_sources: &[crate::ai_assistant::types::AssistantGroundingSource],
+    planner_debug: Option<&crate::ai_assistant::types::AssistantPlannerDebug>,
+    error_message: Option<&str>,
+) {
+    let role_routing = {
+        let guard = state.engine.lock().await;
+        guard.role_routing.clone()
+    };
+    let effective_model_name = role_routing
+        .iter()
+        .find(|decision| decision.role == rustfin_ai_agent::ModelRole::Answer)
+        .map(|decision| decision.model_name.as_str())
+        .unwrap_or(request.model.as_str());
     let planned_tools_json = serde_json::to_string(
         &planned_tools
             .iter()
@@ -284,6 +329,13 @@ pub async fn persist_chat_audit_event(
     .unwrap_or_else(|_| "[]".to_string());
     let grounding_chunks_json =
         serde_json::to_string(grounding_chunks).unwrap_or_else(|_| "[]".to_string());
+    let planner_json = planner_debug
+        .map(serde_json::to_string)
+        .transpose()
+        .unwrap_or_else(|_| Some("{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
+    let model_routing_json =
+        serde_json::to_string(&role_routing).unwrap_or_else(|_| "[]".to_string());
 
     let result = rustfin_db::repo::ai_assistant_audit::create_audit_event(
         &state.db,
@@ -292,12 +344,14 @@ pub async fn persist_chat_audit_event(
             user_id: &user.user_id,
             username: &user.username,
             user_role: &user.role,
-            model_name: &request.model,
+            model_name: effective_model_name,
             message_preview: &normalize_message_preview(&request.message),
             history_len: request.history.len() as i64,
             response_kind: response_kind.as_str(),
             planned_tools_json: &planned_tools_json,
             executed_tools_json: &executed_tools_json,
+            planner_json: &planner_json,
+            model_routing_json: &model_routing_json,
             grounding_chunks_json: &grounding_chunks_json,
             grounding_sources_json: &grounding_sources_json,
             error_message,
@@ -529,6 +583,8 @@ mod tests {
                 message_preview: "hello".to_string(),
                 history_len: 2,
                 response_kind: "completed".to_string(),
+                planner_json: "{bad json".to_string(),
+                model_routing_json: "{bad json".to_string(),
                 planned_tools_json: "{bad json".to_string(),
                 executed_tools_json: "{bad json".to_string(),
                 grounding_chunks_json: "{bad json".to_string(),
@@ -536,6 +592,8 @@ mod tests {
                 error_message: Some("oops".to_string()),
                 created_ts: 123,
             });
+        assert_eq!(parsed.planner, serde_json::json!({}));
+        assert!(parsed.model_routing.is_empty());
         assert!(parsed.planned_tools.is_empty());
         assert!(parsed.executed_tools.is_empty());
         assert!(parsed.grounding_chunks.is_empty());

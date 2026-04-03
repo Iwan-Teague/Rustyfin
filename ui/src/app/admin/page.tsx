@@ -400,6 +400,17 @@ function formatPercent(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+function aiRecommendationStatusLabel(status: string): string {
+  switch (status) {
+    case 'model_missing':
+      return 'model missing';
+    case 'not_applicable':
+      return 'n/a';
+    default:
+      return status.replace(/_/g, ' ');
+  }
+}
+
 function diagnosticsTrendTone(lastMinute: number, lastFiveMinutes: number): string {
   if (lastMinute > 0) return 'text-[#ff8a7a]';
   if (lastFiveMinutes > 0) return 'text-[#f7c67a]';
@@ -3290,6 +3301,46 @@ export default function AdminPage() {
                       </div>
                     </div>
 
+                    <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] muted">
+                          Active Role Routing
+                        </p>
+                        <span className="text-[11px] muted">
+                          {aiAdminState?.role_routing?.length ?? 0} roles
+                        </span>
+                      </div>
+                      {aiAdminState?.role_routing && aiAdminState.role_routing.length > 0 ? (
+                        <div className="space-y-2">
+                          {aiAdminState.role_routing.map((route) => (
+                            <div
+                              key={`${route.role}-${route.model_name}-${route.backend_id}`}
+                              className="rounded-lg border border-[var(--border)]/70 px-3 py-2 text-xs muted"
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                  {route.role}
+                                </span>
+                                <span className="font-medium text-[var(--text-main)]">
+                                  {route.model_name}
+                                </span>
+                                <span>{route.backend_kind}</span>
+                                <span>{route.selection_source.replaceAll('_', ' ')}</span>
+                                <span>{aiRecommendationStatusLabel(route.recommendation_status)}</span>
+                              </div>
+                              {route.recommendation_note ? (
+                                <p className="mt-1 text-[11px] muted">{route.recommendation_note}</p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs muted">
+                          No routed role selections have been recorded yet for this runtime.
+                        </p>
+                      )}
+                    </div>
+
                     {aiAdminState?.model_benchmarks && aiAdminState.model_benchmarks.length > 0 ? (
                       <div className="space-y-2">
                         <p className="text-xs font-semibold uppercase tracking-[0.12em] muted">
@@ -3507,6 +3558,74 @@ export default function AdminPage() {
                             </div>
 
                             <div className="space-y-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Planner
+                              </p>
+                              {event.planner && Object.keys(event.planner).length > 0 ? (
+                                <div className="rounded-lg border border-[var(--border)]/70 px-3 py-2 text-xs muted">
+                                  <div className="flex flex-wrap gap-2">
+                                    {event.planner.planner_mode ? (
+                                      <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                        {event.planner.planner_mode}
+                                      </span>
+                                    ) : null}
+                                    {event.planner.fallback_reason ? (
+                                      <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                        fallback {event.planner.fallback_reason}
+                                      </span>
+                                    ) : null}
+                                    {event.planner.execution?.repair_attempts ? (
+                                      <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                        repairs {event.planner.execution.repair_attempts}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                  {event.planner.raw_response_hash ? (
+                                    <p className="mt-2 text-[11px] muted">
+                                      raw {event.planner.raw_response_hash.slice(0, 12)}
+                                    </p>
+                                  ) : null}
+                                  {event.planner.validation_errors?.length ? (
+                                    <p className="mt-2 text-[11px] muted">
+                                      {event.planner.validation_errors.join(' · ')}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <p className="text-xs muted">No planner diagnostics recorded.</p>
+                              )}
+
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Model Routing
+                              </p>
+                              {event.model_routing.length > 0 ? (
+                                <div className="space-y-2">
+                                  {event.model_routing.map((route) => (
+                                    <div
+                                      key={`${event.id}-${route.role}-${route.model_name}`}
+                                      className="rounded-lg border border-[var(--border)]/70 px-3 py-2 text-xs muted"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                          {route.role}
+                                        </span>
+                                        <span className="font-medium text-[var(--text-main)]">
+                                          {route.model_name}
+                                        </span>
+                                        <span>{route.backend_kind}</span>
+                                        <span>{route.selection_source.replaceAll('_', ' ')}</span>
+                                        <span>{aiRecommendationStatusLabel(route.recommendation_status)}</span>
+                                      </div>
+                                      {route.recommendation_note ? (
+                                        <p className="mt-1 text-[11px] muted">{route.recommendation_note}</p>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs muted">No role-routing diagnostics recorded.</p>
+                              )}
+
                               <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
                                 Executed Tools
                               </p>

@@ -4607,8 +4607,10 @@ mod tests {
 
     #[test]
     fn battleship_payload_masks_ships_by_viewer() {
-        let mut play_state = PlayState::default();
-        play_state.active_game = "battleship".to_string();
+        let mut play_state = PlayState {
+            active_game: "battleship".to_string(),
+            ..PlayState::default()
+        };
         play_state.battleship.blue_user_id = Some("blue-user".to_string());
         play_state.battleship.red_user_id = Some("red-user".to_string());
 

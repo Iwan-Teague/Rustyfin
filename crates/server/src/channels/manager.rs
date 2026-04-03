@@ -8,11 +8,12 @@ use super::protocol::{ChannelEvent, UserInfo};
 
 // (user_id, connection_id, username, avatar_url)
 type VoiceMember = (String, String, String, Option<String>);
+type UserConnectionSenders = HashMap<String, HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>;
 
 pub struct ChannelManager {
     broadcast: broadcast::Sender<Arc<ChannelEvent>>,
     // user_id -> (connection_id -> sender)
-    user_senders: RwLock<HashMap<String, HashMap<String, mpsc::Sender<Arc<ChannelEvent>>>>>,
+    user_senders: RwLock<UserConnectionSenders>,
     /// channel_id → Vec<(user_id, username, avatar_url)> in join order
     voice: RwLock<HashMap<String, Vec<VoiceMember>>>,
     /// channel_id -> unix timestamp (seconds) when the current active voice session began.
@@ -439,7 +440,7 @@ mod tests {
                 )
                 .await
         );
-        assert!(matches!(rx.recv().await, Some(_)));
+        assert!(rx.recv().await.is_some());
         assert!(rx.recv().await.is_none());
     }
 

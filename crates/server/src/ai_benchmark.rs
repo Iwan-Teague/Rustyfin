@@ -111,7 +111,7 @@ pub async fn run_model_benchmarks(
         .unwrap_or_else(|| "admin-benchmark".to_string());
 
     let candidates = benchmark_candidates(
-        &target_model,
+        target_model,
         &model_path,
         model_size_bytes,
         host_threads,
@@ -123,7 +123,7 @@ pub async fn run_model_benchmarks(
         persist_benchmark_outcome(
             &state.db,
             &host_fingerprint,
-            &target_model,
+            target_model,
             &model_path,
             &model_checksum,
             &outcome,
@@ -149,7 +149,7 @@ pub async fn run_model_benchmarks(
 
     let recommendation = recommend_model_profile(
         &host_fingerprint,
-        &target_model,
+        target_model,
         &model_checksum,
         model_size_bytes,
         host_threads,
@@ -195,7 +195,7 @@ pub async fn run_model_benchmarks(
     persist_model_profile(
         &state.db,
         &host_fingerprint,
-        &target_model,
+        target_model,
         &model_path,
         &model_checksum,
         model_size_bytes,
@@ -561,6 +561,7 @@ async fn persist_benchmark_outcome(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_model_profile(
     pool: &rustfin_db::DbPool,
     host_fingerprint: &str,
@@ -684,8 +685,7 @@ fn recommend_model_profile(
         .saturating_div(2)
         .clamp(128, 512);
     let summary_max_output = preferred_completion_tokens.saturating_div(3).clamp(96, 384);
-    let safety_headroom =
-        (u32::try_from(model.context_length.unwrap_or(4096)).unwrap_or(4096) / 6).clamp(128, 1024);
+    let safety_headroom = (model.context_length.unwrap_or(4096) / 6).clamp(128, 1024);
     let warmup_cost_class =
         if winner.load_duration_ms <= 5_000 && model_size_bytes <= 2 * 1024 * 1024 * 1024 {
             WarmupCostClass::Low

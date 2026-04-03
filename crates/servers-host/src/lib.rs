@@ -1188,11 +1188,11 @@ async fn resolve_neoforge_server_download(version: &str) -> Result<String, Strin
     // Find the latest version matching the prefix
     let mut best_version: Option<&str> = None;
     for v in versions.iter().rev() {
-        if let Some(ver_str) = v.as_str() {
-            if ver_str.starts_with(&neoforge_prefix) {
-                best_version = Some(ver_str);
-                break;
-            }
+        if let Some(ver_str) = v.as_str()
+            && ver_str.starts_with(&neoforge_prefix)
+        {
+            best_version = Some(ver_str);
+            break;
         }
     }
 

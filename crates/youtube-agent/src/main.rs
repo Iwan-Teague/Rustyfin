@@ -510,16 +510,16 @@ fn extract_candidate_urls_from_youtubei_payload(payload: &serde_json::Value) -> 
                 continue;
             }
 
-            if let Some(url) = format.get("url").and_then(|v| v.as_str()) {
-                if !url.trim().is_empty() {
-                    out.push(url.to_string());
-                    continue;
-                }
+            if let Some(url) = format.get("url").and_then(|v| v.as_str())
+                && !url.trim().is_empty()
+            {
+                out.push(url.to_string());
+                continue;
             }
-            if let Some(cipher) = format.get("signatureCipher").and_then(|v| v.as_str()) {
-                if let Some(url) = extract_url_from_signature_cipher(cipher) {
-                    out.push(url);
-                }
+            if let Some(cipher) = format.get("signatureCipher").and_then(|v| v.as_str())
+                && let Some(url) = extract_url_from_signature_cipher(cipher)
+            {
+                out.push(url);
             }
         }
     }
@@ -749,7 +749,9 @@ async fn download_url_to_temp_with_headers(
     let android_ua = "com.google.android.youtube/19.08.35 (Linux; U; Android 14; en_US; Pixel 8 Pro Build/UQ1A.240205.002; Cronet/119.0.6045.194)";
     let ios_ua = "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_4 like Mac OS X)";
 
-    let profiles: [(&str, bool, Option<&str>, Option<&str>, &str); 7] = [
+    type DownloadProfile<'a> = (&'a str, bool, Option<&'a str>, Option<&'a str>, &'a str);
+
+    let profiles: [DownloadProfile<'_>; 7] = [
         (
             "desktop+range+watch-referer",
             true,
@@ -858,11 +860,9 @@ async fn download_url_to_temp_with_headers(
             }
         }
 
-        if !read_failed {
-            if let Err(err) = tokio::io::AsyncWriteExt::flush(&mut file).await {
-                profile_errors.push(format!("{label}: temp file flush failed: {err}"));
-                read_failed = true;
-            }
+        if !read_failed && let Err(err) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            profile_errors.push(format!("{label}: temp file flush failed: {err}"));
+            read_failed = true;
         }
 
         if read_failed {

@@ -607,11 +607,11 @@ pub async fn search_retrieval_chunks(
 
     let mut query_builder = sqlx::query(&sql).bind(is_admin).bind(user_id);
 
-    if let Some(library_ids) = allowed_library_ids {
-        if !is_admin {
-            for library_id in library_ids {
-                query_builder = query_builder.bind(library_id);
-            }
+    if let Some(library_ids) = allowed_library_ids
+        && !is_admin
+    {
+        for library_id in library_ids {
+            query_builder = query_builder.bind(library_id);
         }
     }
     if let Some(topic_key) = topic_key {

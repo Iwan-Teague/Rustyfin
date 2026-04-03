@@ -229,6 +229,25 @@ struct GroundedNetworkAddress {
     address: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GroundedLibrarySearchEnvelope {
+    #[serde(default)]
+    match_count: usize,
+    #[serde(default)]
+    matches: Vec<GroundedLibrarySearchMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedLibrarySearchMatch {
+    title: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    year: Option<i64>,
+    #[serde(default)]
+    library_name: Option<String>,
+}
+
 pub fn deterministic_calendar_reply(
     _message: &str,
     grounding_blocks: &[AssistantToolContextBlock],
@@ -278,6 +297,31 @@ pub fn deterministic_network_reply(
             .map(|message| format!("I couldn't load the Rustyfin network details. {message}"))
             .unwrap_or_else(|| "I couldn't load the Rustyfin network details.".to_string())
     })
+}
+
+pub fn deterministic_library_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "library_search_titles")?;
+
+    if block.status != "ok" {
+        return Some(format_calendar_error(
+            block,
+            "I couldn't search your libraries.",
+        ));
+    }
+
+    let envelope =
+        serde_json::from_value::<GroundedLibrarySearchEnvelope>(block.data.clone()).ok()?;
+    Some(format_library_search_reply(
+        extract_library_search_query(message)
+            .or_else(|| extract_quoted_phrase(&block.label))
+            .as_deref(),
+        envelope,
+    ))
 }
 
 fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
@@ -470,6 +514,70 @@ fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> Str
     parts.join(" ")
 }
 
+fn format_library_search_reply(
+    query: Option<&str>,
+    envelope: GroundedLibrarySearchEnvelope,
+) -> String {
+    let query = query.map(str::trim).filter(|value| !value.is_empty());
+    let matches = envelope.matches;
+    let reported_count = envelope.match_count.max(matches.len());
+
+    if matches.is_empty() {
+        return match query {
+            Some(query) => format!(
+                "No {query} titles were found in your libraries. Would you like to try a different title or search a specific collection?"
+            ),
+            None => {
+                "No matching titles were found in your libraries. Would you like to try a different title or search a specific collection?"
+                    .to_string()
+            }
+        };
+    }
+
+    let header = match query {
+        Some(query) if reported_count == 1 => {
+            format!("I found 1 title matching {query}:")
+        }
+        Some(query) => format!("I found {} titles matching {query}:", reported_count),
+        None if reported_count == 1 => "I found 1 matching title:".to_string(),
+        None => format!("I found {} matching titles:", reported_count),
+    };
+
+    let mut lines = vec![header];
+    for item in matches.iter().take(5) {
+        lines.push(format!("- {}", format_library_match(item)));
+    }
+    if reported_count > 5 {
+        lines.push(format!("And {} more.", reported_count - 5));
+    }
+
+    lines.join("\n")
+}
+
+fn format_library_match(item: &GroundedLibrarySearchMatch) -> String {
+    let mut parts = vec![item.title.trim().to_string()];
+    if let Some(year) = item.year {
+        parts.push(format!("({year})"));
+    }
+    if let Some(kind) = item
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("[{kind}]"));
+    }
+    if let Some(library_name) = item
+        .library_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("in {library_name}"));
+    }
+    parts.join(" ")
+}
+
 fn is_notable_user_facing_interface(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     !(lower == "docker0"
@@ -533,14 +641,48 @@ fn format_calendar_error(block: &AssistantToolContextBlock, fallback: &str) -> S
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn extract_library_search_query(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("access to") {
+        return None;
+    }
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        if lower.contains("search")
+            || lower.contains("find")
+            || lower.contains("look for")
+            || lower.contains("is there")
+            || lower.contains("library")
+            || lower.contains("libraries")
+        {
+            return Some(quoted);
+        }
+    }
+
+    None
+}
+
+fn extract_quoted_phrase(message: &str) -> Option<String> {
+    let start = message.find('"')?;
+    let rest = &message[start + 1..];
+    let end = rest.find('"')?;
+    let candidate = rest[..end].trim();
+    if candidate.is_empty() {
+        None
+    } else {
+        Some(candidate.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_calendar_reply, deterministic_network_reply, grounding_chunks_prompt,
-        rank_and_compress_grounding_chunks,
+        deterministic_calendar_reply, deterministic_library_reply, deterministic_network_reply,
+        grounding_chunks_prompt, rank_and_compress_grounding_chunks,
     };
     use crate::ai_assistant::types::{
-        AssistantGroundingCitation, AssistantGroundingVisibility, AssistantToolContextBlock,
+        AssistantGroundingChunk, AssistantGroundingCitation, AssistantGroundingVisibility,
+        AssistantToolContextBlock,
     };
     use serde_json::json;
 
@@ -694,6 +836,29 @@ mod tests {
         assert!(reply.contains("primary LAN interface is enp3s0"));
         assert!(reply.contains("port is 3008"));
         assert!(reply.contains("8097"));
+    }
+
+    #[test]
+    fn deterministic_library_reply_formats_search_results_without_raw_json() {
+        let reply = deterministic_library_reply(
+            "Search my libraries for Star Trek",
+            &[AssistantToolContextBlock {
+                tool: "library_search_titles",
+                label: "Library matches for \"Star Trek\"".to_string(),
+                status: "ok",
+                data: json!({
+                    "match_count": 0,
+                    "matches": [],
+                    "query": "Star Trek"
+                }),
+            }],
+        )
+        .expect("expected deterministic library reply");
+
+        assert!(reply.contains("No Star Trek titles were found in your libraries."));
+        assert!(!reply.contains("\"query\""));
+        assert!(!reply.contains("\"matches\""));
+        assert!(!reply.contains("[{"));
     }
 
     #[test]
