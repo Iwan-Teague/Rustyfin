@@ -308,9 +308,9 @@ pub async fn list_visible_events(
              OR (e.scope = 'personal' AND e.owner_user_id = $2)
          ) \
            AND (
-             (e.recurrence = 'none' AND e.event_date >= $3 AND e.event_date <= $4)
+             (e.recurrence = 'none' AND e.event_date::date >= $3 AND e.event_date::date <= $4)
              OR e.recurrence = 'yearly'
-           ) \
+         ) \
          ORDER BY e.event_date ASC, e.title ASC, e.created_ts ASC",
     )
     .bind(if is_admin { 1 } else { 0 })
@@ -374,9 +374,9 @@ pub async fn list_personal_events(
          LEFT JOIN \"user\" creator ON creator.id = e.created_by_user_id \
          WHERE e.scope = 'personal'
            AND (
-             (e.recurrence = 'none' AND e.event_date >= $1 AND e.event_date <= $2)
+             (e.recurrence = 'none' AND e.event_date::date >= $1 AND e.event_date::date <= $2)
              OR e.recurrence = 'yearly'
-           ) \
+         ) \
          ORDER BY e.event_date ASC, e.title ASC, e.created_ts ASC",
     )
     .bind(from_date)
