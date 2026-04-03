@@ -342,3 +342,24 @@ Current risk notes:
   - `cargo test -p rustfin-tmdb-agent --bin rustfin-tmdb-agent`
   - `cargo test -p rustfin-calendar --bin rustfin-calendar`
 - The Ubuntu host still needs the follow-up commit deployed and the native/runtime health checks rerun.
+
+### 2026-04-03T23:30:00Z - CUDA Deploy Linker Fix Prepared
+
+What changed:
+- Reran the Ubuntu deploy after the migration-order fix and hit a second host-specific blocker: the native build resolved `RUSTFIN_AI_GPU_BACKEND=auto` to `cuda`, but the deploy-time cargo invocation did not include the CUDA library search paths, so linking failed on `cudart_static`.
+- Patched the installer-native build path so CUDA server builds inject `CUDA_PATH=/usr/lib/cuda` plus merged `RUSTFLAGS` search paths for `/usr/lib/x86_64-linux-gnu` and `/usr/lib/cuda/lib64`.
+- This keeps host-local inference as the default path while making repeated native deploys deterministic on CUDA-capable Ubuntu hosts.
+
+Files touched:
+- `/Users/iwanteague/Desktop/Rustyfin/crates/installer/src/main.rs`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/ai_remaining_delta_execution_log.md`
+
+Tests added:
+- `rustfin-installer`: `merge_search_paths_into_rustflags_appends_missing_paths_once`
+
+Current risk notes:
+- Local targeted verification for the CUDA deploy fix is complete:
+  - `cargo fmt --all`
+  - `cargo test -p rustfin-installer --bin rustfin-installer`
+  - `cargo test -p rustfin-tmdb-agent --bin rustfin-tmdb-agent`
+- The Ubuntu host still needs this follow-up commit pulled and the deploy rerun.

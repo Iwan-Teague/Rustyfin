@@ -1683,6 +1683,16 @@ fn build_native_binaries_with_policy(
         }
         cmd.current_dir(repo_root);
         cmd.env("CARGO_TARGET_DIR", &cache_dir);
+        if bin == "rustfin-server" && policy.server_features.contains("ai-cuda") {
+            cmd.env("CUDA_PATH", "/usr/lib/cuda");
+            cmd.env(
+                "RUSTFLAGS",
+                merge_search_paths_into_rustflags(
+                    env::var("RUSTFLAGS").ok().as_deref(),
+                    &["/usr/lib/x86_64-linux-gnu", "/usr/lib/cuda/lib64"],
+                ),
+            );
+        }
         if let Some((local, global)) = &zig_env {
             cmd.env("ZIG_LOCAL_CACHE_DIR", local);
             cmd.env("ZIG_GLOBAL_CACHE_DIR", global);
@@ -1738,6 +1748,23 @@ fn build_native_binaries_with_policy(
     println!("[rustfin-installer] output dir: {}", output_dir.display());
     println!("[rustfin-installer] target: {}", target_triple);
     Ok(())
+}
+
+fn merge_search_paths_into_rustflags(existing: Option<&str>, search_paths: &[&str]) -> String {
+    let mut parts = existing
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    for path in search_paths {
+        let flag = format!("-L{path}");
+        if !parts.iter().any(|part| part == &flag) {
+            parts.push(flag);
+        }
+    }
+
+    parts.join(" ")
 }
 
 fn build_native_ui(
@@ -3232,8 +3259,8 @@ fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
 mod tests {
     use super::{
         BootstrapAiModelConfig, cmdline_matches_pidfile_name, derive_gguf_file_name_from_url,
-        parse_ai_bootstrap_model_enabled, resolve_bootstrap_ai_model_config_with_overrides,
-        resolve_installer_ai_model_dir_from_env,
+        merge_search_paths_into_rustflags, parse_ai_bootstrap_model_enabled,
+        resolve_bootstrap_ai_model_config_with_overrides, resolve_installer_ai_model_dir_from_env,
     };
     use std::path::PathBuf;
 
@@ -3296,6 +3323,18 @@ mod tests {
                 "expected {value} to disable bootstrap"
             );
         }
+    }
+
+    #[test]
+    fn merge_search_paths_into_rustflags_appends_missing_paths_once() {
+        let merged = merge_search_paths_into_rustflags(
+            Some("-Ctarget-cpu=native -L/usr/lib/x86_64-linux-gnu"),
+            &["/usr/lib/x86_64-linux-gnu", "/usr/lib/cuda/lib64"],
+        );
+        assert_eq!(
+            merged,
+            "-Ctarget-cpu=native -L/usr/lib/x86_64-linux-gnu -L/usr/lib/cuda/lib64"
+        );
     }
 
     #[test]
