@@ -12,9 +12,9 @@ Spec: `/Users/iwanteague/Downloads/rustyfin_ai_remaining_delta.md`
 - [x] Phase 5 coordinator/worker orchestration, verifier pass, tests
 - [x] Phase 6 AI eval crate, corpora, thresholds, reports
 - [x] Rust formatting, linting, unit/integration tests, AI eval runs
-- [ ] Ubuntu deployment, runtime verification, admin verification
+- [x] Ubuntu deployment, runtime verification, admin verification
 - [x] Documentation updates
-- [ ] Push to `main`
+- [x] Push to `main`
 
 ## Milestone Log
 
@@ -385,3 +385,63 @@ Current risk notes:
   - `cargo test -p rustfin-installer --bin rustfin-installer`
   - `cargo test -p rustfin-server --features ai ai_tasks::store::tests`
 - The Ubuntu host still needs this final follow-up commit pulled and the deploy rerun.
+
+### 2026-04-04T00:45:00Z - Ubuntu Deployment and Live Verification Completed
+
+What changed:
+- Deployed `main` to the Ubuntu target `server@192.168.0.36` with the native deploy path after applying three deployment blockers discovered during live rollout:
+  - service-specific migration flags for `rustfin-tmdb-agent` and `rustfin-calendar`
+  - CUDA linker search paths for native AI builds
+  - `"user"` table references in the AI task migration/store path
+- Verified that the host pulled the final deployed commit `649e43d` and rebuilt/restarted the full native stack successfully.
+- Completed authenticated AI/runtime/task/admin verification on the live host using a token minted from the running server’s JWT secret and the existing admin account `Iwan`.
+
+Files touched:
+- `/Users/iwanteague/Desktop/Rustyfin/docs/ai_remaining_delta_execution_log.md`
+
+Tests added:
+- No new test suites in this milestone; this is the recorded live deployment verification pass.
+
+Deployment verification results:
+- Host target:
+  - `server@192.168.0.36`
+  - repo: `/home/server/docker/Rustyfin`
+  - deployed commit: `649e43d`
+- Native services:
+  - `rustyfin-native.service`: `active (running)`
+  - `rustfin-servers-agent.service`: `active (running)`
+  - `rustyfin-post-healthcheck.service`: exited `0/SUCCESS`
+- Listeners verified:
+  - backend `127.0.0.1:8097`
+  - calendar `127.0.0.1:8099`
+  - tmdb-agent `127.0.0.1:8100`
+  - youtube-agent `127.0.0.1:8101`
+  - transcription-agent `127.0.0.1:8102`
+  - ui internal `127.0.0.1:3009`
+  - edge `*:3008`
+- HTTP/UI checks:
+  - `curl -s http://127.0.0.1:8097/health` -> `{\"status\":\"ok\"}`
+  - `curl -k -I https://127.0.0.1:3008/login` -> `200`
+  - `curl -k -I https://127.0.0.1:3008/ai` -> `200`
+- AI runtime/admin diagnostics:
+  - `GET /api/v1/ai/runtime` returned healthy runtime/scheduler/resource telemetry
+  - `GET /api/v1/system/ai` returned admin AI state, storage, models, and scheduler data
+  - `GET /api/v1/system/ai/audit?limit=3` returned recent audit rows
+  - `GET /api/v1/system/ai/journals?limit=3` returned recent turn journals with stats/planner metadata
+- AI task framework:
+  - `POST /api/v1/ai/tasks` deep-research task completed on host with `worker_count=2` and a persisted markdown artifact
+  - second task verified `cancel_requested`, `task_cancelled`, `task_resumed`, and then completed with a persisted markdown artifact
+  - `GET /api/v1/ai/tasks` listed both completed tasks and artifacts
+  - `GET /api/v1/ai/tasks/{id}/events` returned the expected lifecycle event history
+
+Final local quality/eval summary:
+- `cargo fmt --all`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test --workspace`
+- `cargo run -p ai-evals -- all --json-out target/ai-evals/report.json`
+- `npm --prefix ui run build`
+- AI eval result: PASS (`/Users/iwanteague/Desktop/Rustyfin/target/ai-evals/report.json`)
+
+Current risk notes:
+- The final deployment required live fixes for three real production-path issues discovered only on the Ubuntu host; all three are now committed on `main` and included in the deployed build.
+- The unrelated local untracked report file `docs/reports/2026-04-03-rustyfin-ai-bundle-gap-audit.md` remains outside this change set.
