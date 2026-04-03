@@ -2519,6 +2519,14 @@ export default function AiPage() {
                     </div>
 
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start md:self-auto">
+                      {inferenceAvailable === true && models.length > 0 ? (
+                        <ModelSelector
+                          models={models}
+                          selected={selectedModel}
+                          onChange={setSelectedModel}
+                          className="w-full min-w-[12rem] sm:w-auto"
+                        />
+                      ) : null}
                       <ResponseModeDropdown
                         value={responseMode}
                         onChange={setResponseMode}
@@ -2720,15 +2728,6 @@ export default function AiPage() {
                           }}
                         />
                       </div>
-
-                      {inferenceAvailable === true && models.length > 0 ? (
-                        <ModelSelector
-                          models={models}
-                          selected={selectedModel}
-                          onChange={setSelectedModel}
-                          className="w-full min-w-[12rem] flex-[0_1_16rem] sm:w-auto"
-                        />
-                      ) : null}
 
                       <div className="flex min-h-[3.25rem] min-w-0 flex-1 basis-[15rem] items-start gap-3">
                         <textarea
