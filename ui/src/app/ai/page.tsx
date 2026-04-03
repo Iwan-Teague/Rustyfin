@@ -2014,6 +2014,10 @@ export default function AiPage() {
     if (canQueueFollowUp && conversationIdOverride) {
       setConversationError('');
       upsertQueuedPrompt(conversationIdOverride, text);
+      if (activeConversationIdRef.current === conversationIdOverride) {
+        setInput('');
+        resetComposerHeight();
+      }
       setVoiceState('idle');
       setVoiceError(null);
       return;
@@ -2390,11 +2394,6 @@ export default function AiPage() {
     voiceState === 'stopping';
   const queueActionLabel = hasQueuedPrompt ? 'Update queued' : 'Queue';
   const queueActionDisabled = composerDisabled || !input.trim();
-  const queuedNotice = hasQueuedPrompt
-    ? isStreaming
-      ? 'Queued follow-up will send automatically when this answer finishes.'
-      : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
-    : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
@@ -2757,6 +2756,37 @@ export default function AiPage() {
                   className="ai-composer-shell sticky bottom-0 z-20 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
                 >
                   <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-2.5 sm:px-5">
+                    {hasQueuedPrompt ? (
+                      <div className="mb-2.5 rounded-2xl border border-[rgba(215,223,255,0.12)] bg-[rgba(255,255,255,0.03)] px-3.5 py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                              Queued prompt
+                            </p>
+                            <p className="mt-1 text-xs muted">
+                              {isStreaming
+                                ? 'This follow-up will send automatically when the current answer finishes.'
+                                : 'This queued follow-up is saved here until you send or cancel it.'}
+                            </p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--text-main)]">
+                              {queuedPrompt}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (activeConversationId) {
+                                clearQueuedPrompt(activeConversationId);
+                              }
+                            }}
+                            className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                          >
+                            Cancel queued
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div className="flex flex-wrap items-start gap-2.5">
                       <div ref={composerMenuRef} className="relative z-20 shrink-0">
                         <button
@@ -2897,29 +2927,10 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    {voiceError || queuedNotice ? (
+                    {voiceError ? (
                       <div className="mt-2 space-y-1.5 px-1 text-xs">
                         {voiceError ? (
                           <div className="text-[var(--danger)]">{voiceError}</div>
-                        ) : null}
-
-                        {queuedNotice ? (
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <span className="muted">{queuedNotice}</span>
-                            {hasQueuedPrompt ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (activeConversationId) {
-                                    clearQueuedPrompt(activeConversationId);
-                                  }
-                                }}
-                                className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
-                              >
-                                Cancel queued
-                              </button>
-                            ) : null}
-                          </div>
                         ) : null}
                       </div>
                     ) : null}
