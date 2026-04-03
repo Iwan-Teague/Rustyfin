@@ -1,6 +1,95 @@
 import { apiFetch, apiJson } from './api';
 import type { AiGroundingChunk, AiModel } from './aiApi';
 
+export interface AiRemoteBackendState {
+  enabled: boolean;
+  base_url: string | null;
+  model: string | null;
+  api_key_env: string | null;
+  timeout_secs: number;
+  supports_prompt_cache: boolean;
+  supports_structured_output: boolean;
+  max_parallel_requests: number;
+  overload_fallback: boolean;
+  route_roles: string[];
+}
+
+export interface AiSchedulerPriorityCount {
+  priority: string;
+  count: number;
+}
+
+export interface AiSchedulerWarmModel {
+  model_name: string;
+  estimated_bytes: number;
+  loaded_ts_ms: number;
+  last_used_ts_ms: number;
+  load_count: number;
+}
+
+export interface AiSchedulerState {
+  max_concurrent_turns: number;
+  queue_limit: number;
+  active_turns: number;
+  queued_turns: number;
+  overload_state: string;
+  warm_pool_bytes: number;
+  warm_pool_budget_bytes: number;
+  active_by_priority: AiSchedulerPriorityCount[];
+  queued_by_priority: AiSchedulerPriorityCount[];
+  warm_models: AiSchedulerWarmModel[];
+  rejected_turns_total: number;
+  degraded_turns_total: number;
+}
+
+export interface AiModelBenchmarkSummary {
+  id: string;
+  model_name: string;
+  model_checksum: string;
+  benchmark_label: string;
+  backend_kind: string;
+  n_threads: number;
+  n_gpu_layers: number;
+  split_mode: string;
+  main_gpu?: number | null;
+  load_duration_ms: number;
+  prefill_tokens: number;
+  prefill_duration_ms: number;
+  decode_tokens: number;
+  decode_duration_ms: number;
+  first_token_ms: number;
+  total_duration_ms: number;
+  tokens_per_second: number;
+  failure_message?: string | null;
+  created_ts: number;
+  updated_ts: number;
+}
+
+export interface AiModelProfileSummary {
+  id: string;
+  model_name: string;
+  model_checksum: string;
+  context_window: number;
+  preferred_completion_tokens: number;
+  planner_max_output: number;
+  summary_max_output: number;
+  safety_headroom: number;
+  warmup_cost_class: string;
+  supports_structured_output: boolean;
+  supports_prompt_cache: boolean;
+  recommended_n_threads: number;
+  recommended_n_gpu_layers: number;
+  recommended_split_mode: string;
+  recommended_main_gpu?: number | null;
+  estimated_model_bytes: number;
+  last_benchmark_label: string;
+  last_load_duration_ms: number;
+  last_tokens_per_second: number;
+  benchmark_count: number;
+  created_ts: number;
+  updated_ts: number;
+}
+
 export interface AiAdminState {
   available: boolean;
   model_dir: string;
@@ -11,6 +100,10 @@ export interface AiAdminState {
   audit_retention_days: number;
   audit_prune_interval_seconds: number;
   models: AiModel[];
+  remote_backend?: AiRemoteBackendState | null;
+  scheduler?: AiSchedulerState;
+  model_benchmarks?: AiModelBenchmarkSummary[];
+  model_profiles?: AiModelProfileSummary[];
 }
 
 export interface AiAssistantAuditGroundingSource {
@@ -47,82 +140,6 @@ export interface AiAssistantAuditEvent {
   created_ts: number;
 }
 
-export interface AiTurnJournal {
-  id: string;
-  user_id: string;
-  conversation_id?: string | null;
-  request_turn_id?: string | null;
-  request_turn_index?: number | null;
-  trace_id: string;
-  request_message: string;
-  model_name: string;
-  response_mode: string;
-  planner_mode?: string | null;
-  status: string;
-  current_phase: string;
-  history_len: number;
-  planner_debug: {
-    schema_version: number;
-    raw_response?: string | null;
-    repaired_response?: string | null;
-    validation_errors: string[];
-    repair_attempt_count: number;
-    used_repaired_response: boolean;
-    validated_call_count: number;
-  };
-  prompt_debug?: {
-    context_length: number;
-    prompt_budget_tokens: number;
-    reserved_completion_tokens: number;
-    prompt_tokens_estimate: number;
-    loaded_history_turns: number;
-    retained_raw_turns: number;
-    summarized_turns: number;
-    recent_grounded_context_count: number;
-    used_memory_summary: boolean;
-    memory_turn_index: number;
-    memory_summary_chars: number;
-    compact_boundary_count: number;
-    recovered_from_compact_boundary: boolean;
-  } | null;
-  stats?: {
-    planner_repair_count: number;
-    planner_validation_error_count: number;
-    prompt_budget_tokens: number;
-    reserved_completion_tokens: number;
-    completion_budget_tokens: number;
-    compact_boundary_count: number;
-    overload: boolean;
-    overload_reason?: string | null;
-    artifact_verification_attempts: number;
-    artifact_revision_count: number;
-  } | null;
-  overload_reason?: string | null;
-  error_message?: string | null;
-  compact_boundary_count: number;
-  artifact_verification?: {
-    status: string;
-    attempts: number;
-    revision_count: number;
-    issues: string[];
-  } | null;
-  created_ts: number;
-  updated_ts: number;
-  finished_ts?: number | null;
-}
-
-export interface AiCompactBoundary {
-  id: string;
-  conversation_id: string;
-  user_id: string;
-  trace_id?: string | null;
-  from_turn_index: number;
-  to_turn_index: number;
-  summarized_turn_count: number;
-  memory_state_json: string;
-  created_ts: number;
-}
-
 export type AdminAiPullEvent =
   | { type: 'progress'; status: string; bytes_done: number; bytes_total: number | null; percent: number }
   | { type: 'done' }
@@ -139,22 +156,38 @@ export async function updateAiModelDir(modelDir: string): Promise<AiAdminState> 
   });
 }
 
+export async function updateAiRemoteBackend(config: {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key_env?: string | null;
+  timeout_secs?: number;
+  supports_prompt_cache?: boolean;
+  supports_structured_output?: boolean;
+  max_parallel_requests?: number;
+  overload_fallback?: boolean;
+  route_roles?: string[];
+}): Promise<AiAdminState> {
+  return apiJson<AiAdminState>('/system/ai/backend', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function runAiModelBenchmark(config: {
+  model_name?: string | null;
+  benchmark_label?: string | null;
+}): Promise<AiAdminState> {
+  return apiJson<AiAdminState>('/system/ai/benchmarks/run', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
 export async function fetchAiAuditEvents(limit = 40): Promise<AiAssistantAuditEvent[]> {
   const params = new URLSearchParams();
   params.set('limit', String(limit));
   return apiJson<AiAssistantAuditEvent[]>(`/system/ai/audit?${params.toString()}`);
-}
-
-export async function fetchAiTurnJournals(limit = 30): Promise<AiTurnJournal[]> {
-  const params = new URLSearchParams();
-  params.set('limit', String(limit));
-  return apiJson<AiTurnJournal[]>(`/system/ai/journals?${params.toString()}`);
-}
-
-export async function fetchAiCompactBoundaries(limit = 20): Promise<AiCompactBoundary[]> {
-  const params = new URLSearchParams();
-  params.set('limit', String(limit));
-  return apiJson<AiCompactBoundary[]>(`/system/ai/compact-boundaries?${params.toString()}`);
 }
 
 export async function deleteAiModel(name: string): Promise<void> {

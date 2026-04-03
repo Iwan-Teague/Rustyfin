@@ -196,8 +196,16 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations_pg/049_ai_turn_journal_and_compaction.sql"),
     ),
     (
+        "046_ai_retrieval_and_memory",
+        include_str!("../migrations_pg/046_ai_retrieval_and_memory.sql"),
+    ),
+    (
         "050_ai_retrieval_and_memory",
         include_str!("../migrations_pg/050_ai_retrieval_and_memory.sql"),
+    ),
+    (
+        "047_ai_model_benchmarks",
+        include_str!("../migrations_pg/047_ai_model_benchmarks.sql"),
     ),
 ];
 

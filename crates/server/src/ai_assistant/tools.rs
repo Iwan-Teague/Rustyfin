@@ -5,33 +5,21 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 
 use chrono::{Datelike, Duration, NaiveDate, Utc};
-use chrono_tz::Tz;
-use futures::{StreamExt, future::join_all};
-use rustfin_ai_agent::{ChatChunk, ChatMessage};
 use serde::Serialize;
 use serde_json::json;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
-use super::document_verify::verify_or_repair_document;
-use super::orchestrator::plan_tool_calls_with_model_assist;
-use super::profiles::answer_sampling_params;
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-    AssistantGroundingSource, AssistantHistoryMessage, AssistantResponseMode,
-    AssistantRuntimePhase, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
+    AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
     ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
-    decode_assistant_clarification_message,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
-    resolve_public_location_timezone,
 };
 use super::web::{fetch_public_page_summary, public_web_tools_enabled, search_public_web};
-use crate::ai_generated_artifacts::artifact_download_path;
-use crate::ai_storage::{current_model_dir, model_file_path};
-use crate::auth::AuthUser;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -61,16 +49,6 @@ struct DownloadArtifactSummary {
     install_mode: Option<String>,
     summary: String,
     detail: String,
-}
-
-#[derive(Debug, Serialize)]
-struct GeneratedDocumentArtifactSummary {
-    id: String,
-    title: String,
-    file_name: String,
-    media_type: String,
-    byte_size: i64,
-    download_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -158,7 +136,6 @@ struct ServerDetailSummary {
 struct CalendarEventSummary {
     title: String,
     event_date: String,
-    next_occurs_on: Option<String>,
     scope: String,
     event_type: String,
     owner_username: Option<String>,
@@ -285,7 +262,6 @@ struct JoinableRoomSummary {
 struct HostRuntimeAssistantSummary {
     host: crate::runtime_diagnostics::HostRuntimeSnapshot,
     rustyfin: HostRuntimeRustyfinSummary,
-    ai: HostRuntimeAiSummary,
     memory: Option<HostRuntimeMemorySummary>,
     swap: Option<HostRuntimeSwapSummary>,
 }
@@ -299,17 +275,6 @@ struct HostRuntimeRustyfinSummary {
     active_watch_party_websockets: u64,
     ai_chat_requests_in_flight: u64,
     ai_tool_calls_in_flight: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct HostRuntimeAiSummary {
-    phase: AssistantRuntimePhase,
-    active_request_count: u64,
-    queue_depth: u64,
-    tool_calls_in_flight: u64,
-    loaded_model: Option<String>,
-    model_loaded: bool,
-    context_length: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,9 +306,6 @@ struct CurrentDateTimeAssistantSummary {
     local_time: String,
     weekday: String,
     timezone_offset: String,
-    timezone_name: Option<String>,
-    resolved_location: Option<String>,
-    location_query: Option<String>,
     unix_timestamp: i64,
 }
 
@@ -499,10 +461,6 @@ pub async fn execute_tool(
         AssistantToolName::CalendarCreateBirthday => {
             calendar_create_birthday(state, context, call).await
         }
-        AssistantToolName::CalendarDeleteEvent => calendar_delete_event(state, context, call).await,
-        AssistantToolName::DocumentCreateDownload => {
-            document_create_download(state, context, call).await
-        }
         AssistantToolName::ChannelsListUnreadActivity => {
             channels_list_unread_activity(state, context, call).await
         }
@@ -535,7 +493,7 @@ pub async fn execute_tool(
         AssistantToolName::RoomsListActive => rooms_list_active(state, context, call).await,
         AssistantToolName::RoomsListJoinable => rooms_list_joinable(state, context, call).await,
         AssistantToolName::RoomsGetRoomSummary => room_get_room_summary(state, context, call).await,
-        AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime(call).await,
+        AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime().await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
@@ -559,24 +517,12 @@ pub async fn execute_tool(
             status: "ok",
             data,
         },
-        Err(message) => {
-            let clarification =
-                decode_assistant_clarification_message(&message).map(str::to_string);
-            AssistantToolContextBlock {
-                tool: spec.name,
-                label: clarification
-                    .clone()
-                    .unwrap_or_else(|| spec.summary.to_string()),
-                status: if clarification.is_some() {
-                    "clarification"
-                } else {
-                    "error"
-                },
-                data: json!({
-                    "message": clarification.unwrap_or(message),
-                }),
-            }
-        }
+        Err(message) => AssistantToolContextBlock {
+            tool: spec.name,
+            label: spec.summary.to_string(),
+            status: "error",
+            data: json!({ "message": message }),
+        },
     }
 }
 
@@ -640,29 +586,6 @@ pub fn source_from_block(
         access_mode: spec.access_mode,
         risk_tier: spec.risk_tier,
         status: block.status.to_string(),
-        download_url: block
-            .data
-            .get("artifact")
-            .and_then(|artifact| artifact.get("download_path"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        download_file_name: block
-            .data
-            .get("artifact")
-            .and_then(|artifact| artifact.get("file_name"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        download_media_type: block
-            .data
-            .get("artifact")
-            .and_then(|artifact| artifact.get("media_type"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        download_size_bytes: block
-            .data
-            .get("artifact")
-            .and_then(|artifact| artifact.get("byte_size"))
-            .and_then(serde_json::Value::as_i64),
     }
 }
 
@@ -1353,10 +1276,6 @@ async fn calendar_list_events(
     call: &PlannedToolCall,
 ) -> Result<(String, serde_json::Value), String> {
     let (from, to, label) = calendar_window_for_call(call, 7);
-    let from_date = NaiveDate::parse_from_str(&from, "%Y-%m-%d")
-        .map_err(|error| format!("invalid calendar window start date {from}: {error}"))?;
-    let to_date = NaiveDate::parse_from_str(&to, "%Y-%m-%d")
-        .map_err(|error| format!("invalid calendar window end date {to}: {error}"))?;
     let events = rustfin_db::repo::calendar::list_visible_events(
         &state.db,
         &context.user_id,
@@ -1370,16 +1289,12 @@ async fn calendar_list_events(
     let events: Vec<_> = events
         .into_iter()
         .take(12)
-        .map(|event| {
-            let next_occurs_on = calendar_event_occurs_in_window(&event, from_date, to_date);
-            CalendarEventSummary {
-                title: event.title,
-                event_date: event.event_date,
-                next_occurs_on,
-                scope: event.scope,
-                event_type: event.event_type,
-                owner_username: event.owner_username,
-            }
+        .map(|event| CalendarEventSummary {
+            title: event.title,
+            event_date: event.event_date,
+            scope: event.scope,
+            event_type: event.event_type,
+            owner_username: event.owner_username,
         })
         .collect();
 
@@ -1404,7 +1319,6 @@ async fn calendar_get_next_event(
         &state.db,
         &context.user_id,
         context.is_admin,
-        assistant_local_today(),
     )
     .await
     .map_err(|e| format!("failed to load the next visible calendar event: {e}"))?;
@@ -1595,381 +1509,6 @@ async fn calendar_create_birthday(
     ))
 }
 
-async fn calendar_delete_event(
-    state: &AppState,
-    context: &AssistantContext,
-    call: &PlannedToolCall,
-) -> Result<(String, serde_json::Value), String> {
-    let AssistantToolInput::CalendarDeleteEvent {
-        event_id,
-        title,
-        event_date,
-        scope,
-        event_type,
-        recurrence,
-    } = &call.input
-    else {
-        return Err("missing calendar delete payload".to_string());
-    };
-
-    let existing = rustfin_db::repo::calendar::get_event(&state.db, event_id)
-        .await
-        .map_err(|e| format!("failed to reload the calendar event to delete: {e}"))?
-        .ok_or_else(|| "That calendar event is no longer available.".to_string())?;
-
-    if !calendar_event_can_manage(context, &existing) {
-        return Err(
-            "Your Rustyfin account is not allowed to delete that calendar entry.".to_string(),
-        );
-    }
-
-    if existing.title != *title
-        || existing.event_date != *event_date
-        || existing.scope != *scope
-        || existing.event_type != *event_type
-        || existing.recurrence != *recurrence
-    {
-        return Err(
-            "That calendar entry changed after the confirmation card was issued. Ask Rustyfin AI to prepare the delete again."
-                .to_string(),
-        );
-    }
-
-    let deleted = rustfin_db::repo::calendar::delete_event(&state.db, event_id)
-        .await
-        .map_err(|e| format!("failed to delete the calendar event: {e}"))?;
-    if !deleted {
-        return Err("That calendar event is no longer available.".to_string());
-    }
-
-    let summary = verify_deleted_calendar_event(state, context, &existing).await?;
-
-    Ok((
-        format!("Deleted calendar event \"{}\"", summary.title),
-        json!({
-            "verified": true,
-            "event": summary,
-        }),
-    ))
-}
-
-async fn document_create_download(
-    state: &AppState,
-    context: &AssistantContext,
-    call: &PlannedToolCall,
-) -> Result<(String, serde_json::Value), String> {
-    let AssistantToolInput::DocumentCreateDownload {
-        title,
-        file_name,
-        format,
-        request_prompt,
-        model_name,
-    } = &call.input
-    else {
-        return Err("missing downloadable document payload".to_string());
-    };
-
-    let format = GeneratedDocumentOutputFormat::parse(format)?;
-    let title = validate_document_title(title)?;
-    let file_name = validate_document_file_name(file_name, format)?;
-    let request_prompt = validate_document_request_prompt(request_prompt)?;
-    let model_name = validate_document_model_name(model_name)?;
-    let history = load_document_generation_history(state, context).await?;
-
-    let model_dir = current_model_dir(state).await;
-    let gguf_path = model_file_path(&model_dir, &model_name)
-        .map_err(|error| format!("invalid AI model selection for document generation: {error}"))?;
-    if !gguf_path.exists() {
-        return Err(format!(
-            "The selected AI model \"{model_name}\" is not installed on this host."
-        ));
-    }
-
-    let (engine, _, _) =
-        crate::ai_enabled::load_engine_for_chat(state, &model_name, &gguf_path).await?;
-    let auth_user = AuthUser {
-        user_id: context.user_id.clone(),
-        username: context.username.clone(),
-        role: context.role.clone(),
-    };
-    let planned =
-        plan_tool_calls_with_model_assist(&engine, &auth_user, &request_prompt, &history).await;
-    let planned = planned
-        .calls
-        .into_iter()
-        .filter(|planned| planned.tool.spec().access_mode == ToolAccessMode::ReadOnly)
-        .collect::<Vec<_>>();
-
-    let nested_context =
-        AssistantContext::new(&auth_user, format!("{}:document", context.trace_id))
-            .with_conversation_id(context.conversation_id.as_deref());
-    let grounding_blocks = join_all(planned.iter().cloned().map(|nested_call| {
-        let nested_context = nested_context.clone();
-        async move { execute_tool(state, &nested_context, &nested_call).await }
-    }))
-    .await;
-
-    let messages =
-        build_document_generation_messages(format, &request_prompt, &history, &grounding_blocks);
-    let draft_content = collect_generated_document_text(&engine, messages)
-        .await
-        .and_then(|content| finalize_generated_document_content(&content))?;
-    let verification = verify_or_repair_document(
-        &engine,
-        format.label(),
-        &request_prompt,
-        &grounding_blocks,
-        draft_content,
-    )
-    .await?;
-    let byte_size = i64::try_from(verification.content.as_bytes().len())
-        .map_err(|_| "generated document is too large to store".to_string())?;
-
-    let artifact = rustfin_db::repo::ai_generated_artifacts::create_artifact(
-        &state.db,
-        rustfin_db::repo::ai_generated_artifacts::CreateAiGeneratedArtifactParams {
-            user_id: &context.user_id,
-            conversation_id: context.conversation_id.as_deref(),
-            title: &title,
-            file_name: &file_name,
-            media_type: format.media_type(),
-            content_text: &verification.content,
-            byte_size,
-            verification_status: &verification.debug.status,
-            verification_attempts: i32::try_from(verification.debug.attempts).unwrap_or(i32::MAX),
-            verification_notes_json: &verification.notes_json,
-            verified_ts: Some(chrono::Utc::now().timestamp()),
-            trace_id: Some(context.trace_id.as_str()),
-        },
-    )
-    .await
-    .map_err(|error| format!("failed to store generated document: {error}"))?;
-
-    let artifact = GeneratedDocumentArtifactSummary {
-        id: artifact.id.clone(),
-        title: artifact.title,
-        file_name: artifact.file_name,
-        media_type: artifact.media_type,
-        byte_size: artifact.byte_size,
-        download_path: artifact_download_path(&artifact.id),
-    };
-
-    Ok((
-        format!(
-            "Created downloadable {} document \"{}\"",
-            format.label(),
-            file_name
-        ),
-        json!({
-            "verified": true,
-            "verification": verification.debug,
-            "artifact": artifact,
-        }),
-    ))
-}
-
-#[derive(Clone, Copy)]
-enum GeneratedDocumentOutputFormat {
-    Markdown,
-    Text,
-}
-
-impl GeneratedDocumentOutputFormat {
-    fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "markdown" => Ok(Self::Markdown),
-            "text" => Ok(Self::Text),
-            other => Err(format!(
-                "unsupported document format \"{other}\"; only markdown and text are available"
-            )),
-        }
-    }
-
-    const fn media_type(self) -> &'static str {
-        match self {
-            Self::Markdown => "text/markdown; charset=utf-8",
-            Self::Text => "text/plain; charset=utf-8",
-        }
-    }
-
-    const fn extension(self) -> &'static str {
-        match self {
-            Self::Markdown => "md",
-            Self::Text => "txt",
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Markdown => "markdown",
-            Self::Text => "plain-text",
-        }
-    }
-}
-
-fn validate_document_title(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("generated document title is required".to_string());
-    }
-    Ok(trimmed.chars().take(80).collect())
-}
-
-fn validate_document_file_name(
-    raw: &str,
-    format: GeneratedDocumentOutputFormat,
-) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("generated document file name is required".to_string());
-    }
-    if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err("generated document file name must not contain path separators".to_string());
-    }
-
-    let mut normalized = trimmed.to_string();
-    if !normalized.ends_with(".md") && !normalized.ends_with(".txt") {
-        normalized.push('.');
-        normalized.push_str(format.extension());
-    }
-    Ok(normalized.chars().take(96).collect())
-}
-
-fn validate_document_request_prompt(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("generated document prompt is required".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
-fn validate_document_model_name(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("generated document model name is required".to_string());
-    }
-    Ok(trimmed.to_string())
-}
-
-async fn load_document_generation_history(
-    state: &AppState,
-    context: &AssistantContext,
-) -> Result<Vec<AssistantHistoryMessage>, String> {
-    let Some(conversation_id) = context.conversation_id.as_deref() else {
-        return Ok(Vec::new());
-    };
-    let (_, _, history) = crate::ai_conversations::load_conversation_request_context(
-        state,
-        &context.user_id,
-        conversation_id,
-    )
-    .await
-    .map_err(|error| {
-        format!("failed to load conversation history for document generation: {error:?}")
-    })?;
-    Ok(trim_document_generation_history(&history))
-}
-
-fn trim_document_generation_history(
-    history: &[AssistantHistoryMessage],
-) -> Vec<AssistantHistoryMessage> {
-    let len = history.len();
-    let start = len.saturating_sub(8);
-    history[start..].to_vec()
-}
-
-fn build_document_generation_messages(
-    format: GeneratedDocumentOutputFormat,
-    request_prompt: &str,
-    history: &[AssistantHistoryMessage],
-    grounding_blocks: &[AssistantToolContextBlock],
-) -> Vec<ChatMessage> {
-    let mut messages = vec![ChatMessage {
-        role: "system".to_string(),
-        content: format!(
-            "You generate downloadable Rustyfin user documents. Return only the document body with no surrounding commentary, no markdown code fences, and no explanation about downloads. Produce a {} document.",
-            format.label()
-        ),
-    }];
-
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: format!(
-            "Current Rustyfin host local date/time for this document: {}.",
-            assistant_local_now().format("%Y-%m-%d %H:%M:%S %:z (%A)")
-        ),
-    });
-
-    if !grounding_blocks.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: format!(
-                "Authoritative Rustyfin grounding for this document:\n{}",
-                serde_json::to_string(grounding_blocks).unwrap_or_else(|_| "[]".to_string())
-            ),
-        });
-    }
-
-    for history_message in history {
-        messages.push(ChatMessage {
-            role: history_message.role.clone(),
-            content: history_message.content.clone(),
-        });
-    }
-
-    let format_instruction = match format {
-        GeneratedDocumentOutputFormat::Markdown => {
-            "Write a clean markdown document with useful headings and concise detail."
-        }
-        GeneratedDocumentOutputFormat::Text => {
-            "Write a clean plain-text document with readable section breaks."
-        }
-    };
-    messages.push(ChatMessage {
-        role: "user".to_string(),
-        content: format!(
-            "{format_instruction}\nUser request for the downloadable document:\n{}",
-            request_prompt.trim()
-        ),
-    });
-
-    messages
-}
-
-async fn collect_generated_document_text(
-    engine: &rustfin_ai_agent::LlamaEngine,
-    messages: Vec<ChatMessage>,
-) -> Result<String, String> {
-    let mut sampling = answer_sampling_params(AssistantResponseMode::Extended);
-    sampling.max_tokens = sampling.max_tokens.min(2048);
-    let mut output = String::new();
-    let stream = engine.chat_stream(messages, sampling);
-    futures::pin_mut!(stream);
-
-    while let Some(chunk) = stream.next().await {
-        match chunk.map_err(|error| format!("document generation failed: {error}"))? {
-            ChatChunk::Token(text) => output.push_str(&text),
-            ChatChunk::Done => break,
-            ChatChunk::Stats { .. } => {}
-        }
-    }
-
-    Ok(output)
-}
-
-fn finalize_generated_document_content(content: &str) -> Result<String, String> {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return Err("the AI generated an empty document".to_string());
-    }
-
-    let normalized = trimmed.replace("\r\n", "\n");
-    if normalized.len() > 64_000 {
-        return Err("the generated document exceeded the maximum allowed size".to_string());
-    }
-    Ok(normalized)
-}
-
 fn validate_calendar_title(raw: &str) -> Result<String, String> {
     let title = raw.trim();
     if title.is_empty() {
@@ -2078,69 +1617,6 @@ async fn verify_created_calendar_event(
         month_day_display: is_birthday.then(|| birthday_month_day_display(&event.event_date)),
         next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&event.event_date)),
     })
-}
-
-async fn verify_deleted_calendar_event(
-    state: &AppState,
-    context: &AssistantContext,
-    deleted_event: &rustfin_db::repo::calendar::CalendarEventRow,
-) -> Result<CalendarEventDetailSummary, String> {
-    if rustfin_db::repo::calendar::get_event(&state.db, &deleted_event.id)
-        .await
-        .map_err(|e| format!("failed to reload the deleted calendar event: {e}"))?
-        .is_some()
-    {
-        return Err(
-            "Rustyfin deleted the calendar entry, but it could not verify that the entry disappeared from the normal calendar read path."
-                .to_string(),
-        );
-    }
-
-    let visible_events = rustfin_db::repo::calendar::list_visible_events(
-        &state.db,
-        &context.user_id,
-        context.is_admin,
-        &deleted_event.event_date,
-        &deleted_event.event_date,
-    )
-    .await
-    .map_err(|e| format!("failed to verify the deleted calendar event: {e}"))?;
-
-    if visible_events
-        .iter()
-        .any(|candidate| candidate.id == deleted_event.id)
-    {
-        return Err(
-            "Rustyfin deleted the calendar entry, but it could not verify that the entry disappeared from the normal calendar read path."
-                .to_string(),
-        );
-    }
-
-    let is_birthday = deleted_event.event_type == "birthday";
-    Ok(CalendarEventDetailSummary {
-        id: deleted_event.id.clone(),
-        title: deleted_event.title.clone(),
-        description: deleted_event.description.clone(),
-        event_date: deleted_event.event_date.clone(),
-        scope: deleted_event.scope.clone(),
-        event_type: deleted_event.event_type.clone(),
-        recurrence: deleted_event.recurrence.clone(),
-        owner_username: deleted_event.owner_username.clone(),
-        created_by_username: deleted_event.created_by_username.clone(),
-        birthday_year: deleted_event.birthday_year,
-        month_day_display: is_birthday
-            .then(|| birthday_month_day_display(&deleted_event.event_date)),
-        next_occurs_on: is_birthday.then(|| next_birthday_occurrence(&deleted_event.event_date)),
-    })
-}
-
-fn calendar_event_can_manage(
-    context: &AssistantContext,
-    event: &rustfin_db::repo::calendar::CalendarEventRow,
-) -> bool {
-    context.is_admin
-        || (event.scope == "personal"
-            && event.owner_user_id.as_deref() == Some(context.user_id.as_str()))
 }
 
 async fn channels_list_unread_activity(
@@ -2333,16 +1809,6 @@ async fn system_get_host_runtime_summary(
     _context: &AssistantContext,
 ) -> Result<(String, serde_json::Value), String> {
     let diagnostics = crate::runtime_diagnostics::collect_runtime_diagnostics(state).await;
-    let (loaded_model, model_loaded, phase, context_length) = {
-        let guard = state.engine.lock().await;
-        (
-            guard.loaded_model.clone(),
-            guard.engine.is_some(),
-            guard.active_phase,
-            guard.engine.as_ref().map(|engine| engine.params().n_ctx),
-        )
-    };
-    let active_request_count = diagnostics.runtime.assistant.chats.calls_in_flight;
     let summary = HostRuntimeAssistantSummary {
         memory: diagnostics
             .host
@@ -2392,19 +1858,6 @@ async fn system_get_host_runtime_summary(
             ai_chat_requests_in_flight: diagnostics.runtime.assistant.chats.calls_in_flight,
             ai_tool_calls_in_flight: diagnostics.runtime.assistant.tools.calls_in_flight,
         },
-        ai: HostRuntimeAiSummary {
-            phase,
-            active_request_count,
-            queue_depth: if phase == AssistantRuntimePhase::Idle {
-                0
-            } else {
-                active_request_count.saturating_sub(1)
-            },
-            tool_calls_in_flight: diagnostics.runtime.assistant.tools.calls_in_flight,
-            loaded_model,
-            model_loaded,
-            context_length,
-        },
     };
 
     Ok((
@@ -2413,59 +1866,22 @@ async fn system_get_host_runtime_summary(
     ))
 }
 
-async fn system_get_current_datetime(
-    call: &PlannedToolCall,
-) -> Result<(String, serde_json::Value), String> {
-    let requested_location = match &call.input {
-        AssistantToolInput::CurrentDateTime { location } => location.clone(),
-        AssistantToolInput::None => None,
-        _ => None,
-    };
-
-    let (label, summary) = if let Some(location) = requested_location {
-        let resolved = resolve_public_location_timezone(&location).await?;
-        let timezone = resolved.timezone.parse::<Tz>().map_err(|error| {
-            format!("failed to parse public timezone for \"{location}\": {error}")
-        })?;
-        let now = Utc::now().with_timezone(&timezone);
-        (
-            format!("Current date and time for {}", resolved.resolved_location),
-            CurrentDateTimeAssistantSummary {
-                local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-                local_date: now.format("%F").to_string(),
-                local_time: now.format("%H:%M:%S").to_string(),
-                weekday: now.format("%A").to_string(),
-                timezone_offset: now.format("%:z").to_string(),
-                timezone_name: Some(resolved.timezone),
-                resolved_location: Some(resolved.resolved_location),
-                location_query: Some(resolved.location_query),
-                unix_timestamp: now.timestamp(),
-            },
-        )
-    } else {
-        let now = assistant_local_now();
-        (
-            format!(
-                "Rustyfin host local date and time: {} ({})",
-                now.format("%F"),
-                now.format("%A")
-            ),
-            CurrentDateTimeAssistantSummary {
-                local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-                local_date: now.format("%F").to_string(),
-                local_time: now.format("%H:%M:%S").to_string(),
-                weekday: now.format("%A").to_string(),
-                timezone_offset: now.format("%:z").to_string(),
-                timezone_name: None,
-                resolved_location: None,
-                location_query: None,
-                unix_timestamp: now.timestamp(),
-            },
-        )
+async fn system_get_current_datetime() -> Result<(String, serde_json::Value), String> {
+    let now = assistant_local_now();
+    let summary = CurrentDateTimeAssistantSummary {
+        local_timestamp: now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        local_date: now.format("%F").to_string(),
+        local_time: now.format("%H:%M:%S").to_string(),
+        weekday: now.format("%A").to_string(),
+        timezone_offset: now.format("%:z").to_string(),
+        unix_timestamp: now.timestamp(),
     };
 
     Ok((
-        label,
+        format!(
+            "Rustyfin host local date and time: {} ({})",
+            summary.local_date, summary.weekday
+        ),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
 }
@@ -2950,17 +2366,14 @@ fn calendar_window_for_call(
             ..
         } => (from_date.clone(), to_date.clone(), label.clone()),
         AssistantToolInput::CalendarCreateEvent { event_date, .. }
-        | AssistantToolInput::CalendarCreateBirthday { event_date, .. }
-        | AssistantToolInput::CalendarDeleteEvent { event_date, .. } => (
+        | AssistantToolInput::CalendarCreateBirthday { event_date, .. } => (
             event_date.clone(),
             event_date.clone(),
-            "the calendar event".to_string(),
+            "the created calendar event".to_string(),
         ),
         AssistantToolInput::None
-        | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
-        | AssistantToolInput::DocumentCreateDownload { .. }
         | AssistantToolInput::LibrarySearch { .. }
         | AssistantToolInput::LibraryRecent { .. }
         | AssistantToolInput::Weather { .. }
@@ -3065,34 +2478,6 @@ fn next_birthday_occurrence(event_date: &str) -> String {
     }
 
     event_date.to_string()
-}
-
-fn calendar_event_occurs_in_window(
-    event: &rustfin_db::repo::calendar::CalendarEventRow,
-    from_date: NaiveDate,
-    to_date: NaiveDate,
-) -> Option<String> {
-    let date = chrono::NaiveDate::parse_from_str(&event.event_date, "%Y-%m-%d").ok()?;
-    if event.recurrence != "yearly" {
-        return (date >= from_date && date <= to_date).then(|| date.format("%F").to_string());
-    }
-
-    for year in [from_date.year(), from_date.year() + 1] {
-        let candidate = if date.month() == 2 && date.day() == 29 {
-            chrono::NaiveDate::from_ymd_opt(year, 2, 29)
-                .or_else(|| chrono::NaiveDate::from_ymd_opt(year, 2, 28))
-        } else {
-            chrono::NaiveDate::from_ymd_opt(year, date.month(), date.day())
-        };
-        if let Some(candidate) = candidate
-            && candidate >= from_date
-            && candidate <= to_date
-        {
-            return Some(candidate.format("%F").to_string());
-        }
-    }
-
-    None
 }
 
 fn channels_query_for_call(call: &PlannedToolCall) -> Option<String> {
@@ -4005,10 +3390,6 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             calendar_query: Some(title.clone()),
             ..AssistantFollowUpInputHint::default()
         },
-        AssistantToolInput::CalendarDeleteEvent { .. }
-        | AssistantToolInput::DocumentCreateDownload { .. } => {
-            AssistantFollowUpInputHint::default()
-        }
         AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
             channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -4061,10 +3442,6 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             web_url: Some(url.clone()),
             ..AssistantFollowUpInputHint::default()
         },
-        AssistantToolInput::CurrentDateTime { location } => AssistantFollowUpInputHint {
-            current_datetime_location: location.clone(),
-            ..AssistantFollowUpInputHint::default()
-        },
         AssistantToolInput::RoomsFilter { room_mode, query } => AssistantFollowUpInputHint {
             room_mode: room_mode.clone(),
             room_query: query.clone(),
@@ -4078,107 +3455,6 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             server_availability: availability.clone(),
             ..AssistantFollowUpInputHint::default()
         },
-    }
-}
-
-fn follow_up_entity_kind(tool: AssistantToolName) -> &'static str {
-    match tool {
-        AssistantToolName::CalendarListEvents
-        | AssistantToolName::CalendarGetNextEvent
-        | AssistantToolName::CalendarGetEventDetails
-        | AssistantToolName::CalendarCreateEvent => "calendar_event",
-        AssistantToolName::CalendarUpcomingBirthdays
-        | AssistantToolName::CalendarCreateBirthday => "birthday",
-        AssistantToolName::ChannelsGetTranscriptSummary => "transcript_channel",
-        AssistantToolName::DownloadsListAvailableArtifacts => "download_artifact",
-        AssistantToolName::LibrarySearchTitles
-        | AssistantToolName::LibrariesGetRecentlyAdded
-        | AssistantToolName::LibraryGetItemSummary => "library_item",
-        AssistantToolName::RoomsListActive
-        | AssistantToolName::RoomsListJoinable
-        | AssistantToolName::RoomsGetRoomSummary => "room",
-        AssistantToolName::ServersListMinecraftStatus
-        | AssistantToolName::ServersGetMinecraftServerSummary => "minecraft_server",
-        AssistantToolName::WebSearchPublicWeb | AssistantToolName::WebFetchPublicPageSummary => {
-            "web_result"
-        }
-        _ => "entity",
-    }
-}
-
-fn follow_up_entity_topic_key(
-    tool: AssistantToolName,
-    block: &AssistantToolContextBlock,
-) -> Option<String> {
-    match tool {
-        AssistantToolName::CalendarListEvents
-        | AssistantToolName::CalendarGetNextEvent
-        | AssistantToolName::CalendarUpcomingBirthdays
-        | AssistantToolName::CalendarGetEventDetails
-        | AssistantToolName::CalendarCreateEvent
-        | AssistantToolName::CalendarCreateBirthday => block
-            .data
-            .get("window")
-            .and_then(|window| window.get("label"))
-            .and_then(serde_json::Value::as_str)
-            .map(|label| format!("calendar:{label}"))
-            .or_else(|| {
-                block
-                    .data
-                    .get("event")
-                    .and_then(|event| event.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(|event_id| format!("calendar:{event_id}"))
-            })
-            .or_else(|| {
-                block
-                    .data
-                    .get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|event_id| format!("calendar:{event_id}"))
-            }),
-        AssistantToolName::ChannelsGetTranscriptSummary => block
-            .data
-            .get("channel_id")
-            .and_then(serde_json::Value::as_str)
-            .map(|channel_id| format!("transcript:{channel_id}")),
-        AssistantToolName::DownloadsListAvailableArtifacts => Some("downloads:catalog".to_string()),
-        AssistantToolName::LibrarySearchTitles
-        | AssistantToolName::LibrariesGetRecentlyAdded
-        | AssistantToolName::LibraryGetItemSummary => block
-            .data
-            .get("library_id")
-            .and_then(serde_json::Value::as_str)
-            .map(|library_id| format!("library:{library_id}"))
-            .or_else(|| Some("libraries:accessible".to_string())),
-        AssistantToolName::RoomsListActive
-        | AssistantToolName::RoomsListJoinable
-        | AssistantToolName::RoomsGetRoomSummary => Some("rooms:catalog".to_string()),
-        AssistantToolName::ServersListMinecraftStatus
-        | AssistantToolName::ServersGetMinecraftServerSummary => {
-            Some("servers:catalog".to_string())
-        }
-        AssistantToolName::WebSearchPublicWeb | AssistantToolName::WebFetchPublicPageSummary => {
-            Some("web:public".to_string())
-        }
-        _ => None,
-    }
-}
-
-fn make_follow_up_entity(
-    tool: AssistantToolName,
-    block: &AssistantToolContextBlock,
-    ordinal: usize,
-    label: String,
-    identifier: Option<String>,
-) -> AssistantFollowUpEntity {
-    AssistantFollowUpEntity {
-        ordinal,
-        label,
-        identifier,
-        kind: Some(follow_up_entity_kind(tool).to_string()),
-        topic_key: follow_up_entity_topic_key(tool, block),
-        source_chunk_id: None,
     }
 }
 
@@ -4197,20 +3473,16 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, event)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            format!(
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
-                                event
-                                    .get("next_occurs_on")
-                                    .or_else(|| event.get("event_date"))?
-                                    .as_str()?
+                                event.get("event_date")?.as_str()?
                             ),
-                            None,
-                        ))
+                            identifier: None,
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
@@ -4219,11 +3491,9 @@ fn follow_up_entities(
             .data
             .get("next_event")
             .map(|event| {
-                vec![make_follow_up_entity(
-                    tool,
-                    block,
-                    1,
-                    format!(
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
                         "{} ({})",
                         event
                             .get("title")
@@ -4235,11 +3505,12 @@ fn follow_up_entities(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                     ),
-                    event
+                    identifier: event
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
-                )]
+                    ..Default::default()
+                }]
             })
             .unwrap_or_default(),
         AssistantToolName::CalendarUpcomingBirthdays => block
@@ -4252,29 +3523,23 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, event)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            format!(
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
-                                event
-                                    .get("next_occurs_on")
-                                    .or_else(|| event.get("event_date"))?
-                                    .as_str()?
+                                event.get("event_date")?.as_str()?
                             ),
-                            None,
-                        ))
+                            identifier: None,
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::CalendarGetEventDetails => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            format!(
+        AssistantToolName::CalendarGetEventDetails => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: format!(
                 "{} ({})",
                 block
                     .data
@@ -4287,21 +3552,20 @@ fn follow_up_entities(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
             ),
-            block
+            identifier: block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => block
             .data
             .get("event")
             .map(|event| {
-                vec![make_follow_up_entity(
-                    tool,
-                    block,
-                    1,
-                    format!(
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: format!(
                         "{} ({})",
                         event
                             .get("title")
@@ -4312,33 +3576,30 @@ fn follow_up_entities(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                     ),
-                    event
+                    identifier: event
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
-                )]
+                    ..Default::default()
+                }]
             })
             .unwrap_or_default(),
-        AssistantToolName::CalendarDeleteEvent | AssistantToolName::DocumentCreateDownload => {
-            Vec::new()
-        }
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
-        AssistantToolName::ChannelsGetTranscriptSummary => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            block
+        AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
                 .data
                 .get("channel_name")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            block
+            identifier: block
                 .data
                 .get("channel_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::DownloadsListAvailableArtifacts => block
             .data
             .get("artifacts")
@@ -4349,16 +3610,15 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, artifact)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            artifact.get("title")?.as_str()?.to_string(),
-                            artifact
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: artifact.get("title")?.as_str()?.to_string(),
+                            identifier: artifact
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
@@ -4373,15 +3633,15 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, item)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            item.get("title")?.as_str()?.to_string(),
-                            item.get("id")
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: item.get("title")?.as_str()?.to_string(),
+                            identifier: item
+                                .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
@@ -4396,35 +3656,34 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, item)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            item.get("title")?.as_str()?.to_string(),
-                            item.get("id")
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: item.get("title")?.as_str()?.to_string(),
+                            identifier: item
+                                .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::LibraryGetItemSummary => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            block
+        AssistantToolName::LibraryGetItemSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
                 .data
                 .get("title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            block
+            identifier: block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::RoomsListActive => block
             .data
             .get("rooms")
@@ -4435,15 +3694,15 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, room)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            room.get("title")?.as_str()?.to_string(),
-                            room.get("room_id")
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: room.get("title")?.as_str()?.to_string(),
+                            identifier: room
+                                .get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
@@ -4458,35 +3717,34 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, room)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            room.get("title")?.as_str()?.to_string(),
-                            room.get("room_id")
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: room.get("title")?.as_str()?.to_string(),
+                            identifier: room
+                                .get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::RoomsGetRoomSummary => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            block
+        AssistantToolName::RoomsGetRoomSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
                 .data
                 .get("title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            block
+            identifier: block
                 .data
                 .get("room_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::ServersListMinecraftStatus => block
             .data
             .get("servers")
@@ -4497,36 +3755,34 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, server)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            server.get("display_name")?.as_str()?.to_string(),
-                            server
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: server.get("display_name")?.as_str()?.to_string(),
+                            identifier: server
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::ServersGetMinecraftServerSummary => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            block
+        AssistantToolName::ServersGetMinecraftServerSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
                 .data
                 .get("display_name")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            block
+            identifier: block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::WebSearchPublicWeb => block
             .data
             .get("results")
@@ -4537,36 +3793,34 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, result)| {
-                        Some(make_follow_up_entity(
-                            tool,
-                            block,
-                            index + 1,
-                            result.get("title")?.as_str()?.to_string(),
-                            result
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: result.get("title")?.as_str()?.to_string(),
+                            identifier: result
                                 .get("url")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        ))
+                            ..Default::default()
+                        })
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::WebFetchPublicPageSummary => vec![make_follow_up_entity(
-            tool,
-            block,
-            1,
-            block
+        AssistantToolName::WebFetchPublicPageSummary => vec![AssistantFollowUpEntity {
+            ordinal: 1,
+            label: block
                 .data
                 .get("page_title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            block
+            identifier: block
                 .data
                 .get("final_url")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        )],
+            ..Default::default()
+        }],
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
         | AssistantToolName::WeatherGetHistory
@@ -4648,7 +3902,7 @@ mod tests {
     use super::{
         birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
         next_birthday_occurrence, probe_service_health_component, storage_used_bytes,
-        storage_used_percent, transcript_excerpt_indexes, transcript_terms,
+        storage_used_percent, transcript_excerpt_indexes, transcript_highlights, transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::types::{
@@ -4657,6 +3911,8 @@ mod tests {
     };
     use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
     use rustfin_db::repo::calendar::CalendarEventRow;
+    use rustfin_db::repo::channel_transcripts::TranscriptEntryRow;
+    use std::collections::HashMap;
 
     async fn spawn_health_test_server(status: StatusCode) -> (String, tokio::task::JoinHandle<()>) {
         async fn handler(status: StatusCode) -> impl IntoResponse {
@@ -4680,7 +3936,6 @@ mod tests {
             role: role.to_string(),
             is_admin: role == "admin",
             confirmed_write_tool: None,
-            conversation_id: None,
         }
     }
 
@@ -4824,6 +4079,33 @@ mod tests {
         assert!(terms.contains(&"rachel".to_string()));
         assert!(!terms.contains(&"yeah".to_string()));
         assert!(!terms.contains(&"okay".to_string()));
+    }
+
+    #[test]
+    fn transcript_highlights_attach_citation_ids_and_windows() {
+        let entries = vec![TranscriptEntryRow {
+            id: "entry-1".to_string(),
+            session_id: "session-1".to_string(),
+            channel_id: "channel-1".to_string(),
+            user_id: "user-1".to_string(),
+            username: "Rachel".to_string(),
+            started_ts_ms: 10_000,
+            ended_ts_ms: 15_000,
+            text: "The server is back online and the download is ready.".to_string(),
+            created_ts: 20_000,
+        }];
+        let term_counts = HashMap::from([
+            ("server".to_string(), 1_usize),
+            ("download".to_string(), 1_usize),
+        ]);
+
+        let highlights = transcript_highlights(&entries, 5_000, &term_counts, 3);
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].entry_id, "entry-1");
+        assert_eq!(highlights[0].citation_id, "transcript:session-1:entry-1");
+        assert_eq!(highlights[0].relative_start, "00:05");
+        assert_eq!(highlights[0].relative_end, "00:10");
+        assert!(highlights[0].text.contains("server"));
     }
 
     #[test]

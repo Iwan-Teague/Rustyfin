@@ -12,7 +12,6 @@ pub struct AiMemoryItemRow {
     pub content: String,
     pub search_text: String,
     pub weight: f64,
-    pub metadata_json: String,
     pub created_ts: i64,
     pub updated_ts: i64,
 }
@@ -26,7 +25,6 @@ pub struct UpsertAiMemoryItemParams<'a> {
     pub content: &'a str,
     pub search_text: &'a str,
     pub weight: f64,
-    pub metadata_json: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +148,6 @@ fn map_memory_item_row(
         String,
         String,
         f64,
-        String,
         i64,
         i64,
     ),
@@ -165,9 +162,8 @@ fn map_memory_item_row(
         content: row.6,
         search_text: row.7,
         weight: row.8,
-        metadata_json: row.9,
-        created_ts: row.10,
-        updated_ts: row.11,
+        created_ts: row.9,
+        updated_ts: row.10,
     }
 }
 
@@ -319,14 +315,13 @@ pub async fn upsert_memory_item(
         String,
         String,
         f64,
-        String,
         i64,
         i64,
     ) = sqlx::query_as(
         "INSERT INTO ai_memory_item (
             id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight,
-            metadata_json, created_ts, updated_ts
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            created_ts, updated_ts
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (user_id, memory_key) DO UPDATE SET
             memory_type = EXCLUDED.memory_type,
             topic_key = EXCLUDED.topic_key,
@@ -334,9 +329,8 @@ pub async fn upsert_memory_item(
             content = EXCLUDED.content,
             search_text = EXCLUDED.search_text,
             weight = EXCLUDED.weight,
-            metadata_json = EXCLUDED.metadata_json,
             updated_ts = EXCLUDED.updated_ts
-        RETURNING id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, metadata_json, created_ts, updated_ts",
+        RETURNING id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, created_ts, updated_ts",
     )
     .bind(&id)
     .bind(params.memory_key)
@@ -347,7 +341,6 @@ pub async fn upsert_memory_item(
     .bind(params.content)
     .bind(params.search_text)
     .bind(params.weight)
-    .bind(params.metadata_json)
     .bind(now)
     .bind(now)
     .fetch_one(pool)
@@ -384,11 +377,10 @@ pub async fn list_memory_items_for_user(
         String,
         String,
         f64,
-        String,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, metadata_json, created_ts, updated_ts
+        "SELECT id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, created_ts, updated_ts
          FROM ai_memory_item
          WHERE user_id = $1
          ORDER BY updated_ts DESC, memory_key ASC
@@ -412,7 +404,7 @@ pub async fn search_memory_items_for_user(
     let normalized_query = query.map(str::trim).filter(|value| !value.is_empty());
     let query_param_index = normalized_query.map(|_| 2 + usize::from(topic_key.is_some()));
     let mut sql = String::from(
-        "SELECT id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, metadata_json, created_ts, updated_ts",
+        "SELECT id, memory_key, user_id, memory_type, topic_key, title, content, search_text, weight, created_ts, updated_ts",
     );
     if let Some(query_param_index) = query_param_index {
         sql.push_str(&format!(
@@ -454,7 +446,6 @@ pub async fn search_memory_items_for_user(
             String,
             String,
             f64,
-            String,
             i64,
             i64,
             f64,
@@ -475,9 +466,8 @@ pub async fn search_memory_items_for_user(
         .map(|row| AiMemoryItemHit {
             row: map_memory_item_row((
                 row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
-                row.11,
             )),
-            rank: row.12,
+            rank: row.11,
         })
         .collect())
 }

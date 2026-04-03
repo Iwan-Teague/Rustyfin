@@ -3,6 +3,7 @@
 Date: 2026-04-01
 Local branch: `ai-assistant-delta-phase0-2`
 Implemented commit: `aa113f9` (`Implement AI assistant delta phases 0-2`)
+Deployed live branch tip: `4345beb` (`Cover native TLS certs with host aliases`)
 Implementation source of truth: `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-04-01-ai-assistant-delta-plan.md`
 
 ## Scope Requested
@@ -129,7 +130,13 @@ Verified the active live runtime before deployment:
 
 ### Deployment Result
 
-Deployed commit `aa113f9` to the active live checkout and switched the live tree to branch `ai-assistant-delta-phase0-2`.
+Switched the active live checkout from `main` to branch `ai-assistant-delta-phase0-2`.
+
+The live host ultimately deployed branch tip `4345beb`, which contains:
+
+- `aa113f9` `Implement AI assistant delta phases 0-2`
+- `cc44732` `Add AI assistant delta execution docs`
+- `4345beb` `Cover native TLS certs with host aliases`
 
 The first deploy attempt failed during the CUDA-backed `rustfin-server` rebuild with:
 
@@ -149,7 +156,7 @@ After that remediation, `./scripts/deploy-native.sh` completed successfully and 
 Verified on the live Ubuntu host after deploy:
 
 - deployed branch: `ai-assistant-delta-phase0-2`
-- deployed commit: `aa113f9`
+- deployed commit: `4345beb`
 - `rustyfin-native.service`: active
 - `rustfin-servers-agent.service`: active
 - `rustyfin-post-healthcheck.service`: exited successfully
@@ -159,19 +166,21 @@ Verified on the live Ubuntu host after deploy:
 Verified rebuilt live backend artifact:
 
 - `/home/server/docker/Rustyfin-main-33b3d14/.native-bins/x86_64-unknown-linux-gnu/dev/rustfin-server`
-- rebuilt timestamp: `2026-04-01 14:54:11 +0100`
+- rebuilt timestamp: `2026-04-01 15:23:45.843071902 +0100`
 
 ### UI And API Surface
 
 Verified on the live host:
 
 - `https://127.0.0.1:3008/login` returned `200`
-- `https://127.0.0.1:3008/ai` returned the deployed AI page shell and AI page bundle
+- `https://127.0.0.1:3008/ai` returned `200`
+- the `/ai` HTML shell references `/_next/static/chunks/app/ai/page-b74bf5a8fff19eff.js`
+- `https://127.0.0.1:3008/api/v1/ai/chat` returned authenticated `401` when called without a token
 - `https://127.0.0.1:3008/api/v1/ai/models` returned authenticated `401` when called without a token
 - `https://127.0.0.1:3008/api/v1/ai/conversations` returned authenticated `401` when called without a token
 - `https://127.0.0.1:3008/api/v1/ai/conversations/test/messages/stream` returned authenticated `401` when called without a token
 
-This confirms the new AI route surface is mounted behind the running live edge and protected by auth.
+This confirms both the legacy and conversation-backed AI route surfaces are mounted behind the running live edge and protected by auth.
 
 ### Database Verification
 

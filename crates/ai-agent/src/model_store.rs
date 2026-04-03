@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use async_stream::stream;
 use futures::{Stream, TryStreamExt};
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::io::StreamReader;
 use tracing::warn;
@@ -15,6 +17,10 @@ use crate::error::AiError;
 use crate::types::{ModelInfo, PullChunk};
 
 const CATALOG: &[(&str, &str)] = &[
+    (
+        "qwen2.5:1.5b",
+        "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
+    ),
     (
         "llama3.2:3b",
         "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
@@ -323,6 +329,30 @@ impl ModelStore {
         }
 
         Err(AiError::ModelNotFound(name.to_string()))
+    }
+
+    pub fn checksum(model_path: &Path) -> Result<String, AiError> {
+        let mut file = std::fs::File::open(model_path).map_err(|error| {
+            AiError::ModelDirError(format!(
+                "failed to open model file {}: {error}",
+                model_path.display()
+            ))
+        })?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(|error| {
+                AiError::ModelDirError(format!(
+                    "failed to read model file {}: {error}",
+                    model_path.display()
+                ))
+            })?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(format!("{:x}", hasher.finalize()))
     }
 }
 

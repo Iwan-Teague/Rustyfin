@@ -419,7 +419,10 @@ fn can_control_server(
 ) -> bool {
     auth.role == "admin"
         || auth.user_id == server.owner_user_id
-        || matches!(server.current_user_role.as_deref(), Some("manager") | Some("operator"))
+        || matches!(
+            server.current_user_role.as_deref(),
+            Some("manager") | Some("operator")
+        )
 }
 
 fn requires_provisioning_before_lifecycle(
@@ -1998,7 +2001,10 @@ pub async fn list_server_members(
 ) -> Result<Json<Vec<ServerMemberResponse>>, AppError> {
     let is_admin = auth.role == "admin";
     let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
-        &state.db, &auth.user_id, is_admin, &id,
+        &state.db,
+        &auth.user_id,
+        is_admin,
+        &id,
     )
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -2041,7 +2047,10 @@ pub async fn add_server_member(
 ) -> Result<StatusCode, AppError> {
     let is_admin = auth.role == "admin";
     let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
-        &state.db, &auth.user_id, is_admin, &id,
+        &state.db,
+        &auth.user_id,
+        is_admin,
+        &id,
     )
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -2056,9 +2065,15 @@ pub async fn add_server_member(
         return Err(ApiError::BadRequest("Invalid role".into()).into());
     }
 
-    rustfin_db::repo::servers::add_server_member(&state.db, &id, &body.user_id, &body.role, &auth.user_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    rustfin_db::repo::servers::add_server_member(
+        &state.db,
+        &id,
+        &body.user_id,
+        &body.role,
+        &auth.user_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok(StatusCode::CREATED)
 }
@@ -2076,7 +2091,10 @@ pub async fn update_server_member(
 ) -> Result<StatusCode, AppError> {
     let is_admin = auth.role == "admin";
     let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
-        &state.db, &auth.user_id, is_admin, &id,
+        &state.db,
+        &auth.user_id,
+        is_admin,
+        &id,
     )
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -2109,7 +2127,10 @@ pub async fn remove_server_member(
 ) -> Result<StatusCode, AppError> {
     let is_admin = auth.role == "admin";
     let server = rustfin_db::repo::servers::get_accessible_minecraft_server(
-        &state.db, &auth.user_id, is_admin, &id,
+        &state.db,
+        &auth.user_id,
+        is_admin,
+        &id,
     )
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -2189,9 +2210,10 @@ pub async fn ignore_discovery_candidate(
     _admin: AdminUser,
     Path(candidate_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let updated = rustfin_db::repo::servers::mark_discovery_candidate_ignored(&state.db, &candidate_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let updated =
+        rustfin_db::repo::servers::mark_discovery_candidate_ignored(&state.db, &candidate_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     if !updated {
         return Err(ApiError::NotFound("discovery candidate not found".into()).into());
@@ -2241,9 +2263,10 @@ pub async fn preflight_import(
     }
 
     // Check if there's an existing discovery candidate
-    let candidate = rustfin_db::repo::servers::get_discovery_candidate_by_path(&state.db, source_path)
-        .await
-        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let candidate =
+        rustfin_db::repo::servers::get_discovery_candidate_by_path(&state.db, source_path)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
     let mut warnings = Vec::new();
 
@@ -2260,7 +2283,9 @@ pub async fn preflight_import(
         let has_eula = eula_path.exists();
 
         if !has_props {
-            warnings.push("No server.properties found - this may not be a valid Minecraft server".to_string());
+            warnings.push(
+                "No server.properties found - this may not be a valid Minecraft server".to_string(),
+            );
         }
         if !has_eula {
             warnings.push("No eula.txt found - server may require EULA acceptance".to_string());
@@ -2271,32 +2296,42 @@ pub async fn preflight_import(
                 // Parse detection_json for world_name
                 serde_json::from_str::<serde_json::Value>(&c.detection_json)
                     .ok()
-                    .and_then(|v| v.get("world_name").and_then(|w| w.as_str()).map(String::from))
+                    .and_then(|v| {
+                        v.get("world_name")
+                            .and_then(|w| w.as_str())
+                            .map(String::from)
+                    })
             })
         });
 
-        (has_props, has_eula, detected.as_ref().and_then(|d| d.0.clone()), detected.and_then(|d| d.1))
+        (
+            has_props,
+            has_eula,
+            detected.as_ref().and_then(|d| d.0.clone()),
+            detected.and_then(|d| d.1),
+        )
     } else {
         (false, false, None, None)
     };
 
     // Estimate size
     let estimated_size_bytes = if source_exists {
-        std::fs::read_dir(source_path)
-            .ok()
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter_map(|e| e.metadata().ok())
-                    .map(|m| m.len())
-                    .sum::<u64>()
-            })
+        std::fs::read_dir(source_path).ok().map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum::<u64>()
+        })
     } else {
         None
     };
 
     if req.import_mode == ImportMode::AdoptInPlace {
-        warnings.push("Adopt-in-place will NOT copy files. The server will run from the original location.".to_string());
+        warnings.push(
+            "Adopt-in-place will NOT copy files. The server will run from the original location."
+                .to_string(),
+        );
     }
 
     Ok(Json(ImportPreflightResponse {
@@ -2353,7 +2388,12 @@ pub async fn delete_minecraft_server_safe(
         )
     } else {
         // Unregister only - stop service but keep files
-        let _ = run_lifecycle_action(&state, &current.systemd_unit_name, ServerLifecycleAction::Stop).await;
+        let _ = run_lifecycle_action(
+            &state,
+            &current.systemd_unit_name,
+            ServerLifecycleAction::Stop,
+        )
+        .await;
 
         rustfin_db::repo::servers::unregister_minecraft_server(&state.db, &current.id)
             .await
