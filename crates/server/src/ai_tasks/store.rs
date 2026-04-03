@@ -435,7 +435,7 @@ impl AiTaskStore for DbAiTaskStore {
         let row = sqlx::query(
             "SELECT u.id, u.username, u.role
              FROM ai_task t
-             INNER JOIN users u ON u.id = t.owner_user_id
+             INNER JOIN \"user\" u ON u.id = t.owner_user_id
              WHERE t.id = $1::uuid",
         )
         .bind(task_id)
