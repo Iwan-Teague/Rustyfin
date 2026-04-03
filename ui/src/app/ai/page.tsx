@@ -198,6 +198,17 @@ function upsertConversationSummary(
   return sortConversationSummaries([summary, ...remaining]);
 }
 
+function isUnusedNewConversation(
+  conversation: AiConversationSummary | undefined,
+  detail?: UiConversationDetail | null,
+): boolean {
+  if (!conversation || conversation.archived) return false;
+  if (conversation.title !== DEFAULT_CONVERSATION_TITLE) return false;
+  if (conversation.last_message_preview?.trim()) return false;
+  if (detail && detail.messages.length > 0) return false;
+  return true;
+}
+
 function toUiTurn(turn: AiConversationTurn): UiConversationTurn {
   return {
     ...turn,
@@ -1231,6 +1242,7 @@ export default function AiPage() {
     conversationId: string;
     queuedText: string | null;
   } | null>(null);
+  const creatingConversationRef = useRef(false);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -1719,6 +1731,28 @@ export default function AiPage() {
   );
 
   const handleNewChat = useCallback(async () => {
+    const latestConversation = liveConversations[0];
+    if (
+      isUnusedNewConversation(
+        latestConversation,
+        latestConversation ? conversationDetails[latestConversation.id] : null,
+      )
+    ) {
+      setConversationError('');
+      setDrawerOpen(false);
+      if (latestConversation && latestConversation.id !== activeConversationId) {
+        handleSelectConversation(latestConversation.id);
+      } else {
+        requestAnimationFrame(() => focusComposer());
+      }
+      return;
+    }
+
+    if (creatingConversationRef.current) {
+      return;
+    }
+
+    creatingConversationRef.current = true;
     try {
       setConversationError('');
       setInput('');
@@ -1729,8 +1763,18 @@ export default function AiPage() {
       setConversationError(
         clientErrorMessage(error, 'Failed to create a new conversation.'),
       );
+    } finally {
+      creatingConversationRef.current = false;
     }
-  }, [createConversationRecord, focusComposer, resetComposerHeight]);
+  }, [
+    activeConversationId,
+    conversationDetails,
+    createConversationRecord,
+    focusComposer,
+    handleSelectConversation,
+    liveConversations,
+    resetComposerHeight,
+  ]);
 
   const handleArchiveToggle = useCallback(
     async (conversation: AiConversationSummary) => {
