@@ -363,3 +363,25 @@ Current risk notes:
   - `cargo test -p rustfin-installer --bin rustfin-installer`
   - `cargo test -p rustfin-tmdb-agent --bin rustfin-tmdb-agent`
 - The Ubuntu host still needs this follow-up commit pulled and the deploy rerun.
+
+### 2026-04-03T23:55:00Z - PostgreSQL Schema Name Fix Prepared
+
+What changed:
+- Reran the Ubuntu deploy after the CUDA linker fix and traced the remaining backend crash to a real schema-name mismatch in the new AI task path.
+- The live Rustyfin PostgreSQL schema uses the long-standing canonical table name `"user"`, but `052_ai_tasks.sql` referenced `users(id)` and `crates/server/src/ai_tasks/store.rs` joined `users u`, which caused startup migration failure on the host.
+- Patched both the migration and the task-store lookup to use `"user"` so fresh and existing Postgres installs follow the actual Rustyfin schema contract.
+
+Files touched:
+- `/Users/iwanteague/Desktop/Rustyfin/crates/db/migrations_pg/052_ai_tasks.sql`
+- `/Users/iwanteague/Desktop/Rustyfin/crates/server/src/ai_tasks/store.rs`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/ai_remaining_delta_execution_log.md`
+
+Tests added:
+- No new test module was required; the existing AI task store suite was re-run against the AI-enabled server build after the schema-name fix.
+
+Current risk notes:
+- Local targeted verification for the schema-name fix is complete:
+  - `cargo fmt --all`
+  - `cargo test -p rustfin-installer --bin rustfin-installer`
+  - `cargo test -p rustfin-server --features ai ai_tasks::store::tests`
+- The Ubuntu host still needs this final follow-up commit pulled and the deploy rerun.
