@@ -2673,89 +2673,23 @@ export default function AiPage() {
 
                 <div
                   ref={composerShellRef}
-                  className="ai-composer-shell sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
+                  className="ai-composer-shell sticky bottom-0 z-20 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
                 >
-                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
-                    <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div ref={composerMenuRef} className="relative">
-                          <button
-                            type="button"
-                            onClick={() => setComposerMenuOpen((current) => !current)}
-                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={composerDisabled}
-                            aria-label="Add media or prompt controls"
-                          >
-                            +
-                          </button>
-                          {composerMenuOpen ? (
-                            <div className="absolute bottom-[calc(100%+0.55rem)] left-0 z-30 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                              <button
-                                type="button"
-                                onClick={() => documentInputRef.current?.click()}
-                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                              >
-                                Add document
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => imageInputRef.current?.click()}
-                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                              >
-                                Add image
-                              </button>
-                            </div>
-                          ) : null}
-                          <input
-                            ref={documentInputRef}
-                            type="file"
-                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
-                            multiple
-                            className="sr-only"
-                            onChange={(event) => {
-                              void handleDocumentFilesSelected(event);
-                            }}
-                          />
-                          <input
-                            ref={imageInputRef}
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            className="sr-only"
-                            onChange={(event) => {
-                              void handleImageFilesSelected(event);
-                            }}
-                          />
-                        </div>
-
-                        {inferenceAvailable === true && models.length > 0 ? (
-                          <ModelSelector
-                            models={models}
-                            selected={selectedModel}
-                            onChange={setSelectedModel}
-                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
-                          />
-                        ) : null}
-
-                        <ResponseModeSelector
-                          value={responseMode}
-                          onChange={setResponseMode}
-                        />
-                      </div>
-
-                      <div className="flex min-h-[3.25rem] items-start gap-3">
+                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-2.5 sm:px-5">
+                    <div className="flex flex-wrap items-start gap-2.5">
+                      <div className="flex min-h-[3.25rem] min-w-0 flex-1 basis-[18rem] items-start gap-3">
                         <textarea
                           ref={textareaRef}
                           value={input}
                           onChange={handleInputChange}
                           onKeyDown={handleKeyDown}
                           placeholder={placeholder}
-                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-[0.55rem] text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
                           disabled={composerDisabled}
                           rows={1}
                         />
 
-                        <div className="flex shrink-0 items-center gap-2 pt-1">
+                        <div className="flex shrink-0 items-start gap-2">
                           {isStreaming ? (
                             <>
                               {canQueueActiveConversation ? (
@@ -2828,6 +2762,74 @@ export default function AiPage() {
                               </button>
                             </>
                           )}
+                        </div>
+                      </div>
+
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                        <div ref={composerMenuRef} className="relative z-20 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setComposerMenuOpen((current) => !current)}
+                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={composerDisabled}
+                            aria-label="Add media or prompt controls"
+                          >
+                            +
+                          </button>
+                          {composerMenuOpen ? (
+                            <div className="absolute bottom-full left-0 z-40 mb-2.5 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                              <button
+                                type="button"
+                                onClick={() => documentInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add document
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => imageInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add image
+                              </button>
+                            </div>
+                          ) : null}
+                          <input
+                            ref={documentInputRef}
+                            type="file"
+                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleDocumentFilesSelected(event);
+                            }}
+                          />
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleImageFilesSelected(event);
+                            }}
+                          />
+                        </div>
+
+                        {inferenceAvailable === true && models.length > 0 ? (
+                          <ModelSelector
+                            models={models}
+                            selected={selectedModel}
+                            onChange={setSelectedModel}
+                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
+                          />
+                        ) : null}
+
+                        <div className="shrink-0">
+                          <ResponseModeSelector
+                            value={responseMode}
+                            onChange={setResponseMode}
+                          />
                         </div>
                       </div>
                     </div>
