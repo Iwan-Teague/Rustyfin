@@ -19,7 +19,7 @@ use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
     AssistantGroundingSource, AssistantHistoryMessage, AssistantToolContextBlock,
     AssistantToolInput, PlannedToolCall, ToolAccessMode, ToolConfirmationPolicy,
-    ToolRoleRequirement,
+    ToolRoleRequirement, decode_assistant_clarification_message,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
@@ -535,12 +535,24 @@ pub async fn execute_tool(
             status: "ok",
             data,
         },
-        Err(message) => AssistantToolContextBlock {
-            tool: spec.name,
-            label: spec.summary.to_string(),
-            status: "error",
-            data: json!({ "message": message }),
-        },
+        Err(message) => {
+            let clarification =
+                decode_assistant_clarification_message(&message).map(str::to_string);
+            AssistantToolContextBlock {
+                tool: spec.name,
+                label: clarification
+                    .clone()
+                    .unwrap_or_else(|| spec.summary.to_string()),
+                status: if clarification.is_some() {
+                    "clarification"
+                } else {
+                    "error"
+                },
+                data: json!({
+                    "message": clarification.unwrap_or(message),
+                }),
+            }
+        }
     }
 }
 

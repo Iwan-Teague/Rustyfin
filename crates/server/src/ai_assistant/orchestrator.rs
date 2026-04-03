@@ -17,7 +17,7 @@ use super::types::{
     AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
     AssistantHistoryMessage, AssistantPlannerMode, AssistantResponseMode,
     AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
-    PreparedAssistantTurn,
+    PreparedAssistantTurn, decode_assistant_clarification_message,
 };
 use super::web::public_web_tools_enabled;
 use crate::auth::AuthUser;
@@ -3786,7 +3786,41 @@ pub fn deterministic_current_datetime_reply(
         return None;
     }
     if block.status != "ok" {
-        return Some("I couldn't load the current Rustyfin host date and time.".to_string());
+        if block.status == "clarification" {
+            return block
+                .data
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    block
+                        .data
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(decode_assistant_clarification_message)
+                        .map(str::to_string)
+                });
+        }
+        return Some(
+            block
+                .data
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .and_then(decode_assistant_clarification_message)
+                .map(str::to_string)
+                .or_else(|| {
+                    block
+                        .data
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|message| {
+                            format!("I couldn't load the current date and time: {message}.")
+                        })
+                })
+                .unwrap_or_else(|| {
+                    "I couldn't load the current Rustyfin host date and time.".to_string()
+                }),
+        );
     }
 
     let summary =
@@ -4997,6 +5031,26 @@ mod tests {
         assert!(reply.contains("France"));
         assert!(reply.contains("22:53:06"));
         assert!(reply.contains("Europe/Paris"));
+    }
+
+    #[test]
+    fn deterministic_current_datetime_reply_returns_clarification_message() {
+        let reply = deterministic_current_datetime_reply(
+            "What time is it in Galway right now?",
+            &[],
+            &[AssistantToolContextBlock {
+                tool: "system_get_current_datetime",
+                label: "Needs clarification before continuing".to_string(),
+                status: "clarification",
+                data: serde_json::json!({
+                    "message": "I found multiple locations matching \"Galway\": Galway, Connacht, Ireland; Galway, Saratoga, New York, United States. Which one did you mean?"
+                }),
+            }],
+        )
+        .expect("expected clarification reply");
+        assert!(reply.contains("Which one did you mean?"));
+        assert!(reply.contains("Galway, Connacht, Ireland"));
+        assert!(reply.contains("Galway, Saratoga, New York, United States"));
     }
 
     #[test]

@@ -4,7 +4,10 @@ use chrono::NaiveDate;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
-use super::types::AssistantToolContextBlock;
+use super::types::{
+    AssistantToolContextBlock, decode_assistant_clarification_message,
+    encode_assistant_clarification_message,
+};
 
 const WEATHER_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const WEATHER_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
@@ -79,7 +82,7 @@ struct GeocodingResponse {
     results: Vec<GeocodingResult>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GeocodingResult {
     name: String,
     latitude: f64,
@@ -94,6 +97,12 @@ struct GeocodingResult {
     admin3: Option<String>,
     #[serde(default)]
     admin4: Option<String>,
+}
+
+#[derive(Debug)]
+enum GeocodingSelection {
+    Match(GeocodingResult),
+    Ambiguous(Vec<GeocodingResult>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,6 +300,8 @@ async fn geocode_location_from_base(
     query: &str,
     geocoding_url: &str,
 ) -> Result<GeocodingResult, String> {
+    let mut ambiguous_matches: Option<Vec<GeocodingResult>> = None;
+
     for candidate in geocoding_query_variants(query) {
         let url = Url::parse_with_params(
             geocoding_url,
@@ -317,9 +328,21 @@ async fn geocode_location_from_base(
             .json::<GeocodingResponse>()
             .await
             .map_err(|error| format!("failed to parse weather geocoding response: {error}"))?;
-        if let Some(result) = select_best_geocoding_result(query, payload.results) {
-            return Ok(result);
+        match select_geocoding_result(query, payload.results) {
+            Some(GeocodingSelection::Match(result)) => return Ok(result),
+            Some(GeocodingSelection::Ambiguous(options)) => {
+                if ambiguous_matches.is_none() {
+                    ambiguous_matches = Some(options);
+                }
+            }
+            None => {}
         }
+    }
+
+    if let Some(options) = ambiguous_matches {
+        return Err(encode_assistant_clarification_message(
+            &format_ambiguous_location_message(query, &options),
+        ));
     }
 
     Err(format!("no public weather location matched \"{query}\""))
@@ -531,13 +554,81 @@ fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> 
     }
 }
 
+#[cfg(test)]
 fn select_best_geocoding_result(
     query: &str,
     results: Vec<GeocodingResult>,
 ) -> Option<GeocodingResult> {
-    results
+    match select_geocoding_result(query, results) {
+        Some(GeocodingSelection::Match(result)) => Some(result),
+        _ => None,
+    }
+}
+
+fn select_geocoding_result(
+    query: &str,
+    results: Vec<GeocodingResult>,
+) -> Option<GeocodingSelection> {
+    if results.is_empty() {
+        return None;
+    }
+
+    let query_text = normalize_location_text(query);
+    let mut ranked = results
         .into_iter()
-        .max_by_key(|result| geocoding_match_score(query, result))
+        .map(|result| (geocoding_match_score(query, &result), result))
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+
+    if let Some((_, result)) = ranked
+        .iter()
+        .find(|(_, result)| is_exact_country_query_match(&query_text, result))
+    {
+        return Some(GeocodingSelection::Match(result.clone()));
+    }
+
+    let exact_name_matches = unique_geocoding_results(
+        ranked
+            .iter()
+            .filter(|(_, result)| normalize_location_text(&result.name) == query_text)
+            .map(|(_, result)| result.clone())
+            .collect(),
+    );
+    if exact_name_matches.len() > 1 {
+        return Some(GeocodingSelection::Ambiguous(exact_name_matches));
+    }
+
+    ranked
+        .into_iter()
+        .next()
+        .map(|(_, result)| GeocodingSelection::Match(result))
+}
+
+fn is_exact_country_query_match(query_text: &str, result: &GeocodingResult) -> bool {
+    let country = normalize_location_text(result.country.as_deref().unwrap_or_default());
+    !country.is_empty() && query_text == country
+}
+
+fn unique_geocoding_results(results: Vec<GeocodingResult>) -> Vec<GeocodingResult> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for result in results {
+        let key = format_resolved_location(&result).to_ascii_lowercase();
+        if seen.insert(key) {
+            unique.push(result);
+        }
+    }
+    unique
+}
+
+fn format_ambiguous_location_message(query: &str, options: &[GeocodingResult]) -> String {
+    let choices = options
+        .iter()
+        .take(5)
+        .map(format_resolved_location)
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("I found multiple locations matching \"{query}\": {choices}. Which one did you mean?")
 }
 
 fn geocoding_match_score(query: &str, result: &GeocodingResult) -> i32 {
@@ -709,11 +800,32 @@ fn weather_code_description(code: Option<i32>) -> &'static str {
 }
 
 fn format_weather_error(block: &AssistantToolContextBlock) -> String {
+    if block.status == "clarification" {
+        return block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                block
+                    .data
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(decode_assistant_clarification_message)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Which location did you mean?".to_string());
+    }
+
     block
         .data
         .get("message")
         .and_then(serde_json::Value::as_str)
-        .map(|message| format!("I couldn't load that weather data: {message}."))
+        .map(|message| {
+            decode_assistant_clarification_message(message)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("I couldn't load that weather data: {message}."))
+        })
         .unwrap_or_else(|| "I couldn't load that weather data.".to_string())
 }
 
@@ -925,12 +1037,13 @@ fn format_decimal(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ForecastDaily, ForecastResponse, GeocodingResult, PublicWeatherCurrentSummary,
-        PublicWeatherForecastDay, PublicWeatherForecastSummary, PublicWeatherHistorySummary,
-        build_forecast_days, deterministic_weather_reply,
+        ForecastDaily, ForecastResponse, GeocodingResult, GeocodingSelection,
+        PublicWeatherCurrentSummary, PublicWeatherForecastDay, PublicWeatherForecastSummary,
+        PublicWeatherHistorySummary, build_forecast_days, deterministic_weather_reply,
         fetch_public_weather_current_with_endpoints, fetch_public_weather_forecast_with_endpoints,
         format_resolved_location, geocoding_query_variants, normalize_location_query,
-        select_best_geocoding_result, weather_client, weather_code_description,
+        select_best_geocoding_result, select_geocoding_result, weather_client,
+        weather_code_description,
     };
     use axum::{
         Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
@@ -1116,6 +1229,50 @@ mod tests {
     }
 
     #[test]
+    fn geocoding_result_selection_marks_bare_same_name_queries_as_ambiguous() {
+        let selection = select_geocoding_result(
+            "Galway",
+            vec![
+                GeocodingResult {
+                    name: "Galway".to_string(),
+                    latitude: 53.2707,
+                    longitude: -9.0568,
+                    timezone: Some("Europe/Dublin".to_string()),
+                    country: Some("Ireland".to_string()),
+                    admin1: Some("Connacht".to_string()),
+                    admin2: None,
+                    admin3: None,
+                    admin4: None,
+                },
+                GeocodingResult {
+                    name: "Galway".to_string(),
+                    latitude: 43.0167,
+                    longitude: -73.8462,
+                    timezone: Some("America/New_York".to_string()),
+                    country: Some("United States".to_string()),
+                    admin1: Some("New York".to_string()),
+                    admin2: Some("Saratoga".to_string()),
+                    admin3: None,
+                    admin4: None,
+                },
+            ],
+        )
+        .expect("expected geocoding selection");
+
+        match selection {
+            GeocodingSelection::Ambiguous(options) => {
+                let labels = options
+                    .iter()
+                    .map(format_resolved_location)
+                    .collect::<Vec<_>>();
+                assert!(labels.contains(&"Galway, Connacht, Ireland".to_string()));
+                assert!(labels.contains(&"Galway, Saratoga, New York, United States".to_string()));
+            }
+            GeocodingSelection::Match(_) => panic!("expected ambiguity for bare Galway query"),
+        }
+    }
+
+    #[test]
     fn deterministic_weather_reply_uses_grounded_forecast_data() {
         let reply = deterministic_weather_reply(
             "Will it rain in Galway today?",
@@ -1287,6 +1444,51 @@ mod tests {
         .await
         .expect_err("expected missing current conditions failure");
         assert!(error.contains("did not include current conditions"));
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn weather_current_requests_clarification_for_ambiguous_same_name_location() {
+        let (base, handle) = spawn_weather_test_server(WeatherTestState {
+            geocode_status: StatusCode::OK,
+            geocode_body: json!({
+                "results": [
+                    {
+                        "name": "Galway",
+                        "latitude": 53.2707,
+                        "longitude": -9.0568,
+                        "country": "Ireland",
+                        "admin1": "Connacht",
+                        "timezone": "Europe/Dublin"
+                    },
+                    {
+                        "name": "Galway",
+                        "latitude": 43.0167,
+                        "longitude": -73.8462,
+                        "country": "United States",
+                        "admin1": "New York",
+                        "admin2": "Saratoga",
+                        "timezone": "America/New_York"
+                    }
+                ]
+            }),
+            forecast_status: StatusCode::OK,
+            forecast_body: "{}".to_string(),
+        })
+        .await;
+        let client = weather_client().unwrap();
+        let error = fetch_public_weather_current_with_endpoints(
+            &client,
+            "Galway",
+            &format!("{base}/geocode"),
+            &format!("{base}/forecast"),
+        )
+        .await
+        .expect_err("expected ambiguity clarification");
+        assert!(error.contains("clarification:"));
+        assert!(error.contains("multiple locations matching \"Galway\""));
+        assert!(error.contains("Galway, Connacht, Ireland"));
+        assert!(error.contains("Galway, Saratoga, New York, United States"));
         handle.abort();
     }
 }
