@@ -1112,7 +1112,7 @@ function ModelSelector({
   );
 }
 
-function ResponseModeSelector({
+function ResponseModeDropdown({
   value,
   onChange,
   className = '',
@@ -1122,25 +1122,24 @@ function ResponseModeSelector({
   className?: string;
 }) {
   return (
-    <div className={`inline-flex h-10 items-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] p-1 ${className}`}>
-      {(['instant', 'thinking'] as const).map((mode) => {
-        const active = value === mode;
-        return (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => onChange(mode)}
-            className={`rounded-full px-3 py-1.5 text-sm font-medium transition-all ${
-              active
-                ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-main)]'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
-            }`}
-            aria-pressed={active}
-          >
-            {mode === 'instant' ? 'Instant' : 'Thinking'}
-          </button>
-        );
-      })}
+    <div className={`relative min-w-[9.75rem] ${className}`}>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
+        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
+        aria-label="AI response mode"
+      >
+        <option value="instant">Instant</option>
+        <option value="thinking">Thinking</option>
+        <option value="extended">Extended</option>
+      </select>
+      <svg
+        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+      >
+        <path d="M8 11L2 5h12z" />
+      </svg>
     </div>
   );
 }
@@ -2520,7 +2519,7 @@ export default function AiPage() {
                     </div>
 
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start md:self-auto">
-                      <ResponseModeSelector
+                      <ResponseModeDropdown
                         value={responseMode}
                         onChange={setResponseMode}
                       />

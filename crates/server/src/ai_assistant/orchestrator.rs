@@ -193,6 +193,7 @@ async fn run_model_planner(
             top_k: 20,
             repeat_penalty: 1.05,
             max_tokens: 320,
+            max_duration_ms: None,
         },
     );
     futures::pin_mut!(planner_stream);
@@ -733,6 +734,9 @@ fn response_mode_prompt(response_mode: AssistantResponseMode) -> &'static str {
         }
         AssistantResponseMode::Thinking => {
             "Response mode is thinking. Take a more deliberate approach before answering. Check ambiguity against the grounded context, explain the conclusion clearly when that helps, and allow a fuller answer when it materially improves quality. Keep the final answer readable and do not expose hidden chain-of-thought."
+        }
+        AssistantResponseMode::Extended => {
+            "Response mode is extended. Use the larger response budget for substantial work such as drafting documents, writing or reviewing code, checking your own work, and producing structured multi-step outputs. Be deliberate, verify the grounded facts you rely on, self-check before concluding, and return a complete polished final answer without exposing hidden chain-of-thought."
         }
     }
 }
@@ -5026,6 +5030,23 @@ mod tests {
         );
         assert!(messages.iter().any(|message| {
             message.role == "system" && message.content.contains("Response mode is thinking")
+        }));
+    }
+
+    #[test]
+    fn build_assistant_messages_includes_extended_mode_guidance() {
+        let messages = build_assistant_messages(
+            AssistantChatRequest {
+                model: "model.gguf".to_string(),
+                message: "hello".to_string(),
+                response_mode: AssistantResponseMode::Extended,
+                confirmation_token: None,
+                history: Vec::new(),
+            },
+            &[],
+        );
+        assert!(messages.iter().any(|message| {
+            message.role == "system" && message.content.contains("Response mode is extended")
         }));
     }
 

@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_stream::stream;
 use futures::Stream;
@@ -79,6 +79,7 @@ pub struct SamplingParams {
     pub top_k: i32,
     pub repeat_penalty: f32,
     pub max_tokens: u32,
+    pub max_duration_ms: Option<u64>,
 }
 
 impl Default for SamplingParams {
@@ -89,6 +90,7 @@ impl Default for SamplingParams {
             top_k: 40,
             repeat_penalty: 1.1,
             max_tokens: 2048,
+            max_duration_ms: None,
         }
     }
 }
@@ -334,12 +336,22 @@ fn run_decode_loop(
 
     let started = Instant::now();
     let prompt_token_count = prompt_tokens.len() as u64;
+    let max_completion_tokens = sampling
+        .max_tokens
+        .min(ctx.n_ctx().saturating_sub(prompt_tokens.len() as u32));
+    let max_duration = sampling
+        .max_duration_ms
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis);
     let mut completion_tokens = 0_u64;
     let mut next_position = i32::try_from(prompt_tokens.len()).unwrap_or(i32::MAX);
     let mut token_decoder = encoding_rs::UTF_8.new_decoder();
     let mut decode_batch = LlamaBatch::new(1, 1);
 
-    for _ in 0..sampling.max_tokens {
+    for _ in 0..max_completion_tokens {
+        if max_duration.is_some_and(|limit| started.elapsed() >= limit) {
+            break;
+        }
         let token = sampler.sample(&ctx, last_batch_tokens - 1);
         sampler.accept(token);
 
@@ -397,8 +409,8 @@ fn prompt_decode_batch_capacity(prompt_token_count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        LlamaGpuSplitMode, MAX_PROMPT_DECODE_BATCH_TOKENS, normalize_device_indices,
-        prompt_decode_batch_capacity,
+        LlamaGpuSplitMode, MAX_PROMPT_DECODE_BATCH_TOKENS, SamplingParams,
+        normalize_device_indices, prompt_decode_batch_capacity,
     };
 
     #[test]
@@ -442,5 +454,11 @@ mod tests {
             prompt_decode_batch_capacity(MAX_PROMPT_DECODE_BATCH_TOKENS + 900),
             MAX_PROMPT_DECODE_BATCH_TOKENS
         );
+    }
+
+    #[test]
+    fn sampling_params_default_has_no_duration_cap() {
+        let params = SamplingParams::default();
+        assert_eq!(params.max_duration_ms, None);
     }
 }

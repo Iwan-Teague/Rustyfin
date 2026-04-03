@@ -84,7 +84,7 @@ export interface AiTurnStats {
   tokens_per_second: number;
 }
 
-export type AiResponseMode = 'instant' | 'thinking';
+export type AiResponseMode = 'instant' | 'thinking' | 'extended';
 
 export type AiPhase = 'planning' | 'generating';
 
