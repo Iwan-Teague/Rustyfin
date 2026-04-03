@@ -395,7 +395,7 @@ textarea:focus-visible {
 
 .ai-composer-shell {
   isolation: isolate;
-  overflow: clip;
+  overflow: visible;
 }
 
 .ai-composer-shell::before {
