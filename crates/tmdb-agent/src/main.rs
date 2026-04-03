@@ -35,6 +35,21 @@ struct EnrichQuery {
     force: Option<bool>,
 }
 
+fn env_bool_with_fallback(primary: &str, fallback: &str, default: bool) -> bool {
+    let parse = |raw: String| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    };
+
+    std::env::var(primary)
+        .ok()
+        .map(parse)
+        .or_else(|| std::env::var(fallback).ok().map(parse))
+        .unwrap_or(default)
+}
+
 #[derive(Debug, Serialize)]
 struct EnrichLibraryResponse {
     library_id: String,
@@ -670,22 +685,18 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to connect to db")?;
     let db_backend = rustfin_db::DatabaseBackend::Postgres;
-    let run_migrations = std::env::var("RUSTFIN_RUN_MIGRATIONS")
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(true);
+    let run_migrations = env_bool_with_fallback(
+        "RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS",
+        "RUSTFIN_RUN_MIGRATIONS",
+        true,
+    );
     if run_migrations {
         rustfin_db::migrate::run(&pool, db_backend)
             .await
             .context("failed to run db migrations")?;
     } else {
         warn!(
-            "RUSTFIN_RUN_MIGRATIONS disabled for tmdb-agent service; assuming schema is pre-migrated"
+            "RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS disabled for tmdb-agent service; assuming schema is pre-migrated"
         );
     }
 
@@ -722,4 +733,32 @@ async fn main() -> anyhow::Result<()> {
     info!(addr = %bind, "tmdb-agent listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_bool_with_fallback;
+
+    #[test]
+    fn service_specific_migration_flag_overrides_global_value() {
+        // SAFETY: this test mutates process env only for the duration of the assertion.
+        unsafe {
+            std::env::remove_var("RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS");
+            std::env::remove_var("RUSTFIN_RUN_MIGRATIONS");
+            std::env::set_var("RUSTFIN_RUN_MIGRATIONS", "true");
+            std::env::set_var("RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS", "false");
+        }
+
+        assert!(!env_bool_with_fallback(
+            "RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS",
+            "RUSTFIN_RUN_MIGRATIONS",
+            true,
+        ));
+
+        // SAFETY: restore process env after the test.
+        unsafe {
+            std::env::remove_var("RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS");
+            std::env::remove_var("RUSTFIN_RUN_MIGRATIONS");
+        }
+    }
 }

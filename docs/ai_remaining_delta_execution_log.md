@@ -319,3 +319,26 @@ Current risk notes:
   - `npm --prefix ui run build`
 - Deployment sequencing divergence from the delta is required by the real deploy mechanism: the prepared Ubuntu deploy flow (`/tmp/ssh_rustyfin_main_deploy.expect`) performs `git checkout main && git pull --ff-only origin main` on the host, so the finished local result must be committed and pushed to `main` before host deployment or the server would deploy stale code. This keeps behavior aligned with the delta goal of deploying the finished system.
 - Live Ubuntu deployment is blocked only by missing password credentials for `server@192.168.0.36`. The prepared deploy script exists at `/tmp/ssh_rustyfin_main_deploy.expect`, but this session does not have the password argument needed to execute it.
+
+### 2026-04-03T23:20:00Z - Deployment Regression Fix Prepared
+
+What changed:
+- Investigated the failed Ubuntu deploy and confirmed the native stack was dying because `rustfin-tmdb-agent` attempted to run shared DB migrations before the main server had created the base schema.
+- Root cause: both `rustfin-tmdb-agent` and `rustfin-calendar` only honored the global `RUSTFIN_RUN_MIGRATIONS` flag, even though the native startup path already exports service-specific `RUSTFIN_TMDB_AGENT_RUN_MIGRATIONS=false` and `RUSTFIN_CALENDAR_RUN_MIGRATIONS=false`.
+- Patched both services to honor their service-specific migration override first, then fall back to the global flag. This keeps the intended startup order intact without changing deployment UX or runtime defaults.
+
+Files touched:
+- `/Users/iwanteague/Desktop/Rustyfin/crates/tmdb-agent/src/main.rs`
+- `/Users/iwanteague/Desktop/Rustyfin/crates/calendar/src/main.rs`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/ai_remaining_delta_execution_log.md`
+
+Tests added:
+- `rustfin-tmdb-agent`: service-specific migration override precedence test
+- `rustfin-calendar`: service-specific migration override precedence test
+
+Current risk notes:
+- Local targeted verification for the deploy fix is complete:
+  - `cargo fmt --all`
+  - `cargo test -p rustfin-tmdb-agent --bin rustfin-tmdb-agent`
+  - `cargo test -p rustfin-calendar --bin rustfin-calendar`
+- The Ubuntu host still needs the follow-up commit deployed and the native/runtime health checks rerun.
