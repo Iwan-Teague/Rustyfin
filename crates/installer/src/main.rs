@@ -2241,9 +2241,8 @@ fn write_runtime_snapshot_to_path(output: &Path) -> anyhow::Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(&output, rendered)
-        .with_context(|| format!("failed to write {}", output.display()))?;
-    fs::set_permissions(&output, fs::Permissions::from_mode(0o600))
+    fs::write(output, rendered).with_context(|| format!("failed to write {}", output.display()))?;
+    fs::set_permissions(output, fs::Permissions::from_mode(0o600))
         .with_context(|| format!("failed to chmod {}", output.display()))?;
     Ok(())
 }
@@ -2719,7 +2718,6 @@ fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
 }
 
 /// Returns true when a CUDA build toolchain is detectable on this host.
-
 fn is_ipv4(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     if parts.len() != 4 {
@@ -3199,17 +3197,17 @@ fn cmdline_arg_matches(arg: &str, expected: &str) -> bool {
 }
 
 fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
-    if let Ok(url) = env::var("RUSTFIN_DATABASE_URL") {
-        if !url.trim().is_empty() {
-            return Ok(url);
-        }
+    if let Ok(url) = env::var("RUSTFIN_DATABASE_URL")
+        && !url.trim().is_empty()
+    {
+        return Ok(url);
     }
 
     let runtime_snapshot = load_shell_env_map(&repo_root.join(".rustyfin.runtime.env"))?;
-    if let Some(url) = runtime_snapshot.get("RUSTFIN_DATABASE_URL") {
-        if !url.trim().is_empty() {
-            return Ok(url.clone());
-        }
+    if let Some(url) = runtime_snapshot.get("RUSTFIN_DATABASE_URL")
+        && !url.trim().is_empty()
+    {
+        return Ok(url.clone());
     }
 
     let pg_user = env::var("RUSTFIN_PG_USER")
@@ -4282,10 +4280,10 @@ fn resolve_media_path(repo_root: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn resolve_database_url() -> anyhow::Result<String> {
-    if let Ok(value) = env::var("RUSTFIN_DATABASE_URL") {
-        if !value.trim().is_empty() {
-            return Ok(value);
-        }
+    if let Ok(value) = env::var("RUSTFIN_DATABASE_URL")
+        && !value.trim().is_empty()
+    {
+        return Ok(value);
     }
 
     let pg_user = env::var("RUSTFIN_PG_USER")

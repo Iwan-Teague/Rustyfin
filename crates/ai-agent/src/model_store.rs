@@ -144,28 +144,28 @@ impl ModelStore {
                         error = %error,
                         "failed to inspect gguf metadata, using filename fallback"
                     );
-                    if let Ok(metadata) = entry.metadata() {
-                        if metadata.is_file() {
-                            let file = path
-                                .file_name()
-                                .and_then(OsStr::to_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            let name = path
-                                .file_stem()
-                                .and_then(OsStr::to_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            out.push(ModelInfo {
-                                name,
-                                file: file.clone(),
-                                size_gb: bytes_to_gb(metadata.len()),
-                                parameter_size: None,
-                                quantization: quantization_from_filename(&file),
-                                architecture: None,
-                                context_length: None,
-                            });
-                        }
+                    if let Ok(metadata) = entry.metadata()
+                        && metadata.is_file()
+                    {
+                        let file = path
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let name = path
+                            .file_stem()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        out.push(ModelInfo {
+                            name,
+                            file: file.clone(),
+                            size_gb: bytes_to_gb(metadata.len()),
+                            parameter_size: None,
+                            quantization: quantization_from_filename(&file),
+                            architecture: None,
+                            context_length: None,
+                        });
                     }
                 }
             }

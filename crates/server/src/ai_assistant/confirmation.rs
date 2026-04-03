@@ -796,8 +796,6 @@ fn normalize_document_file_name(raw: &str, default_extension: &str) -> Option<St
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
                 ch
-            } else if ch.is_whitespace() {
-                '-'
             } else {
                 '-'
             }

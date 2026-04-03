@@ -24,7 +24,12 @@ glob = "0.3"
 
 [features]
 default = []
-gpu-opencl = ["whisper-rs/opencl", "whisper-rs/_gpu"]
-gpu-cuda = ["whisper-rs/cuda"]
-gpu-hip = ["whisper-rs/hipblas"]
+gpu-opencl = ["dep:rustfin-transcription-opencl-link"]
+gpu-cuda = ["dep:rustfin-transcription-cuda-link"]
+gpu-hip = ["dep:rustfin-transcription-hip-link"]
 gpu-all = ["gpu-opencl", "gpu-cuda", "gpu-hip"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustfin-transcription-opencl-link = { path = "../transcription-opencl-link", optional = true }
+rustfin-transcription-cuda-link = { path = "../transcription-cuda-link", optional = true }
+rustfin-transcription-hip-link = { path = "../transcription-hip-link", optional = true }

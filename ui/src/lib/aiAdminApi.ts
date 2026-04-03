@@ -90,6 +90,29 @@ export interface AiModelProfileSummary {
   updated_ts: number;
 }
 
+export interface AiRoleRoutingDecision {
+  role: 'planner' | 'summarizer' | 'answer' | 'verifier' | 'worker' | string;
+  model_name: string;
+  backend_id: string;
+  backend_kind: 'local' | 'remote' | string;
+  selection_source:
+    | 'explicit_request'
+    | 'stored_recommendation'
+    | 'env_default'
+    | 'fallback'
+    | string;
+  recommendation_status:
+    | 'applied'
+    | 'missing'
+    | 'stale'
+    | 'model_missing'
+    | 'not_applicable'
+    | string;
+  recommendation_note?: string | null;
+  recommendation_model_name?: string | null;
+  recommendation_updated_ts?: number | null;
+}
+
 export interface AiAdminState {
   available: boolean;
   model_dir: string;
@@ -104,6 +127,7 @@ export interface AiAdminState {
   scheduler?: AiSchedulerState;
   model_benchmarks?: AiModelBenchmarkSummary[];
   model_profiles?: AiModelProfileSummary[];
+  role_routing?: AiRoleRoutingDecision[];
 }
 
 export interface AiAssistantAuditGroundingSource {
@@ -122,6 +146,24 @@ export interface AiAssistantAuditToolExecution {
   result_count: number | null;
 }
 
+export interface AiAssistantPlannerAuditExecution {
+  parse_attempts?: number;
+  validation_failures?: number;
+  repair_attempts?: number;
+  repair_successes?: number;
+  fallback_reason?: string | null;
+}
+
+export interface AiAssistantPlannerAudit {
+  raw_response_hash?: string | null;
+  planner_mode?: string | null;
+  fallback_reason?: string | null;
+  repair_attempt_count?: number;
+  final_selected_tools?: string[];
+  validation_errors?: string[];
+  execution?: AiAssistantPlannerAuditExecution;
+}
+
 export interface AiAssistantAuditEvent {
   id: string;
   trace_id: string;
@@ -132,6 +174,8 @@ export interface AiAssistantAuditEvent {
   message_preview: string;
   history_len: number;
   response_kind: string;
+  planner: AiAssistantPlannerAudit;
+  model_routing: AiRoleRoutingDecision[];
   planned_tools: string[];
   executed_tools: AiAssistantAuditToolExecution[];
   grounding_chunks: AiGroundingChunk[];

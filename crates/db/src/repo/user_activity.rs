@@ -577,6 +577,7 @@ pub async fn get_daily_rows_for_user(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::bounded_forward_progress_delta;
 

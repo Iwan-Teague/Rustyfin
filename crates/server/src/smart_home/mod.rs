@@ -35,7 +35,7 @@ pub struct SmartHomeSummary {
 
 pub async fn get_smart_home_state(
     _auth: AuthUser,
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> Result<Json<SmartHomeSummary>, AppError> {
     // Check if Home Assistant is configured (e.g. via env var or settings)
     let ha_url = std::env::var("RUSTFIN_SMART_HOME_URL").ok();

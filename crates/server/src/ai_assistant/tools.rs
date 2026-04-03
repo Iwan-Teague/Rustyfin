@@ -10,6 +10,7 @@ use serde_json::json;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
+use super::provider::{ToolExecutionProfile, default_tool_registry};
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
@@ -434,21 +435,93 @@ pub async fn execute_tool(
     context: &AssistantContext,
     call: &PlannedToolCall,
 ) -> AssistantToolContextBlock {
-    let tool = call.tool;
-    let spec = tool.spec();
+    let profile = ToolExecutionProfile::full_access();
+    execute_tool_with_profile(state, context, call, &profile).await
+}
+
+pub async fn execute_tool_with_profile(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+    profile: &ToolExecutionProfile,
+) -> AssistantToolContextBlock {
+    let registry = default_tool_registry();
+    let spec = registry
+        .entry(call.tool)
+        .map(|entry| {
+            debug_assert_eq!(entry.tool, call.tool);
+            entry.spec
+        })
+        .unwrap_or_else(|| call.tool.spec());
+
+    if let Some(message) = profile.denial_reason(call.tool, spec) {
+        return tool_error_block(spec, message);
+    }
     if let Some(message) = enforce_tool_policy(context, spec) {
-        return AssistantToolContextBlock {
-            tool: spec.name,
-            label: spec.summary.to_string(),
-            status: "error",
-            data: json!({ "message": message }),
-        };
+        return tool_error_block(spec, message);
     }
 
-    let result = match tool {
+    let Some(provider) = registry.provider_for_tool(call.tool) else {
+        return tool_error_block(
+            spec,
+            format!("{} is not registered with an internal provider.", spec.name),
+        );
+    };
+
+    provider.execute(state, context, call).await
+}
+
+fn tool_context_block_for_result(
+    tool: AssistantToolName,
+    result: Result<(String, serde_json::Value), String>,
+) -> AssistantToolContextBlock {
+    let spec = tool.spec();
+    match result {
+        Ok((label, data)) => AssistantToolContextBlock {
+            tool: spec.name,
+            label,
+            status: "ok",
+            data,
+        },
+        Err(message) => tool_error_block(spec, message),
+    }
+}
+
+fn tool_error_block(
+    spec: super::types::AssistantToolSpec,
+    message: impl Into<String>,
+) -> AssistantToolContextBlock {
+    AssistantToolContextBlock {
+        tool: spec.name,
+        label: spec.summary.to_string(),
+        status: "error",
+        data: json!({ "message": message.into() }),
+    }
+}
+
+pub(crate) async fn execute_account_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::AccountGetProfileSummary => {
             account_get_profile_summary(state, context).await
         }
+        _ => Err(format!(
+            "{} is not handled by the account provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_calendar_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::CalendarListEvents => calendar_list_events(state, context, call).await,
         AssistantToolName::CalendarGetNextEvent => calendar_get_next_event(state, context).await,
         AssistantToolName::CalendarUpcomingBirthdays => {
@@ -461,18 +534,75 @@ pub async fn execute_tool(
         AssistantToolName::CalendarCreateBirthday => {
             calendar_create_birthday(state, context, call).await
         }
+        AssistantToolName::CalendarDeleteEvent => calendar_delete_event(state, context, call).await,
+        _ => Err(format!(
+            "{} is not handled by the calendar provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_channels_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::ChannelsListUnreadActivity => {
             channels_list_unread_activity(state, context, call).await
         }
         AssistantToolName::ChannelsGetTranscriptSummary => {
             channels_get_transcript_summary(state, context, call).await
         }
+        _ => Err(format!(
+            "{} is not handled by the channels provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_documents_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::DocumentCreateDownload => {
+            document_create_download(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the documents provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_downloads_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::DownloadsListAvailableArtifacts => {
             downloads_list_available_artifacts(state, context, call).await
         }
-        AssistantToolName::NetworkGetTopologySummary => {
-            network_get_topology_summary(state, context).await
-        }
+        _ => Err(format!(
+            "{} is not handled by the downloads provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_libraries_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::LibrariesListAccessible => {
             libraries_list_accessible(state, context).await
         }
@@ -483,16 +613,74 @@ pub async fn execute_tool(
         AssistantToolName::LibrariesGetRecentlyAdded => {
             libraries_get_recently_added(state, context, call).await
         }
-        AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
-        AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
-        AssistantToolName::WeatherGetHistory => weather_get_history(state, context, call).await,
-        AssistantToolName::WebSearchPublicWeb => web_search_public_web(state, context, call).await,
-        AssistantToolName::WebFetchPublicPageSummary => {
-            web_fetch_public_page_summary(state, context, call).await
+        _ => Err(format!(
+            "{} is not handled by the libraries provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_network_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::NetworkGetTopologySummary => {
+            network_get_topology_summary(state, context).await
         }
+        _ => Err(format!(
+            "{} is not handled by the network provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_rooms_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::RoomsListActive => rooms_list_active(state, context, call).await,
         AssistantToolName::RoomsListJoinable => rooms_list_joinable(state, context, call).await,
         AssistantToolName::RoomsGetRoomSummary => room_get_room_summary(state, context, call).await,
+        _ => Err(format!(
+            "{} is not handled by the rooms provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_servers_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::ServersListMinecraftStatus => {
+            servers_list_minecraft_status(state, context, call).await
+        }
+        AssistantToolName::ServersGetMinecraftServerSummary => {
+            server_get_minecraft_server_summary(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the servers provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_system_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
         AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime().await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
@@ -502,28 +690,47 @@ pub async fn execute_tool(
         AssistantToolName::SystemGetTranscodeSummary => system_get_transcode_summary(state).await,
         AssistantToolName::SystemGetStorageSummary => system_get_storage_summary(state).await,
         AssistantToolName::SystemGetRecentErrors => system_get_recent_errors(state).await,
-        AssistantToolName::ServersListMinecraftStatus => {
-            servers_list_minecraft_status(state, context, call).await
-        }
-        AssistantToolName::ServersGetMinecraftServerSummary => {
-            server_get_minecraft_server_summary(state, context, call).await
-        }
+        _ => Err(format!(
+            "{} is not handled by the system provider.",
+            call.tool.as_str()
+        )),
     };
+    tool_context_block_for_result(call.tool, result)
+}
 
-    match result {
-        Ok((label, data)) => AssistantToolContextBlock {
-            tool: spec.name,
-            label,
-            status: "ok",
-            data,
-        },
-        Err(message) => AssistantToolContextBlock {
-            tool: spec.name,
-            label: spec.summary.to_string(),
-            status: "error",
-            data: json!({ "message": message }),
-        },
-    }
+pub(crate) async fn execute_weather_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::WeatherGetCurrent => weather_get_current(state, context, call).await,
+        AssistantToolName::WeatherGetForecast => weather_get_forecast(state, context, call).await,
+        AssistantToolName::WeatherGetHistory => weather_get_history(state, context, call).await,
+        _ => Err(format!(
+            "{} is not handled by the weather provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
+pub(crate) async fn execute_web_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::WebSearchPublicWeb => web_search_public_web(state, context, call).await,
+        AssistantToolName::WebFetchPublicPageSummary => {
+            web_fetch_public_page_summary(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the web provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
 }
 
 fn enforce_tool_policy(
@@ -586,6 +793,25 @@ pub fn source_from_block(
         access_mode: spec.access_mode,
         risk_tier: spec.risk_tier,
         status: block.status.to_string(),
+        download_url: block
+            .data
+            .get("download_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_file_name: block
+            .data
+            .get("file_name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_media_type: block
+            .data
+            .get("media_type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        download_size_bytes: block
+            .data
+            .get("size_bytes")
+            .and_then(serde_json::Value::as_i64),
     }
 }
 
@@ -1319,6 +1545,7 @@ async fn calendar_get_next_event(
         &state.db,
         &context.user_id,
         context.is_admin,
+        assistant_local_today(),
     )
     .await
     .map_err(|e| format!("failed to load the next visible calendar event: {e}"))?;
@@ -1506,6 +1733,65 @@ async fn calendar_create_birthday(
             "verified": true,
             "event": summary,
         }),
+    ))
+}
+
+async fn calendar_delete_event(
+    state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::CalendarDeleteEvent {
+        event_id,
+        title,
+        event_date,
+        scope,
+        event_type,
+        recurrence,
+    } = &call.input
+    else {
+        return Err("missing calendar delete payload".to_string());
+    };
+
+    let deleted = rustfin_db::repo::calendar::delete_event(&state.db, event_id)
+        .await
+        .map_err(|e| format!("failed to delete the calendar event: {e}"))?;
+    if !deleted {
+        return Err("that calendar event is no longer available to delete".to_string());
+    }
+
+    Ok((
+        format!("Deleted calendar event \"{}\"", title),
+        json!({
+            "verified": true,
+            "event": {
+                "id": event_id,
+                "title": title,
+                "event_date": event_date,
+                "scope": scope,
+                "event_type": event_type,
+                "recurrence": recurrence,
+                "deleted": true,
+            },
+        }),
+    ))
+}
+
+async fn document_create_download(
+    _state: &AppState,
+    _context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::DocumentCreateDownload {
+        file_name, format, ..
+    } = &call.input
+    else {
+        return Err("missing document generation payload".to_string());
+    };
+
+    let _ = format;
+    Err(format!(
+        "Rustyfin AI could not create `{file_name}` because document artifact generation is not yet wired into this tool path for confirmed actions."
     ))
 }
 
@@ -2371,6 +2657,11 @@ fn calendar_window_for_call(
             event_date.clone(),
             "the created calendar event".to_string(),
         ),
+        AssistantToolInput::CalendarDeleteEvent { event_date, .. } => (
+            event_date.clone(),
+            event_date.clone(),
+            "the deleted calendar event".to_string(),
+        ),
         AssistantToolInput::None
         | AssistantToolInput::ChannelsFilter { .. }
         | AssistantToolInput::DownloadsFilter { .. }
@@ -2380,6 +2671,8 @@ fn calendar_window_for_call(
         | AssistantToolInput::WeatherHistory { .. }
         | AssistantToolInput::WebSearch { .. }
         | AssistantToolInput::WebFetch { .. }
+        | AssistantToolInput::DocumentCreateDownload { .. }
+        | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::RoomsFilter { .. }
         | AssistantToolInput::ServerFilter { .. } => {
             let from = assistant_local_today();
@@ -3390,6 +3683,15 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             calendar_query: Some(title.clone()),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::CalendarDeleteEvent {
+            event_date, title, ..
+        } => AssistantFollowUpInputHint {
+            calendar_label: Some("the deleted calendar event".to_string()),
+            calendar_from_date: Some(event_date.clone()),
+            calendar_to_date: Some(event_date.clone()),
+            calendar_query: Some(title.clone()),
+            ..AssistantFollowUpInputHint::default()
+        },
         AssistantToolInput::ChannelsFilter { query } => AssistantFollowUpInputHint {
             channels_query: query.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -3442,6 +3744,16 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             web_url: Some(url.clone()),
             ..AssistantFollowUpInputHint::default()
         },
+        AssistantToolInput::DocumentCreateDownload { request_prompt, .. } => {
+            AssistantFollowUpInputHint {
+                web_search_query: Some(request_prompt.clone()),
+                ..AssistantFollowUpInputHint::default()
+            }
+        }
+        AssistantToolInput::CurrentDateTime { location } => AssistantFollowUpInputHint {
+            current_datetime_location: location.clone(),
+            ..AssistantFollowUpInputHint::default()
+        },
         AssistantToolInput::RoomsFilter { room_mode, query } => AssistantFollowUpInputHint {
             room_mode: room_mode.clone(),
             room_query: query.clone(),
@@ -3463,6 +3775,46 @@ fn follow_up_entities(
     block: &AssistantToolContextBlock,
 ) -> Vec<AssistantFollowUpEntity> {
     match tool {
+        AssistantToolName::CalendarDeleteEvent => block
+            .data
+            .get("event")
+            .map(|event| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: event
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Deleted calendar event")
+                        .to_string(),
+                    identifier: event
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    kind: Some("calendar_event".to_string()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
+        AssistantToolName::DocumentCreateDownload => block
+            .data
+            .get("artifact")
+            .map(|artifact| {
+                vec![AssistantFollowUpEntity {
+                    ordinal: 1,
+                    label: artifact
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Generated document")
+                        .to_string(),
+                    identifier: artifact
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                    kind: Some("generated_document".to_string()),
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
         AssistantToolName::CalendarListEvents => block
             .data
             .get("events")
@@ -3900,19 +4252,25 @@ mod tests {
         select_linux_mount_entry, summarize_storage_mounts,
     };
     use super::{
-        birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
-        next_birthday_occurrence, probe_service_health_component, storage_used_bytes,
-        storage_used_percent, transcript_excerpt_indexes, transcript_highlights, transcript_terms,
+        birthday_matches_query, birthday_month_day_display, build_follow_up_context,
+        enforce_tool_policy, execute_tool_with_profile, next_birthday_occurrence,
+        probe_service_health_component, storage_used_bytes, storage_used_percent,
+        transcript_excerpt_indexes, transcript_highlights, transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
+    use crate::ai_assistant::provider::ToolExecutionProfile;
+    use crate::ai_assistant::registry::AssistantToolName;
     use crate::ai_assistant::types::{
-        AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier,
-        ToolRoleRequirement,
+        AssistantToolContextBlock, AssistantToolInput, AssistantToolSpec, PlannedToolCall,
+        ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier, ToolRoleRequirement,
     };
     use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
     use rustfin_db::repo::calendar::CalendarEventRow;
     use rustfin_db::repo::channel_transcripts::TranscriptEntryRow;
+    use serde_json::json;
+    use sqlx::postgres::PgPoolOptions;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     async fn spawn_health_test_server(status: StatusCode) -> (String, tokio::task::JoinHandle<()>) {
         async fn handler(status: StatusCode) -> impl IntoResponse {
@@ -3936,6 +4294,7 @@ mod tests {
             role: role.to_string(),
             is_admin: role == "admin",
             confirmed_write_tool: None,
+            conversation_id: None,
         }
     }
 
@@ -3953,6 +4312,54 @@ mod tests {
             confirmation,
             timeout_ms: 1_000,
             max_result_bytes: 1_024,
+        }
+    }
+
+    fn test_state() -> crate::state::AppState {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1/rustfin_test")
+            .expect("lazy postgres pool");
+        let tc_config = rustfin_transcoder::TranscoderConfig {
+            transcode_dir: std::env::temp_dir()
+                .join(format!("rustyfin-ai-tools-test-{}", uuid::Uuid::new_v4())),
+            max_concurrent: 1,
+            ..Default::default()
+        };
+        let ffmpeg_path = tc_config.ffmpeg_path.clone();
+        let ffprobe_path = tc_config.ffprobe_path.clone();
+        let transcoder = Arc::new(rustfin_transcoder::session::SessionManager::new(tc_config));
+        let (events_tx, _) = tokio::sync::broadcast::channel(8);
+
+        crate::state::AppState {
+            db: pool,
+            rustyvault: crate::state::RustyVaultRuntimeState::available(),
+            jwt_secret: "test-secret".to_string(),
+            http: reqwest::Client::builder().build().unwrap(),
+            runtime_metrics: crate::runtime_metrics::RuntimeMetrics::new(),
+            tmdb_agent_url: "http://127.0.0.1:8100".to_string(),
+            tmdb_agent_token: None,
+            youtube_agent_url: "http://127.0.0.1:8101".to_string(),
+            youtube_agent_token: None,
+            transcription_agent_url: "http://127.0.0.1:8102".to_string(),
+            transcription_agent_token: None,
+            servers_agent_url: None,
+            servers_agent_token: None,
+            model_dir: Arc::new(tokio::sync::RwLock::new(
+                std::env::temp_dir().join("rustyfin-ai-tools-models-test"),
+            )),
+            engine: Arc::new(tokio::sync::Mutex::new(crate::ai::EngineState::default())),
+            transcoder,
+            ffmpeg_path,
+            ffprobe_path,
+            transcoder_hw_accel: None,
+            transcoder_hw_accel_required: false,
+            cache_dir: std::env::temp_dir()
+                .join(format!("rustyfin-ai-tools-cache-{}", uuid::Uuid::new_v4())),
+            watch_party_audio_dir: std::env::temp_dir()
+                .join(format!("rustyfin-ai-tools-audio-{}", uuid::Uuid::new_v4())),
+            events: events_tx,
+            watch_party: Arc::new(crate::watch_party::manager::WatchPartyManager::new()),
+            channel_manager: Arc::new(crate::channels::manager::ChannelManager::new()),
         }
     }
 
@@ -4012,6 +4419,84 @@ mod tests {
         );
         let message = enforce_tool_policy(&context, spec).expect("policy should reject");
         assert!(message.contains("confirmation flow is implemented"));
+    }
+
+    #[tokio::test]
+    async fn execute_tool_with_profile_denies_disallowed_tools() {
+        let state = test_state();
+        let context = assistant_context("user");
+        let call = PlannedToolCall {
+            tool: AssistantToolName::LibrarySearchTitles,
+            input: AssistantToolInput::LibrarySearch {
+                query: "Star Trek".to_string(),
+            },
+        };
+        let profile =
+            ToolExecutionProfile::restricted([AssistantToolName::LibrariesListAccessible], true, 1);
+
+        let block = execute_tool_with_profile(&state, &context, &call, &profile).await;
+        assert_eq!(block.status, "error");
+        assert_eq!(block.tool, "library_search_titles");
+        assert!(
+            block.data["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not available")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_tool_with_profile_preserves_confirmation_gates() {
+        let state = test_state();
+        let context = assistant_context("user");
+        let call = PlannedToolCall {
+            tool: AssistantToolName::CalendarCreateEvent,
+            input: AssistantToolInput::CalendarCreateEvent {
+                scope: "global".to_string(),
+                title: "Launch".to_string(),
+                description: Some("Ship it".to_string()),
+                event_date: "2026-04-10".to_string(),
+            },
+        };
+        let profile =
+            ToolExecutionProfile::restricted([AssistantToolName::CalendarCreateEvent], false, 1);
+
+        let block = execute_tool_with_profile(&state, &context, &call, &profile).await;
+        assert_eq!(block.status, "error");
+        assert!(
+            block.data["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("requires explicit confirmation")
+        );
+    }
+
+    #[test]
+    fn build_follow_up_context_keeps_library_search_entities_stable() {
+        let call = PlannedToolCall {
+            tool: AssistantToolName::LibrarySearchTitles,
+            input: AssistantToolInput::LibrarySearch {
+                query: "Star Trek".to_string(),
+            },
+        };
+        let block = AssistantToolContextBlock {
+            tool: call.tool.as_str(),
+            label: "Library matches for \"Star Trek\"".to_string(),
+            status: "ok",
+            data: json!({
+                "match_count": 2,
+                "matches": [
+                    { "id": "item-1", "title": "Star Trek", "kind": "show" },
+                    { "id": "item-2", "title": "Star Trek II", "kind": "movie" }
+                ]
+            }),
+        };
+
+        let context = build_follow_up_context(&call, &block);
+        assert_eq!(context.tool, "library_search_titles");
+        assert_eq!(context.entities.len(), 2);
+        assert_eq!(context.entities[0].label, "Star Trek");
+        assert_eq!(context.entities[1].identifier.as_deref(), Some("item-2"));
     }
 
     fn birthday_event(title: &str, owner_username: Option<&str>) -> CalendarEventRow {

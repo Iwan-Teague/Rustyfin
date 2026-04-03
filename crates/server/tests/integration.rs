@@ -1,3 +1,5 @@
+#![cfg(feature = "db-integration-tests")]
+
 use axum_test::{TestServer, TestWebSocket};
 use rustfin_server::routes::build_router;
 use rustfin_server::state::AppState;
@@ -271,10 +273,10 @@ fn extract_sse_json_event(body: &str, event_name: &str) -> Value {
             active_event = Some(name.trim());
             continue;
         }
-        if active_event == Some(event_name) {
-            if let Some(raw) = line.strip_prefix("data: ") {
-                return serde_json::from_str(raw).expect("SSE JSON event should parse");
-            }
+        if active_event == Some(event_name)
+            && let Some(raw) = line.strip_prefix("data: ")
+        {
+            return serde_json::from_str(raw).expect("SSE JSON event should parse");
         }
     }
     panic!("missing SSE event {event_name}");
@@ -1061,6 +1063,7 @@ async fn create_watch_party_room(
 }
 
 #[cfg(feature = "ai")]
+#[allow(clippy::too_many_arguments)]
 async fn create_calendar_event(
     pool: &rustfin_db::DbPool,
     scope: &str,
@@ -3955,10 +3958,12 @@ async fn scan_movie_library_prunes_deleted_files_and_admin_counts() {
         .unwrap();
     assert_eq!(count_after, 1);
 
-    let grouped_counts =
-        rustfin_db::repo::libraries::count_library_items_for_libraries(&pool, &[lib.id.clone()])
-            .await
-            .unwrap();
+    let grouped_counts = rustfin_db::repo::libraries::count_library_items_for_libraries(
+        &pool,
+        std::slice::from_ref(&lib.id),
+    )
+    .await
+    .unwrap();
     assert_eq!(grouped_counts, vec![(lib.id.clone(), 1)]);
 
     let deleted_path = deleted_file.to_string_lossy().to_string();

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ai-evals",
     "crates/ai-agent",
     "crates/calendar",
     "crates/core",
@@ -16,6 +17,14 @@ members = [
     "crates/youtube-agent",
     "crates/transcoder",
     "crates/server",
+]
+exclude = [
+    "crates/ai-agent-cuda-link",
+    "crates/ai-agent-rocm-link",
+    "crates/ai-agent-vulkan-link",
+    "crates/transcription-cuda-link",
+    "crates/transcription-hip-link",
+    "crates/transcription-opencl-link",
 ]
 
 [workspace.package]

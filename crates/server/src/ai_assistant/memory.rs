@@ -83,13 +83,7 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
                 .get("library_id")
                 .and_then(Value::as_str)
                 .map(|library_id| format!("library:{library_id}"))
-                .or_else(|| {
-                    block
-                        .data
-                        .get("query")
-                        .and_then(Value::as_str)
-                        .map(|query| format!("library_query:{query}"))
-                })
+                .or_else(|| Some("libraries:search".to_string()))
         }
         "rooms_list_active" | "rooms_list_joinable" | "rooms_get_room_summary" => {
             Some("rooms:catalog".to_string())
@@ -120,6 +114,7 @@ fn first_string_field(value: &Value, keys: &[&str]) -> Option<String> {
         .find_map(|key| value.get(key).and_then(Value::as_str).map(str::to_string))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn chunk_citation(
     source_kind: &str,
     source_id: &str,
@@ -152,6 +147,7 @@ fn chunk_citation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn chunk_from_parts(
     source_kind: &str,
     title: String,
@@ -293,6 +289,77 @@ fn generic_chunk_for_block(
         source_sub_id,
         citation,
     )
+}
+
+fn library_search_chunks_for_block(
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+    block: &AssistantToolContextBlock,
+    source_id: Option<String>,
+    source_sub_id: Option<String>,
+) -> Vec<AssistantGroundingChunk> {
+    let matches = block
+        .data
+        .get("matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let match_count = block
+        .data
+        .get("match_count")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(matches.len());
+
+    let excerpt = if match_count == 0 {
+        "No matching library titles were found.".to_string()
+    } else {
+        let mut titles = matches
+            .iter()
+            .take(5)
+            .filter_map(|item| item.get("title").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if titles.is_empty() {
+            format!("Found {match_count} matching library titles.")
+        } else {
+            let extra = match_count.saturating_sub(titles.len());
+            if extra > 0 {
+                titles.push(format!("and {extra} more"));
+            }
+            format!(
+                "Found {match_count} matching library titles: {}.",
+                titles.join(", ")
+            )
+        }
+    };
+
+    let visibility = visibility_for_tool(call.tool.as_str());
+    let citation = source_id.as_deref().map(|source_id| {
+        chunk_citation(
+            call.tool.as_str(),
+            source_id,
+            source_sub_id.as_deref(),
+            Some(&block.label),
+            Some(&excerpt),
+            None,
+            None,
+            None,
+        )
+    });
+
+    vec![chunk_from_parts(
+        call.tool.as_str(),
+        block.label.clone(),
+        excerpt,
+        if block.status == "ok" { 1.0 } else { 0.2 },
+        visibility,
+        Some("libraries:search".to_string()),
+        Some(context.user_id.clone()),
+        source_id,
+        source_sub_id,
+        citation,
+    )]
 }
 
 fn transcript_chunks_for_block(
@@ -521,6 +588,23 @@ fn build_chunks_from_block(
     block: &AssistantToolContextBlock,
     source: &super::types::AssistantGroundingSource,
 ) -> Vec<AssistantGroundingChunk> {
+    if call.tool == super::registry::AssistantToolName::LibrarySearchTitles {
+        let source_id = first_string_field(&block.data, &["library_id"])
+            .or_else(|| Some(stable_id("source", &[call.tool.as_str(), &block.label])));
+        let source_sub_id = first_string_field(&block.data, &["item_id"]);
+        let mut chunks =
+            library_search_chunks_for_block(context, call, block, source_id, source_sub_id);
+        if let Some(first_chunk) = chunks.first_mut() {
+            first_chunk.score = (first_chunk.score
+                + match source.status.as_str() {
+                    "ok" => 0.6,
+                    "error" => 0.1,
+                    _ => 0.2,
+                })
+            .min(2.0);
+        }
+        return chunks;
+    }
     if call.tool == super::registry::AssistantToolName::ChannelsGetTranscriptSummary {
         return transcript_chunks_for_block(context, call, block);
     }
@@ -607,10 +691,7 @@ pub fn derive_topic_key_from_history(history: &[AssistantHistoryMessage]) -> Opt
                         .entities
                         .iter()
                         .find_map(|entity| entity.topic_key.clone())
-                        .or_else(|| {
-                            let topic = maybe_topic_from_message(&context.label);
-                            topic
-                        })
+                        .or_else(|| maybe_topic_from_message(&context.label))
                 })
             })
     })
@@ -1086,6 +1167,8 @@ pub async fn augment_history_with_entity_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_assistant::registry::AssistantToolName;
+    use crate::ai_assistant::types::AssistantToolInput;
 
     #[test]
     fn topic_key_from_history_prefers_latest_assistant_context() {
@@ -1163,5 +1246,43 @@ mod tests {
             chunk_access_scope(&admin_chunk, "user-1"),
             ("admin".to_string(), Some("user-1".to_string()), None,)
         );
+    }
+
+    #[test]
+    fn library_search_chunks_use_compact_summary() {
+        let context = AssistantContext {
+            trace_id: "trace".to_string(),
+            user_id: "user-1".to_string(),
+            username: "user".to_string(),
+            role: "user".to_string(),
+            is_admin: false,
+            confirmed_write_tool: None,
+            conversation_id: None,
+        };
+        let call = PlannedToolCall {
+            tool: AssistantToolName::LibrarySearchTitles,
+            input: AssistantToolInput::LibrarySearch {
+                query: "Star Trek".to_string(),
+            },
+        };
+        let block = AssistantToolContextBlock {
+            tool: "library_search_titles",
+            label: "Library matches for \"Star Trek\"".to_string(),
+            status: "ok",
+            data: serde_json::json!({
+                "match_count": 0,
+                "matches": [],
+                "query": "Star Trek"
+            }),
+        };
+        let chunks = library_search_chunks_for_block(&context, &call, &block, None, None);
+        let prompt = crate::ai_assistant::replies::grounding_chunks_prompt(&chunks);
+
+        assert!(prompt.contains("Library matches for \"Star Trek\""));
+        assert!(prompt.contains("No matching library titles were found."));
+        assert!(!prompt.contains("\"query\""));
+        assert!(!prompt.contains("\"matches\""));
+        assert!(!prompt.contains("[{"));
+        assert!(!prompt.contains("library_query:"));
     }
 }

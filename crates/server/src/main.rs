@@ -562,6 +562,11 @@ async fn main() -> anyhow::Result<()> {
         ),
     };
 
+    #[cfg(feature = "ai")]
+    if let Err(error) = rustfin_server::ai_tasks::recover_pending_tasks(app_state.clone()).await {
+        warn!(error = %error, "failed to recover pending AI tasks at startup");
+    }
+
     // Spawn watch-party empty-lobby cleanup task.
     {
         let watch_party = app_state.watch_party.clone();

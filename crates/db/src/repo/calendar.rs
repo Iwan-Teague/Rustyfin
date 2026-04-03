@@ -82,10 +82,10 @@ fn next_occurrence_on_or_after(
 
     let current_year = on_or_after.year();
     let current_year_occurrence = with_year_safe(source_date, current_year);
-    if let Some(candidate) = current_year_occurrence {
-        if candidate >= on_or_after {
-            return Ok(Some(candidate));
-        }
+    if let Some(candidate) = current_year_occurrence
+        && candidate >= on_or_after
+    {
+        return Ok(Some(candidate));
     }
     Ok(with_year_safe(source_date, current_year + 1))
 }

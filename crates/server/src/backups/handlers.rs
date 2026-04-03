@@ -42,7 +42,7 @@ pub async fn create_backup_job(
 ) -> Result<Json<String>, AppError> {
     let job_id = service::trigger_backup(&state.db, None)
         .await
-        .map_err(|e| ApiError::Internal(e))?;
+        .map_err(ApiError::Internal)?;
     Ok(Json(job_id))
 }
 
@@ -53,6 +53,6 @@ pub async fn restore_backup(
 ) -> Result<(), AppError> {
     service::restore_backup(&state.db, &job_id)
         .await
-        .map_err(|e| ApiError::Internal(e))?;
+        .map_err(ApiError::Internal)?;
     Ok(())
 }

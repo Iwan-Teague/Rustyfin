@@ -6,13 +6,13 @@ use crate::utils::{
 use anyhow::Result;
 
 pub struct UbuntuAdapter {
-    version: String,
+    _version: String,
 }
 
 impl UbuntuAdapter {
     pub fn new(version: &str) -> Self {
         Self {
-            version: version.to_string(),
+            _version: version.to_string(),
         }
     }
 }

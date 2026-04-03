@@ -264,6 +264,7 @@ struct PreferredLocalAccessCandidate {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn preferred_local_ipv4(nodes: &[NetworkNodeSummary]) -> Option<String> {
     preferred_local_access_candidate(nodes).map(|candidate| candidate.address)
 }

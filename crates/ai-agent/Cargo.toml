@@ -5,9 +5,9 @@ edition.workspace = true
 
 [features]
 default = []
-cuda = ["llama-cpp-2/cuda"]
-rocm = ["llama-cpp-2/rocm"]
-vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["dep:rustfin-ai-agent-cuda-link"]
+rocm = ["dep:rustfin-ai-agent-rocm-link"]
+vulkan = ["dep:rustfin-ai-agent-vulkan-link"]
 cpu = []
 
 [dependencies]
@@ -23,3 +23,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 async-stream = "0.3"
 sha2 = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustfin-ai-agent-cuda-link = { path = "../ai-agent-cuda-link", optional = true }
+rustfin-ai-agent-rocm-link = { path = "../ai-agent-rocm-link", optional = true }
+rustfin-ai-agent-vulkan-link = { path = "../ai-agent-vulkan-link", optional = true }

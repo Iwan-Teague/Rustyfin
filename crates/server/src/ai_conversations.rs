@@ -190,6 +190,8 @@ pub async fn update_conversation(
         &user.user_id,
         title.as_deref(),
         req.archived,
+        None,
+        None,
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -324,6 +326,7 @@ pub async fn persist_user_turn(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_assistant_turn(
     state: &AppState,
     user_id: &str,
@@ -350,11 +353,11 @@ pub async fn persist_assistant_turn(
     let activity_trace_json = serde_json::to_string(activity_trace)
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
     let stats_json = stats
-        .map(|value| serde_json::to_string(value))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
     let pending_action_json = pending_action
-        .map(|value| serde_json::to_string(value))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
 

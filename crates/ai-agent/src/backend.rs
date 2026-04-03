@@ -1,57 +1,22 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{LlamaEngine, SamplingParams};
 use crate::error::AiError;
-use crate::types::{ChatChunk, ChatMessage};
+use crate::roles::ModelRole;
+use crate::types::{BackendCapabilities, BackendKind, ChatChunk, ChatMessage, PromptCacheHint};
+
+pub mod local_llama;
+pub mod role_router;
+
+pub use local_llama::LocalLlamaBackend;
+pub use role_router::{ModelSelectionSource, RoleBoundPromptBackend, RoleModelSelection};
 
 static LLAMA_BACKEND: OnceLock<llama_cpp_2::llama_backend::LlamaBackend> = OnceLock::new();
 static LLAMA_BACKEND_INIT: Mutex<()> = Mutex::new(());
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackendKind {
-    LocalGguf,
-    OpenAiCompat,
-    Ollama,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenCountMode {
-    Exact,
-    Estimated,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackendCapabilities {
-    pub kind: BackendKind,
-    pub token_count_mode: TokenCountMode,
-    pub supports_streaming: bool,
-    pub supports_prompt_cache: bool,
-    pub supports_structured_output: bool,
-    pub supports_long_running_jobs: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_context_tokens: Option<u32>,
-}
-
-impl Default for BackendCapabilities {
-    fn default() -> Self {
-        Self {
-            kind: BackendKind::LocalGguf,
-            token_count_mode: TokenCountMode::Exact,
-            supports_streaming: true,
-            supports_prompt_cache: false,
-            supports_structured_output: true,
-            supports_long_running_jobs: true,
-            max_context_tokens: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteBackendConfig {
@@ -119,21 +84,26 @@ impl RemoteBackendConfig {
 }
 
 pub trait InferenceBackend: Send + Sync {
-    fn backend_id(&self) -> &str;
+    fn backend_id(&self) -> &'static str;
     fn backend_kind(&self) -> BackendKind;
     fn model_name(&self) -> Option<&str>;
     fn capabilities(&self) -> BackendCapabilities;
     fn local_engine(&self) -> Option<&LlamaEngine> {
         None
     }
-    fn count_tokens<'a>(
-        &'a self,
-        messages: &'a [ChatMessage],
-    ) -> BoxFuture<'a, Result<u32, AiError>>;
-    fn stream_chat(
+    fn count_chat_tokens(
         &self,
+        _role: ModelRole,
+        messages: &[ChatMessage],
+    ) -> Result<u32, AiError> {
+        Ok(estimate_chat_tokens(messages))
+    }
+    fn chat_stream_boxed(
+        &self,
+        role: ModelRole,
         messages: Vec<ChatMessage>,
         sampling: SamplingParams,
+        prompt_cache: Option<PromptCacheHint>,
     ) -> BoxStream<'static, Result<ChatChunk, AiError>>;
 }
 
@@ -170,56 +140,4 @@ pub fn estimate_chat_tokens(messages: &[ChatMessage]) -> u32 {
     }
 
     u32::try_from(total).unwrap_or(u32::MAX).max(1)
-}
-
-impl From<&LlamaEngine> for BackendCapabilities {
-    fn from(engine: &LlamaEngine) -> Self {
-        let params = engine.params().clone();
-        Self {
-            kind: BackendKind::LocalGguf,
-            token_count_mode: TokenCountMode::Exact,
-            supports_streaming: true,
-            supports_prompt_cache: false,
-            supports_structured_output: true,
-            supports_long_running_jobs: true,
-            max_context_tokens: Some(params.n_ctx),
-        }
-    }
-}
-
-impl InferenceBackend for LlamaEngine {
-    fn backend_id(&self) -> &str {
-        "local"
-    }
-
-    fn backend_kind(&self) -> BackendKind {
-        BackendKind::LocalGguf
-    }
-
-    fn model_name(&self) -> Option<&str> {
-        None
-    }
-
-    fn capabilities(&self) -> BackendCapabilities {
-        BackendCapabilities::from(self)
-    }
-
-    fn local_engine(&self) -> Option<&LlamaEngine> {
-        Some(self)
-    }
-
-    fn count_tokens<'a>(
-        &'a self,
-        messages: &'a [ChatMessage],
-    ) -> BoxFuture<'a, Result<u32, AiError>> {
-        Box::pin(async move { Ok(estimate_chat_tokens(messages)) })
-    }
-
-    fn stream_chat(
-        &self,
-        messages: Vec<ChatMessage>,
-        sampling: SamplingParams,
-    ) -> BoxStream<'static, Result<ChatChunk, AiError>> {
-        self.chat_stream(messages, sampling).boxed()
-    }
 }

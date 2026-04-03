@@ -173,7 +173,7 @@ async fn finalize_public_text_response(
     })
 }
 
-fn normalize_public_url(raw_url: &str) -> Result<Url, String> {
+pub(crate) fn normalize_public_url(raw_url: &str) -> Result<Url, String> {
     let trimmed = raw_url.trim();
     if trimmed.is_empty() {
         return Err("public web URL is required".to_string());

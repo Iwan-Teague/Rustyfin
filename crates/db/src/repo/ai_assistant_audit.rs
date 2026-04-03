@@ -1,4 +1,5 @@
 use crate::DbPool;
+use sqlx::Row;
 
 #[derive(Debug, Clone)]
 pub struct AiAssistantAuditEventRow {
@@ -13,6 +14,8 @@ pub struct AiAssistantAuditEventRow {
     pub response_kind: String,
     pub planned_tools_json: String,
     pub executed_tools_json: String,
+    pub planner_json: String,
+    pub model_routing_json: String,
     pub grounding_chunks_json: String,
     pub grounding_sources_json: String,
     pub error_message: Option<String>,
@@ -30,6 +33,8 @@ pub struct CreateAiAssistantAuditEventParams<'a> {
     pub response_kind: &'a str,
     pub planned_tools_json: &'a str,
     pub executed_tools_json: &'a str,
+    pub planner_json: &'a str,
+    pub model_routing_json: &'a str,
     pub grounding_chunks_json: &'a str,
     pub grounding_sources_json: &'a str,
     pub error_message: Option<&'a str>,
@@ -46,11 +51,12 @@ pub async fn create_audit_event(
         "INSERT INTO ai_assistant_audit_event (
             id, trace_id, user_id, username, user_role, model_name, message_preview,
             history_len, response_kind, planned_tools_json, executed_tools_json,
-            grounding_chunks_json, grounding_sources_json, error_message, created_ts
+            planner_json, model_routing_json, grounding_chunks_json, grounding_sources_json,
+            error_message, created_ts
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11,
-            $12, $13, $14, $15
+            $12, $13, $14, $15, $16, $17
         )",
     )
     .bind(&id)
@@ -64,6 +70,8 @@ pub async fn create_audit_event(
     .bind(params.response_kind)
     .bind(params.planned_tools_json)
     .bind(params.executed_tools_json)
+    .bind(params.planner_json)
+    .bind(params.model_routing_json)
     .bind(params.grounding_chunks_json)
     .bind(params.grounding_sources_json)
     .bind(params.error_message)
@@ -83,6 +91,8 @@ pub async fn create_audit_event(
         response_kind: params.response_kind.to_string(),
         planned_tools_json: params.planned_tools_json.to_string(),
         executed_tools_json: params.executed_tools_json.to_string(),
+        planner_json: params.planner_json.to_string(),
+        model_routing_json: params.model_routing_json.to_string(),
         grounding_chunks_json: params.grounding_chunks_json.to_string(),
         grounding_sources_json: params.grounding_sources_json.to_string(),
         error_message: params.error_message.map(str::to_string),
@@ -95,26 +105,11 @@ pub async fn list_audit_events(
     limit: i64,
 ) -> Result<Vec<AiAssistantAuditEventRow>, sqlx::Error> {
     let limit = limit.clamp(1, 200);
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        i64,
-    )> = sqlx::query_as(
+    let rows = sqlx::query(
         "SELECT id, trace_id, user_id, username, user_role, model_name, message_preview,
                 history_len, response_kind, planned_tools_json, executed_tools_json,
-                grounding_chunks_json, grounding_sources_json, error_message, created_ts
+                planner_json, model_routing_json, grounding_chunks_json, grounding_sources_json,
+                error_message, created_ts
          FROM ai_assistant_audit_event
          ORDER BY created_ts DESC, id DESC
          LIMIT $1",
@@ -123,44 +118,29 @@ pub async fn list_audit_events(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                trace_id,
-                user_id,
-                username,
-                user_role,
-                model_name,
-                message_preview,
-                history_len,
-                response_kind,
-                planned_tools_json,
-                executed_tools_json,
-                grounding_chunks_json,
-                grounding_sources_json,
-                error_message,
-                created_ts,
-            )| AiAssistantAuditEventRow {
-                id,
-                trace_id,
-                user_id,
-                username,
-                user_role,
-                model_name,
-                message_preview,
-                history_len,
-                response_kind,
-                planned_tools_json,
-                executed_tools_json,
-                grounding_chunks_json,
-                grounding_sources_json,
-                error_message,
-                created_ts,
-            },
-        )
-        .collect())
+    rows.into_iter()
+        .map(|row| {
+            Ok(AiAssistantAuditEventRow {
+                id: row.try_get("id")?,
+                trace_id: row.try_get("trace_id")?,
+                user_id: row.try_get("user_id")?,
+                username: row.try_get("username")?,
+                user_role: row.try_get("user_role")?,
+                model_name: row.try_get("model_name")?,
+                message_preview: row.try_get("message_preview")?,
+                history_len: row.try_get("history_len")?,
+                response_kind: row.try_get("response_kind")?,
+                planned_tools_json: row.try_get("planned_tools_json")?,
+                executed_tools_json: row.try_get("executed_tools_json")?,
+                planner_json: row.try_get("planner_json")?,
+                model_routing_json: row.try_get("model_routing_json")?,
+                grounding_chunks_json: row.try_get("grounding_chunks_json")?,
+                grounding_sources_json: row.try_get("grounding_sources_json")?,
+                error_message: row.try_get("error_message")?,
+                created_ts: row.try_get("created_ts")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
 }
 
 pub async fn delete_audit_events_older_than(

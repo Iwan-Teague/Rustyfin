@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use futures::{StreamExt, future::join_all};
 use rustfin_ai_agent::{ChatChunk, ChatMessage, PromptCacheHint, SamplingParams};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use rustfin_ai_agent::backends::PromptBackend;
@@ -19,29 +19,75 @@ use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
     AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerMode,
+    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode,
     AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
-    PreparedAssistantTurn,
+    PlannerFallbackReason, PlannerIssue, PlannerRepairRecord, PreparedAssistantTurn,
 };
-use super::web::public_web_tools_enabled;
+use super::web::{normalize_public_url, public_web_tools_enabled};
 use crate::auth::AuthUser;
 use crate::state::AppState;
 
 const MAX_TOOL_CALLS_PER_TURN: usize = 3;
 const PLANNER_HISTORY_MESSAGE_LIMIT: usize = 6;
 
-#[derive(Debug, Deserialize)]
-struct ModelPlannerResponse {
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    tools: Vec<ModelPlannerTool>,
+const MAX_PLANNER_REPAIR_ATTEMPTS: u8 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum PlannerAst {
+    None {
+        #[serde(default)]
+        tools: Vec<PlannerAstToolCall>,
+    },
+    ToolPlan {
+        #[serde(default)]
+        tools: Vec<PlannerAstToolCall>,
+    },
 }
 
-#[derive(Debug, Deserialize)]
-struct ModelPlannerTool {
+impl PlannerAst {
+    fn mode_label(&self) -> &'static str {
+        match self {
+            Self::None { .. } => "none",
+            Self::ToolPlan { .. } => "tool_plan",
+        }
+    }
+
+    fn tools(&self) -> &[PlannerAstToolCall] {
+        match self {
+            Self::None { tools } | Self::ToolPlan { tools } => tools,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PlannerAstToolCall {
     #[serde(alias = "name")]
     tool: String,
+    #[serde(default)]
+    args: PlannerAstArgs,
+    #[serde(flatten)]
+    legacy_args: PlannerAstArgs,
+}
+
+impl PlannerAstToolCall {
+    fn merged_args(&self) -> PlannerAstArgs {
+        let args = &self.args;
+        let legacy = &self.legacy_args;
+        PlannerAstArgs {
+            query: args.query.clone().or_else(|| legacy.query.clone()),
+            url: args.url.clone().or_else(|| legacy.url.clone()),
+            availability: args
+                .availability
+                .clone()
+                .or_else(|| legacy.availability.clone()),
+            room_mode: args.room_mode.clone().or_else(|| legacy.room_mode.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PlannerAstArgs {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
@@ -58,48 +104,248 @@ pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> PlannedToolSet {
+    let mut debug = AssistantPlannerDebug {
+        schema_version: 2,
+        ..AssistantPlannerDebug::default()
+    };
     if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+        debug.planner_mode = Some(
+            AssistantPlannerMode::DeterministicFallback
+                .as_str()
+                .to_string(),
+        );
         return PlannedToolSet {
             mode: AssistantPlannerMode::DeterministicFallback,
             calls: Vec::new(),
+            debug,
         };
     }
 
     if extract_follow_up_entity_reference(message).is_some() {
         let calls = plan_tool_calls_with_history(message, history);
         if !calls.is_empty() {
+            debug.planner_mode = Some(
+                AssistantPlannerMode::DeterministicEntityFollowUp
+                    .as_str()
+                    .to_string(),
+            );
+            debug.validated_call_count = calls.len() as u32;
+            debug.final_selected_tools = calls
+                .iter()
+                .map(|call| call.tool.as_str().to_string())
+                .collect();
             return PlannedToolSet {
                 mode: AssistantPlannerMode::DeterministicEntityFollowUp,
                 calls,
+                debug,
             };
         }
     }
 
     let deterministic = plan_tool_calls_with_history(message, history);
-    let raw_response = run_model_planner(backend, user, message, history).await;
-    let model_calls = raw_response
-        .as_deref()
-        .and_then(parse_model_planner_response)
-        .map(|response| normalize_model_plan(&response, user, message, history))
-        .unwrap_or_default();
+    let model_plan =
+        resolve_model_plan_with_repair(backend, user, message, history, &mut debug).await;
 
     if should_prefer_deterministic_plan(&deterministic) {
+        debug.planner_mode = Some(
+            AssistantPlannerMode::DeterministicFallback
+                .as_str()
+                .to_string(),
+        );
+        debug.validated_call_count = deterministic.len() as u32;
+        debug.final_selected_tools = deterministic
+            .iter()
+            .map(|call| call.tool.as_str().to_string())
+            .collect();
         return PlannedToolSet {
             mode: AssistantPlannerMode::DeterministicFallback,
             calls: deterministic,
+            debug,
         };
     }
 
-    if !model_calls.is_empty() || (raw_response.is_some() && deterministic.is_empty()) {
+    if let Some(model_calls) = model_plan {
+        debug.planner_mode = Some(AssistantPlannerMode::ModelStructured.as_str().to_string());
+        debug.validated_call_count = model_calls.len() as u32;
+        debug.final_selected_tools = model_calls
+            .iter()
+            .map(|call| call.tool.as_str().to_string())
+            .collect();
         return PlannedToolSet {
             mode: AssistantPlannerMode::ModelStructured,
             calls: model_calls,
+            debug,
         };
     }
 
+    debug.planner_mode = Some(
+        AssistantPlannerMode::DeterministicFallback
+            .as_str()
+            .to_string(),
+    );
+    debug.validated_call_count = deterministic.len() as u32;
+    debug.final_selected_tools = deterministic
+        .iter()
+        .map(|call| call.tool.as_str().to_string())
+        .collect();
     PlannedToolSet {
         mode: AssistantPlannerMode::DeterministicFallback,
         calls: deterministic,
+        debug,
+    }
+}
+
+async fn resolve_model_plan_with_repair<B: PromptBackend>(
+    backend: &B,
+    user: &AuthUser,
+    message: &str,
+    history: &[AssistantHistoryMessage],
+    debug: &mut AssistantPlannerDebug,
+) -> Option<Vec<PlannedToolCall>> {
+    let raw_response = run_model_planner(backend, user, message, history).await?;
+    debug.raw_response_hash = Some(hash_planner_text(&raw_response));
+    debug.raw_response = Some(raw_response.clone());
+
+    let mut current_raw = raw_response;
+    let mut parse_failed = false;
+
+    for attempt in 0..=MAX_PLANNER_REPAIR_ATTEMPTS {
+        debug.execution.parse_attempts = debug.execution.parse_attempts.saturating_add(1);
+        let ast = match parse_planner_ast(&current_raw) {
+            Ok(ast) => ast,
+            Err(issues) => {
+                parse_failed = true;
+                debug.validation_errors = planner_issue_messages(&issues);
+                if attempt == MAX_PLANNER_REPAIR_ATTEMPTS {
+                    let fallback_reason = fallback_reason_for_issues(&issues, true, attempt > 0);
+                    debug.execution.fallback_reason = Some(fallback_reason);
+                    debug.fallback_reason = Some(fallback_reason.as_str().to_string());
+                    return None;
+                }
+                let repaired = run_planner_repair(
+                    backend,
+                    user,
+                    message,
+                    &current_raw,
+                    history,
+                    &issues,
+                    attempt + 1,
+                )
+                .await?;
+                debug.execution.repair_attempts = debug.execution.repair_attempts.saturating_add(1);
+                debug.repair_attempt_count = u32::from(debug.execution.repair_attempts);
+                debug.repaired_response = Some(repaired.clone());
+                debug.used_repaired_response = true;
+                debug.repair_records.push(PlannerRepairRecord {
+                    attempt_index: attempt + 1,
+                    issues: issues.clone(),
+                    repaired_successfully: false,
+                });
+                current_raw = repaired;
+                continue;
+            }
+        };
+
+        debug.planner_mode = Some(ast.mode_label().to_string());
+        match validate_planner_ast(&ast, user, message, history) {
+            Ok(calls) => {
+                if attempt > 0 {
+                    debug.execution.repair_successes =
+                        debug.execution.repair_successes.saturating_add(1);
+                    if let Some(record) = debug.repair_records.last_mut() {
+                        record.repaired_successfully = true;
+                    }
+                }
+                return Some(calls);
+            }
+            Err(issues) => {
+                debug.execution.validation_failures =
+                    debug.execution.validation_failures.saturating_add(1);
+                debug.validation_errors = planner_issue_messages(&issues);
+                if attempt == MAX_PLANNER_REPAIR_ATTEMPTS {
+                    let fallback_reason =
+                        fallback_reason_for_issues(&issues, parse_failed, attempt > 0);
+                    debug.execution.fallback_reason = Some(fallback_reason);
+                    debug.fallback_reason = Some(fallback_reason.as_str().to_string());
+                    return None;
+                }
+                let repaired = run_planner_repair(
+                    backend,
+                    user,
+                    message,
+                    &current_raw,
+                    history,
+                    &issues,
+                    attempt + 1,
+                )
+                .await?;
+                debug.execution.repair_attempts = debug.execution.repair_attempts.saturating_add(1);
+                debug.repair_attempt_count = u32::from(debug.execution.repair_attempts);
+                debug.repaired_response = Some(repaired.clone());
+                debug.used_repaired_response = true;
+                debug.repair_records.push(PlannerRepairRecord {
+                    attempt_index: attempt + 1,
+                    issues: issues.clone(),
+                    repaired_successfully: false,
+                });
+                current_raw = repaired;
+            }
+        }
+    }
+
+    debug.execution.fallback_reason = Some(PlannerFallbackReason::RepairExhausted);
+    debug.fallback_reason = Some("repair_exhausted".to_string());
+    None
+}
+
+fn planner_issue_messages(issues: &[PlannerIssue]) -> Vec<String> {
+    issues
+        .iter()
+        .map(|issue| match issue.path.as_deref() {
+            Some(path) => format!("{} ({path})", issue.message),
+            None => issue.message.clone(),
+        })
+        .collect()
+}
+
+fn hash_planner_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.trim().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn fallback_reason_for_issues(
+    issues: &[PlannerIssue],
+    parse_failed: bool,
+    repair_attempted: bool,
+) -> PlannerFallbackReason {
+    if issues
+        .iter()
+        .any(|issue| issue.code == "tool_count_exceeded")
+    {
+        PlannerFallbackReason::ToolCountExceeded
+    } else if issues.iter().any(|issue| issue.code == "tool_not_allowed") {
+        PlannerFallbackReason::ToolNotAllowed
+    } else if issues.iter().any(|issue| {
+        matches!(
+            issue.code.as_str(),
+            "missing_required_argument" | "invalid_argument" | "invalid_enum"
+        )
+    }) {
+        PlannerFallbackReason::ArgumentInvalid
+    } else if issues.iter().any(|issue| {
+        matches!(
+            issue.code.as_str(),
+            "unsupported_combination" | "duplicate_tool"
+        )
+    }) {
+        PlannerFallbackReason::UnsupportedCombination
+    } else if repair_attempted {
+        PlannerFallbackReason::RepairExhausted
+    } else if parse_failed {
+        PlannerFallbackReason::ParseFailed
+    } else {
+        PlannerFallbackReason::ValidationFailed
     }
 }
 
@@ -173,10 +419,10 @@ pub async fn prepare_assistant_turn(
     let context = AssistantContext::new(user, uuid::Uuid::new_v4().to_string());
     let planned_tools = plan_tool_calls_with_history(&request.message, &request.history);
 
-    let tool_results = join_all(planned_tools.iter().cloned().map(|call| {
+    let tool_results = join_all(planned_tools.iter().map(|call| {
         let context = context.clone();
         async move {
-            let block = execute_tool(state, &context, &call).await;
+            let block = execute_tool(state, &context, call).await;
             let source = source_from_block(call.tool, &block);
             (block, source)
         }
@@ -227,7 +473,8 @@ async fn run_model_planner<B: PromptBackend>(
         message,
         history,
     );
-    let planner_stream = backend.chat_stream_boxed(
+    collect_backend_text(
+        backend,
         planner_messages,
         SamplingParams {
             temperature: 0.1,
@@ -237,7 +484,41 @@ async fn run_model_planner<B: PromptBackend>(
             max_tokens: 320,
         },
         prompt_cache,
-    );
+    )
+    .await
+}
+
+async fn run_planner_repair<B: PromptBackend>(
+    backend: &B,
+    user: &AuthUser,
+    message: &str,
+    raw_invalid_json: &str,
+    history: &[AssistantHistoryMessage],
+    issues: &[PlannerIssue],
+    _attempt_index: u8,
+) -> Option<String> {
+    collect_backend_text(
+        backend,
+        build_planner_repair_messages(user, message, raw_invalid_json, history, issues),
+        SamplingParams {
+            temperature: 0.0,
+            top_p: 0.9,
+            top_k: 20,
+            repeat_penalty: 1.0,
+            max_tokens: 320,
+        },
+        None,
+    )
+    .await
+}
+
+async fn collect_backend_text<B: PromptBackend>(
+    backend: &B,
+    messages: Vec<ChatMessage>,
+    sampling: SamplingParams,
+    prompt_cache: Option<PromptCacheHint>,
+) -> Option<String> {
+    let planner_stream = backend.chat_stream_boxed(messages, sampling, prompt_cache);
     futures::pin_mut!(planner_stream);
 
     let mut response = String::new();
@@ -250,6 +531,46 @@ async fn run_model_planner<B: PromptBackend>(
     }
 
     Some(response)
+}
+
+fn build_planner_repair_messages(
+    user: &AuthUser,
+    message: &str,
+    raw_invalid_json: &str,
+    history: &[AssistantHistoryMessage],
+    issues: &[PlannerIssue],
+) -> Vec<ChatMessage> {
+    let role_label = if user.role == "admin" {
+        "admin"
+    } else {
+        "authenticated_user"
+    };
+    let issue_lines = issues
+        .iter()
+        .map(|issue| match issue.path.as_deref() {
+            Some(path) => format!("- {}: {} ({path})", issue.code, issue.message),
+            None => format!("- {}: {}", issue.code, issue.message),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    vec![
+        ChatMessage {
+            role: "system".to_string(),
+            content: "You repair invalid Rustyfin planner JSON.\nReturn JSON only.\nPreserve user intent but obey the allowed schema.\nDo not add tools not already justified by the original request.".to_string(),
+        },
+        ChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "Current user role: {role_label}\nAllowed tool inventory:\n{}\nRecent conversation:\n{}\nOriginal user message:\n{}\nValidation issues:\n{}\nRaw invalid JSON:\n{}",
+                planner_tool_inventory(user),
+                planner_history_summary(history),
+                message.trim(),
+                issue_lines,
+                raw_invalid_json.trim(),
+            ),
+        },
+    ]
 }
 
 fn planner_prompt_cache_hint(
@@ -301,7 +622,7 @@ fn build_model_planner_messages(
                 "You are the Rustyfin assistant tool planner. Choose zero to three grounded read-only tools. \
 Return JSON only with no markdown, no prose, and no code fences.\n\
 Schema:\n\
-{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}]}}\n\
+{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
 or\n\
 {{\"mode\":\"none\",\"tools\":[]}}\n\
 Rules:\n\
@@ -364,6 +685,12 @@ fn planner_tool_inventory(user: &AuthUser) -> String {
         .iter()
         .copied()
         .filter(|tool| tool_visible_to_user(*tool, user))
+        .filter(|tool| {
+            matches!(
+                tool.spec().access_mode,
+                super::types::ToolAccessMode::ReadOnly
+            )
+        })
         .map(|tool| {
             format!(
                 "- {}: {}{}",
@@ -477,13 +804,25 @@ fn truncate_for_planner(content: &str, max_chars: usize) -> String {
     trimmed.chars().take(max_chars).collect::<String>() + "..."
 }
 
-fn parse_model_planner_response(raw: &str) -> Option<ModelPlannerResponse> {
+fn parse_planner_ast(raw: &str) -> Result<PlannerAst, Vec<PlannerIssue>> {
     let cleaned = strip_markdown_code_fence(raw);
-    if let Ok(response) = serde_json::from_str::<ModelPlannerResponse>(cleaned) {
-        return Some(response);
+    if let Ok(ast) = serde_json::from_str::<PlannerAst>(cleaned) {
+        return Ok(ast);
     }
-    let candidate = extract_json_object(cleaned)?;
-    serde_json::from_str::<ModelPlannerResponse>(&candidate).ok()
+    let Some(candidate) = extract_json_object(cleaned) else {
+        return Err(vec![planner_issue(
+            "parse_failed",
+            "planner output did not contain a JSON object",
+            None,
+        )]);
+    };
+    serde_json::from_str::<PlannerAst>(&candidate).map_err(|error| {
+        vec![planner_issue(
+            "parse_failed",
+            &format!("planner JSON did not match the required schema: {error}"),
+            None,
+        )]
+    })
 }
 
 fn strip_markdown_code_fence(raw: &str) -> &str {
@@ -541,27 +880,76 @@ fn extract_json_object(raw: &str) -> Option<String> {
     None
 }
 
-fn normalize_model_plan(
-    response: &ModelPlannerResponse,
+fn validate_planner_ast(
+    ast: &PlannerAst,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
-) -> Vec<PlannedToolCall> {
+) -> Result<Vec<PlannedToolCall>, Vec<PlannerIssue>> {
     if is_tool_inventory_query(&message.to_ascii_lowercase()) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    if response.mode.as_deref() == Some("none") {
-        return Vec::new();
+    if matches!(ast, PlannerAst::None { tools } if !tools.is_empty()) {
+        return Err(vec![planner_issue(
+            "unsupported_combination",
+            "mode none cannot include tool calls",
+            Some("tools"),
+        )]);
+    }
+
+    if ast.tools().len() > MAX_TOOL_CALLS_PER_TURN {
+        return Err(vec![planner_issue(
+            "tool_count_exceeded",
+            &format!(
+                "planner proposed {} tools but the limit is {MAX_TOOL_CALLS_PER_TURN}",
+                ast.tools().len()
+            ),
+            Some("tools"),
+        )]);
+    }
+
+    if matches!(ast, PlannerAst::None { .. }) {
+        return Ok(Vec::new());
     }
 
     let mut planned = Vec::new();
     let mut seen = HashSet::new();
-    for tool in response.tools.iter().take(MAX_TOOL_CALLS_PER_TURN) {
+    let mut seen_domains = HashSet::new();
+    let mut issues = Vec::new();
+    for (index, tool) in ast.tools().iter().enumerate() {
+        let path = format!("tools[{index}]");
         let Some(parsed_tool) = AssistantToolName::from_str(&tool.tool.to_ascii_lowercase()) else {
+            issues.push(planner_issue(
+                "unknown_tool",
+                &format!("unknown planner tool `{}`", tool.tool),
+                Some(&format!("{path}.tool")),
+            ));
             continue;
         };
         if !tool_visible_to_user(parsed_tool, user) {
+            issues.push(planner_issue(
+                "tool_not_allowed",
+                &format!(
+                    "tool `{}` is not allowed for this user",
+                    parsed_tool.as_str()
+                ),
+                Some(&format!("{path}.tool")),
+            ));
+            continue;
+        }
+        if !matches!(
+            parsed_tool.spec().access_mode,
+            super::types::ToolAccessMode::ReadOnly
+        ) {
+            issues.push(planner_issue(
+                "tool_not_allowed",
+                &format!(
+                    "tool `{}` is confirmation-gated and cannot be planned by the model",
+                    parsed_tool.as_str()
+                ),
+                Some(&format!("{path}.tool")),
+            ));
             continue;
         }
         if matches!(
@@ -571,28 +959,92 @@ fn normalize_model_plan(
                 | AssistantToolName::WeatherGetHistory
         ) {
             if !message_allows_weather_tool(message, history) {
+                issues.push(planner_issue(
+                    "unsupported_combination",
+                    "weather tools are not valid for this message",
+                    Some(&format!("{path}.tool")),
+                ));
                 continue;
             }
-            let Some(location) = normalize_optional_query(tool.query.clone())
+            let merged_args = tool.merged_args();
+            let Some(location) = normalize_optional_query(merged_args.query.clone())
                 .or_else(|| extract_weather_location(message))
             else {
+                issues.push(planner_issue(
+                    "missing_required_argument",
+                    "weather tool requires a location",
+                    Some(&format!("{path}.args.query")),
+                ));
                 continue;
             };
             let Some((weather_tool, weather_input)) =
                 weather_tool_call_for_location(message, location)
             else {
+                issues.push(planner_issue(
+                    "invalid_argument",
+                    "weather tool arguments could not be normalized",
+                    Some(&format!("{path}.args.query")),
+                ));
                 continue;
             };
-            push_tool(&mut planned, &mut seen, weather_tool, weather_input);
+            let dedupe_key = format!(
+                "{}:{}",
+                weather_tool.as_str(),
+                serde_json::to_string(&weather_input).unwrap_or_default()
+            );
+            if !seen.insert(dedupe_key) {
+                issues.push(planner_issue(
+                    "duplicate_tool",
+                    "duplicate tool calls are not allowed",
+                    Some(&path),
+                ));
+                continue;
+            }
+            planned.push(PlannedToolCall {
+                tool: weather_tool,
+                input: weather_input,
+            });
             continue;
         }
-        let Some(input) = normalize_model_tool_input(parsed_tool, tool, message) else {
-            continue;
-        };
-        push_tool(&mut planned, &mut seen, parsed_tool, input);
+        match normalize_planner_tool_input(parsed_tool, &tool.merged_args(), message) {
+            Ok(input) => {
+                let dedupe_key = format!(
+                    "{}:{}",
+                    parsed_tool.as_str(),
+                    serde_json::to_string(&input).unwrap_or_default()
+                );
+                if !seen.insert(dedupe_key) {
+                    issues.push(planner_issue(
+                        "duplicate_tool",
+                        "duplicate tool calls are not allowed",
+                        Some(&path),
+                    ));
+                    continue;
+                }
+                if let Some(domain) = unsupported_combo_domain(parsed_tool) {
+                    if !seen_domains.insert(domain) {
+                        issues.push(planner_issue(
+                            "unsupported_combination",
+                            "planner proposed multiple overlapping tools for the same domain",
+                            Some(&path),
+                        ));
+                        continue;
+                    }
+                }
+                planned.push(PlannedToolCall {
+                    tool: parsed_tool,
+                    input,
+                });
+            }
+            Err(issue) => issues.push(issue.with_path_prefix(&path)),
+        }
     }
 
-    planned
+    if issues.is_empty() {
+        Ok(planned)
+    } else {
+        Err(issues)
+    }
 }
 
 fn message_allows_weather_tool(message: &str, history: &[AssistantHistoryMessage]) -> bool {
@@ -624,16 +1076,20 @@ fn tool_visible_to_user(tool: AssistantToolName, user: &AuthUser) -> bool {
     }
 }
 
-fn normalize_model_tool_input(
+fn normalize_planner_tool_input(
     tool: AssistantToolName,
-    response: &ModelPlannerTool,
+    args: &PlannerAstArgs,
     message: &str,
-) -> Option<AssistantToolInput> {
+) -> Result<AssistantToolInput, PlannerIssue> {
     match tool {
         AssistantToolName::CalendarCreateEvent
         | AssistantToolName::CalendarCreateBirthday
         | AssistantToolName::CalendarDeleteEvent
-        | AssistantToolName::DocumentCreateDownload => None,
+        | AssistantToolName::DocumentCreateDownload => Err(planner_issue(
+            "tool_not_allowed",
+            "write tools are not allowed in model planning",
+            None,
+        )),
         AssistantToolName::AccountGetProfileSummary
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
@@ -644,106 +1100,262 @@ fn normalize_model_tool_input(
         | AssistantToolName::SystemGetServiceHealth
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
-        | AssistantToolName::SystemGetRecentErrors => Some(AssistantToolInput::None),
-        AssistantToolName::CalendarListEvents => Some(extract_calendar_window(message, 7, None)),
-        AssistantToolName::CalendarUpcomingBirthdays => Some(extract_calendar_window(
+        | AssistantToolName::SystemGetRecentErrors => Ok(AssistantToolInput::None),
+        AssistantToolName::CalendarListEvents => Ok(extract_calendar_window(message, 7, None)),
+        AssistantToolName::CalendarUpcomingBirthdays => Ok(extract_calendar_window(
             message,
             30,
-            normalize_optional_query(response.query.clone())
+            normalize_optional_query(args.query.clone())
                 .or_else(|| extract_birthday_query(message)),
         )),
-        AssistantToolName::CalendarGetEventDetails => Some(extract_calendar_window(
-            message,
-            30,
-            normalize_optional_query(response.query.clone())
-                .or_else(|| extract_calendar_event_detail_query(message)),
-        )),
-        AssistantToolName::ChannelsListUnreadActivity => Some(AssistantToolInput::ChannelsFilter {
-            query: normalize_optional_query(response.query.clone())
+        AssistantToolName::CalendarGetEventDetails => {
+            let query = normalize_optional_query(args.query.clone())
+                .or_else(|| extract_calendar_event_detail_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "calendar detail queries require a specific event reference",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(extract_calendar_window(message, 30, Some(query)))
+        }
+        AssistantToolName::ChannelsListUnreadActivity => Ok(AssistantToolInput::ChannelsFilter {
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_channel_query(message)),
         }),
-        AssistantToolName::ChannelsGetTranscriptSummary => {
-            Some(AssistantToolInput::ChannelsFilter {
-                query: normalize_optional_query(response.query.clone())
-                    .or_else(|| extract_transcript_channel_query(message)),
-            })
-        }
+        AssistantToolName::ChannelsGetTranscriptSummary => Ok(AssistantToolInput::ChannelsFilter {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_transcript_channel_query(message)),
+        }),
         AssistantToolName::DownloadsListAvailableArtifacts => {
-            Some(AssistantToolInput::DownloadsFilter {
-                query: normalize_optional_query(response.query.clone())
+            let availability = validated_downloads_availability(args.availability.as_deref())?
+                .or_else(|| extract_downloads_availability(message));
+            Ok(AssistantToolInput::DownloadsFilter {
+                query: normalize_optional_query(args.query.clone())
                     .or_else(|| extract_downloads_follow_up_query(message))
                     .or_else(|| extract_downloads_query(message)),
-                availability: normalize_downloads_availability(response.availability.as_deref())
-                    .or_else(|| extract_downloads_availability(message)),
+                availability,
             })
         }
-        AssistantToolName::LibrarySearchTitles => Some(AssistantToolInput::LibrarySearch {
-            query: normalize_optional_query(response.query.clone())
+        AssistantToolName::LibrarySearchTitles => Ok(AssistantToolInput::LibrarySearch {
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_library_search_query(message))
-                .or_else(|| extract_library_follow_up_query(message))?,
+                .or_else(|| extract_library_follow_up_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "library search requires a title query",
+                        Some("args.query"),
+                    )
+                })?,
         }),
-        AssistantToolName::LibraryGetItemSummary => Some(AssistantToolInput::LibrarySearch {
-            query: normalize_optional_query(response.query.clone())
+        AssistantToolName::LibraryGetItemSummary => Ok(AssistantToolInput::LibrarySearch {
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_quoted_phrase(message))
                 .or_else(|| extract_library_follow_up_query(message))
-                .or_else(|| extract_library_search_query(message))?,
+                .or_else(|| extract_library_search_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "library detail queries require a title",
+                        Some("args.query"),
+                    )
+                })?,
         }),
-        AssistantToolName::LibrariesGetRecentlyAdded => Some(AssistantToolInput::LibraryRecent {
-            query: normalize_optional_query(response.query.clone())
+        AssistantToolName::LibrariesGetRecentlyAdded => Ok(AssistantToolInput::LibraryRecent {
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_recent_library_query(message)),
         }),
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
-        | AssistantToolName::WeatherGetHistory => normalize_optional_query(response.query.clone())
+        | AssistantToolName::WeatherGetHistory => normalize_optional_query(args.query.clone())
             .or_else(|| extract_weather_location(message))
-            .and_then(|location| weather_tool_input_for_location(message, location)),
-        AssistantToolName::WebSearchPublicWeb => Some(AssistantToolInput::WebSearch {
-            query: normalize_optional_query(response.query.clone())
-                .or_else(|| extract_public_web_search_query(message))?,
+            .and_then(|location| weather_tool_input_for_location(message, location))
+            .ok_or_else(|| {
+                planner_issue(
+                    "missing_required_argument",
+                    "weather tools require a location",
+                    Some("args.query"),
+                )
+            }),
+        AssistantToolName::WebSearchPublicWeb => Ok(AssistantToolInput::WebSearch {
+            query: normalize_optional_query(args.query.clone())
+                .or_else(|| extract_public_web_search_query(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "web search requires a query",
+                        Some("args.query"),
+                    )
+                })?,
         }),
-        AssistantToolName::WebFetchPublicPageSummary => Some(AssistantToolInput::WebFetch {
-            url: normalize_optional_query(response.url.clone())
-                .or_else(|| normalize_optional_query(response.query.clone()))
-                .or_else(|| extract_public_web_url(message))?,
+        AssistantToolName::WebFetchPublicPageSummary => Ok(AssistantToolInput::WebFetch {
+            url: validated_public_web_url(
+                normalize_optional_query(args.url.clone())
+                    .or_else(|| normalize_optional_query(args.query.clone()))
+                    .or_else(|| extract_public_web_url(message))
+                    .ok_or_else(|| {
+                        planner_issue(
+                            "missing_required_argument",
+                            "web fetch requires an explicit public URL",
+                            Some("args.url"),
+                        )
+                    })?,
+            )?,
         }),
-        AssistantToolName::RoomsListActive => Some(AssistantToolInput::RoomsFilter {
-            room_mode: normalize_room_mode(response.room_mode.as_deref())
+        AssistantToolName::RoomsListActive => Ok(AssistantToolInput::RoomsFilter {
+            room_mode: validated_room_mode(args.room_mode.as_deref())?
                 .or_else(|| detect_room_mode(message)),
-            query: normalize_optional_query(response.query.clone()),
+            query: normalize_optional_query(args.query.clone()),
         }),
-        AssistantToolName::RoomsListJoinable => Some(AssistantToolInput::RoomsFilter {
-            room_mode: normalize_room_mode(response.room_mode.as_deref())
+        AssistantToolName::RoomsListJoinable => Ok(AssistantToolInput::RoomsFilter {
+            room_mode: validated_room_mode(args.room_mode.as_deref())?
                 .or_else(|| detect_room_mode(message)),
-            query: normalize_optional_query(response.query.clone())
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_room_query(message)),
         }),
-        AssistantToolName::RoomsGetRoomSummary => Some(AssistantToolInput::RoomsFilter {
-            room_mode: normalize_room_mode(response.room_mode.as_deref())
+        AssistantToolName::RoomsGetRoomSummary => Ok(AssistantToolInput::RoomsFilter {
+            room_mode: validated_room_mode(args.room_mode.as_deref())?
                 .or_else(|| detect_room_mode(message)),
             query: Some(
-                normalize_optional_query(response.query.clone())
+                normalize_optional_query(args.query.clone())
                     .or_else(|| extract_room_query(message))
-                    .or_else(|| extract_quoted_phrase(message))?,
+                    .or_else(|| extract_quoted_phrase(message))
+                    .ok_or_else(|| {
+                        planner_issue(
+                            "missing_required_argument",
+                            "room detail queries require a room reference",
+                            Some("args.query"),
+                        )
+                    })?,
             ),
         }),
-        AssistantToolName::ServersListMinecraftStatus => Some(AssistantToolInput::ServerFilter {
-            query: normalize_optional_query(response.query.clone())
+        AssistantToolName::ServersListMinecraftStatus => Ok(AssistantToolInput::ServerFilter {
+            query: normalize_optional_query(args.query.clone())
                 .or_else(|| extract_server_query(message)),
-            availability: normalize_server_availability(response.availability.as_deref())
+            availability: validated_server_availability(args.availability.as_deref())?
                 .or_else(|| extract_server_availability(message)),
         }),
         AssistantToolName::ServersGetMinecraftServerSummary => {
-            Some(AssistantToolInput::ServerFilter {
+            Ok(AssistantToolInput::ServerFilter {
                 query: Some(
-                    normalize_optional_query(response.query.clone())
+                    normalize_optional_query(args.query.clone())
                         .or_else(|| extract_server_query(message))
                         .or_else(|| extract_quoted_phrase(message))
-                        .filter(|query| !query.is_empty())?,
+                        .filter(|query| !query.is_empty())
+                        .ok_or_else(|| {
+                            planner_issue(
+                                "missing_required_argument",
+                                "server detail queries require a server reference",
+                                Some("args.query"),
+                            )
+                        })?,
                 ),
-                availability: normalize_server_availability(response.availability.as_deref())
+                availability: validated_server_availability(args.availability.as_deref())?
                     .or_else(|| extract_server_availability(message)),
             })
         }
+    }
+}
+
+fn validated_room_mode(room_mode: Option<&str>) -> Result<Option<String>, PlannerIssue> {
+    match room_mode {
+        Some(raw) => normalize_room_mode(Some(raw))
+            .ok_or_else(|| {
+                planner_issue(
+                    "invalid_enum",
+                    "room_mode must be one of video, audio, youtube, web, screen, create, or play",
+                    Some("args.room_mode"),
+                )
+            })
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn validated_downloads_availability(
+    availability: Option<&str>,
+) -> Result<Option<String>, PlannerIssue> {
+    match availability {
+        Some(raw) => normalize_downloads_availability(Some(raw))
+            .ok_or_else(|| {
+                planner_issue(
+                    "invalid_enum",
+                    "availability must be one of available, planned, or unavailable",
+                    Some("args.availability"),
+                )
+            })
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn validated_server_availability(
+    availability: Option<&str>,
+) -> Result<Option<String>, PlannerIssue> {
+    match availability {
+        Some(raw) => normalize_server_availability(Some(raw))
+            .ok_or_else(|| {
+                planner_issue(
+                    "invalid_enum",
+                    "availability must be one of online, offline, healthy, or problem",
+                    Some("args.availability"),
+                )
+            })
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn validated_public_web_url(raw_url: String) -> Result<String, PlannerIssue> {
+    normalize_public_url(&raw_url)
+        .map(|url| url.to_string())
+        .map_err(|error| planner_issue("invalid_argument", &error, Some("args.url")))
+}
+
+fn unsupported_combo_domain(tool: AssistantToolName) -> Option<&'static str> {
+    match tool {
+        AssistantToolName::CalendarListEvents
+        | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::CalendarUpcomingBirthdays
+        | AssistantToolName::CalendarGetEventDetails => Some("calendar"),
+        AssistantToolName::LibrarySearchTitles
+        | AssistantToolName::LibraryGetItemSummary
+        | AssistantToolName::LibrariesGetRecentlyAdded
+        | AssistantToolName::LibrariesListAccessible => Some("library"),
+        AssistantToolName::RoomsListActive
+        | AssistantToolName::RoomsListJoinable
+        | AssistantToolName::RoomsGetRoomSummary => Some("rooms"),
+        AssistantToolName::ServersListMinecraftStatus
+        | AssistantToolName::ServersGetMinecraftServerSummary => Some("servers"),
+        AssistantToolName::WeatherGetCurrent
+        | AssistantToolName::WeatherGetForecast
+        | AssistantToolName::WeatherGetHistory => Some("weather"),
+        _ => None,
+    }
+}
+
+fn planner_issue(code: &str, message: &str, path: Option<&str>) -> PlannerIssue {
+    PlannerIssue {
+        code: code.to_string(),
+        message: message.to_string(),
+        path: path.map(str::to_string),
+    }
+}
+
+trait PlannerIssuePathExt {
+    fn with_path_prefix(self, prefix: &str) -> Self;
+}
+
+impl PlannerIssuePathExt for PlannerIssue {
+    fn with_path_prefix(mut self, prefix: &str) -> Self {
+        self.path = match self.path {
+            Some(path) if path.starts_with("tools[") => Some(path),
+            Some(path) => Some(format!("{prefix}.{path}")),
+            None => Some(prefix.to_string()),
+        };
+        self
     }
 }
 
@@ -1612,7 +2224,10 @@ fn apply_follow_up_tool_hints(
 
     for tool in recent_tools {
         match tool {
-            AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => {}
+            AssistantToolName::CalendarCreateEvent
+            | AssistantToolName::CalendarCreateBirthday
+            | AssistantToolName::CalendarDeleteEvent
+            | AssistantToolName::DocumentCreateDownload => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(
@@ -4387,19 +5002,27 @@ fn next_n_months_window(today: NaiveDate, months: i64) -> (NaiveDate, NaiveDate)
 #[cfg(test)]
 mod tests {
     use super::{
-        AssistantToolName, ModelPlannerResponse, clarification_for_message,
+        AssistantToolName, PlannerAst, clarification_for_message,
         deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
-        normalize_model_plan, parse_model_planner_response, plan_tool_calls,
-        plan_tool_calls_with_history, status_label_for_tool_call,
-        unsupported_write_response_for_message,
+        parse_planner_ast, plan_tool_calls, plan_tool_calls_with_history,
+        plan_tool_calls_with_model_assist, status_label_for_tool_call,
+        unsupported_write_response_for_message, validate_planner_ast,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
         AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-        AssistantHistoryMessage, AssistantToolContextBlock, AssistantToolInput,
+        AssistantHistoryMessage, AssistantPlannerMode, AssistantToolContextBlock,
+        AssistantToolInput,
     };
     use crate::auth::AuthUser;
+    use futures::stream::{self, BoxStream};
+    use rustfin_ai_agent::{
+        BackendCapabilities, BackendKind, ChatChunk, ChatMessage, PromptBackend, PromptCacheHint,
+        SamplingParams,
+    };
     use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     fn auth_user(role: &str) -> AuthUser {
         AuthUser {
@@ -4460,6 +5083,58 @@ mod tests {
                 "timezone_offset": "+00:00",
                 "unix_timestamp": 1775121600_i64,
             }),
+        }
+    }
+
+    struct MockPromptBackend {
+        responses: Mutex<VecDeque<String>>,
+    }
+
+    impl MockPromptBackend {
+        fn new(responses: Vec<&str>) -> Self {
+            Self {
+                responses: Mutex::new(
+                    responses
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect::<VecDeque<_>>(),
+                ),
+            }
+        }
+    }
+
+    impl PromptBackend for MockPromptBackend {
+        fn backend_kind(&self) -> BackendKind {
+            BackendKind::Local
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities {
+                kind: BackendKind::Local,
+                supports_streaming: true,
+                supports_prompt_cache: false,
+                supports_structured_output: true,
+                can_degrade: true,
+                max_parallel_requests: 1,
+            }
+        }
+
+        fn chat_stream_boxed(
+            &self,
+            _messages: Vec<ChatMessage>,
+            _sampling: SamplingParams,
+            _prompt_cache: Option<PromptCacheHint>,
+        ) -> BoxStream<'static, Result<ChatChunk, rustfin_ai_agent::AiError>> {
+            let response = self
+                .responses
+                .lock()
+                .expect("mock planner response lock")
+                .pop_front()
+                .unwrap_or_default();
+            Box::pin(stream::iter(vec![
+                Ok(ChatChunk::Token(response)),
+                Ok(ChatChunk::Done),
+            ]))
         }
     }
 
@@ -4527,25 +5202,7 @@ mod tests {
         assert_eq!(tools[0].tool, AssistantToolName::LibrarySearchTitles);
         match &tools[0].input {
             AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Interstellar"),
-            AssistantToolInput::None => panic!("expected library search input"),
-            AssistantToolInput::CalendarWindow { .. } => panic!("unexpected calendar window"),
-            AssistantToolInput::ChannelsFilter { .. } => panic!("unexpected channel filter"),
-            AssistantToolInput::DownloadsFilter { .. } => panic!("unexpected downloads filter"),
-            AssistantToolInput::LibraryRecent { .. } => panic!("unexpected recent library input"),
-            AssistantToolInput::Weather { .. } => panic!("unexpected weather input"),
-            AssistantToolInput::WeatherHistory { .. } => {
-                panic!("unexpected weather history input")
-            }
-            AssistantToolInput::WebSearch { .. } => panic!("unexpected web search"),
-            AssistantToolInput::WebFetch { .. } => panic!("unexpected web fetch"),
-            AssistantToolInput::RoomsFilter { .. } => panic!("unexpected room filter"),
-            AssistantToolInput::ServerFilter { .. } => panic!("unexpected server filter"),
-            AssistantToolInput::CalendarCreateEvent { .. } => {
-                panic!("unexpected calendar create event input")
-            }
-            AssistantToolInput::CalendarCreateBirthday { .. } => {
-                panic!("unexpected calendar create birthday input")
-            }
+            _ => panic!("expected library search input"),
         }
     }
 
@@ -4697,123 +5354,154 @@ mod tests {
     }
 
     #[test]
-    fn model_planner_parser_accepts_markdown_fenced_json() {
-        let parsed = parse_model_planner_response(
-            "```json\n{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}\n```",
+    fn planner_ast_parses_and_validates_valid_tool_plan() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}}]}",
         )
-        .expect("expected parsed planner response");
-        assert_eq!(parsed.mode.as_deref(), Some("tool_plan"));
-        assert_eq!(parsed.tools.len(), 1);
-        assert_eq!(parsed.tools[0].tool, "library_search_titles");
-        assert_eq!(parsed.tools[0].query.as_deref(), Some("Dune"));
-    }
-
-    #[test]
-    fn model_planner_parser_extracts_json_from_surrounding_prose() {
-        let parsed = parse_model_planner_response(
-            "I will use a grounded tool.\n{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"}]}\nThanks!",
-        )
-        .expect("expected parsed planner response");
-        assert_eq!(parsed.mode.as_deref(), Some("tool_plan"));
-        assert_eq!(parsed.tools.len(), 1);
-        assert_eq!(parsed.tools[0].tool, "calendar_list_events");
-    }
-
-    #[test]
-    fn model_planner_parser_rejects_non_json_output() {
-        assert!(parse_model_planner_response("no usable planner json here").is_none());
-    }
-
-    #[test]
-    fn model_planner_mode_none_discards_tool_entries() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"none\",\"tools\":[{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
-        )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(&response, &auth_user("admin"), "Do I have Dune?", &[]);
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn model_planner_normalization_respects_role_visibility() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"system_get_host_runtime_summary\"},{\"tool\":\"library_search_titles\",\"query\":\"Dune\"}]}",
-        )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("user"),
-            "How much RAM is the server using and do I have Dune?",
-            &[],
-        );
+        .expect("expected parsed planner AST");
+        let tools = validate_planner_ast(&ast, &auth_user("user"), "Do I have Dune?", &[])
+            .expect("expected validated tool plan");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::LibrarySearchTitles);
-    }
-
-    #[test]
-    fn model_planner_normalizes_server_filter_values() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"servers_list_minecraft_status\",\"availability\":\"running\",\"query\":\"Survival\"}]}",
-        )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("admin"),
-            "Is the Minecraft server called Survival online?",
-            &[],
-        );
-        assert_eq!(tools.len(), 1);
         match &tools[0].input {
-            AssistantToolInput::ServerFilter {
-                query,
-                availability,
-            } => {
-                assert_eq!(query.as_deref(), Some("Survival"));
-                assert_eq!(availability.as_deref(), Some("online"));
-            }
-            _ => panic!("expected server filter"),
+            AssistantToolInput::LibrarySearch { query } => assert_eq!(query, "Dune"),
+            _ => panic!("expected normalized library search"),
         }
     }
 
     #[test]
-    fn model_planner_normalization_deduplicates_duplicate_tools() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"},{\"tool\":\"calendar_list_events\"}]}",
+    fn planner_ast_accepts_markdown_fenced_json() {
+        let ast = parse_planner_ast(
+            "```json\n{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}}]}\n```",
         )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("user"),
-            "What events are this week?",
-            &[],
-        );
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
+        .expect("expected parsed planner AST");
+        assert!(matches!(ast, PlannerAst::ToolPlan { .. }));
     }
 
     #[test]
-    fn model_planner_normalization_ignores_tools_without_required_inputs() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\"},{\"tool\":\"weather_get_current\"}]}",
+    fn planner_ast_rejects_unknown_tool_names() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"totally_unknown_tool\"}]}",
         )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(&response, &auth_user("user"), "Hello there", &[]);
-        assert!(tools.is_empty());
+        .expect("expected parsed planner AST");
+        let issues = validate_planner_ast(&ast, &auth_user("user"), "hello", &[])
+            .expect_err("expected unknown tool rejection");
+        assert!(issues.iter().any(|issue| issue.code == "unknown_tool"));
     }
 
     #[test]
-    fn model_planner_rejects_weather_for_current_datetime_question() {
-        let response: ModelPlannerResponse = serde_json::from_str(
-            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"weather_get_forecast\",\"query\":\"London\"}]}",
+    fn planner_ast_rejects_excessive_tool_count() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_list_events\"},{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}},{\"tool\":\"rooms_list_active\"},{\"tool\":\"servers_list_minecraft_status\"}]}",
         )
-        .expect("expected planner response");
-        let tools = normalize_model_plan(
-            &response,
-            &auth_user("user"),
-            "What day next Tuesday would be?",
+        .expect("expected parsed planner AST");
+        let issues = validate_planner_ast(
+            &ast,
+            &auth_user("admin"),
+            "What events are this week, do I have Dune, what rooms are active, and what servers are online?",
             &[],
+        )
+        .expect_err("expected tool-count rejection");
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "tool_count_exceeded")
         );
-        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn planner_ast_rejects_invalid_enum_values() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"rooms_list_active\",\"args\":{\"room_mode\":\"party\"}}]}",
+        )
+        .expect("expected parsed planner AST");
+        let issues = validate_planner_ast(&ast, &auth_user("user"), "What rooms are active?", &[])
+            .expect_err("expected invalid enum rejection");
+        assert!(issues.iter().any(|issue| issue.code == "invalid_enum"));
+    }
+
+    #[test]
+    fn planner_ast_rejects_missing_required_args() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\"}]}",
+        )
+        .expect("expected parsed planner AST");
+        let issues = validate_planner_ast(&ast, &auth_user("user"), "Hello there", &[])
+            .expect_err("expected missing arg rejection");
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.code == "missing_required_argument")
+        );
+    }
+
+    #[test]
+    fn planner_ast_rejects_write_tools_from_model_output() {
+        let ast = parse_planner_ast(
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"calendar_create_event\",\"args\":{\"query\":\"Team sync\"}}]}",
+        )
+        .expect("expected parsed planner AST");
+        let issues = validate_planner_ast(&ast, &auth_user("user"), "Add Team sync tomorrow", &[])
+            .expect_err("expected write-tool rejection");
+        assert!(issues.iter().any(|issue| issue.code == "tool_not_allowed"));
+    }
+
+    #[tokio::test]
+    async fn planner_repair_succeeds_after_one_failed_parse() {
+        let backend = MockPromptBackend::new(vec![
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\"}]",
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}}]}",
+        ]);
+        let planned = plan_tool_calls_with_model_assist(
+            &backend,
+            &auth_user("user"),
+            "Do I have \"Dune\" in my library?",
+            &[],
+        )
+        .await;
+        assert_eq!(planned.mode, AssistantPlannerMode::ModelStructured);
+        assert_eq!(planned.calls.len(), 1);
+        assert_eq!(
+            planned.calls[0].tool,
+            AssistantToolName::LibrarySearchTitles
+        );
+        assert_eq!(planned.debug.execution.parse_attempts, 2);
+        assert_eq!(planned.debug.execution.repair_attempts, 1);
+        assert_eq!(planned.debug.execution.repair_successes, 1);
+        assert_eq!(planned.debug.repair_records.len(), 1);
+        assert!(planned.debug.repair_records[0].repaired_successfully);
+    }
+
+    #[tokio::test]
+    async fn planner_repair_exhaustion_triggers_deterministic_fallback() {
+        let backend = MockPromptBackend::new(vec![
+            "not valid json",
+            "still not valid json",
+            "still not valid json again",
+        ]);
+        let planned = plan_tool_calls_with_model_assist(
+            &backend,
+            &auth_user("user"),
+            "What is the weather in Dublin right now?",
+            &[],
+        )
+        .await;
+        assert_eq!(planned.mode, AssistantPlannerMode::DeterministicFallback);
+        assert_eq!(planned.calls.len(), 1);
+        assert_eq!(planned.calls[0].tool, AssistantToolName::WeatherGetCurrent);
+        assert_eq!(planned.debug.execution.repair_attempts, 2);
+        assert_eq!(
+            planned.debug.fallback_reason.as_deref(),
+            Some("repair_exhausted")
+        );
+        assert_eq!(
+            planned
+                .debug
+                .execution
+                .fallback_reason
+                .map(|reason| reason.as_str()),
+            Some("repair_exhausted")
+        );
     }
 
     #[test]

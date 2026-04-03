@@ -1,0 +1,3 @@
+{"name":"deep_research_datetime","task_type":"deep_research_report","objective":"What date is it today?","max_workers":3,"expected_worker_profiles":["source_scout_worker","grounding_worker"],"required_artifact_substrings":["Deep Research Report","Sources"],"allowed_runtime_budget_ms":5000}
+{"name":"grounded_document_datetime","task_type":"grounded_document_generation","prompt":"What date is it today?","title":"today-report","format":"markdown","required_artifact_substrings":["# today-report","Sources"],"allowed_runtime_budget_ms":5000}
+{"name":"ai_eval_report_task","task_type":"ai_eval_run","suite":"default","required_artifact_substrings":["AI Eval Report","Overall result"],"allowed_runtime_budget_ms":5000}

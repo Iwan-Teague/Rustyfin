@@ -91,7 +91,7 @@ pub fn detect_native_user_context(repo_root: &Path) -> Result<NativeUserContext>
                 env::var("USER")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
-                    .or_else(|| Some(id_value("-un").ok()?))
+                    .or_else(|| id_value("-un").ok())
             }
         })
         .context("failed to resolve native install user")?;
@@ -598,7 +598,7 @@ pub fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) -> Result<()> 
         let src = arch_lib.join(lib);
         let dst = cuda_lib64.join(lib);
         if src.exists() && !dst.exists() {
-            let _ = run_root_command(
+            run_root_command(
                 "ln",
                 &[
                     "-sf",
@@ -620,7 +620,7 @@ pub fn ensure_cuda_lib_symlinks(user_context: &NativeUserContext) -> Result<()> 
                 "CUDA_PATH=/usr/lib/cuda\n",
                 "RUSTFLAGS=-L/usr/lib/x86_64-linux-gnu -L/usr/lib/cuda/lib64\n",
             );
-            let _ = run_root_command(
+            run_root_command(
                 "bash",
                 &[
                     "-c",

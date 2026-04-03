@@ -688,6 +688,19 @@ function runtimePhaseLabel(phase: AiRuntimeResponse['turn']['phase']): string {
   }
 }
 
+function runtimeRoutingSummary(route: AiRuntimeResponse['role_routing'][number]): string {
+  const parts = [
+    route.backend_kind,
+    route.selection_source.replaceAll('_', ' '),
+    route.recommendation_status === 'applied'
+      ? 'benchmark applied'
+      : route.recommendation_status === 'not_applicable'
+        ? null
+        : route.recommendation_status.replaceAll('_', ' '),
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
 function pendingActionExpired(pendingAction: AiPendingAction): boolean {
   return (
     pendingAction.status === 'expired' ||
@@ -786,6 +799,19 @@ function RuntimePanel({
             <p>{runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}</p>
             {configuredDevices ? <p>{configuredDevices}</p> : null}
           </div>
+          {runtime.role_routing.length > 0 ? (
+            <div className="mt-3 space-y-2 text-xs muted">
+              {runtime.role_routing.map((route) => (
+                <div key={`${route.role}-${route.model_name}-${route.backend_id}`}>
+                  <p className="font-medium text-[var(--text-main)]">
+                    {titleCase(route.role)} · {route.model_name}
+                  </p>
+                  <p>{runtimeRoutingSummary(route)}</p>
+                  {route.recommendation_note ? <p>{route.recommendation_note}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
 
         <section className="border-b border-[var(--border)] pb-4">

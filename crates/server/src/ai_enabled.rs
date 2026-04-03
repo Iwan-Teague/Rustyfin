@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_stream::stream;
@@ -19,26 +21,30 @@ use crate::ai_assistant::context::AssistantContext;
 use crate::ai_assistant::memory::{
     augment_history_with_entity_graph, build_grounding_chunks_for_turn, persist_grounding_artifacts,
 };
-use crate::ai_assistant::scheduler::{PlannerBackendSelection, TurnPriority, TurnScheduler};
+use crate::ai_assistant::scheduler::{TurnPriority, TurnScheduler};
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
     AssistantFollowUpContext, AssistantGroundingChunk, AssistantGroundingSource,
     AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantPlannerMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
-    AssistantToolActivityEvent, AssistantToolActivityState, AssistantToolContextBlock,
-    AssistantToolInput, AssistantTurnStats, PlannedToolSet,
+    AssistantPlannerDebug, AssistantPlannerMode, AssistantRuntimePhase, AssistantStatusEvent,
+    AssistantStatusKind, AssistantToolActivityEvent, AssistantToolActivityState,
+    AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats, ConversationPromptDebug,
+    PlannedToolSet,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
-    deterministic_current_datetime_reply, deterministic_network_reply,
+    deterministic_current_datetime_reply, deterministic_library_reply, deterministic_network_reply,
     deterministic_tool_inventory_reply, immediate_response_for_message,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
-use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
+use crate::ai_audit::{
+    AiAssistantAuditResponseKind, persist_chat_audit_event, persist_chat_audit_event_with_planner,
+};
 use crate::ai_conversations::ConversationMessageRequest;
+use crate::ai_model_routing::RoleRoutingDecision;
 use crate::ai_storage::{
     AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
 };
@@ -49,8 +55,19 @@ use crate::state::AppState;
 pub struct EngineState {
     pub loaded_model: Option<String>,
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
+    pub role_models: HashMap<rustfin_ai_agent::ModelRole, LoadedRoleModel>,
+    pub role_routing: Vec<RoleRoutingDecision>,
+    pub last_prompt_debug: Option<ConversationPromptDebug>,
     pub active_phase: AssistantRuntimePhase,
     pub scheduler: std::sync::Arc<TurnScheduler>,
+}
+
+#[derive(Clone)]
+pub struct LoadedRoleModel {
+    pub model_name: String,
+    pub backend_id: String,
+    pub backend_kind: rustfin_ai_agent::BackendKind,
+    pub backend: Arc<dyn rustfin_ai_agent::InferenceBackend>,
 }
 
 impl Default for EngineState {
@@ -58,6 +75,9 @@ impl Default for EngineState {
         Self {
             loaded_model: None,
             engine: None,
+            role_models: HashMap::new(),
+            role_routing: Vec::new(),
+            last_prompt_debug: None,
             active_phase: AssistantRuntimePhase::Idle,
             scheduler: std::sync::Arc::new(TurnScheduler::new()),
         }
@@ -73,6 +93,7 @@ pub fn ai_router() -> Router<AppState> {
     Router::new()
         .route("/models", get(list_models))
         .route("/runtime", get(crate::ai_runtime::get_ai_runtime))
+        .merge(crate::ai_tasks::router())
         .route(
             "/transcribe",
             post(crate::ai_transcribe::transcribe_audio).layer(DefaultBodyLimit::max(
@@ -155,6 +176,7 @@ async fn stream_conversation_message(
         AssistantChatRequest {
             model: req.model,
             message: req.message,
+            response_mode: crate::ai_assistant::types::AssistantResponseMode::Thinking,
             confirmation_token: req.confirmation_token,
             history,
         },
@@ -168,9 +190,10 @@ fn stream_chat_response(
     req: AssistantChatRequest,
     persistence: Option<ConversationPersistence>,
 ) -> Response {
-    let model_name = req.model.clone();
+    let requested_model_name = req.model.clone();
     let history_len = req.history.len();
     let sse_stream = stream! {
+        let mut model_name = requested_model_name.clone();
         let trace_id = uuid::Uuid::new_v4().to_string();
         let assistant_context = AssistantContext::new(&user, trace_id.clone());
         let turn_started = Instant::now();
@@ -189,10 +212,18 @@ fn stream_chat_response(
             trace_id = %trace_id,
             user_id = %user.user_id,
             username = %user.username,
-            model = %model_name,
+            model = %requested_model_name,
             history_len,
             "ai chat request received"
         );
+
+        {
+            let mut guard = state.engine.lock().await;
+            guard.role_models.clear();
+            guard.role_routing.clear();
+            guard.loaded_model = None;
+            guard.engine = None;
+        }
 
         let planning_started_ts_ms = now_ts_ms();
         set_engine_phase(&state, AssistantRuntimePhase::Planning).await;
@@ -267,7 +298,7 @@ fn stream_chat_response(
                             &[],
                             &[],
                             &grounding_chunks,
-                            &[],
+                            &grounding_sources,
                             &activity_trace,
                             stats.as_ref(),
                             None,
@@ -540,7 +571,7 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &grounding_chunks,
-                    &[],
+                    &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     pending_action.as_ref(),
@@ -620,7 +651,7 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &grounding_chunks,
-                    &[],
+                    &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     None,
@@ -686,6 +717,7 @@ fn stream_chat_response(
                 &[],
                 &[],
                 &[],
+                &[],
                 None,
             )
             .await;
@@ -699,6 +731,7 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &[],
+                    &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     None,
@@ -769,7 +802,7 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &grounding_chunks,
-                    &[],
+                    &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     None,
@@ -807,6 +840,69 @@ fn stream_chat_response(
         .await;
 
         let model_dir = current_model_dir(&state).await;
+        let available_models = crate::ai_storage::list_models_from_state(&state)
+            .await
+            .unwrap_or_default();
+        let available_model_names = available_models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect::<Vec<_>>();
+        let scheduler = {
+            let guard = state.engine.lock().await;
+            guard.scheduler.clone()
+        };
+        let remote_backend = match crate::ai_admin::load_remote_backend_config(&state).await {
+            Ok(Some(remote_config)) => {
+                scheduler.set_remote_backend(Some(remote_config.clone()));
+                Some(remote_config)
+            }
+            Ok(None) => {
+                scheduler.set_remote_backend(None);
+                None
+            }
+            Err(error) => {
+                warn!(
+                    trace_id = %trace_id,
+                    user_id = %user.user_id,
+                    error = ?error,
+                    "failed to load persisted remote AI backend config; continuing with local role routing"
+                );
+                None
+            }
+        };
+        let profiles = load_model_profiles_for_host(&state).await;
+        let mut role_routing = crate::ai_model_routing::resolve_role_routing_plan(
+            Some(&requested_model_name),
+            &available_model_names,
+            &profiles,
+            remote_backend.as_ref(),
+            chrono::Utc::now().timestamp(),
+        );
+        let answer_route = role_route(&role_routing, rustfin_ai_agent::ModelRole::Answer)
+            .cloned()
+            .unwrap_or_else(|| crate::ai_model_routing::ResolvedRoleRouting {
+                selection: rustfin_ai_agent::RoleModelSelection {
+                    model_name: requested_model_name.clone(),
+                    source: rustfin_ai_agent::ModelSelectionSource::ExplicitRequest,
+                },
+                decision: crate::ai_model_routing::RoleRoutingDecision {
+                    role: rustfin_ai_agent::ModelRole::Answer,
+                    model_name: requested_model_name.clone(),
+                    backend_id: "local_llama".to_string(),
+                    backend_kind: rustfin_ai_agent::BackendKind::Local,
+                    selection_source: rustfin_ai_agent::ModelSelectionSource::ExplicitRequest,
+                    recommendation_status: crate::ai_benchmark_recommendations::BenchmarkRecommendationStatus::Missing,
+                    recommendation_note: Some("no answer-role routing decision was produced".to_string()),
+                    recommendation_model_name: None,
+                    recommendation_updated_ts: None,
+                },
+                tuning_profile: None,
+            });
+        model_name = answer_route.selection.model_name.clone();
+        {
+            let mut guard = state.engine.lock().await;
+            guard.role_routing = role_routing.iter().map(|route| route.decision.clone()).collect();
+        }
         let gguf_path = match model_file_path(&model_dir, &model_name) {
             Ok(path) => path,
             Err(error) => {
@@ -838,22 +934,6 @@ fn stream_chat_response(
             .await
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let scheduler = {
-            let guard = state.engine.lock().await;
-            guard.scheduler.clone()
-        };
-        match crate::ai_admin::load_remote_backend_config(&state).await {
-            Ok(Some(remote_config)) => scheduler.set_remote_backend(Some(remote_config)),
-            Ok(None) => {}
-            Err(error) => {
-                warn!(
-                    trace_id = %trace_id,
-                    user_id = %user.user_id,
-                    error = ?error,
-                    "failed to load persisted remote AI backend config; continuing with local planner"
-                );
-            }
-        }
         let turn_priority = TurnPriority::Interactive;
 
         set_engine_phase(&state, AssistantRuntimePhase::LoadingModel).await;
@@ -863,8 +943,8 @@ fn stream_chat_response(
                     turn_priority,
                     &model_name,
                     gguf_path.clone(),
-                    engine_params_from_env(),
-                    model_size_bytes.saturating_mul(3).saturating_div(2),
+                    engine_params_for_profile(answer_route.tuning_profile.as_ref()),
+                    estimated_model_bytes(model_size_bytes, answer_route.tuning_profile.as_ref()),
                 )
                 .await
             {
@@ -900,62 +980,227 @@ fn stream_chat_response(
                 }
             };
 
+        let answer_backend: Arc<dyn rustfin_ai_agent::InferenceBackend> =
+            Arc::new(rustfin_ai_agent::LocalLlamaBackend::new(
+                model_name.clone(),
+                engine.clone(),
+            ));
+        let mut loaded_role_models = HashMap::new();
+        loaded_role_models.insert(
+            rustfin_ai_agent::ModelRole::Answer,
+            LoadedRoleModel {
+                model_name: model_name.clone(),
+                backend_id: "local_llama".to_string(),
+                backend_kind: rustfin_ai_agent::BackendKind::Local,
+                backend: answer_backend.clone(),
+            },
+        );
+
+        if let Some(planner_route) = role_route(&role_routing, rustfin_ai_agent::ModelRole::Planner)
+            .cloned()
+        {
+            let planner_backend = if let Some(loaded) =
+                find_loaded_backend_for_route(&loaded_role_models, &planner_route)
+            {
+                loaded.backend
+            } else {
+                match planner_route.decision.backend_kind {
+                    rustfin_ai_agent::BackendKind::Remote => {
+                        match remote_backend.clone() {
+                            Some(remote_config) => match rustfin_ai_agent::RemotePromptBackend::new(
+                                rustfin_ai_agent::RemoteBackendConfig::from(&remote_config),
+                            ) {
+                                Ok(remote_prompt_backend) => {
+                                    Arc::new(remote_prompt_backend)
+                                        as Arc<dyn rustfin_ai_agent::InferenceBackend>
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        trace_id = %trace_id,
+                                        user_id = %user.user_id,
+                                        error = %error,
+                                        "failed to initialize remote planner backend; falling back to answer backend"
+                                    );
+                                    if let Some(route) = role_routing
+                                        .iter_mut()
+                                        .find(|route| route.decision.role == rustfin_ai_agent::ModelRole::Planner)
+                                    {
+                                        route.selection.model_name = model_name.clone();
+                                        route.selection.source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                        route.decision.model_name = model_name.clone();
+                                        route.decision.backend_id = "local_llama".to_string();
+                                        route.decision.backend_kind = rustfin_ai_agent::BackendKind::Local;
+                                        route.decision.selection_source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                        route.decision.recommendation_note = Some(format!(
+                                            "remote planner backend initialization failed: {error}"
+                                        ));
+                                    }
+                                    answer_backend.clone()
+                                }
+                            },
+                            None => answer_backend.clone(),
+                        }
+                    }
+                    rustfin_ai_agent::BackendKind::Local => {
+                        let planner_path =
+                            model_file_path(&model_dir, &planner_route.selection.model_name).ok();
+                        let planner_size_bytes = if let Some(path) = planner_path.as_ref() {
+                            tokio::fs::metadata(path)
+                                .await
+                                .map(|metadata| metadata.len())
+                                .unwrap_or_default()
+                        } else {
+                            0
+                        };
+                        if let Some(path) = planner_path {
+                            match scheduler
+                                .acquire_aux_model(
+                                    &planner_route.selection.model_name,
+                                    path,
+                                    engine_params_for_profile(planner_route.tuning_profile.as_ref()),
+                                    estimated_model_bytes(
+                                        planner_size_bytes,
+                                        planner_route.tuning_profile.as_ref(),
+                                    ),
+                                )
+                                .await
+                            {
+                                Ok((planner_engine, _planner_load_duration_ms)) => {
+                                    Arc::new(rustfin_ai_agent::LocalLlamaBackend::new(
+                                        planner_route.selection.model_name.clone(),
+                                        planner_engine,
+                                    )) as Arc<dyn rustfin_ai_agent::InferenceBackend>
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        trace_id = %trace_id,
+                                        user_id = %user.user_id,
+                                        role = "planner",
+                                        model = %planner_route.selection.model_name,
+                                        error = %error,
+                                        "failed to load planner role model; falling back to answer backend"
+                                    );
+                                    if let Some(route) = role_routing
+                                        .iter_mut()
+                                        .find(|route| route.decision.role == rustfin_ai_agent::ModelRole::Planner)
+                                    {
+                                        route.selection.model_name = model_name.clone();
+                                        route.selection.source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                        route.decision.model_name = model_name.clone();
+                                        route.decision.backend_id = "local_llama".to_string();
+                                        route.decision.backend_kind = rustfin_ai_agent::BackendKind::Local;
+                                        route.decision.selection_source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                        route.decision.recommendation_note = Some(format!(
+                                            "planner role model load failed: {error}"
+                                        ));
+                                    }
+                                    answer_backend.clone()
+                                }
+                            }
+                        } else {
+                            if let Some(route) = role_routing
+                                .iter_mut()
+                                .find(|route| route.decision.role == rustfin_ai_agent::ModelRole::Planner)
+                            {
+                                route.selection.model_name = model_name.clone();
+                                route.selection.source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                route.decision.model_name = model_name.clone();
+                                route.decision.backend_id = "local_llama".to_string();
+                                route.decision.backend_kind = rustfin_ai_agent::BackendKind::Local;
+                                route.decision.selection_source = rustfin_ai_agent::ModelSelectionSource::Fallback;
+                                route.decision.recommendation_note = Some(format!(
+                                    "planner role model `{}` was not found locally",
+                                    planner_route.selection.model_name
+                                ));
+                            }
+                            answer_backend.clone()
+                        }
+                    }
+                }
+            };
+
+            let effective_planner_route =
+                role_route(&role_routing, rustfin_ai_agent::ModelRole::Planner)
+                    .cloned()
+                    .unwrap_or(planner_route);
+            loaded_role_models.insert(
+                rustfin_ai_agent::ModelRole::Planner,
+                LoadedRoleModel {
+                    model_name: effective_planner_route.selection.model_name,
+                    backend_id: effective_planner_route.decision.backend_id,
+                    backend_kind: effective_planner_route.decision.backend_kind,
+                    backend: planner_backend,
+                },
+            );
+        }
+
         {
             let mut guard = state.engine.lock().await;
             guard.loaded_model = Some(model_name.clone());
             guard.engine = Some(engine.clone());
+            guard.role_models = loaded_role_models;
+            guard.role_routing = role_routing.iter().map(|route| route.decision.clone()).collect();
             guard.active_phase = AssistantRuntimePhase::Planning;
         }
 
         let planner_started = Instant::now();
         let planned_tool_set = if scheduler_decision.prefer_deterministic_planner {
+            let calls = crate::ai_assistant::orchestrator::plan_tool_calls_with_history(
+                &req.message,
+                &augmented_history,
+            );
             PlannedToolSet {
                 mode: AssistantPlannerMode::DeterministicFallback,
-                calls: crate::ai_assistant::orchestrator::plan_tool_calls_with_history(
-                    &req.message,
-                    &augmented_history,
-                ),
+                debug: AssistantPlannerDebug {
+                    schema_version: 2,
+                    planner_mode: Some(
+                        AssistantPlannerMode::DeterministicFallback
+                            .as_str()
+                            .to_string(),
+                    ),
+                    validated_call_count: calls.len() as u32,
+                    final_selected_tools: calls
+                        .iter()
+                        .map(|call| call.tool.as_str().to_string())
+                        .collect(),
+                    ..AssistantPlannerDebug::default()
+                },
+                calls,
             }
         } else {
-            match &scheduler_decision.planner_backend {
-                PlannerBackendSelection::Local => {
-                    plan_tool_calls_with_model_assist(&engine, &user, &req.message, &augmented_history)
-                        .await
+            let planner_loaded = {
+                let guard = state.engine.lock().await;
+                guard
+                    .role_models
+                    .get(&rustfin_ai_agent::ModelRole::Planner)
+                    .cloned()
+            };
+            match planner_loaded {
+                Some(planner_loaded) => {
+                    let planner_backend = rustfin_ai_agent::RoleBoundPromptBackend::new(
+                        planner_loaded.backend,
+                        rustfin_ai_agent::ModelRole::Planner,
+                    );
+                    plan_tool_calls_with_model_assist(
+                        &planner_backend,
+                        &user,
+                        &req.message,
+                        &augmented_history,
+                    )
+                    .await
                 }
-                PlannerBackendSelection::Remote(config) => {
-                    match rustfin_ai_agent::RemotePromptBackend::new(
-                        rustfin_ai_agent::RemoteBackendConfig::from(config),
-                    ) {
-                        Ok(remote_backend) => {
-                            plan_tool_calls_with_model_assist(
-                                &remote_backend,
-                                &user,
-                                &req.message,
-                                &augmented_history,
-                            )
-                            .await
-                        }
-                        Err(error) => {
-                            warn!(
-                                trace_id = %trace_id,
-                                user_id = %user.user_id,
-                                model = %model_name,
-                                error = %error,
-                                "failed to initialize remote planner backend; using local deterministic planning"
-                            );
-                            PlannedToolSet {
-                                mode: AssistantPlannerMode::DeterministicFallback,
-                                calls: crate::ai_assistant::orchestrator::plan_tool_calls_with_history(
-                                    &req.message,
-                                    &augmented_history,
-                                ),
-                            }
-                        }
-                    }
-                }
+                None => PlannedToolSet {
+                    mode: AssistantPlannerMode::DeterministicFallback,
+                    calls: crate::ai_assistant::orchestrator::plan_tool_calls_with_history(
+                        &req.message,
+                        &augmented_history,
+                    ),
+                    debug: AssistantPlannerDebug::default(),
+                },
             }
         };
         let planner_duration_ms = planner_started.elapsed().as_millis() as u64;
+        let planner_debug = planned_tool_set.debug.clone();
         let planned_tools = planned_tool_set.calls;
         info!(
             trace_id = %trace_id,
@@ -1123,7 +1368,7 @@ fn stream_chat_response(
             deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
         {
             assistant_content = datetime_reply;
-            stats = Some(build_turn_stats(
+            stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
                 0,
@@ -1133,6 +1378,7 @@ fn stream_chat_response(
                 queue_duration_ms,
                 model_load_duration_ms,
                 0.0,
+                Some(&planner_debug),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1161,7 +1407,7 @@ fn stream_chat_response(
                 )
                 .await;
             }
-            persist_chat_audit_event(
+            persist_chat_audit_event_with_planner(
                 &state,
                 &user,
                 &req,
@@ -1171,6 +1417,7 @@ fn stream_chat_response(
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
+                Some(&planner_debug),
                 None,
             )
             .await;
@@ -1190,7 +1437,7 @@ fn stream_chat_response(
             deterministic_calendar_reply(&req.message, &grounding_blocks)
         {
             assistant_content = calendar_reply;
-            stats = Some(build_turn_stats(
+            stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
                 0,
@@ -1200,6 +1447,7 @@ fn stream_chat_response(
                 queue_duration_ms,
                 model_load_duration_ms,
                 0.0,
+                Some(&planner_debug),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1228,7 +1476,7 @@ fn stream_chat_response(
                 )
                 .await;
             }
-            persist_chat_audit_event(
+            persist_chat_audit_event_with_planner(
                 &state,
                 &user,
                 &req,
@@ -1238,6 +1486,7 @@ fn stream_chat_response(
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
+                Some(&planner_debug),
                 None,
             )
             .await;
@@ -1257,7 +1506,7 @@ fn stream_chat_response(
             deterministic_network_reply(&req.message, &grounding_blocks)
         {
             assistant_content = network_reply;
-            stats = Some(build_turn_stats(
+            stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
                 0,
@@ -1267,6 +1516,7 @@ fn stream_chat_response(
                 queue_duration_ms,
                 model_load_duration_ms,
                 0.0,
+                Some(&planner_debug),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1295,7 +1545,7 @@ fn stream_chat_response(
                 )
                 .await;
             }
-            persist_chat_audit_event(
+            persist_chat_audit_event_with_planner(
                 &state,
                 &user,
                 &req,
@@ -1305,6 +1555,76 @@ fn stream_chat_response(
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
+                Some(&planner_debug),
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(library_reply) =
+            deterministic_library_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = library_reply;
+            stats = Some(build_turn_stats_with_planner(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+                Some(&planner_debug),
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event_with_planner(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                Some(&planner_debug),
                 None,
             )
             .await;
@@ -1322,7 +1642,7 @@ fn stream_chat_response(
 
         if let Some(weather_reply) = deterministic_weather_reply(&req.message, &grounding_blocks) {
             assistant_content = weather_reply;
-            stats = Some(build_turn_stats(
+            stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
                 0,
@@ -1332,6 +1652,7 @@ fn stream_chat_response(
                 queue_duration_ms,
                 model_load_duration_ms,
                 0.0,
+                Some(&planner_debug),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1360,7 +1681,7 @@ fn stream_chat_response(
                 )
                 .await;
             }
-            persist_chat_audit_event(
+            persist_chat_audit_event_with_planner(
                 &state,
                 &user,
                 &req,
@@ -1370,6 +1691,7 @@ fn stream_chat_response(
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
+                Some(&planner_debug),
                 None,
             )
             .await;
@@ -1405,15 +1727,23 @@ fn stream_chat_response(
         ));
 
         let prompt_request = crate::ai_assistant::AssistantChatRequest {
-            model: req.model.clone(),
+            model: model_name.clone(),
             message: req.message.clone(),
+            response_mode: req.response_mode,
             confirmation_token: req.confirmation_token.clone(),
             history: augmented_history.clone(),
         };
         let messages = build_assistant_messages(prompt_request, &grounding_chunks);
-        let mut sampling = rustfin_ai_agent::SamplingParams::default();
-        sampling.max_tokens = scheduler_decision.max_generation_tokens;
-        let raw_stream = engine.chat_stream(messages, sampling);
+        let sampling = rustfin_ai_agent::SamplingParams {
+            max_tokens: scheduler_decision.max_generation_tokens,
+            ..rustfin_ai_agent::SamplingParams::default()
+        };
+        let raw_stream = answer_backend.chat_stream_boxed(
+            rustfin_ai_agent::ModelRole::Answer,
+            messages,
+            sampling,
+            None,
+        );
         futures::pin_mut!(raw_stream);
 
         while let Some(chunk) = raw_stream.next().await {
@@ -1448,7 +1778,7 @@ fn stream_chat_response(
                             finished_ts_ms: Some(generating_finished_ts_ms),
                         },
                     ));
-                    stats = Some(build_turn_stats(
+                    stats = Some(build_turn_stats_with_planner(
                         prompt_tokens,
                         completion_tokens,
                         total_duration_ms,
@@ -1458,6 +1788,7 @@ fn stream_chat_response(
                         queue_duration_ms,
                         model_load_duration_ms,
                         tokens_per_second,
+                        Some(&planner_debug),
                     ));
                     yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                 }
@@ -1480,7 +1811,7 @@ fn stream_chat_response(
                                 finished_ts_ms: Some(generating_finished_ts_ms),
                             },
                         ));
-                        stats = Some(build_turn_stats(
+                        stats = Some(build_turn_stats_with_planner(
                             0,
                             0,
                             generation_duration_ms,
@@ -1490,6 +1821,7 @@ fn stream_chat_response(
                             queue_duration_ms,
                             model_load_duration_ms,
                             0.0,
+                            Some(&planner_debug),
                         ));
                         yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                     }
@@ -1526,7 +1858,7 @@ fn stream_chat_response(
                         .await;
                     }
 
-                    persist_chat_audit_event(
+                    persist_chat_audit_event_with_planner(
                         &state,
                         &user,
                         &req,
@@ -1536,6 +1868,7 @@ fn stream_chat_response(
                         &grounding_blocks,
                         &grounding_chunks,
                         &grounding_sources,
+                        Some(&planner_debug),
                         None,
                     )
                     .await;
@@ -1568,7 +1901,7 @@ fn stream_chat_response(
                         },
                     ));
                     if !audit_written {
-                        persist_chat_audit_event(
+                        persist_chat_audit_event_with_planner(
                             &state,
                             &user,
                             &req,
@@ -1578,6 +1911,7 @@ fn stream_chat_response(
                             &grounding_blocks,
                             &grounding_chunks,
                             &grounding_sources,
+                            Some(&planner_debug),
                             Some(&error_message),
                         )
                         .await;
@@ -1633,11 +1967,82 @@ async fn persist_turn_grounding_artifacts(
 }
 
 pub(crate) fn engine_params_from_env() -> rustfin_ai_agent::LlamaEngineParams {
-    let mut params = rustfin_ai_agent::LlamaEngineParams::default();
-    params.split_mode = parse_gpu_split_mode_from_env();
-    params.main_gpu = parse_i32_env("RUSTFIN_AI_GPU_MAIN_DEVICE");
-    params.device_indices = parse_device_indices_env("RUSTFIN_AI_GPU_DEVICES");
+    rustfin_ai_agent::LlamaEngineParams {
+        split_mode: parse_gpu_split_mode_from_env(),
+        main_gpu: parse_i32_env("RUSTFIN_AI_GPU_MAIN_DEVICE"),
+        device_indices: parse_device_indices_env("RUSTFIN_AI_GPU_DEVICES"),
+        ..rustfin_ai_agent::LlamaEngineParams::default()
+    }
+}
+
+pub(crate) fn engine_params_for_profile(
+    profile: Option<&rustfin_db::repo::ai_models::AiModelProfileRow>,
+) -> rustfin_ai_agent::LlamaEngineParams {
+    let mut params = profile
+        .map(|profile| rustfin_ai_agent::LlamaEngineParams {
+            n_gpu_layers: profile.recommended_n_gpu_layers,
+            tensor_split: Vec::new(),
+            split_mode: parse_gpu_split_mode_override(Some(&profile.recommended_split_mode)),
+            main_gpu: profile.recommended_main_gpu,
+            device_indices: serde_json::from_str(&profile.recommended_device_indices_json)
+                .unwrap_or_default(),
+            n_ctx: u32::try_from(profile.context_window.max(1)).unwrap_or(4096),
+            n_threads: u32::try_from(profile.recommended_n_threads.max(1)).unwrap_or(8),
+        })
+        .unwrap_or_default();
+
+    if std::env::var("RUSTFIN_AI_GPU_SPLIT_MODE").is_ok() {
+        params.split_mode = parse_gpu_split_mode_from_env();
+    }
+    if let Some(main_gpu) = parse_i32_env("RUSTFIN_AI_GPU_MAIN_DEVICE") {
+        params.main_gpu = Some(main_gpu);
+    }
+    let device_indices = parse_device_indices_env("RUSTFIN_AI_GPU_DEVICES");
+    if !device_indices.is_empty() {
+        params.device_indices = device_indices;
+    }
+
     params
+}
+
+fn estimated_model_bytes(
+    model_size_bytes: u64,
+    profile: Option<&rustfin_db::repo::ai_models::AiModelProfileRow>,
+) -> u64 {
+    profile
+        .and_then(|profile| u64::try_from(profile.estimated_model_bytes).ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or_else(|| model_size_bytes.saturating_mul(3).saturating_div(2))
+}
+
+fn role_route(
+    routes: &[crate::ai_model_routing::ResolvedRoleRouting],
+    role: rustfin_ai_agent::ModelRole,
+) -> Option<&crate::ai_model_routing::ResolvedRoleRouting> {
+    routes.iter().find(|route| route.decision.role == role)
+}
+
+fn find_loaded_backend_for_route(
+    loaded_role_models: &HashMap<rustfin_ai_agent::ModelRole, LoadedRoleModel>,
+    route: &crate::ai_model_routing::ResolvedRoleRouting,
+) -> Option<LoadedRoleModel> {
+    loaded_role_models
+        .values()
+        .find(|loaded| {
+            loaded.model_name == route.selection.model_name
+                && loaded.backend_id == route.decision.backend_id
+                && loaded.backend_kind == route.decision.backend_kind
+        })
+        .cloned()
+}
+
+async fn load_model_profiles_for_host(
+    state: &AppState,
+) -> Vec<rustfin_db::repo::ai_models::AiModelProfileRow> {
+    let host_fingerprint = crate::ai_admin::host_fingerprint();
+    rustfin_db::repo::ai_models::list_model_profiles_for_host(&state.db, &host_fingerprint, 200)
+        .await
+        .unwrap_or_default()
 }
 
 fn parse_gpu_split_mode_from_env() -> rustfin_ai_agent::engine::LlamaGpuSplitMode {
@@ -1719,9 +2124,61 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override};
+    use super::{
+        LoadedRoleModel, build_turn_stats_with_planner, find_loaded_backend_for_route,
+        parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
+    };
+    use crate::ai_assistant::types::{
+        AssistantPlannerDebug, PlannerExecutionStats, PlannerFallbackReason,
+    };
+    use futures::stream::BoxStream;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
+    use rustfin_ai_agent::{
+        BackendCapabilities, BackendKind, ChatChunk, ChatMessage, InferenceBackend, ModelRole,
+        PromptCacheHint, SamplingParams,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[derive(Clone)]
+    struct DummyBackend;
+
+    impl InferenceBackend for DummyBackend {
+        fn backend_id(&self) -> &'static str {
+            "local_llama"
+        }
+
+        fn backend_kind(&self) -> BackendKind {
+            BackendKind::Local
+        }
+
+        fn model_name(&self) -> Option<&str> {
+            Some("planner.gguf")
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities {
+                kind: BackendKind::Local,
+                supports_streaming: true,
+                supports_prompt_cache: false,
+                supports_structured_output: true,
+                can_degrade: true,
+                max_parallel_requests: 1,
+            }
+        }
+
+        fn chat_stream_boxed(
+            &self,
+            _role: ModelRole,
+            _messages: Vec<ChatMessage>,
+            _sampling: SamplingParams,
+            _prompt_cache: Option<PromptCacheHint>,
+        ) -> BoxStream<'static, Result<ChatChunk, rustfin_ai_agent::AiError>> {
+            Box::pin(futures::stream::empty())
+        }
+    }
 
     #[test]
     fn parse_gpu_split_mode_override_defaults_to_layer() {
@@ -1773,6 +2230,75 @@ mod tests {
             parse_device_indices_override("TEST_VALUE", Some("0, 2, bad, 2")),
             vec![0, 2, 2]
         );
+    }
+
+    #[test]
+    fn build_turn_stats_with_planner_carries_planner_counters() {
+        let planner_debug = AssistantPlannerDebug {
+            validation_errors: vec!["bad arg".to_string(), "bad enum".to_string()],
+            repair_attempt_count: 1,
+            execution: PlannerExecutionStats {
+                parse_attempts: 2,
+                validation_failures: 1,
+                repair_attempts: 1,
+                repair_successes: 1,
+                fallback_reason: Some(PlannerFallbackReason::ArgumentInvalid),
+            },
+            ..AssistantPlannerDebug::default()
+        };
+
+        let stats =
+            build_turn_stats_with_planner(10, 5, 20, 7, 3, 40, 2, 1, 12.0, Some(&planner_debug));
+
+        assert_eq!(stats.planner_validation_error_count, 2);
+        assert_eq!(stats.planner_repair_count, 1);
+        assert_eq!(stats.planner_parse_attempts, 2);
+        assert_eq!(stats.planner_validation_failures, 1);
+        assert_eq!(stats.planner_repair_attempts, 1);
+        assert_eq!(stats.planner_repair_successes, 1);
+        assert_eq!(
+            stats.planner_fallback_reason.as_deref(),
+            Some("argument_invalid")
+        );
+    }
+
+    #[test]
+    fn same_model_roles_reuse_loaded_backend() {
+        let shared_backend: Arc<dyn InferenceBackend> = Arc::new(DummyBackend);
+        let mut loaded = HashMap::new();
+        loaded.insert(
+            ModelRole::Answer,
+            LoadedRoleModel {
+                model_name: "planner.gguf".to_string(),
+                backend_id: "local_llama".to_string(),
+                backend_kind: BackendKind::Local,
+                backend: shared_backend.clone(),
+            },
+        );
+
+        let route = crate::ai_model_routing::ResolvedRoleRouting {
+            selection: rustfin_ai_agent::RoleModelSelection {
+                model_name: "planner.gguf".to_string(),
+                source: rustfin_ai_agent::ModelSelectionSource::StoredRecommendation,
+            },
+            decision: crate::ai_model_routing::RoleRoutingDecision {
+                role: ModelRole::Planner,
+                model_name: "planner.gguf".to_string(),
+                backend_id: "local_llama".to_string(),
+                backend_kind: BackendKind::Local,
+                selection_source: rustfin_ai_agent::ModelSelectionSource::StoredRecommendation,
+                recommendation_status:
+                    crate::ai_benchmark_recommendations::BenchmarkRecommendationStatus::Applied,
+                recommendation_note: None,
+                recommendation_model_name: Some("planner.gguf".to_string()),
+                recommendation_updated_ts: Some(123),
+            },
+            tuning_profile: None,
+        };
+
+        let reused = find_loaded_backend_for_route(&loaded, &route)
+            .expect("planner route should reuse the loaded answer backend");
+        assert!(Arc::ptr_eq(&reused.backend, &shared_backend));
     }
 }
 
@@ -1998,6 +2524,7 @@ fn finish_tool(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_turn_stats(
     prompt_tokens: u64,
     completion_tokens: u64,
@@ -2009,7 +2536,34 @@ fn build_turn_stats(
     model_load_duration_ms: u64,
     tokens_per_second: f64,
 ) -> AssistantTurnStats {
-    AssistantTurnStats {
+    build_turn_stats_with_planner(
+        prompt_tokens,
+        completion_tokens,
+        generation_duration_ms,
+        planner_duration_ms,
+        tool_duration_ms,
+        end_to_end_duration_ms,
+        queue_duration_ms,
+        model_load_duration_ms,
+        tokens_per_second,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_turn_stats_with_planner(
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    generation_duration_ms: u64,
+    planner_duration_ms: u64,
+    tool_duration_ms: u64,
+    end_to_end_duration_ms: u64,
+    queue_duration_ms: u64,
+    model_load_duration_ms: u64,
+    tokens_per_second: f64,
+    planner_debug: Option<&AssistantPlannerDebug>,
+) -> AssistantTurnStats {
+    let mut stats = AssistantTurnStats {
         prompt_tokens: clamp_token_count(prompt_tokens),
         completion_tokens: clamp_token_count(completion_tokens),
         total_duration_ms: generation_duration_ms,
@@ -2020,7 +2574,23 @@ fn build_turn_stats(
         queue_duration_ms,
         model_load_duration_ms,
         tokens_per_second,
+        ..AssistantTurnStats::default()
+    };
+
+    if let Some(debug) = planner_debug {
+        stats.planner_validation_error_count = debug.validation_errors.len() as u32;
+        stats.planner_repair_count = debug.repair_attempt_count;
+        stats.planner_parse_attempts = debug.execution.parse_attempts;
+        stats.planner_validation_failures = debug.execution.validation_failures;
+        stats.planner_repair_attempts = debug.execution.repair_attempts;
+        stats.planner_repair_successes = debug.execution.repair_successes;
+        stats.planner_fallback_reason = debug
+            .execution
+            .fallback_reason
+            .map(|reason| reason.as_str().to_string());
     }
+
+    stats
 }
 
 fn clamp_token_count(value: u64) -> u32 {
@@ -2053,6 +2623,24 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             ..
         } => format!(
             "calendar_create_birthday:scope={scope}:title={title}:date={event_date}:birth_year={birthday_year}"
+        ),
+        AssistantToolInput::CalendarDeleteEvent {
+            event_id,
+            scope,
+            title,
+            event_date,
+            event_type,
+            ..
+        } => format!(
+            "calendar_delete_event:id={event_id}:scope={scope}:title={title}:date={event_date}:type={event_type}"
+        ),
+        AssistantToolInput::DocumentCreateDownload {
+            file_name,
+            format,
+            model_name,
+            ..
+        } => format!(
+            "document_create_download:file_name={file_name}:format={format}:model={model_name}"
         ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))
@@ -2089,6 +2677,10 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
         ),
         AssistantToolInput::WebSearch { query } => format!("web_search:{query}"),
         AssistantToolInput::WebFetch { url } => format!("web_fetch:{url}"),
+        AssistantToolInput::CurrentDateTime { location } => format!(
+            "current_datetime:location={}",
+            location.as_deref().unwrap_or("host")
+        ),
         AssistantToolInput::RoomsFilter { room_mode, query } => format!(
             "rooms:mode={}:query={}",
             room_mode.as_deref().unwrap_or("*"),

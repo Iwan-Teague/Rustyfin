@@ -766,15 +766,19 @@ pub struct DiscoveryCandidateRow {
     pub last_seen_ts: i64,
 }
 
+pub struct DiscoveryCandidateUpsert<'a> {
+    pub game_kind: &'a str,
+    pub canonical_path: &'a str,
+    pub detected_name: Option<&'a str>,
+    pub detected_distribution: Option<&'a str>,
+    pub detected_version: Option<&'a str>,
+    pub detection_json: &'a str,
+    pub scan_status: &'a str,
+}
+
 pub async fn upsert_discovery_candidate(
     pool: &DbPool,
-    game_kind: &str,
-    canonical_path: &str,
-    detected_name: Option<&str>,
-    detected_distribution: Option<&str>,
-    detected_version: Option<&str>,
-    detection_json: &str,
-    scan_status: &str,
+    candidate: DiscoveryCandidateUpsert<'_>,
 ) -> Result<String, sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     let id = uuid::Uuid::new_v4().to_string();
@@ -794,13 +798,13 @@ pub async fn upsert_discovery_candidate(
            RETURNING id"#,
     )
     .bind(&id)
-    .bind(game_kind)
-    .bind(canonical_path)
-    .bind(detected_name)
-    .bind(detected_distribution)
-    .bind(detected_version)
-    .bind(detection_json)
-    .bind(scan_status)
+    .bind(candidate.game_kind)
+    .bind(candidate.canonical_path)
+    .bind(candidate.detected_name)
+    .bind(candidate.detected_distribution)
+    .bind(candidate.detected_version)
+    .bind(candidate.detection_json)
+    .bind(candidate.scan_status)
     .bind(now)
     .fetch_one(pool)
     .await?;

@@ -1282,6 +1282,7 @@ pub async fn list_online_audio_tracks(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod search_query_tests {
     use super::build_pg_prefix_tsquery;
 
