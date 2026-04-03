@@ -735,6 +735,11 @@ textarea:focus-visible {
   transition-duration: 110ms;
 }
 
+.ai-composer-icon-btn {
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .btn-ghost {
   color: var(--text-muted);
   background: transparent;
