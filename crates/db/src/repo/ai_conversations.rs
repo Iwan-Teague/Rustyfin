@@ -6,6 +6,8 @@ pub struct AiConversationRow {
     pub user_id: String,
     pub title: String,
     pub archived: bool,
+    pub group_name: Option<String>,
+    pub sort_order: i64,
     pub last_message_preview: Option<String>,
     pub last_model_name: Option<String>,
     pub created_ts: i64,
@@ -36,6 +38,12 @@ pub struct CreateAiConversationParams<'a> {
     pub title: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ConversationMoveDirection {
+    Up,
+    Down,
+}
+
 pub struct CreateAiConversationTurnParams<'a> {
     pub conversation_id: &'a str,
     pub user_id: &'a str,
@@ -58,6 +66,8 @@ fn map_conversation_row(
         String,
         bool,
         Option<String>,
+        i64,
+        Option<String>,
         Option<String>,
         i64,
         i64,
@@ -68,6 +78,8 @@ fn map_conversation_row(
         user_id,
         title,
         archived,
+        group_name,
+        sort_order,
         last_message_preview,
         last_model_name,
         created_ts,
@@ -79,11 +91,94 @@ fn map_conversation_row(
         user_id,
         title,
         archived,
+        group_name,
+        sort_order,
         last_message_preview,
         last_model_name,
         created_ts,
         updated_ts,
     }
+}
+
+async fn next_sort_order_for_scope(
+    pool: &DbPool,
+    user_id: &str,
+    archived: bool,
+    group_name: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    let max_sort_order: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(sort_order), 0)
+         FROM ai_conversation
+         WHERE user_id = $1
+           AND archived = $2
+           AND (
+                ($3::TEXT IS NULL AND group_name IS NULL)
+                OR group_name = $3
+           )",
+    )
+    .bind(user_id)
+    .bind(archived)
+    .bind(group_name)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(max_sort_order + 1024)
+}
+
+async fn next_sort_order_for_bucket(
+    pool: &DbPool,
+    user_id: &str,
+    archived: bool,
+) -> Result<i64, sqlx::Error> {
+    let max_sort_order: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(sort_order), 0)
+         FROM ai_conversation
+         WHERE user_id = $1
+           AND archived = $2",
+    )
+    .bind(user_id)
+    .bind(archived)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(max_sort_order + 1024)
+}
+
+async fn list_conversations_in_scope(
+    pool: &DbPool,
+    user_id: &str,
+    archived: bool,
+    group_name: Option<&str>,
+) -> Result<Vec<AiConversationRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        bool,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
+         FROM ai_conversation
+         WHERE user_id = $1
+           AND archived = $2
+           AND (
+                ($3::TEXT IS NULL AND group_name IS NULL)
+                OR group_name = $3
+           )
+         ORDER BY sort_order DESC, updated_ts DESC, id DESC",
+    )
+    .bind(user_id)
+    .bind(archived)
+    .bind(group_name)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.into_iter().map(map_conversation_row).collect())
 }
 
 fn map_turn_row(
@@ -148,15 +243,17 @@ pub async fn create_conversation(
 ) -> Result<AiConversationRow, sqlx::Error> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp();
+    let sort_order = next_sort_order_for_bucket(pool, params.user_id, false).await?;
 
     sqlx::query(
         "INSERT INTO ai_conversation (
-            id, user_id, title, archived, last_message_preview, last_model_name, created_ts, updated_ts
-        ) VALUES ($1, $2, $3, FALSE, NULL, NULL, $4, $5)",
+            id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
+        ) VALUES ($1, $2, $3, FALSE, NULL, $4, NULL, NULL, $5, $6)",
     )
     .bind(&id)
     .bind(params.user_id)
     .bind(params.title)
+    .bind(sort_order)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -179,15 +276,17 @@ pub async fn list_conversations_for_user(
         String,
         bool,
         Option<String>,
+        i64,
+        Option<String>,
         Option<String>,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, title, archived, last_message_preview, last_model_name, created_ts, updated_ts
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
          FROM ai_conversation
          WHERE user_id = $1
            AND ($2 = TRUE OR archived = FALSE)
-         ORDER BY updated_ts DESC, id DESC
+         ORDER BY archived ASC, sort_order DESC, updated_ts DESC, id DESC
          LIMIT $3",
     )
     .bind(user_id)
@@ -210,11 +309,13 @@ pub async fn get_conversation_for_user(
         String,
         bool,
         Option<String>,
+        i64,
+        Option<String>,
         Option<String>,
         i64,
         i64,
     )> = sqlx::query_as(
-        "SELECT id, user_id, title, archived, last_message_preview, last_model_name, created_ts, updated_ts
+        "SELECT id, user_id, title, archived, group_name, sort_order, last_message_preview, last_model_name, created_ts, updated_ts
          FROM ai_conversation
          WHERE id = $1 AND user_id = $2",
     )
@@ -232,26 +333,108 @@ pub async fn update_conversation_for_user(
     user_id: &str,
     title: Option<&str>,
     archived: Option<bool>,
+    group_name: Option<Option<&str>>,
+    sort_order: Option<i64>,
 ) -> Result<Option<AiConversationRow>, sqlx::Error> {
     let Some(current) = get_conversation_for_user(pool, conversation_id, user_id).await? else {
         return Ok(None);
     };
 
-    let now = chrono::Utc::now().timestamp();
+    let next_archived = archived.unwrap_or(current.archived);
+    let next_group_name = match group_name {
+        Some(Some(value)) => Some(value.to_string()),
+        Some(None) => None,
+        None => current.group_name.clone(),
+    };
+    let next_sort_order = match sort_order {
+        Some(value) => value,
+        None if next_archived != current.archived || next_group_name != current.group_name => {
+            next_sort_order_for_scope(pool, user_id, next_archived, next_group_name.as_deref())
+                .await?
+        }
+        None => current.sort_order,
+    };
+
     sqlx::query(
         "UPDATE ai_conversation
-         SET title = $1, archived = $2, updated_ts = $3
-         WHERE id = $4 AND user_id = $5",
+         SET title = $1, archived = $2, group_name = $3, sort_order = $4, updated_ts = $5
+         WHERE id = $6 AND user_id = $7",
     )
     .bind(title.unwrap_or(&current.title))
-    .bind(archived.unwrap_or(current.archived))
-    .bind(now)
+    .bind(next_archived)
+    .bind(next_group_name.as_deref())
+    .bind(next_sort_order)
+    .bind(current.updated_ts)
     .bind(conversation_id)
     .bind(user_id)
     .execute(pool)
     .await?;
 
     get_conversation_for_user(pool, conversation_id, user_id).await
+}
+
+pub async fn move_conversation_for_user(
+    pool: &DbPool,
+    conversation_id: &str,
+    user_id: &str,
+    direction: ConversationMoveDirection,
+) -> Result<Option<bool>, sqlx::Error> {
+    let Some(current) = get_conversation_for_user(pool, conversation_id, user_id).await? else {
+        return Ok(None);
+    };
+
+    let conversations = list_conversations_in_scope(
+        pool,
+        user_id,
+        current.archived,
+        current.group_name.as_deref(),
+    )
+    .await?;
+
+    let Some(index) = conversations
+        .iter()
+        .position(|conversation| conversation.id == current.id)
+    else {
+        return Ok(Some(false));
+    };
+
+    let target_index = match direction {
+        ConversationMoveDirection::Up if index > 0 => Some(index - 1),
+        ConversationMoveDirection::Down if index + 1 < conversations.len() => Some(index + 1),
+        _ => None,
+    };
+
+    let Some(target_index) = target_index else {
+        return Ok(Some(false));
+    };
+    let target = &conversations[target_index];
+
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE ai_conversation
+         SET sort_order = $1
+         WHERE id = $2 AND user_id = $3",
+    )
+    .bind(target.sort_order)
+    .bind(&current.id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE ai_conversation
+         SET sort_order = $1
+         WHERE id = $2 AND user_id = $3",
+    )
+    .bind(current.sort_order)
+    .bind(&target.id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(Some(true))
 }
 
 pub async fn delete_conversation_for_user(
