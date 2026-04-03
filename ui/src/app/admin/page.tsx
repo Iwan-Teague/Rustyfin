@@ -329,6 +329,22 @@ function formatTsMs(ts: number | null | undefined): string {
   return new Date(ts).toLocaleString();
 }
 
+function groundingCitationSummary(citation?: {
+  citation_id: string;
+  label?: string | null;
+  source_sub_id?: string | null;
+}): string {
+  if (!citation) return '';
+  const parts = [citation.citation_id];
+  if (citation.label?.trim()) {
+    parts.push(citation.label.trim());
+  }
+  if (citation.source_sub_id?.trim()) {
+    parts.push(citation.source_sub_id.trim());
+  }
+  return parts.join(' · ');
+}
+
 function formatJobStatus(status: string): string {
   switch (status) {
     case 'queued':
@@ -2954,6 +2970,36 @@ export default function AdminPage() {
                                       {source.tool}
                                       {' · '}
                                       {source.status}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Grounding Chunks
+                              </p>
+                              {event.grounding_chunks.length === 0 ? (
+                                <p className="text-xs muted">No compact grounding chunks recorded.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {event.grounding_chunks.map((chunk) => (
+                                    <div
+                                      key={chunk.id}
+                                      className="rounded-lg border border-[var(--border)]/70 px-3 py-2 text-xs muted"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                          {chunk.source_kind}
+                                        </span>
+                                        <p className="font-medium text-[var(--text-main)]">{chunk.title}</p>
+                                        <span className="text-[11px] muted">{chunk.id}</span>
+                                      </div>
+                                      <p className="mt-1">{chunk.excerpt}</p>
+                                      {chunk.citation ? (
+                                        <p className="mt-1 text-[11px] muted">
+                                          {groundingCitationSummary(chunk.citation)}
+                                        </p>
+                                      ) : null}
                                     </div>
                                   ))}
                                 </div>

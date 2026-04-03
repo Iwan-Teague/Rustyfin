@@ -388,7 +388,10 @@ fn api_router(state: AppState) -> Router<AppState> {
         )
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
         .route("/system/network", get(get_network_topology))
-        .route("/system/smart-home", get(crate::smart_home::get_smart_home_state))
+        .route(
+            "/system/smart-home",
+            get(crate::smart_home::get_smart_home_state),
+        )
         .nest("/system/backups", crate::backups::router(state.clone()))
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
