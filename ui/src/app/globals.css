@@ -720,6 +720,12 @@ textarea:focus-visible {
   animation: btn-click-streaks 420ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
 }
 
+.btn-primary.ai-rail-new-chat-btn,
+.btn-primary.ai-rail-new-chat-btn:hover,
+.btn-primary.ai-rail-new-chat-btn:active {
+  box-shadow: none;
+}
+
 .btn-secondary {
   color: var(--text-main);
   background: var(--surface);

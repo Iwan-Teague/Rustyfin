@@ -223,7 +223,7 @@ export default function AiConversationRail({
           type="button"
           onClick={onNewChat}
           disabled={disabled}
-          className="btn-primary w-full rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+          className="btn-primary ai-rail-new-chat-btn w-full rounded-xl px-4 py-2 text-sm disabled:opacity-40"
         >
           New chat
         </button>
