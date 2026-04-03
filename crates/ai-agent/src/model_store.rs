@@ -40,6 +40,65 @@ const CATALOG: &[(&str, &str)] = &[
 pub struct ModelStore;
 
 impl ModelStore {
+    pub fn inspect_file(path: &Path) -> Result<ModelInfo, AiError> {
+        if !path.exists() {
+            return Err(AiError::ModelNotFound(path.display().to_string()));
+        }
+
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            AiError::ModelDirError(format!(
+                "failed to read model metadata for {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !metadata.is_file() {
+            return Err(AiError::ModelDirError(format!(
+                "{} is not a model file",
+                path.display()
+            )));
+        }
+
+        let backend = shared_backend()?;
+        let file = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_string();
+        let name = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_string();
+
+        let mut info = ModelInfo {
+            name,
+            file: file.clone(),
+            size_gb: bytes_to_gb(metadata.len()),
+            parameter_size: None,
+            quantization: quantization_from_filename(&file),
+            architecture: None,
+            context_length: None,
+        };
+
+        let model_params = LlamaModelParams::default().with_vocab_only(true);
+        let model = LlamaModel::load_from_file(backend, path, &model_params).map_err(|error| {
+            AiError::InferenceError(format!(
+                "failed to inspect gguf metadata for {}: {error}",
+                path.display()
+            ))
+        })?;
+        let meta = read_metadata(&model);
+        info.architecture = meta.get("general.architecture").cloned();
+        info.parameter_size = parameter_size_from_meta(&meta);
+        info.quantization = meta
+            .get("general.quantization")
+            .cloned()
+            .or(info.quantization);
+        info.context_length = context_length_from_meta(&meta, info.architecture.as_deref());
+
+        Ok(info)
+    }
+
     pub fn discover(model_dir: &Path) -> Result<Vec<ModelInfo>, AiError> {
         if !model_dir.exists() {
             return Ok(Vec::new());
@@ -50,8 +109,6 @@ impl ModelStore {
                 model_dir.display()
             )));
         }
-
-        let backend = shared_backend()?;
         let mut out = Vec::new();
         let read_dir = std::fs::read_dir(model_dir).map_err(|error| {
             AiError::ModelDirError(format!(
@@ -73,56 +130,39 @@ impl ModelStore {
             if path.extension() != Some(OsStr::new("gguf")) {
                 continue;
             }
-
-            let metadata = match entry.metadata() {
-                Ok(metadata) if metadata.is_file() => metadata,
-                _ => continue,
-            };
-
-            let file = path
-                .file_name()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default()
-                .to_string();
-            let name = path
-                .file_stem()
-                .and_then(OsStr::to_str)
-                .unwrap_or_default()
-                .to_string();
-
-            let mut info = ModelInfo {
-                name: name.clone(),
-                file: file.clone(),
-                size_gb: bytes_to_gb(metadata.len()),
-                parameter_size: None,
-                quantization: quantization_from_filename(&file),
-                architecture: None,
-                context_length: None,
-            };
-
-            let model_params = LlamaModelParams::default().with_vocab_only(true);
-            match LlamaModel::load_from_file(backend, &path, &model_params) {
-                Ok(model) => {
-                    let meta = read_metadata(&model);
-                    info.architecture = meta.get("general.architecture").cloned();
-                    info.parameter_size = parameter_size_from_meta(&meta);
-                    info.quantization = meta
-                        .get("general.quantization")
-                        .cloned()
-                        .or(info.quantization);
-                    info.context_length =
-                        context_length_from_meta(&meta, info.architecture.as_deref());
-                }
+            match Self::inspect_file(&path) {
+                Ok(info) => out.push(info),
                 Err(error) => {
                     warn!(
                         model = %path.display(),
                         error = %error,
-                        "failed to load gguf metadata, using filename fallback"
+                        "failed to inspect gguf metadata, using filename fallback"
                     );
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_file() {
+                            let file = path
+                                .file_name()
+                                .and_then(OsStr::to_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let name = path
+                                .file_stem()
+                                .and_then(OsStr::to_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            out.push(ModelInfo {
+                                name,
+                                file: file.clone(),
+                                size_gb: bytes_to_gb(metadata.len()),
+                                parameter_size: None,
+                                quantization: quantization_from_filename(&file),
+                                architecture: None,
+                                context_length: None,
+                            });
+                        }
+                    }
                 }
             }
-
-            out.push(info);
         }
 
         out.sort_by(|a, b| a.name.cmp(&b.name));

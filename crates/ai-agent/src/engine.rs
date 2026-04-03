@@ -174,6 +174,42 @@ impl LlamaEngine {
     pub fn params(&self) -> &LlamaEngineParams {
         &self.params
     }
+
+    pub fn count_chat_tokens(&self, messages: &[ChatMessage]) -> Result<u32, AiError> {
+        let template = match self.model.chat_template(None) {
+            Ok(template) => template,
+            Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
+                AiError::ContextError(format!("failed to create chat template: {error}"))
+            })?,
+        };
+
+        let chat_messages = messages
+            .iter()
+            .cloned()
+            .map(|message| {
+                LlamaChatMessage::new(message.role, message.content).map_err(|error| {
+                    AiError::ContextError(format!("invalid chat message: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let prompt = self
+            .model
+            .apply_chat_template(&template, &chat_messages, true)
+            .map_err(|error| {
+                AiError::ContextError(format!("failed to apply chat template: {error}"))
+            })?;
+
+        let prompt_tokens = self
+            .model
+            .str_to_token(&prompt, AddBos::Never)
+            .map_err(|error| {
+                AiError::ContextError(format!("failed to tokenize prompt: {error}"))
+            })?;
+
+        u32::try_from(prompt_tokens.len())
+            .map_err(|_| AiError::ContextError("prompt token count exceeded u32 range".to_string()))
+    }
 }
 
 fn resolve_device_indices(params: &LlamaEngineParams) -> Vec<usize> {
