@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingSource,
     AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus,
-    AssistantTurnStats,
+    AssistantResponseMode, AssistantTurnStats,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -38,6 +38,8 @@ pub struct UpdateConversationRequest {
 pub struct ConversationMessageRequest {
     pub model: String,
     pub message: String,
+    #[serde(default)]
+    pub response_mode: AssistantResponseMode,
     #[serde(default)]
     pub confirmation_token: Option<String>,
     #[allow(dead_code)]

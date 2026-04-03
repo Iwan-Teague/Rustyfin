@@ -84,6 +84,8 @@ export interface AiTurnStats {
   tokens_per_second: number;
 }
 
+export type AiResponseMode = 'instant' | 'thinking';
+
 export type AiPhase = 'planning' | 'generating';
 
 export interface AiPhaseEvent {
@@ -628,13 +630,20 @@ export function streamChat(
   model: string,
   message: string,
   history: ChatHistoryMessage[],
+  responseMode: AiResponseMode,
   confirmationToken: string | undefined,
   onEvent: (event: AiSseEvent) => void,
   onClose: () => void,
 ): () => void {
   return streamAssistantRequest(
     '/ai/chat',
-    { model, message, history, confirmation_token: confirmationToken },
+    {
+      model,
+      message,
+      history,
+      response_mode: responseMode,
+      confirmation_token: confirmationToken,
+    },
     onEvent,
     onClose,
   );
@@ -644,13 +653,19 @@ export function streamConversationMessage(
   conversationId: string,
   model: string,
   message: string,
+  responseMode: AiResponseMode,
   confirmationToken: string | undefined,
   onEvent: (event: AiSseEvent) => void,
   onClose: () => void,
 ): () => void {
   return streamAssistantRequest(
     `/ai/conversations/${conversationId}/messages/stream`,
-    { model, message, confirmation_token: confirmationToken },
+    {
+      model,
+      message,
+      response_mode: responseMode,
+      confirmation_token: confirmationToken,
+    },
     onEvent,
     onClose,
   );

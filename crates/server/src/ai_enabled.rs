@@ -20,8 +20,8 @@ use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_f
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
     AssistantFollowUpContext, AssistantGroundingSource, AssistantPendingAction,
-    AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent, AssistantRuntimePhase,
-    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
+    AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent, AssistantResponseMode,
+    AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
     AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
@@ -151,6 +151,7 @@ async fn stream_conversation_message(
         AssistantChatRequest {
             model: req.model,
             message: req.message,
+            response_mode: req.response_mode,
             confirmation_token: req.confirmation_token,
             history,
         },
@@ -1133,7 +1134,7 @@ fn stream_chat_response(
         ));
 
         let messages = build_assistant_messages(req.clone(), &grounding_blocks);
-        let raw_stream = engine.chat_stream(messages, rustfin_ai_agent::SamplingParams::default());
+        let raw_stream = engine.chat_stream(messages, sampling_params_for_response_mode(req.response_mode));
         futures::pin_mut!(raw_stream);
 
         while let Some(chunk) = raw_stream.next().await {
@@ -1432,9 +1433,34 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
         .collect()
 }
 
+fn sampling_params_for_response_mode(
+    response_mode: AssistantResponseMode,
+) -> rustfin_ai_agent::SamplingParams {
+    match response_mode {
+        AssistantResponseMode::Instant => rustfin_ai_agent::SamplingParams {
+            temperature: 0.45,
+            top_p: 0.85,
+            top_k: 24,
+            repeat_penalty: 1.05,
+            max_tokens: 640,
+        },
+        AssistantResponseMode::Thinking => rustfin_ai_agent::SamplingParams {
+            temperature: 0.72,
+            top_p: 0.94,
+            top_k: 48,
+            repeat_penalty: 1.08,
+            max_tokens: 1536,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override};
+    use super::{
+        parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
+        sampling_params_for_response_mode,
+    };
+    use crate::ai_assistant::types::AssistantResponseMode;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
 
     #[test]
@@ -1487,6 +1513,15 @@ mod tests {
             parse_device_indices_override("TEST_VALUE", Some("0, 2, bad, 2")),
             vec![0, 2, 2]
         );
+    }
+
+    #[test]
+    fn instant_mode_uses_tighter_sampling_profile() {
+        let instant = sampling_params_for_response_mode(AssistantResponseMode::Instant);
+        let thinking = sampling_params_for_response_mode(AssistantResponseMode::Thinking);
+        assert!(instant.max_tokens < thinking.max_tokens);
+        assert!(instant.temperature < thinking.temperature);
+        assert!(instant.top_k < thinking.top_k);
     }
 }
 
