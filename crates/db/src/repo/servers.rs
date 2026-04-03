@@ -740,13 +740,12 @@ pub async fn remove_server_member(
     instance_id: &str,
     user_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM server_instance_member WHERE instance_id = $1 AND user_id = $2",
-    )
-    .bind(instance_id)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM server_instance_member WHERE instance_id = $1 AND user_id = $2")
+            .bind(instance_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -926,12 +925,11 @@ pub async fn unregister_minecraft_server(
     pool: &DbPool,
     instance_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "DELETE FROM server_instance WHERE id = $1 AND game_kind = 'minecraft'",
-    )
-    .bind(instance_id)
-    .execute(pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM server_instance WHERE id = $1 AND game_kind = 'minecraft'")
+            .bind(instance_id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -954,9 +952,7 @@ pub async fn list_servers_for_auto_stop(
     )
     .fetch_all(pool)
     .await?;
-    rows.into_iter()
-        .map(decode_minecraft_server_row)
-        .collect()
+    rows.into_iter().map(decode_minecraft_server_row).collect()
 }
 
 pub async fn list_servers_needing_status_refresh(
@@ -978,7 +974,5 @@ pub async fn list_servers_needing_status_refresh(
     .bind(cutoff)
     .fetch_all(pool)
     .await?;
-    rows.into_iter()
-        .map(decode_minecraft_server_row)
-        .collect()
+    rows.into_iter().map(decode_minecraft_server_row).collect()
 }

@@ -10,6 +10,8 @@ pub mod ai_admin;
 pub mod ai_assistant;
 pub mod ai_audit;
 #[cfg(feature = "ai")]
+pub mod ai_benchmark;
+#[cfg(feature = "ai")]
 pub mod ai_conversations;
 #[cfg(feature = "ai")]
 pub mod ai_enabled;

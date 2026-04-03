@@ -7,10 +7,12 @@ import {
   deleteAiModel,
   fetchAiAuditEvents,
   fetchAiAdminState,
+  runAiModelBenchmark,
   type AiAssistantAuditEvent,
   pullAiModelFromUrl,
   type AiAdminState,
   type AdminAiPullEvent,
+  updateAiRemoteBackend,
   updateAiModelDir,
 } from '@/lib/aiAdminApi';
 import { useAuth } from '@/lib/auth';
@@ -329,6 +331,22 @@ function formatTsMs(ts: number | null | undefined): string {
   return new Date(ts).toLocaleString();
 }
 
+function groundingCitationSummary(citation?: {
+  citation_id: string;
+  label?: string | null;
+  source_sub_id?: string | null;
+}): string {
+  if (!citation) return '';
+  const parts = [citation.citation_id];
+  if (citation.label?.trim()) {
+    parts.push(citation.label.trim());
+  }
+  if (citation.source_sub_id?.trim()) {
+    parts.push(citation.source_sub_id.trim());
+  }
+  return parts.join(' · ');
+}
+
 function formatJobStatus(status: string): string {
   switch (status) {
     case 'queued':
@@ -450,9 +468,25 @@ export default function AdminPage() {
   const [aiAuditError, setAiAuditError] = useState('');
   const [aiModelDirInput, setAiModelDirInput] = useState('');
   const [savingAiModelDir, setSavingAiModelDir] = useState(false);
+  const [aiRemoteBackendInput, setAiRemoteBackendInput] = useState({
+    enabled: false,
+    base_url: '',
+    model: '',
+    api_key_env: '',
+    timeout_secs: 120,
+    supports_prompt_cache: false,
+    supports_structured_output: false,
+    max_parallel_requests: 1,
+    overload_fallback: false,
+    route_roles: [] as string[],
+  });
+  const [savingAiRemoteBackend, setSavingAiRemoteBackend] = useState(false);
   const [aiModelPullUrl, setAiModelPullUrl] = useState('');
   const [aiModelPullState, setAiModelPullState] = useState<AiModelPullState | null>(null);
   const [aiDeletingModel, setAiDeletingModel] = useState<string | null>(null);
+  const [aiBenchmarkModelName, setAiBenchmarkModelName] = useState('');
+  const [aiBenchmarkLabel, setAiBenchmarkLabel] = useState('admin-benchmark');
+  const [runningAiBenchmark, setRunningAiBenchmark] = useState(false);
   const [pendingDeleteAction, setPendingDeleteAction] = useState<PendingDeleteAction | null>(
     null,
   );
@@ -751,6 +785,20 @@ export default function AdminPage() {
       if (stateResult.status === 'fulfilled') {
         setAiAdminState(stateResult.value);
         setAiModelDirInput(stateResult.value.model_dir);
+        setAiRemoteBackendInput({
+          enabled: stateResult.value.remote_backend?.enabled ?? false,
+          base_url: stateResult.value.remote_backend?.base_url ?? '',
+          model: stateResult.value.remote_backend?.model ?? '',
+          api_key_env: stateResult.value.remote_backend?.api_key_env ?? '',
+          timeout_secs: stateResult.value.remote_backend?.timeout_secs ?? 120,
+          supports_prompt_cache: stateResult.value.remote_backend?.supports_prompt_cache ?? false,
+          supports_structured_output:
+            stateResult.value.remote_backend?.supports_structured_output ?? false,
+          max_parallel_requests: stateResult.value.remote_backend?.max_parallel_requests ?? 1,
+          overload_fallback: stateResult.value.remote_backend?.overload_fallback ?? false,
+          route_roles: stateResult.value.remote_backend?.route_roles ?? [],
+        });
+        setAiBenchmarkModelName(stateResult.value.models[0]?.name ?? '');
       } else {
         setAiAdminState(null);
         throw stateResult.reason;
@@ -770,6 +818,17 @@ export default function AdminPage() {
       setAiAdminLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!aiAdminState || aiAdminState.models.length === 0) {
+      return;
+    }
+    const selected = aiBenchmarkModelName.trim();
+    if (selected && aiAdminState.models.some((model) => model.name === selected)) {
+      return;
+    }
+    setAiBenchmarkModelName(aiAdminState.models[0].name);
+  }, [aiAdminState, aiBenchmarkModelName]);
 
   useEffect(() => {
     if (me?.role === 'admin') {
@@ -1648,6 +1707,77 @@ export default function AdminPage() {
       setErr(clientErrorMessage(err, 'Failed to reset AI model directory'));
     } finally {
       setSavingAiModelDir(false);
+    }
+  }
+
+  async function saveAiRemoteBackend() {
+    setSavingAiRemoteBackend(true);
+    try {
+      const updated = await updateAiRemoteBackend({
+        enabled: aiRemoteBackendInput.enabled,
+        base_url: aiRemoteBackendInput.base_url,
+        model: aiRemoteBackendInput.model,
+        api_key_env: aiRemoteBackendInput.api_key_env.trim() || null,
+        timeout_secs: aiRemoteBackendInput.timeout_secs,
+        supports_prompt_cache: aiRemoteBackendInput.supports_prompt_cache,
+        supports_structured_output: aiRemoteBackendInput.supports_structured_output,
+        max_parallel_requests: aiRemoteBackendInput.max_parallel_requests,
+        overload_fallback: aiRemoteBackendInput.overload_fallback,
+        route_roles: aiRemoteBackendInput.route_roles,
+      });
+      setAiAdminState(updated);
+      setAiModelDirInput(updated.model_dir);
+      setAiRemoteBackendInput({
+        enabled: updated.remote_backend?.enabled ?? false,
+        base_url: updated.remote_backend?.base_url ?? '',
+        model: updated.remote_backend?.model ?? '',
+        api_key_env: updated.remote_backend?.api_key_env ?? '',
+        timeout_secs: updated.remote_backend?.timeout_secs ?? 120,
+        supports_prompt_cache: updated.remote_backend?.supports_prompt_cache ?? false,
+        supports_structured_output: updated.remote_backend?.supports_structured_output ?? false,
+        max_parallel_requests: updated.remote_backend?.max_parallel_requests ?? 1,
+        overload_fallback: updated.remote_backend?.overload_fallback ?? false,
+        route_roles: updated.remote_backend?.route_roles ?? [],
+      });
+      setOk('AI remote backend updated');
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to save AI remote backend'));
+    } finally {
+      setSavingAiRemoteBackend(false);
+    }
+  }
+
+  async function runAiBenchmark() {
+    if (!aiBenchmarkModelName.trim()) {
+      setErr('Choose a model before running the benchmark.');
+      return;
+    }
+
+    setRunningAiBenchmark(true);
+    try {
+      const updated = await runAiModelBenchmark({
+        model_name: aiBenchmarkModelName.trim(),
+        benchmark_label: aiBenchmarkLabel.trim() || null,
+      });
+      setAiAdminState(updated);
+      setAiModelDirInput(updated.model_dir);
+      setAiRemoteBackendInput({
+        enabled: updated.remote_backend?.enabled ?? false,
+        base_url: updated.remote_backend?.base_url ?? '',
+        model: updated.remote_backend?.model ?? '',
+        api_key_env: updated.remote_backend?.api_key_env ?? '',
+        timeout_secs: updated.remote_backend?.timeout_secs ?? 120,
+        supports_prompt_cache: updated.remote_backend?.supports_prompt_cache ?? false,
+        supports_structured_output: updated.remote_backend?.supports_structured_output ?? false,
+        max_parallel_requests: updated.remote_backend?.max_parallel_requests ?? 1,
+        overload_fallback: updated.remote_backend?.overload_fallback ?? false,
+        route_roles: updated.remote_backend?.route_roles ?? [],
+      });
+      setOk(`AI benchmark completed for ${aiBenchmarkModelName.trim()}`);
+    } catch (err: unknown) {
+      setErr(clientErrorMessage(err, 'Failed to run AI benchmark'));
+    } finally {
+      setRunningAiBenchmark(false);
     }
   }
 
@@ -2812,6 +2942,392 @@ export default function AdminPage() {
                   </div>
                 </div>
 
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="panel-soft space-y-4 rounded-2xl border border-[var(--border)] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">Remote Backend</p>
+                        <p className="text-xs muted">
+                          Optional OpenAI-compatible planner or overload-fallback provider.
+                        </p>
+                      </div>
+                      <span
+                        className={`chip ${
+                          aiRemoteBackendInput.enabled && aiRemoteBackendInput.base_url.trim()
+                            ? 'chip-accent'
+                            : 'border-[var(--border)] text-[var(--text-muted)]'
+                        }`}
+                      >
+                        {aiRemoteBackendInput.enabled && aiRemoteBackendInput.base_url.trim()
+                          ? 'Configured'
+                          : 'Disabled'}
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 text-xs md:col-span-2">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Base URL
+                        </span>
+                        <input
+                          value={aiRemoteBackendInput.base_url}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              base_url: event.target.value,
+                            }))
+                          }
+                          placeholder="https://api.example.com/v1"
+                          className="input w-full px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Model
+                        </span>
+                        <input
+                          value={aiRemoteBackendInput.model}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              model: event.target.value,
+                            }))
+                          }
+                          placeholder="gpt-4o-mini"
+                          className="input w-full px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          API Key Env
+                        </span>
+                        <input
+                          value={aiRemoteBackendInput.api_key_env}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              api_key_env: event.target.value,
+                            }))
+                          }
+                          placeholder="RUSTFIN_REMOTE_AI_KEY"
+                          className="input w-full px-3 py-2 text-sm font-mono"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Timeout Secs
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={aiRemoteBackendInput.timeout_secs}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              timeout_secs: Number(event.target.value) || 120,
+                            }))
+                          }
+                          className="input w-full px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Max Parallel
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={aiRemoteBackendInput.max_parallel_requests}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              max_parallel_requests: Number(event.target.value) || 1,
+                            }))
+                          }
+                          className="input w-full px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs md:col-span-2">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Route Roles
+                        </span>
+                        <input
+                          value={aiRemoteBackendInput.route_roles.join(', ')}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              route_roles: event.target.value
+                                .split(',')
+                                .map((role) => role.trim().toLowerCase())
+                                .filter(Boolean),
+                            }))
+                          }
+                          placeholder="planner, all"
+                          className="input w-full px-3 py-2 text-sm font-mono"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 text-sm">
+                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={aiRemoteBackendInput.enabled}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              enabled: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Enabled</span>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={aiRemoteBackendInput.supports_prompt_cache}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              supports_prompt_cache: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Prompt cache</span>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={aiRemoteBackendInput.supports_structured_output}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              supports_structured_output: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Structured output</span>
+                      </label>
+                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={aiRemoteBackendInput.overload_fallback}
+                          onChange={(event) =>
+                            setAiRemoteBackendInput((current) => ({
+                              ...current,
+                              overload_fallback: event.target.checked,
+                            }))
+                          }
+                        />
+                        <span>Overload fallback</span>
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void saveAiRemoteBackend();
+                        }}
+                        disabled={savingAiRemoteBackend}
+                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                      >
+                        {savingAiRemoteBackend ? 'Saving…' : 'Save backend'}
+                      </button>
+                    </div>
+
+                    {aiAdminState?.remote_backend ? (
+                      <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3 text-xs muted">
+                        <p className="font-semibold text-[var(--text-main)]">Persisted backend</p>
+                        <p className="mt-1">
+                          {aiAdminState.remote_backend.enabled ? 'Enabled' : 'Disabled'} ·{' '}
+                          {aiAdminState.remote_backend.base_url || 'No URL'} ·{' '}
+                          {aiAdminState.remote_backend.model || 'No model'}
+                        </p>
+                        <p className="mt-1">
+                          Roles: {aiAdminState.remote_backend.route_roles.join(', ') || 'none'}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs muted">No remote backend is currently stored.</p>
+                    )}
+                  </div>
+
+                  <div className="panel-soft space-y-4 rounded-2xl border border-[var(--border)] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">Benchmark & Profiles</p>
+                        <p className="text-xs muted">
+                          Run a host-specific benchmark sweep and inspect the stored recommendations.
+                        </p>
+                      </div>
+                      <span className="chip chip-accent">
+                        {aiAdminState?.scheduler?.overload_state
+                          ? titleCase(aiAdminState.scheduler.overload_state)
+                          : 'Idle'}
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Model
+                        </span>
+                        <select
+                          value={aiBenchmarkModelName}
+                          onChange={(event) => setAiBenchmarkModelName(event.target.value)}
+                          className="input w-full px-3 py-2 text-sm"
+                        >
+                          <option value="">Choose a model</option>
+                          {(aiAdminState?.models ?? []).map((model) => (
+                            <option key={model.name} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-xs">
+                        <span className="font-semibold uppercase tracking-[0.12em] muted">
+                          Benchmark Label
+                        </span>
+                        <input
+                          value={aiBenchmarkLabel}
+                          onChange={(event) => setAiBenchmarkLabel(event.target.value)}
+                          placeholder="admin-benchmark"
+                          className="input w-full px-3 py-2 text-sm font-mono"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void runAiBenchmark();
+                        }}
+                        disabled={runningAiBenchmark || !aiBenchmarkModelName.trim()}
+                        className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                      >
+                        {runningAiBenchmark ? 'Benchmarking…' : 'Run benchmark'}
+                      </button>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.12em] muted">
+                            Scheduler Snapshot
+                          </p>
+                          <span className="text-[11px] muted">
+                            {aiAdminState?.scheduler
+                              ? `${aiAdminState.scheduler.active_turns}/${aiAdminState.scheduler.max_concurrent_turns}`
+                              : '—'}
+                          </span>
+                        </div>
+                        {aiAdminState?.scheduler ? (
+                          <div className="space-y-1 text-xs muted">
+                            <p>Queue limit {aiAdminState.scheduler.queue_limit}</p>
+                            <p>Queued turns {aiAdminState.scheduler.queued_turns}</p>
+                            <p>
+                              Warm pool {formatBytes(aiAdminState.scheduler.warm_pool_bytes)} /{' '}
+                              {formatBytes(aiAdminState.scheduler.warm_pool_budget_bytes)}
+                            </p>
+                            <p>Rejected {aiAdminState.scheduler.rejected_turns_total}</p>
+                            <p>Degraded {aiAdminState.scheduler.degraded_turns_total}</p>
+                            <p>
+                              Hot models:{' '}
+                              {aiAdminState.scheduler.warm_models.length > 0
+                                ? aiAdminState.scheduler.warm_models
+                                    .slice(0, 3)
+                                    .map((model) => model.model_name)
+                                    .join(', ')
+                                : 'none'}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs muted">No scheduler snapshot available yet.</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.12em] muted">
+                            Recommendation
+                          </p>
+                          <span className="text-[11px] muted">
+                            {aiAdminState?.model_profiles?.[0]?.benchmark_count ?? 0} runs
+                          </span>
+                        </div>
+                        {aiAdminState?.model_profiles?.[0] ? (
+                          <div className="space-y-1 text-xs muted">
+                            <p className="font-medium text-[var(--text-main)]">
+                              {aiAdminState.model_profiles[0].model_name}
+                            </p>
+                            <p>
+                              {aiAdminState.model_profiles[0].recommended_n_threads} threads ·{' '}
+                              {aiAdminState.model_profiles[0].recommended_n_gpu_layers} GPU layers ·{' '}
+                              {aiAdminState.model_profiles[0].recommended_split_mode}
+                            </p>
+                            <p>
+                              Caps: planner {aiAdminState.model_profiles[0].planner_max_output} ·
+                              summary {aiAdminState.model_profiles[0].summary_max_output} · completion{' '}
+                              {aiAdminState.model_profiles[0].preferred_completion_tokens}
+                            </p>
+                            <p>
+                              Warmup {titleCase(aiAdminState.model_profiles[0].warmup_cost_class)} · last benchmark{' '}
+                              {aiAdminState.model_profiles[0].last_benchmark_label}
+                            </p>
+                            <p>
+                              Throughput {aiAdminState.model_profiles[0].last_tokens_per_second.toFixed(1)} t/s ·
+                              estimated {formatBytes(aiAdminState.model_profiles[0].estimated_model_bytes)}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-xs muted">No profile recommendation has been stored yet.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {aiAdminState?.model_benchmarks && aiAdminState.model_benchmarks.length > 0 ? (
+                      <div className="space-y-2">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] muted">
+                          Recent Benchmarks
+                        </p>
+                        <div className="space-y-2">
+                          {aiAdminState.model_benchmarks.slice(0, 4).map((benchmark) => (
+                            <div
+                              key={benchmark.id}
+                              className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3 text-xs muted"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="font-medium text-[var(--text-main)]">
+                                  {benchmark.model_name} · {benchmark.benchmark_label}
+                                </p>
+                                <span>{formatTs(benchmark.updated_ts)}</span>
+                              </div>
+                              <p className="mt-1">
+                                {benchmark.n_threads} threads · {benchmark.n_gpu_layers} GPU layers ·{' '}
+                                {benchmark.split_mode}
+                              </p>
+                              <p className="mt-1">
+                                Load {benchmark.load_duration_ms}ms · prefill {benchmark.prefill_duration_ms}ms ·
+                                decode {benchmark.decode_duration_ms}ms · {benchmark.tokens_per_second.toFixed(1)} t/s
+                              </p>
+                              {benchmark.failure_message ? (
+                                <p className="mt-1 text-[var(--danger)]">{benchmark.failure_message}</p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-xs muted">No benchmark runs have been recorded yet.</p>
+                    )}
+                  </div>
+                </div>
+
                 <div className="panel-soft rounded-2xl border border-[var(--border)] p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
@@ -2954,6 +3470,36 @@ export default function AdminPage() {
                                       {source.tool}
                                       {' · '}
                                       {source.status}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] muted">
+                                Grounding Chunks
+                              </p>
+                              {event.grounding_chunks.length === 0 ? (
+                                <p className="text-xs muted">No compact grounding chunks recorded.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {event.grounding_chunks.map((chunk) => (
+                                    <div
+                                      key={chunk.id}
+                                      className="rounded-lg border border-[var(--border)]/70 px-3 py-2 text-xs muted"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                          {chunk.source_kind}
+                                        </span>
+                                        <p className="font-medium text-[var(--text-main)]">{chunk.title}</p>
+                                        <span className="text-[11px] muted">{chunk.id}</span>
+                                      </div>
+                                      <p className="mt-1">{chunk.excerpt}</p>
+                                      {chunk.citation ? (
+                                        <p className="mt-1 text-[11px] muted">
+                                          {groundingCitationSummary(chunk.citation)}
+                                        </p>
+                                      ) : null}
                                     </div>
                                   ))}
                                 </div>

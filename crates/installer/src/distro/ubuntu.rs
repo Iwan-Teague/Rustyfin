@@ -1,9 +1,9 @@
-use anyhow::Result;
 use crate::distro::DistroAdapter;
 use crate::utils::{
-    command_exists, ensure_command_available, ensure_cuda_lib_symlinks, has_cuda_build_support,
-    run_root_command, NativeUserContext,
+    NativeUserContext, command_exists, ensure_command_available, ensure_cuda_lib_symlinks,
+    has_cuda_build_support, run_root_command,
 };
+use anyhow::Result;
 
 pub struct UbuntuAdapter {
     version: String,
@@ -85,8 +85,11 @@ impl DistroAdapter for UbuntuAdapter {
         println!(
             "[rustfin-installer] NVIDIA GPU detected but CUDA toolkit not found. Installing nvidia-cuda-toolkit..."
         );
-        let result =
-            run_root_command("apt-get", &["install", "-y", "nvidia-cuda-toolkit"], user_context);
+        let result = run_root_command(
+            "apt-get",
+            &["install", "-y", "nvidia-cuda-toolkit"],
+            user_context,
+        );
         match result {
             Ok(_) => {
                 println!("[rustfin-installer] CUDA toolkit installed successfully.");

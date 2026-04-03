@@ -12,6 +12,7 @@ import {
   type AiConversationDetail,
   type AiConversationSummary,
   type AiConversationTurn,
+  type AiGroundingCitation,
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
@@ -43,7 +44,30 @@ type UiConversationDetail = Omit<AiConversationDetail, 'messages'> & {
   messages: UiConversationTurn[];
 };
 
-type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'ready' | 'error';
+type ConversationPromptStats = {
+  id: string;
+  label: string;
+  promptTokens: number;
+  completionTokens: number;
+  generationDurationMs: number;
+  totalDurationMs: number;
+  tokensPerSecond: number;
+};
+
+type ConversationStatsSummary = {
+  promptCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  averageTokensPerSecond: number;
+  averageMsPerToken: number;
+  prompts: ConversationPromptStats[];
+};
+
+type QueuedPromptMap = Record<string, string>;
+
+type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
+type ComposerResponseMode = 'instant' | 'thinking';
+type ComposerAttachmentKind = 'document' | 'image';
 
 type BrowserSpeechRecognitionResult = {
   isFinal: boolean;
@@ -180,6 +204,93 @@ function formatTps(tps: number): string {
   return tps > 0 ? `${tps.toFixed(1)} t/s` : '—';
 }
 
+function groundingCitationSummary(citation: AiGroundingCitation): string {
+  const parts = [citation.citation_id];
+  if (citation.label?.trim()) {
+    parts.push(citation.label.trim());
+  }
+  if (citation.source_sub_id?.trim()) {
+    parts.push(citation.source_sub_id.trim());
+  }
+  return parts.join(' · ');
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function isTextLikeDocument(file: File): boolean {
+  const lowerName = file.name.toLowerCase();
+  const textExtensions = [
+    '.txt',
+    '.md',
+    '.markdown',
+    '.json',
+    '.csv',
+    '.log',
+    '.yaml',
+    '.yml',
+    '.xml',
+    '.html',
+    '.css',
+    '.js',
+    '.jsx',
+    '.ts',
+    '.tsx',
+    '.rs',
+    '.toml',
+    '.ini',
+    '.conf',
+    '.sql',
+  ];
+  return file.type.startsWith('text/') || textExtensions.some((extension) => lowerName.endsWith(extension));
+}
+
+async function buildAttachmentInsert(file: File, kind: ComposerAttachmentKind): Promise<string> {
+  const details = `${file.type || 'unknown type'} · ${formatBytes(file.size)}`;
+  if (kind === 'image') {
+    return `Attached image: ${file.name} (${details}). Image bytes are not yet parsed by the current Rustyfin AI composer path, so this is a file reference only.`;
+  }
+
+  if (!isTextLikeDocument(file)) {
+    return `Attached document: ${file.name} (${details}). This file was added as a reference because the current browser path only embeds text-based document contents.`;
+  }
+
+  try {
+    const rawText = await file.text();
+    const text = rawText.trim();
+    if (!text) {
+      return `Attached document: ${file.name} (${details}). The file was empty.`;
+    }
+
+    const trimmed = text.length > 12000 ? `${text.slice(0, 12000)}\n\n[Document truncated after 12,000 characters.]` : text;
+    return [
+      `Attached document: ${file.name} (${details})`,
+      `--- Begin ${file.name} ---`,
+      trimmed,
+      `--- End ${file.name} ---`,
+    ].join('\n');
+  } catch {
+    return `Attached document: ${file.name} (${details}). Rustyfin could not read this file in the browser, so it was added as a reference only.`;
+  }
+}
+
+function appendPromptText(current: string, addition: string): string {
+  const base = current.trimEnd();
+  const extra = addition.trim();
+  if (!base) return extra;
+  if (!extra) return base;
+  return `${base}\n\n${extra}`;
+}
+
 function parseContent(raw: string): { thinking: string | null; content: string } {
   if (!raw.startsWith('<think>')) return { thinking: null, content: raw };
   const closeIdx = raw.indexOf('</think>');
@@ -192,6 +303,66 @@ function parseContent(raw: string): { thinking: string | null; content: string }
 
 function modelDisplayName(name: string): string {
   return name.replace(':', ' · ');
+}
+
+const STARTER_SUGGESTIONS = [
+  'How much RAM is the server using right now?',
+  "What's my next event?",
+  'What events are coming up this week?',
+  'Who has a birthday coming up?',
+  'What was the last call about?',
+  'What rooms can I join right now?',
+  'Any unread activity in general chat?',
+  'What downloads are available right now?',
+  'What IP should I use on the local network to open Rustyfin?',
+  'What time is it in Italy right now?',
+  "What's the weather like in Galway today?",
+  'Did it rain yesterday in Galway?',
+  'What was recently added to my libraries?',
+  'Search my libraries for Star Trek',
+  'What public rooms are active right now?',
+  'Which invites can I use right now?',
+  'What is the next thing coming up in my calendar?',
+  'Show me the details for my next calendar event',
+  'Which birthdays are coming up this month?',
+  'What is the weather this week in Campile, County Wexford?',
+  'What temperature is it in Dublin right now?',
+  'What rooms can I join with video?',
+  'Summarize my most recent voice call',
+  'What channels were active recently?',
+  'Which library items were added most recently?',
+  'What is the current date and time on this Rustyfin host?',
+  "When is my next birthday event?",
+  "What's the weather tomorrow in Cork?",
+  'Show me joinable rooms I can enter right now',
+  'Which network address should I use from another device on this LAN?',
+  'What open rooms are running right now?',
+  'Show my visible calendar events for the next seven days.',
+] as const;
+
+const ADMIN_STARTER_SUGGESTIONS = [
+  'What services are down right now?',
+  'How much storage is free on the NAS?',
+  'How much VRAM are the GPUs using right now?',
+  'What model is currently loaded?',
+  'What is the AI runtime status right now?',
+  'What recent backup errors should I know about?',
+  'How many active AI requests are running right now?',
+  'What recent host errors should I check?',
+] as const;
+
+function pickStarterSuggestions(isAdmin: boolean, limit = 10): string[] {
+  const pool = [
+    ...STARTER_SUGGESTIONS,
+    ...(isAdmin ? ADMIN_STARTER_SUGGESTIONS : []),
+  ];
+
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+
+  return pool.slice(0, Math.min(limit, pool.length));
 }
 
 function formatPercent(value: number | null | undefined, digits = 0): string {
@@ -226,6 +397,64 @@ function runtimeDeviceSummary(deviceIndices: number[]): string | null {
     return null;
   }
   return `Devices ${deviceIndices.join(', ')}`;
+}
+
+function buildConversationStatsSummary(
+  conversation: UiConversationDetail | null,
+): ConversationStatsSummary | null {
+  if (!conversation) return null;
+
+  const prompts: ConversationPromptStats[] = [];
+  const userTurns = conversation.messages.filter((message) => message.role === 'user');
+  let lastUserContent = 'Prompt';
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalGenerationDurationMs = 0;
+
+  for (const message of conversation.messages) {
+    if (message.role === 'user') {
+      lastUserContent = normalizePreview(message.content);
+      continue;
+    }
+
+    if (!message.stats) {
+      continue;
+    }
+
+    totalInputTokens += message.stats.prompt_tokens;
+    totalOutputTokens += message.stats.completion_tokens;
+    totalGenerationDurationMs += message.stats.generation_duration_ms;
+
+    prompts.push({
+      id: message.id,
+      label: lastUserContent,
+      promptTokens: message.stats.prompt_tokens,
+      completionTokens: message.stats.completion_tokens,
+      generationDurationMs: message.stats.generation_duration_ms,
+      totalDurationMs: message.stats.end_to_end_duration_ms || message.stats.total_duration_ms,
+      tokensPerSecond: message.stats.tokens_per_second,
+    });
+  }
+
+  if (userTurns.length === 0 && prompts.length === 0) {
+    return null;
+  }
+
+  const averageTokensPerSecond =
+    totalGenerationDurationMs > 0 && totalOutputTokens > 0
+      ? totalOutputTokens / (totalGenerationDurationMs / 1000)
+      : 0;
+  const averageMsPerToken =
+    totalOutputTokens > 0 ? totalGenerationDurationMs / totalOutputTokens : 0;
+
+  return {
+    promptCount: userTurns.length,
+    totalInputTokens,
+    totalOutputTokens,
+    averageTokensPerSecond,
+    averageMsPerToken,
+    prompts,
+  };
 }
 
 function mergePhaseEvent(
@@ -338,25 +567,18 @@ function FallbackThinkingBlock({
   }, [live]);
 
   return (
-    <div className="mb-3">
+    <div className="mb-3 space-y-1.5">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-2 text-xs muted transition-colors hover:text-[var(--text-main)]"
+        className="ai-activity-fallback-toggle"
       >
-        <span
-          className="h-3 w-3 rounded-full border border-[var(--purple)]"
-          style={{
-            background: live ? 'var(--purple)' : 'transparent',
-            opacity: live ? 1 : 0.6,
-          }}
-        />
-        <span className="font-medium">
-          {live ? 'Thinking...' : open ? 'Hide fallback note' : 'Show fallback note'}
+        <span className="ai-activity-primary">
+          {live ? 'Thinking' : open ? 'Hide fallback note' : 'Show fallback note'}
         </span>
         {!live ? (
           <svg
-            className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+            className={`h-3 w-3 text-[var(--text-dim)] transition-transform ${open ? 'rotate-180' : ''}`}
             viewBox="0 0 16 16"
             fill="currentColor"
           >
@@ -365,13 +587,7 @@ function FallbackThinkingBlock({
         ) : null}
       </button>
       {open ? (
-        <div
-          className="mt-2 rounded-xl px-3 py-2.5 font-mono text-xs leading-relaxed muted whitespace-pre-wrap"
-          style={{
-            background: 'rgba(177,140,255,0.07)',
-            border: '1px solid rgba(177,140,255,0.2)',
-          }}
-        >
+        <div className="ai-activity-fallback-body">
           {text}
           {live ? <span className="ai-cursor" /> : null}
         </div>
@@ -519,10 +735,16 @@ function PendingActionCard({
 
 function RuntimePanel({
   runtime,
+  conversationStats,
+  showDetails,
+  onToggleDetails,
   className = '',
   stacked = false,
 }: {
   runtime: AiRuntimeResponse | null;
+  conversationStats: ConversationStatsSummary | null;
+  showDetails: boolean;
+  onToggleDetails: () => void;
   className?: string;
   stacked?: boolean;
 }) {
@@ -544,68 +766,110 @@ function RuntimePanel({
 
   return (
     <div className={className}>
-      <div className={stacked ? 'grid gap-2' : 'grid gap-2 md:grid-cols-2 xl:grid-cols-4'}>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+      <div className={stacked ? 'space-y-5' : 'grid gap-5 md:grid-cols-2'}>
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Model</p>
           <p className="mt-1 text-sm font-semibold">
             {runtime.model.name ?? 'No model loaded'}
           </p>
-          <p className="mt-1 text-xs muted">
-            {runtime.model.backend} · ctx {runtime.model.context_length} · {runtime.model.n_threads} threads
-          </p>
-          <p className="mt-1 text-xs muted">
-            {runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}
-          </p>
-          {configuredDevices ? (
-            <p className="mt-1 text-xs muted">{configuredDevices}</p>
-          ) : null}
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>{runtime.model.backend} backend</p>
+            <p>Context {runtime.model.context_length} · {runtime.model.n_threads} threads</p>
+            <p>{runtimeSplitModeLabel(runtime.model.split_mode)} · {gpuSummary}</p>
+            {configuredDevices ? <p>{configuredDevices}</p> : null}
+          </div>
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Turn</p>
           <p className="mt-1 text-sm font-semibold">
             {runtimePhaseLabel(runtime.turn.phase)}
           </p>
-          <p className="mt-1 text-xs muted">
-            {runtime.turn.active_request_count} active · queue {runtime.turn.queue_depth}
-          </p>
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
-          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Resources</p>
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>{runtime.turn.active_request_count} active requests</p>
+            <p>Queue depth {runtime.turn.queue_depth}</p>
+          </div>
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Scheduler</p>
           <p className="mt-1 text-sm font-semibold">
-            {runtime.resources.process_rss_human ?? '—'}
+            {titleCase(runtime.scheduler.overload_state)}
           </p>
-          <p className="mt-1 text-xs muted">
-            CPU {formatPercent(runtime.resources.host_cpu_percent, 1)}
-          </p>
-          <p className="mt-1 text-xs muted">
-            RAM {runtimeRamSummary(runtime.resources)}
-          </p>
-        </div>
-        <div className="panel-soft rounded-2xl px-3 py-3">
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>
+              {runtime.scheduler.active_turns} active · {runtime.scheduler.queued_turns} queued
+            </p>
+            <p>Queue limit {runtime.scheduler.queue_limit}</p>
+            <p>
+              Warm pool {formatBytes(runtime.scheduler.warm_pool_bytes)} /{' '}
+              {formatBytes(runtime.scheduler.warm_pool_budget_bytes)}
+            </p>
+            <p>
+              Hot models:{' '}
+              {runtime.scheduler.warm_models.length > 0
+                ? runtime.scheduler.warm_models
+                    .slice(0, 3)
+                    .map((model) => model.model_name)
+                    .join(', ')
+                : 'none'}
+            </p>
+          </div>
+        </section>
+
+        <section className="border-b border-[var(--border)] pb-4">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Resources</p>
+          <div className="mt-2 space-y-1 text-xs muted">
+            <p>Process RSS {runtime.resources.process_rss_human ?? '—'}</p>
+            <p>CPU {formatPercent(runtime.resources.host_cpu_percent, 1)}</p>
+            <p>RAM {runtimeRamSummary(runtime.resources)}</p>
+          </div>
+        </section>
+
+        <section className="space-y-2">
           <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">GPUs</p>
           {runtime.gpus.length > 0 ? (
-            <div className="mt-2 space-y-2">
+            <div className="space-y-3">
               {runtime.gpus.map((gpu) => (
-                <div
-                  key={`${gpu.index ?? 'gpu'}-${gpu.name}`}
-                  className="rounded-xl border border-[var(--border)] bg-[rgba(255,255,255,0.03)] px-3 py-2"
-                >
-                  <p className="text-sm font-semibold">
+                <div key={`${gpu.index ?? 'gpu'}-${gpu.name}`} className="space-y-1 text-xs muted">
+                  <p className="text-sm font-semibold text-[var(--text-main)]">
                     {gpu.index !== undefined && gpu.index !== null ? `GPU ${gpu.index}` : 'GPU'} · {gpu.name}
                   </p>
-                  <p className="mt-1 text-xs muted">
-                    {formatPercent(gpu.utilization_percent, 0)} · {gpu.vram_used_human ?? '—'} / {gpu.vram_total_human ?? '—'}
-                  </p>
-                  <p className="mt-1 text-xs muted">
-                    Temp {gpu.temperature_celsius ?? '—'}°C
-                  </p>
+                  <p>Utilization {formatPercent(gpu.utilization_percent, 0)}</p>
+                  <p>VRAM {gpu.vram_used_human ?? '—'} / {gpu.vram_total_human ?? '—'}</p>
+                  <p>Temp {gpu.temperature_celsius ?? '—'}°C</p>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="mt-1 text-xs muted">No GPU telemetry available for this host runtime.</p>
+            <p className="text-xs muted">No GPU telemetry available for this host runtime.</p>
           )}
-        </div>
+        </section>
+      </div>
+
+      <div className="mt-5 border-t border-[var(--border)] pt-4">
+        <section className="border-b border-[var(--border)] pb-4">
+          <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Chat</p>
+          {conversationStats ? (
+            <div className="mt-2 space-y-1 text-xs muted">
+              <p>{conversationStats.promptCount} prompts</p>
+              <p>{conversationStats.totalInputTokens} input tokens</p>
+              <p>{conversationStats.totalOutputTokens} output tokens</p>
+              <p>Avg speed {formatTps(conversationStats.averageTokensPerSecond)}</p>
+              <p>Avg token time {formatMs(conversationStats.averageMsPerToken)}</p>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs muted">No completed chat stats yet.</p>
+          )}
+        </section>
+
+        <button
+          type="button"
+          onClick={onToggleDetails}
+          className="mt-4 text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+        >
+          {showDetails ? 'Hide AI prompt details' : 'Show AI prompt details'}
+        </button>
       </div>
     </div>
   );
@@ -642,11 +906,13 @@ function preferredRecorderMimeType(): string | undefined {
 
 function MessageBubble({
   entry,
+  showStats,
   onConfirmPendingAction,
   confirmingToken,
   interactionDisabled,
 }: {
   entry: UiConversationTurn;
+  showStats: boolean;
   onConfirmPendingAction: (pendingAction: AiPendingAction) => void;
   confirmingToken: string | null;
   interactionDisabled: boolean;
@@ -699,7 +965,38 @@ function MessageBubble({
           {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
         </div>
 
-        {entry.stats ? <StatsBar stats={entry.stats} /> : null}
+        {entry.grounding_chunks.length > 0 ? (
+          <div className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] muted">Sources</p>
+              <p className="text-[11px] muted">
+                {entry.grounding_chunks.length} chunk
+                {entry.grounding_chunks.length === 1 ? '' : 's'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              {entry.grounding_chunks.map((chunk) => (
+                <div key={chunk.id} className="rounded-xl border border-[var(--border)]/70 px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                      {chunk.source_kind}
+                    </span>
+                    <p className="text-sm font-medium text-[var(--text-main)]">{chunk.title}</p>
+                    <span className="text-[11px] muted">{chunk.id}</span>
+                  </div>
+                  <p className="mt-1 text-xs muted">{chunk.excerpt}</p>
+                  {chunk.citation ? (
+                    <p className="mt-1 text-[11px] muted">
+                      {groundingCitationSummary(chunk.citation)}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {showStats && entry.stats ? <StatsBar stats={entry.stats} /> : null}
 
         {entry.pending_action ? (
           <PendingActionCard
@@ -768,30 +1065,24 @@ function EmptyState({
   model,
   isAdmin,
   hasConversation,
+  suggestionKey,
   onNewChat,
   onSuggest,
 }: {
   model: string;
   isAdmin: boolean;
   hasConversation: boolean;
+  suggestionKey: string;
   onNewChat: () => void;
   onSuggest: (value: string) => void;
 }) {
-  const suggestions = [
-    'How much RAM is the server using right now?',
-    'What is that in gigabytes?',
-    "What's my next event?",
-    'What events are coming up this week?',
-    'Who has a birthday coming up?',
-    'What was the last call about?',
-    'What rooms can I join right now?',
-    'Any unread activity in general chat?',
-    'What downloads are available right now?',
-  ];
+  const [suggestions, setSuggestions] = useState<string[]>(() =>
+    pickStarterSuggestions(isAdmin),
+  );
 
-  if (isAdmin) {
-    suggestions.push('What services are down right now?');
-  }
+  useEffect(() => {
+    setSuggestions(pickStarterSuggestions(isAdmin));
+  }, [isAdmin, suggestionKey]);
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 px-4 py-8 text-center">
@@ -870,17 +1161,19 @@ function ModelSelector({
   models,
   selected,
   onChange,
+  className = '',
 }: {
   models: AiModel[];
   selected: string;
   onChange: (value: string) => void;
+  className?: string;
 }) {
   return (
-    <div className="relative w-full sm:w-auto">
+    <div className={`relative min-w-[11rem] ${className}`}>
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full appearance-none cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--surface)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors focus:border-[var(--purple)] focus:outline-none"
+        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -900,6 +1193,37 @@ function ModelSelector({
   );
 }
 
+function ResponseModeSelector({
+  value,
+  onChange,
+}: {
+  value: ComposerResponseMode;
+  onChange: (value: ComposerResponseMode) => void;
+}) {
+  return (
+    <div className="inline-flex h-10 items-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] p-1">
+      {(['instant', 'thinking'] as const).map((mode) => {
+        const active = value === mode;
+        return (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => onChange(mode)}
+            className={`rounded-full px-3 py-1.5 text-sm font-medium transition-all ${
+              active
+                ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-main)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
+            }`}
+            aria-pressed={active}
+          >
+            {mode === 'instant' ? 'Instant' : 'Thinking'}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function AiPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -914,36 +1238,59 @@ export default function AiPage() {
   const [conversations, setConversations] = useState<AiConversationSummary[]>([]);
   const [conversationDetails, setConversationDetails] = useState<Record<string, UiConversationDetail>>({});
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPromptMap>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [runtimeDrawerOpen, setRuntimeDrawerOpen] = useState(false);
+  const [desktopRuntimeOpen, setDesktopRuntimeOpen] = useState(false);
+  const [desktopRailOpen, setDesktopRailOpen] = useState(true);
   const [conversationError, setConversationError] = useState('');
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
 
   const [input, setInput] = useState('');
+  const [responseMode, setResponseMode] = useState<ComposerResponseMode>('instant');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [confirmingToken, setConfirmingToken] = useState<string | null>(null);
+  const [autoSendRequest, setAutoSendRequest] = useState<{
+    conversationId: string;
+    text: string;
+  } | null>(null);
 
   const [runtime, setRuntime] = useState<AiRuntimeResponse | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [showPromptDetails, setShowPromptDetails] = useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [composerShellHeight, setComposerShellHeight] = useState(176);
+  const [desktopViewport, setDesktopViewport] = useState(false);
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
 
-  const threadRef = useRef<HTMLDivElement | null>(null);
+  const queuedPromptsRef = useRef<QueuedPromptMap>({});
+  const activeConversationIdRef = useRef<string | null>(null);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const composerShellRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const stopRef = useRef<(() => void) | null>(null);
+  const composerMenuRef = useRef<HTMLDivElement | null>(null);
+  const documentInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
+  const autoStickToBottomRef = useRef(true);
+  const stopIntentRef = useRef<{
+    conversationId: string;
+    queuedText: string | null;
+  } | null>(null);
 
   const activeConversation = activeConversationId
     ? conversationDetails[activeConversationId] ?? null
@@ -954,8 +1301,16 @@ export default function AiPage() {
       : '';
   const archivedConversations = conversations.filter((conversation) => conversation.archived);
   const liveConversations = conversations.filter((conversation) => !conversation.archived);
+  const activeConversationStats = buildConversationStatsSummary(activeConversation);
   const streamingElsewhere =
     Boolean(streamingConversationId) && streamingConversationId !== activeConversationId;
+  const queuedPrompt =
+    activeConversationId ? queuedPrompts[activeConversationId] ?? '' : '';
+  const hasQueuedPrompt = queuedPrompt.trim().length > 0;
+  const messageScrollPaddingBottom = desktopViewport
+    ? 16
+    : Math.max(composerShellHeight + 10, 132);
+  const messageEndScrollMarginBottom = desktopViewport ? 6 : 12;
 
   const resetComposerHeight = useCallback(() => {
     if (textareaRef.current) {
@@ -965,6 +1320,50 @@ export default function AiPage() {
 
   const focusComposer = useCallback(() => {
     textareaRef.current?.focus();
+  }, []);
+
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const endNode = messageEndRef.current;
+    if (endNode) {
+      endNode.scrollIntoView({ block: 'end', behavior, inline: 'nearest' });
+      return;
+    }
+    const node = messageScrollRef.current;
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior });
+  }, []);
+
+  const handleMessageScroll = useCallback(() => {
+    const node = messageScrollRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - (node.scrollTop + node.clientHeight);
+    autoStickToBottomRef.current = distanceFromBottom <= 48;
+  }, []);
+
+  const upsertQueuedPrompt = useCallback((conversationId: string, text: string) => {
+    const normalized = text.trim();
+    setQueuedPrompts((current) => {
+      const next = { ...current };
+      if (normalized) {
+        next[conversationId] = normalized;
+      } else {
+        delete next[conversationId];
+      }
+      queuedPromptsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const clearQueuedPrompt = useCallback((conversationId: string) => {
+    setQueuedPrompts((current) => {
+      if (!(conversationId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[conversationId];
+      queuedPromptsRef.current = next;
+      return next;
+    });
   }, []);
 
   const storeConversationDetail = useCallback((detail: AiConversationDetail) => {
@@ -1071,6 +1470,14 @@ export default function AiPage() {
   }, [storeConversationDetail]);
 
   useEffect(() => {
+    queuedPromptsRef.current = queuedPrompts;
+  }, [queuedPrompts]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
     if (!authLoading && !me) {
       router.replace('/login');
     }
@@ -1098,14 +1505,53 @@ export default function AiPage() {
   }, [activeConversationId, loadConversationDetail, me]);
 
   useEffect(() => {
-    const node = threadRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+    if (typeof document === 'undefined') return;
+    document.documentElement.dataset.rfPage = 'ai';
+    document.body.dataset.rfPage = 'ai';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const media = window.matchMedia('(min-width: 768px)');
+    const update = () => setDesktopViewport(media.matches);
+    update();
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', update);
+      return () => media.removeEventListener('change', update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
+
+  useEffect(() => {
+    if (!autoStickToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
   }, [
     activeConversationId,
     activeConversation?.messages.length,
     lastActiveMessageContent,
+    scrollMessagesToBottom,
   ]);
+
+  useEffect(() => {
+    if (!autoStickToBottomRef.current) return;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+  }, [messageScrollPaddingBottom, scrollMessagesToBottom]);
+
+  useEffect(() => {
+    autoStickToBottomRef.current = true;
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+  }, [activeConversationId, scrollMessagesToBottom]);
 
   useEffect(() => {
     if (!drawerOpen && !runtimeDrawerOpen) return;
@@ -1120,9 +1566,56 @@ export default function AiPage() {
   }, [drawerOpen, runtimeDrawerOpen]);
 
   useEffect(() => {
+    if (typeof document === 'undefined' || (!drawerOpen && !runtimeDrawerOpen)) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [drawerOpen, runtimeDrawerOpen]);
+
+  useEffect(() => {
+    if (!composerMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!composerMenuRef.current?.contains(event.target as Node)) {
+        setComposerMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [composerMenuOpen]);
+
+  useEffect(() => {
     if (inferenceAvailable === true && selectedModel) return;
     setRuntimeDrawerOpen(false);
+    setDesktopRuntimeOpen(false);
   }, [inferenceAvailable, selectedModel]);
+
+  useEffect(() => {
+    const node = composerShellRef.current;
+    if (!node) return;
+
+    const updateHeight = () => {
+      setComposerShellHeight(node.getBoundingClientRect().height);
+    };
+
+    updateHeight();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => updateHeight());
+      observer.observe(node);
+      window.addEventListener('resize', updateHeight);
+      return () => {
+        observer.disconnect();
+        window.removeEventListener('resize', updateHeight);
+      };
+    }
+
+    window.addEventListener('resize', updateHeight);
+    return () => window.removeEventListener('resize', updateHeight);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1176,10 +1669,35 @@ export default function AiPage() {
         setVoiceError('Rustyfin could not detect any speech in that recording.');
         return;
       }
-      setInput(next);
-      setVoiceState('ready');
+      setInput((current) => appendPromptText(current, next));
+      setVoiceState('idle');
       setVoiceError(null);
-      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
+      requestAnimationFrame(() => {
+        focusComposer();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
+    },
+    [focusComposer],
+  );
+
+  const insertAttachmentIntoPrompt = useCallback(
+    async (files: FileList | null, kind: ComposerAttachmentKind) => {
+      if (!files || files.length === 0) {
+        return;
+      }
+
+      const inserts: string[] = [];
+      for (const file of Array.from(files)) {
+        inserts.push(await buildAttachmentInsert(file, kind));
+      }
+
+      const combined = inserts.join('\n\n');
+      setInput((current) => appendPromptText(current, combined));
+      setComposerMenuOpen(false);
+
       requestAnimationFrame(() => {
         focusComposer();
         if (textareaRef.current) {
@@ -1199,9 +1717,11 @@ export default function AiPage() {
   }, []);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value);
-    if (voiceState === 'ready') {
-      setVoiceNotice('Voice transcript ready. Review it, edit if needed, then send.');
+    const nextValue = event.target.value;
+    setInput(nextValue);
+    const queuedConversationId = activeConversationIdRef.current;
+    if (queuedConversationId && queuedConversationId in queuedPromptsRef.current) {
+      upsertQueuedPrompt(queuedConversationId, nextValue);
     }
     event.target.style.height = 'auto';
     event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
@@ -1210,6 +1730,10 @@ export default function AiPage() {
   const handleSuggestion = useCallback(
     (value: string) => {
       setInput(value);
+      const queuedConversationId = activeConversationIdRef.current;
+      if (queuedConversationId && queuedConversationId in queuedPromptsRef.current) {
+        upsertQueuedPrompt(queuedConversationId, value);
+      }
       requestAnimationFrame(() => {
         focusComposer();
         if (textareaRef.current) {
@@ -1218,7 +1742,23 @@ export default function AiPage() {
         }
       });
     },
-    [focusComposer],
+    [focusComposer, upsertQueuedPrompt],
+  );
+
+  const handleDocumentFilesSelected = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      await insertAttachmentIntoPrompt(event.target.files, 'document');
+      event.target.value = '';
+    },
+    [insertAttachmentIntoPrompt],
+  );
+
+  const handleImageFilesSelected = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      await insertAttachmentIntoPrompt(event.target.files, 'image');
+      event.target.value = '';
+    },
+    [insertAttachmentIntoPrompt],
   );
 
   const handleSelectConversation = useCallback(
@@ -1226,8 +1766,14 @@ export default function AiPage() {
       setConversationError('');
       setActiveConversationId(conversationId);
       setDrawerOpen(false);
-      setInput('');
-      resetComposerHeight();
+      setInput(queuedPromptsRef.current[conversationId] ?? '');
+      requestAnimationFrame(() => {
+        resetComposerHeight();
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+        }
+      });
     },
     [resetComposerHeight],
   );
@@ -1324,6 +1870,11 @@ export default function AiPage() {
         delete next[deleteTarget.id];
         return next;
       });
+      clearQueuedPrompt(deleteTarget.id);
+      if (activeConversationId === deleteTarget.id) {
+        setInput('');
+        resetComposerHeight();
+      }
       setActiveConversationId(nextActiveId);
       setDeleteTarget(null);
     } catch (error) {
@@ -1333,7 +1884,7 @@ export default function AiPage() {
     } finally {
       setModalBusy(false);
     }
-  }, [activeConversationId, conversations, deleteTarget]);
+  }, [activeConversationId, clearQueuedPrompt, conversations, deleteTarget, resetComposerHeight]);
 
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
@@ -1341,7 +1892,6 @@ export default function AiPage() {
     }
 
     setVoiceError(null);
-    setVoiceNotice(null);
 
     const SpeechRecognitionCtor =
       typeof window !== 'undefined'
@@ -1460,21 +2010,41 @@ export default function AiPage() {
   const sendMessage = useCallback(async (options?: {
     text?: string;
     confirmationToken?: string;
+    conversationIdOverride?: string;
+    bypassQueue?: boolean;
   }) => {
     const confirmationToken = options?.confirmationToken;
     const text = (options?.text ?? input).trim();
-    if (!text || !selectedModel || isStreaming) return;
+    const conversationIdOverride = options?.conversationIdOverride ?? activeConversationId;
+    const bypassQueue = options?.bypassQueue === true;
+    const canQueueFollowUp =
+      !confirmationToken &&
+      !bypassQueue &&
+      isStreaming &&
+      Boolean(conversationIdOverride) &&
+      conversationIdOverride === streamingConversationId;
+
+    if (!text || !selectedModel) return;
     if (inferenceAvailable !== true || !modelStorageAvailable) return;
+    if (canQueueFollowUp && conversationIdOverride) {
+      setConversationError('');
+      upsertQueuedPrompt(conversationIdOverride, text);
+      setVoiceState('idle');
+      setVoiceError(null);
+      return;
+    }
+    if (isStreaming) return;
     if (activeConversation?.archived) {
       setConversationError('Restore this archived conversation before sending a new message.');
       return;
     }
 
-    let conversationId = activeConversationId;
+    let conversationId = conversationIdOverride;
     let conversationTitle = activeConversation?.title ?? DEFAULT_CONVERSATION_TITLE;
 
     try {
       setConversationError('');
+      autoStickToBottomRef.current = true;
       if (!conversationId) {
         const detail = await createConversationRecord();
         conversationId = detail.id;
@@ -1483,6 +2053,18 @@ export default function AiPage() {
 
       if (!conversationId) {
         throw new Error('No conversation is available for this message.');
+      }
+
+      const savedQueuedPrompt = queuedPromptsRef.current[conversationId]?.trim();
+      if ((bypassQueue || savedQueuedPrompt === text) && savedQueuedPrompt) {
+        clearQueuedPrompt(conversationId);
+        if (
+          activeConversationIdRef.current === conversationId &&
+          input.trim() === text
+        ) {
+          setInput('');
+          resetComposerHeight();
+        }
       }
 
       const sentTs = nowTsSeconds();
@@ -1501,6 +2083,7 @@ export default function AiPage() {
         model_name: null,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -1516,6 +2099,7 @@ export default function AiPage() {
         model_name: selectedModel,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -1561,10 +2145,11 @@ export default function AiPage() {
       setDrawerOpen(false);
       setVoiceState('idle');
       setVoiceError(null);
-      setVoiceNotice(null);
 
       let completed = false;
       let latestAssistantContent = '';
+      let requiresConfirmation = false;
+      let streamFailed = false;
 
       stopRef.current = streamConversationMessage(
         conversationId,
@@ -1597,6 +2182,7 @@ export default function AiPage() {
           }
 
           if (event.type === 'confirmation_required') {
+            requiresConfirmation = true;
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
               pending_action: {
@@ -1620,6 +2206,7 @@ export default function AiPage() {
           if (event.type === 'grounding') {
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
+              grounding_chunks: event.chunks,
               grounding_sources: event.sources,
               follow_up_contexts: event.followUpContexts,
               grounding_tools: event.sources.map((source) => source.tool),
@@ -1636,6 +2223,7 @@ export default function AiPage() {
           }
 
           if (event.type === 'error') {
+            streamFailed = true;
             updateAssistantTurn(conversationId!, assistantTurnId, (turn) => ({
               ...turn,
               isStreaming: false,
@@ -1670,8 +2258,27 @@ export default function AiPage() {
           finalizeAssistantTurn(conversationId!, assistantTurnId);
           void loadRuntime();
 
+          const stopIntent = stopIntentRef.current;
+          if (stopIntent?.conversationId === conversationId) {
+            stopIntentRef.current = null;
+            if (stopIntent.queuedText) {
+              setAutoSendRequest({
+                conversationId: conversationId!,
+                text: stopIntent.queuedText,
+              });
+            }
+            return;
+          }
+
           if (completed) {
             void loadConversationDetail(conversationId!);
+            const queuedText = queuedPromptsRef.current[conversationId!]?.trim();
+            if (queuedText && !requiresConfirmation && !streamFailed) {
+              setAutoSendRequest({
+                conversationId: conversationId!,
+                text: queuedText,
+              });
+            }
           }
         },
       );
@@ -1692,9 +2299,12 @@ export default function AiPage() {
     loadConversationDetail,
     loadRuntime,
     modelStorageAvailable,
+    clearQueuedPrompt,
     resetComposerHeight,
     selectedModel,
+    streamingConversationId,
     updateAssistantTurn,
+    upsertQueuedPrompt,
   ]);
 
   const handleConfirmPendingAction = useCallback(
@@ -1716,7 +2326,27 @@ export default function AiPage() {
     [sendMessage],
   );
 
+  useEffect(() => {
+    if (!autoSendRequest || isStreaming) return;
+    const { conversationId, text } = autoSendRequest;
+    setAutoSendRequest(null);
+    void sendMessage({
+      text,
+      conversationIdOverride: conversationId,
+      bypassQueue: true,
+    });
+  }, [autoSendRequest, isStreaming, sendMessage]);
+
   const handleStop = useCallback(() => {
+    if (streamingConversationId) {
+      const queuedText = queuedPromptsRef.current[streamingConversationId]?.trim() || null;
+      stopIntentRef.current = {
+        conversationId: streamingConversationId,
+        queuedText,
+      };
+    } else {
+      stopIntentRef.current = null;
+    }
     stopRef.current?.();
     stopRef.current = null;
     setIsStreaming(false);
@@ -1740,7 +2370,7 @@ export default function AiPage() {
   }, [streamingConversationId]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void sendMessage();
     }
@@ -1758,21 +2388,39 @@ export default function AiPage() {
     return null;
   }
 
+  const canQueueActiveConversation =
+    isStreaming &&
+    Boolean(activeConversationId) &&
+    activeConversationId === streamingConversationId;
   const composerDisabled =
     serviceUnavailable ||
     inferenceAvailable !== true ||
     !modelStorageAvailable ||
     !selectedModel ||
-    isStreaming ||
+    streamingElsewhere ||
     Boolean(activeConversationId && !activeConversation) ||
     Boolean(activeConversation?.archived);
   const voiceControlDisabled =
-    composerDisabled || voiceState === 'transcribing' || voiceState === 'stopping';
+    composerDisabled ||
+    isStreaming ||
+    voiceState === 'transcribing' ||
+    voiceState === 'stopping';
+  const queueActionLabel = hasQueuedPrompt ? 'Update queued' : 'Queue';
+  const queueActionDisabled = composerDisabled || !input.trim();
+  const queuedNotice = hasQueuedPrompt
+    ? isStreaming
+      ? 'Queued follow-up will send automatically when this answer finishes.'
+      : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
+    : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
     : !selectedModel
       ? 'No model available.'
+      : canQueueActiveConversation
+        ? hasQueuedPrompt
+          ? 'Edit the queued follow-up, then press Update queued.'
+          : 'Type the next prompt while Rustyfin finishes this answer.'
       : streamingElsewhere
         ? 'Rustyfin AI is still working in another chat.'
         : 'Ask Rustyfin AI something grounded in your server state…';
@@ -1785,87 +2433,77 @@ export default function AiPage() {
       ? 'Active response in another chat'
       : null;
   const showRuntimePanel = inferenceAvailable === true && Boolean(selectedModel);
+  const showDesktopRuntimePanel = showRuntimePanel && desktopRuntimeOpen;
+  const desktopRailWidth = desktopRailOpen ? 'clamp(15rem, 18vw, 18rem)' : '0px';
+  const desktopRuntimeWidth = showDesktopRuntimePanel ? 'clamp(16rem, 19vw, 20rem)' : '0px';
 
   return (
     <>
-      <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)] animate-rise">
-        <div className="hidden h-full shrink-0 sm:flex">
-          <AiConversationRail
-            conversations={liveConversations}
-            archivedConversations={archivedConversations}
-            activeConversationId={activeConversationId}
-            disabled={conversationsLoading}
-            onSelect={handleSelectConversation}
-            onNewChat={() => {
-              void handleNewChat();
-            }}
-            onRename={handleRenameConversation}
-            onArchiveToggle={(conversation) => {
-              void handleArchiveToggle(conversation);
-            }}
-            onDelete={handleDeleteConversation}
-          />
-        </div>
-
-        {drawerOpen ? (
-          <div
-            className="fixed inset-0 z-40 bg-black/60 sm:hidden"
-            onClick={() => setDrawerOpen(false)}
-          />
-        ) : null}
-
-        {runtimeDrawerOpen ? (
-          <div
-            className="fixed inset-0 z-40 bg-black/60 lg:hidden"
-            onClick={() => setRuntimeDrawerOpen(false)}
-          />
-        ) : null}
-
+      <div
+        className={`fixed inset-0 z-[70] md:hidden ${drawerOpen ? '' : 'pointer-events-none'}`}
+        aria-hidden={drawerOpen ? 'false' : 'true'}
+      >
         <div
-          className={`fixed inset-y-0 left-0 z-50 flex transition-transform duration-200 sm:hidden ${
+          className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${
+            drawerOpen ? 'opacity-100' : 'opacity-0'
+          }`}
+          onClick={() => setDrawerOpen(false)}
+        />
+        <div
+          className={`absolute inset-y-0 left-0 flex w-[min(19rem,75vw)] max-w-[75vw] flex-col border-r border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl backdrop-blur-xl transition-transform duration-200 ${
             drawerOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
-          <div className="flex h-full w-[min(19rem,88vw)] flex-col">
-            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[rgba(10,14,24,0.96)] px-4 py-3">
-              <div>
-                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                  Conversations
-                </p>
-                <p className="mt-1 text-xs muted">Saved chats and history</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDrawerOpen(false)}
-                className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
-                aria-label="Close conversations"
-              >
-                ×
-              </button>
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+            <div>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                Conversations
+              </p>
+              <p className="mt-1 text-xs muted">Saved chats and history</p>
             </div>
-            <div className="min-h-0 flex-1">
-              <AiConversationRail
-                conversations={liveConversations}
-                archivedConversations={archivedConversations}
-                activeConversationId={activeConversationId}
-                disabled={conversationsLoading}
-                onSelect={handleSelectConversation}
-                onNewChat={() => {
-                  void handleNewChat();
-                }}
-                onRename={handleRenameConversation}
-                onArchiveToggle={(conversation) => {
-                  void handleArchiveToggle(conversation);
-                }}
-                onDelete={handleDeleteConversation}
-              />
-            </div>
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(false)}
+              className="btn-ghost h-9 w-9 rounded-full p-0 text-lg"
+              aria-label="Close conversations"
+            >
+              ×
+            </button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <AiConversationRail
+              conversations={liveConversations}
+              archivedConversations={archivedConversations}
+              activeConversationId={activeConversationId}
+              disabled={conversationsLoading}
+              className="h-full border-r-0 sm:w-full"
+              onSelect={handleSelectConversation}
+              onNewChat={() => {
+                void handleNewChat();
+              }}
+              onRename={handleRenameConversation}
+              onArchiveToggle={(conversation) => {
+                void handleArchiveToggle(conversation);
+              }}
+              onDelete={handleDeleteConversation}
+            />
           </div>
         </div>
+      </div>
 
+      <div
+        className={`fixed inset-0 z-[70] md:hidden ${runtimeDrawerOpen ? '' : 'pointer-events-none'}`}
+        aria-hidden={runtimeDrawerOpen ? 'false' : 'true'}
+      >
         <div
-          className={`fixed inset-x-0 bottom-0 z-[60] max-h-[78dvh] overflow-hidden rounded-t-[1.75rem] border border-[var(--border)] bg-[rgba(10,14,24,0.97)] shadow-2xl transition-transform duration-200 lg:hidden ${
-            runtimeDrawerOpen ? 'translate-y-0' : 'translate-y-full pointer-events-none'
+          className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${
+            runtimeDrawerOpen ? 'opacity-100' : 'opacity-0'
+          }`}
+          onClick={() => setRuntimeDrawerOpen(false)}
+        />
+        <div
+          className={`absolute inset-y-0 right-0 flex w-[min(20rem,75vw)] max-w-[75vw] flex-col border-l border-[var(--border)] bg-[rgba(18,22,33,0.98)] shadow-2xl backdrop-blur-xl transition-transform duration-200 ${
+            runtimeDrawerOpen ? 'translate-x-0' : 'translate-x-full'
           }`}
         >
           <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
@@ -1884,269 +2522,438 @@ export default function AiPage() {
               ×
             </button>
           </div>
-          <div className="overflow-y-auto p-4">
-            <RuntimePanel runtime={runtime} className="space-y-0" stacked />
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <RuntimePanel
+              runtime={runtime}
+              conversationStats={activeConversationStats}
+              showDetails={showPromptDetails}
+              onToggleDetails={() => setShowPromptDetails((current) => !current)}
+              className="space-y-0"
+              stacked
+            />
           </div>
         </div>
+      </div>
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg)]">
-          <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--border)] px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none sm:hidden"
-                onClick={() => setDrawerOpen(true)}
-                aria-label="Open conversations"
-              >
-                ☰
-              </button>
-              <div className="min-w-0">
-                <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-                  <span className="accent-logo">AI</span>
-                  <span className="text-base font-normal text-[var(--text-muted)]">
-                    Assistant
-                  </span>
-                </h1>
-                <p className="truncate text-xs muted">
-                  {headerSubtitle}
-                  {headerStatus ? ` · ${headerStatus}` : ''}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-              {showRuntimePanel ? (
-                <button
-                  type="button"
-                  onClick={() => setRuntimeDrawerOpen(true)}
-                  className="btn-ghost px-4 py-2 text-sm lg:hidden"
-                >
-                  Runtime
-                </button>
-              ) : null}
-              {inferenceAvailable === true && models.length > 0 ? (
-                <ModelSelector
-                  models={models}
-                  selected={selectedModel}
-                  onChange={setSelectedModel}
-                />
-              ) : null}
-              {activeConversation?.archived ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const summary = conversations.find(
-                      (conversation) => conversation.id === activeConversation.id,
-                    );
-                    if (summary) {
-                      void handleArchiveToggle(summary);
-                    }
-                  }}
-                  className="btn-primary px-4 py-2 text-sm sm:inline-flex"
-                >
-                  Restore
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          {modelsError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              {modelsError}
-            </div>
-          ) : null}
-
-          {conversationError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)] px-4 py-2 text-sm text-[var(--danger)]">
-              {conversationError}
-            </div>
-          ) : null}
-
-          {runtimeError ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              {runtimeError}
-            </div>
-          ) : null}
-
-          {streamingElsewhere && streamingConversationId ? (
-            <div className="shrink-0 border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)] px-4 py-2 text-sm text-[var(--orange-soft)]">
-              Rustyfin AI is still responding in another chat.
-              <button
-                type="button"
-                onClick={() => handleSelectConversation(streamingConversationId)}
-                className="ml-3 font-medium text-[var(--text-main)] underline underline-offset-4"
-              >
-                Jump back
-              </button>
-            </div>
-          ) : null}
-
-          <div className="min-h-0 flex flex-1 overflow-hidden">
-            <div className="min-h-0 flex min-w-0 flex-1 flex-col overflow-hidden">
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {serviceUnavailable ? (
-                  <InferenceUnavailable
-                    serviceUnavailable
-                    showRecommendation={false}
-                  />
-                ) : inferenceAvailable === false ? (
-                  <InferenceUnavailable
-                    title="AI unavailable on this host"
-                    description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
-                    showRecommendation={false}
-                  />
-                ) : inferenceAvailable === null ? (
-                  <div className="flex h-full items-center justify-center">
-                    <span className="muted">Loading AI models…</span>
-                  </div>
-                ) : !modelStorageAvailable ? (
-                  <InferenceUnavailable
-                    title="AI model storage is unavailable"
-                    description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
-                    showRecommendation={false}
-                  />
-                ) : !selectedModel ? (
-                  <InferenceUnavailable />
-                ) : activeConversationId && loadingConversationId === activeConversationId && !activeConversation ? (
-                  <div className="flex h-full items-center justify-center">
-                    <span className="muted">Loading conversation…</span>
-                  </div>
-                ) : !activeConversation || activeConversation.messages.length === 0 ? (
-                  <EmptyState
-                    model={selectedModel}
-                    isAdmin={me.role === 'admin'}
-                    hasConversation={Boolean(activeConversation)}
+      <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
+        <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
+          <div className="flex min-h-0 flex-1 md:overflow-hidden">
+            <aside
+              className="ai-side-panel-shell ai-side-panel-shell-left hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+              data-open={desktopRailOpen ? 'true' : 'false'}
+              data-side="left"
+              style={{ width: desktopRailWidth }}
+            >
+              <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-r border-[var(--border)]">
+                <div className="min-h-0 flex-1">
+                  <AiConversationRail
+                    conversations={liveConversations}
+                    archivedConversations={archivedConversations}
+                    activeConversationId={activeConversationId}
+                    disabled={conversationsLoading}
+                    className="h-full w-full border-r-0"
+                    onSelect={handleSelectConversation}
                     onNewChat={() => {
                       void handleNewChat();
                     }}
-                    onSuggest={handleSuggestion}
+                    onRename={handleRenameConversation}
+                    onArchiveToggle={(conversation) => {
+                      void handleArchiveToggle(conversation);
+                    }}
+                    onDelete={handleDeleteConversation}
                   />
-                ) : (
-                  <div
-                    ref={threadRef}
-                    className="h-full overflow-y-auto px-3 py-4 sm:px-5 sm:py-5"
-                  >
-                    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-                      {activeConversation.messages.map((message) => (
-                        <MessageBubble
-                          key={message.id}
-                          entry={message}
-                          onConfirmPendingAction={handleConfirmPendingAction}
-                          confirmingToken={confirmingToken}
-                          interactionDisabled={isStreaming}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
+                </div>
               </div>
+            </aside>
 
-              <div className="shrink-0 border-t border-[var(--border)] bg-[rgba(13,17,28,0.92)] px-3 py-3 sm:px-5">
-                <div className="mx-auto w-full max-w-4xl">
-                  <div
-                    className="panel-soft flex items-end gap-3 rounded-2xl border border-[var(--border)] px-3 py-3"
-                    style={{ background: 'rgba(19,24,38,0.9)' }}
-                  >
-                    <textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={handleInputChange}
-                      onKeyDown={handleKeyDown}
-                      placeholder={placeholder}
-                      className="min-h-[2.4rem] flex-1 resize-none bg-transparent py-1 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
-                      disabled={composerDisabled}
-                      rows={1}
-                    />
-
-                    {isStreaming ? (
+            <div className="flex min-w-0 flex-1 basis-0 flex-col md:min-h-0 md:overflow-hidden">
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col md:h-full md:overflow-hidden">
+                <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
+                  <div className="flex items-start justify-between gap-3 px-3 py-3 sm:px-5 sm:py-4 md:items-center">
+                    <div className="flex min-w-0 items-center gap-3">
                       <button
                         type="button"
-                        onClick={handleStop}
-                        className="btn-secondary h-10 px-4 text-sm"
+                        className="btn-ghost h-9 w-9 rounded-xl p-0 text-lg leading-none"
+                        onClick={() => {
+                          if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+                            setDesktopRailOpen((current) => !current);
+                          } else {
+                            setRuntimeDrawerOpen(false);
+                            setDrawerOpen(true);
+                          }
+                        }}
+                        aria-label={
+                          desktopRailOpen
+                            ? 'Hide conversations'
+                            : 'Show conversations'
+                        }
                       >
-                        Stop
+                        ☰
                       </button>
-                    ) : (
-                      <>
+                      <div className="min-w-0">
+                        <h1 className="truncate text-base font-semibold tracking-tight text-[var(--text-main)] sm:text-lg">
+                          {headerSubtitle}
+                        </h1>
+                        {headerStatus ? (
+                          <p className="mt-0.5 truncate text-xs muted">{headerStatus}</p>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
+                      {showRuntimePanel ? (
                         <button
                           type="button"
                           onClick={() => {
-                            if (voiceState === 'recording') {
-                              stopVoiceInput();
+                            if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+                              setDesktopRuntimeOpen((current) => !current);
                             } else {
-                              void startVoiceInput();
+                              setDrawerOpen(false);
+                              setRuntimeDrawerOpen(true);
                             }
                           }}
-                          className="btn-secondary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={voiceControlDisabled}
-                          aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                          className="btn-ghost px-4 py-2 text-sm"
                         >
-                          <svg
-                            className="h-4 w-4"
-                            viewBox="0 0 24 24"
-                            fill={voiceState === 'recording' ? 'currentColor' : 'none'}
-                            stroke="currentColor"
-                            strokeWidth="1.9"
-                          >
-                            <rect x="9" y="3" width="6" height="12" rx="3" />
-                            <path d="M6 11a6 6 0 0 0 12 0" />
-                            <path d="M12 17v4" />
-                          </svg>
+                          {desktopRuntimeOpen ? 'Hide runtime' : 'Runtime'}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void sendMessage();
-                          }}
-                          className="btn-primary flex h-10 w-10 items-center justify-center rounded-xl p-0 disabled:cursor-not-allowed disabled:opacity-40"
-                          disabled={composerDisabled || !input.trim()}
-                          aria-label="Send message"
-                        >
-                          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-                            <path d="M5 12h12" />
-                            <path d="m13 6 6 6-6 6" />
-                          </svg>
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {voiceError || voiceNotice || voiceState !== 'idle' ? (
-                    <div className="mt-2 px-1 text-xs">
-                      {voiceError ? (
-                        <span className="text-[var(--danger)]">{voiceError}</span>
-                      ) : voiceNotice ? (
-                        <span className="text-[var(--orange-soft)]">{voiceNotice}</span>
-                      ) : (
-                        <span className="muted">
-                          {voiceState === 'recording'
-                            ? 'Listening…'
-                            : voiceState === 'stopping'
-                              ? 'Stopping…'
-                              : voiceState === 'transcribing'
-                                ? 'Transcribing…'
-                                : null}
-                        </span>
-                      )}
+                      ) : null}
                     </div>
-                  ) : null}
+                  </div>
                 </div>
-              </div>
+
+                {modelsError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      {modelsError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {conversationError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,117,136,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--danger)] sm:px-5">
+                      {conversationError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {runtimeError ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="w-full px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      {runtimeError}
+                    </div>
+                  </div>
+                ) : null}
+
+                {streamingElsewhere && streamingConversationId ? (
+                  <div className="border-b border-[var(--border)] bg-[rgba(255,145,77,0.08)]">
+                    <div className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-sm text-[var(--orange-soft)] sm:px-5">
+                      <span>Rustyfin AI is still responding in another chat.</span>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectConversation(streamingConversationId)}
+                        className="font-medium text-[var(--text-main)] underline underline-offset-4"
+                      >
+                        Jump back
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div
+                  ref={messageScrollRef}
+                  onScroll={handleMessageScroll}
+                  className="ai-message-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-5 sm:px-5 sm:pt-6"
+                  style={{
+                    paddingBottom: `${messageScrollPaddingBottom}px`,
+                    scrollPaddingBottom: `${messageScrollPaddingBottom}px`,
+                  }}
+                >
+                  <div className="w-full">
+                    {serviceUnavailable ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          serviceUnavailable
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : inferenceAvailable === false ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          title="AI unavailable on this host"
+                          description="This host is running without an enabled AI inference backend, so the assistant is unavailable right now."
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : inferenceAvailable === null ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <span className="muted">Loading AI models…</span>
+                      </div>
+                    ) : !modelStorageAvailable ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable
+                          title="AI model storage is unavailable"
+                          description={modelsError ?? 'Rustyfin could not access the configured AI model directory on this host.'}
+                          showRecommendation={false}
+                        />
+                      </div>
+                    ) : !selectedModel ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <InferenceUnavailable />
+                      </div>
+                    ) : activeConversationId &&
+                      loadingConversationId === activeConversationId &&
+                      !activeConversation ? (
+                      <div className="flex min-h-[48vh] items-center justify-center">
+                        <span className="muted">Loading conversation…</span>
+                      </div>
+                    ) : !activeConversation || activeConversation.messages.length === 0 ? (
+                      <div className="min-h-[48vh]">
+                        <EmptyState
+                          model={selectedModel}
+                          isAdmin={me.role === 'admin'}
+                          hasConversation={Boolean(activeConversation)}
+                          suggestionKey={activeConversation?.id ?? activeConversationId ?? 'starter'}
+                          onNewChat={() => {
+                            void handleNewChat();
+                          }}
+                          onSuggest={handleSuggestion}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-4">
+                        {activeConversation.messages.map((message) => (
+                          <MessageBubble
+                            key={message.id}
+                            entry={message}
+                            showStats={showPromptDetails}
+                            onConfirmPendingAction={handleConfirmPendingAction}
+                            confirmingToken={confirmingToken}
+                            interactionDisabled={isStreaming}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <div
+                      ref={messageEndRef}
+                      aria-hidden="true"
+                      className="h-px w-full"
+                      style={{ scrollMarginBottom: `${messageEndScrollMarginBottom}px` }}
+                    />
+                  </div>
+                </div>
+
+                <div
+                  ref={composerShellRef}
+                  className="ai-composer-shell sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
+                >
+                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div ref={composerMenuRef} className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setComposerMenuOpen((current) => !current)}
+                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={composerDisabled}
+                            aria-label="Add media or prompt controls"
+                          >
+                            +
+                          </button>
+                          {composerMenuOpen ? (
+                            <div className="absolute bottom-[calc(100%+0.55rem)] left-0 z-30 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                              <button
+                                type="button"
+                                onClick={() => documentInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add document
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => imageInputRef.current?.click()}
+                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                              >
+                                Add image
+                              </button>
+                            </div>
+                          ) : null}
+                          <input
+                            ref={documentInputRef}
+                            type="file"
+                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleDocumentFilesSelected(event);
+                            }}
+                          />
+                          <input
+                            ref={imageInputRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="sr-only"
+                            onChange={(event) => {
+                              void handleImageFilesSelected(event);
+                            }}
+                          />
+                        </div>
+
+                        {inferenceAvailable === true && models.length > 0 ? (
+                          <ModelSelector
+                            models={models}
+                            selected={selectedModel}
+                            onChange={setSelectedModel}
+                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
+                          />
+                        ) : null}
+
+                        <ResponseModeSelector
+                          value={responseMode}
+                          onChange={setResponseMode}
+                        />
+                      </div>
+
+                      <div className="flex min-h-[3.25rem] items-start gap-3">
+                        <textarea
+                          ref={textareaRef}
+                          value={input}
+                          onChange={handleInputChange}
+                          onKeyDown={handleKeyDown}
+                          placeholder={placeholder}
+                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                          disabled={composerDisabled}
+                          rows={1}
+                        />
+
+                        <div className="flex shrink-0 items-center gap-2 pt-1">
+                          {isStreaming ? (
+                            <>
+                              {canQueueActiveConversation ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void sendMessage();
+                                  }}
+                                  className="btn-secondary h-10 px-3.5 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                                  disabled={queueActionDisabled}
+                                >
+                                  {queueActionLabel}
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={handleStop}
+                                className="btn-primary ai-send-control flex h-10 w-10 items-center justify-center rounded-full p-0"
+                                aria-label={hasQueuedPrompt ? 'Stop current response and continue with queued prompt' : 'Stop current response'}
+                              >
+                                <span className="ai-stop-square" aria-hidden="true" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (voiceState === 'recording') {
+                                    stopVoiceInput();
+                                  } else {
+                                    void startVoiceInput();
+                                  }
+                                }}
+                                className="btn-secondary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={voiceControlDisabled}
+                                aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  viewBox="0 0 24 24"
+                                  fill={voiceState === 'recording' ? 'currentColor' : 'none'}
+                                  stroke="currentColor"
+                                  strokeWidth="1.9"
+                                >
+                                  <rect x="9" y="3" width="6" height="12" rx="3" />
+                                  <path d="M6 11a6 6 0 0 0 12 0" />
+                                  <path d="M12 17v4" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void sendMessage();
+                                }}
+                                className="btn-primary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled={composerDisabled || !input.trim()}
+                                aria-label="Send message"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.9"
+                                >
+                                  <path d="M5 12h12" />
+                                  <path d="m13 6 6 6-6 6" />
+                                </svg>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {voiceError || queuedNotice ? (
+                      <div className="mt-2 space-y-1.5 px-1 text-xs">
+                        {voiceError ? (
+                          <div className="text-[var(--danger)]">{voiceError}</div>
+                        ) : null}
+
+                        {queuedNotice ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <span className="muted">{queuedNotice}</span>
+                            {hasQueuedPrompt ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (activeConversationId) {
+                                    clearQueuedPrompt(activeConversationId);
+                                  }
+                                }}
+                                className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+                              >
+                                Cancel queued
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
             </div>
 
-            {showRuntimePanel ? (
-              <aside className="hidden lg:flex lg:w-[22rem] xl:w-[24rem] shrink-0 border-l border-[var(--border)] bg-[rgba(8,12,20,0.6)]">
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <div className="border-b border-[var(--border)] px-4 py-3">
-                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
-                      AI Runtime
-                    </p>
-                    <p className="mt-1 text-xs muted">Model, turn, host, and GPU status</p>
-                  </div>
-                  <RuntimePanel runtime={runtime} className="p-4" stacked />
+            <aside
+              className="ai-side-panel-shell ai-side-panel-shell-right hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+              data-open={showDesktopRuntimePanel ? 'true' : 'false'}
+              data-side="right"
+              style={{ width: desktopRuntimeWidth }}
+            >
+              <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-l border-[var(--border)]">
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <RuntimePanel
+                    runtime={runtime}
+                    conversationStats={activeConversationStats}
+                    showDetails={showPromptDetails}
+                    onToggleDetails={() => setShowPromptDetails((current) => !current)}
+                    className="space-y-0"
+                    stacked
+                  />
                 </div>
-              </aside>
-            ) : null}
+              </div>
+            </aside>
           </div>
         </div>
       </div>

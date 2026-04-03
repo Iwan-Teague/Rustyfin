@@ -1,9 +1,9 @@
-use axum::extract::State;
-use axum::Json;
-use serde::Serialize;
+use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::auth::AuthUser;
+use axum::Json;
+use axum::extract::State;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,7 +39,7 @@ pub async fn get_smart_home_state(
 ) -> Result<Json<SmartHomeSummary>, AppError> {
     // Check if Home Assistant is configured (e.g. via env var or settings)
     let ha_url = std::env::var("RUSTFIN_SMART_HOME_URL").ok();
-    
+
     if ha_url.is_none() {
         return Ok(Json(SmartHomeSummary {
             available: false,
@@ -50,9 +50,9 @@ pub async fn get_smart_home_state(
 
     // In a real implementation, we would fetch from Home Assistant here.
     // For MVP/placeholder, we'll return "available" but empty, or mock data if needed.
-    // Given I cannot connect to a real HA instance, I will return a stub that indicates 
+    // Given I cannot connect to a real HA instance, I will return a stub that indicates
     // the feature is technically enabled but has no devices yet, or unavailable.
-    
+
     Ok(Json(SmartHomeSummary {
         available: true,
         provider: Some("Home Assistant".to_string()),

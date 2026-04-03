@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use async_stream::stream;
 use futures::Stream;
+use futures::stream::BoxStream;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::{LlamaModelParams, LlamaSplitMode};
@@ -16,7 +17,7 @@ use tracing::warn;
 
 use crate::backend::shared_backend;
 use crate::error::AiError;
-use crate::types::{ChatChunk, ChatMessage};
+use crate::types::{BackendCapabilities, BackendKind, ChatChunk, ChatMessage, PromptCacheHint};
 
 #[derive(Debug, Clone)]
 pub struct LlamaEngineParams {
@@ -170,6 +171,40 @@ impl LlamaEngine {
     pub fn params(&self) -> &LlamaEngineParams {
         &self.params
     }
+
+    pub fn backend_kind(&self) -> BackendKind {
+        BackendKind::Local
+    }
+
+    pub fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            kind: self.backend_kind(),
+            supports_streaming: true,
+            supports_prompt_cache: false,
+            supports_structured_output: true,
+            can_degrade: true,
+            max_parallel_requests: 1,
+        }
+    }
+}
+
+impl crate::backends::PromptBackend for LlamaEngine {
+    fn backend_kind(&self) -> BackendKind {
+        self.backend_kind()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities()
+    }
+
+    fn chat_stream_boxed(
+        &self,
+        messages: Vec<ChatMessage>,
+        sampling: SamplingParams,
+        _prompt_cache: Option<PromptCacheHint>,
+    ) -> BoxStream<'static, Result<ChatChunk, AiError>> {
+        Box::pin(self.chat_stream(messages, sampling))
+    }
 }
 
 fn resolve_device_indices(params: &LlamaEngineParams) -> Vec<usize> {
@@ -291,9 +326,11 @@ fn run_decode_loop(
             })?;
     }
 
+    let prefill_started = Instant::now();
     ctx.decode(&mut prompt_batch).map_err(|error| {
         AiError::InferenceError(format!("llama decode failed on prompt: {error}"))
     })?;
+    let prefill_duration_ms = prefill_started.elapsed().as_millis() as u64;
 
     let temperature = if sampling.temperature.is_finite() {
         sampling.temperature.max(0.0)
@@ -372,6 +409,7 @@ fn run_decode_loop(
     let _ = tx.send(Ok(ChatChunk::Stats {
         prompt_tokens: prompt_token_count,
         completion_tokens,
+        prefill_duration_ms,
         total_duration_ms,
         tokens_per_second,
     }));

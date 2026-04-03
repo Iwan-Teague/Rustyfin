@@ -17,14 +17,13 @@ mod distro;
 mod utils;
 
 use crate::utils::{
-    command_exists, default_native_linux_target, detect_default_ai_backend, detect_host_platform,
-    detect_native_user_context, ensure_command_available, ensure_success, has_cuda_build_support,
-    id_value, resolve_ai_gpu_backend, resolve_command_path, resolve_user_home,
+    HostPlatform, NativeUserContext, command_exists, default_native_linux_target,
+    detect_default_ai_backend, detect_host_platform, detect_native_user_context,
+    ensure_command_available, ensure_success, resolve_ai_gpu_backend, resolve_command_path,
     run_as_native_user_shell, run_command_capture, run_command_in_dir_as_user,
-    run_command_in_dir_as_user_allow_failure, run_command_in_dir_as_user_capture, run_root_command,
-    run_root_command_allow_failure, run_root_command_capture, run_script, run_script_as_repo_owner,
-    server_features_for_ai_backend, stat_value, trim_os_release_value, uname_value, user_home_dir,
-    HostPlatform, NativeUserContext,
+    run_command_in_dir_as_user_capture, run_root_command, run_root_command_allow_failure,
+    run_root_command_capture, run_script, run_script_as_repo_owner, server_features_for_ai_backend,
+    stat_value,
 };
 
 const SERVERS_AGENT_BIND: &str = "127.0.0.1:8103";
@@ -37,8 +36,11 @@ const INSTALL_MANIFEST_PATH: &str = "/var/lib/rustyfin/install-manifest.json";
 const MANAGED_JAVA_ROOT: &str = "/opt/rustyfin/java";
 const MANAGED_JAVA_CURRENT: &str = "/opt/rustyfin/java/current";
 const MANAGED_JAVA_INSTALL_DIR: &str = "/opt/rustyfin/java/temurin-21";
-
-
+const DEFAULT_AI_MODEL_DIR: &str = "/var/lib/rustyfin/ai/models";
+const DEFAULT_BOOTSTRAP_AI_MODEL_URL: &str = "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf";
+const AI_BOOTSTRAP_MODEL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL";
+const AI_BOOTSTRAP_MODEL_URL_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL_URL";
+const AI_BOOTSTRAP_MODEL_FILE_ENV: &str = "RUSTFIN_AI_BOOTSTRAP_MODEL_FILE";
 
 const DIRECTORY_PICKER_HELPER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import json
@@ -204,10 +206,6 @@ struct Cli {
     command: CliCommand,
 }
 
-
-
-
-
 #[derive(Debug, Clone)]
 struct SystemdInstallConfig {
     main_service_name: String,
@@ -254,6 +252,13 @@ struct InstallPathManifest {
     runtime_defaults_file: String,
     log_dir: String,
     manifest_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BootstrapAiModelConfig {
+    url: String,
+    file_name: String,
+    strict: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -863,8 +868,6 @@ fn repo_root() -> anyhow::Result<PathBuf> {
         .context("failed to resolve repository root from CARGO_MANIFEST_DIR")
 }
 
-
-
 fn build_systemd_config(repo_root: &Path) -> SystemdInstallConfig {
     let main_service_name =
         env::var("RUSTFIN_SYSTEMD_SERVICE").unwrap_or_else(|_| "rustyfin-native.service".into());
@@ -917,7 +920,10 @@ fn install(
         "[rustfin-installer] Native runtime user: {} ({})",
         user_context.name, user_context.home
     );
-    println!("[rustfin-installer] Using distro adapter: {}", adapter.name());
+    println!(
+        "[rustfin-installer] Using distro adapter: {}",
+        adapter.name()
+    );
 
     if !options.skip_prereqs {
         println!("[rustfin-installer] Installing runtime packages...");
@@ -949,6 +955,8 @@ fn install(
 
     println!("[rustfin-installer] Writing native runtime defaults...");
     write_native_runtime_defaults(repo_root, host, user_context)?;
+    println!("[rustfin-installer] Ensuring starter AI model...");
+    ensure_starter_ai_model(repo_root, host, user_context)?;
 
     if options.skip_systemd {
         println!("[rustfin-installer] Starting Rustyfin directly without systemd install.");
@@ -985,10 +993,6 @@ fn install_native_systemd_command(
     println!("[rustfin-installer] Native systemd install completed.");
     Ok(())
 }
-
-
-
-
 
 fn ensure_native_user_rust_toolchain(user_context: &NativeUserContext) -> anyhow::Result<()> {
     let cargo_bin = Path::new(&user_context.home).join(".cargo/bin/cargo");
@@ -1244,6 +1248,267 @@ fn write_native_runtime_defaults(
         0o644,
         user_context,
     )
+}
+
+fn ensure_starter_ai_model(
+    repo_root: &Path,
+    host: &HostPlatform,
+    user_context: &NativeUserContext,
+) -> anyhow::Result<()> {
+    if !ai_bootstrap_model_enabled() {
+        println!(
+            "[rustfin-installer] Starter AI model bootstrap disabled via {}.",
+            AI_BOOTSTRAP_MODEL_ENV
+        );
+        return Ok(());
+    }
+
+    let requested_ai_backend =
+        env::var("RUSTFIN_AI_GPU_BACKEND").unwrap_or_else(|_| "auto".to_string());
+    let resolved_ai_backend = resolve_ai_gpu_backend(host, &requested_ai_backend)?;
+    if resolved_ai_backend == "disabled" {
+        println!(
+            "[rustfin-installer] Skipping starter AI model because AI inference is disabled for this host/build."
+        );
+        return Ok(());
+    }
+
+    let model_dir = ensure_installer_ai_model_dir_ready(user_context)?;
+    if ai_model_dir_contains_gguf(&model_dir)? {
+        println!(
+            "[rustfin-installer] Existing GGUF model detected in {}; skipping starter model download.",
+            model_dir.display()
+        );
+        return Ok(());
+    }
+
+    let bootstrap = resolve_bootstrap_ai_model_config()?;
+    println!(
+        "[rustfin-installer] Downloading starter AI model {} into {}...",
+        bootstrap.file_name,
+        model_dir.display()
+    );
+    match download_starter_ai_model(repo_root, user_context, &model_dir, &bootstrap) {
+        Ok(downloaded_path) => {
+            println!(
+                "[rustfin-installer] Starter AI model ready at {}",
+                downloaded_path.display()
+            );
+            Ok(())
+        }
+        Err(error) if !bootstrap.strict => {
+            eprintln!(
+                "[rustfin-installer] Warning: failed to download the default starter AI model from {}: {error}. Rustyfin will continue installing without a bundled model. Set {}=0 to skip this step or {} to override the source.",
+                bootstrap.url, AI_BOOTSTRAP_MODEL_ENV, AI_BOOTSTRAP_MODEL_URL_ENV
+            );
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to provision the configured starter AI model from {}",
+                bootstrap.url
+            )
+        }),
+    }
+}
+
+fn ai_bootstrap_model_enabled() -> bool {
+    parse_ai_bootstrap_model_enabled(env::var(AI_BOOTSTRAP_MODEL_ENV).ok().as_deref())
+}
+
+fn parse_ai_bootstrap_model_enabled(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|raw| raw.trim().to_ascii_lowercase()),
+        Some(ref value)
+            if matches!(
+                value.as_str(),
+                "0" | "false" | "off" | "disabled" | "disable" | "no"
+            )
+    )
+}
+
+fn resolve_bootstrap_ai_model_config() -> anyhow::Result<BootstrapAiModelConfig> {
+    resolve_bootstrap_ai_model_config_with_overrides(
+        env::var(AI_BOOTSTRAP_MODEL_URL_ENV).ok().as_deref(),
+        env::var(AI_BOOTSTRAP_MODEL_FILE_ENV).ok().as_deref(),
+    )
+}
+
+fn resolve_bootstrap_ai_model_config_with_overrides(
+    url_override: Option<&str>,
+    file_override: Option<&str>,
+) -> anyhow::Result<BootstrapAiModelConfig> {
+    let url_override = url_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let file_override = file_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let strict = url_override.is_some() || file_override.is_some();
+    let url = url_override
+        .clone()
+        .unwrap_or_else(|| DEFAULT_BOOTSTRAP_AI_MODEL_URL.to_string());
+    let file_name = match file_override {
+        Some(file_name) => validate_bootstrap_model_file_name(&file_name)?,
+        None => derive_gguf_file_name_from_url(&url)?,
+    };
+
+    Ok(BootstrapAiModelConfig {
+        url,
+        file_name,
+        strict,
+    })
+}
+
+fn validate_bootstrap_model_file_name(file_name: &str) -> anyhow::Result<String> {
+    let trimmed = file_name.trim();
+    if trimmed.is_empty() {
+        bail!("{AI_BOOTSTRAP_MODEL_FILE_ENV} must not be empty");
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        bail!("{AI_BOOTSTRAP_MODEL_FILE_ENV} must be a plain filename");
+    }
+    if !trimmed.ends_with(".gguf") {
+        bail!("{AI_BOOTSTRAP_MODEL_FILE_ENV} must end with .gguf");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn derive_gguf_file_name_from_url(url: &str) -> anyhow::Result<String> {
+    let base = url
+        .split(['?', '#'])
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("bootstrap AI model URL must not be empty")?;
+    let file_name = base
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .context("bootstrap AI model URL must include a filename")?;
+    validate_bootstrap_model_file_name(file_name)
+}
+
+fn resolve_installer_ai_model_dir() -> PathBuf {
+    resolve_installer_ai_model_dir_from_env(env::var("RUSTFIN_AI_MODEL_DIR").ok().as_deref())
+}
+
+fn resolve_installer_ai_model_dir_from_env(value: Option<&str>) -> PathBuf {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_AI_MODEL_DIR))
+}
+
+fn ensure_installer_ai_model_dir_ready(
+    user_context: &NativeUserContext,
+) -> anyhow::Result<PathBuf> {
+    ensure_command_available("install")?;
+    let model_dir = resolve_installer_ai_model_dir();
+    let model_dir_string = model_dir.display().to_string();
+    run_root_command(
+        "install",
+        &[
+            "-d",
+            "-m",
+            "755",
+            "-o",
+            user_context.name.as_str(),
+            "-g",
+            user_context.name.as_str(),
+            model_dir_string.as_str(),
+        ],
+        user_context,
+    )?;
+    Ok(model_dir.canonicalize().unwrap_or(model_dir))
+}
+
+fn ai_model_dir_contains_gguf(model_dir: &Path) -> anyhow::Result<bool> {
+    if !model_dir.exists() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(model_dir)
+        .with_context(|| format!("failed to read {}", model_dir.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read AI model directory entry in {}",
+                model_dir.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("gguf") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn download_starter_ai_model(
+    repo_root: &Path,
+    user_context: &NativeUserContext,
+    model_dir: &Path,
+    bootstrap: &BootstrapAiModelConfig,
+) -> anyhow::Result<PathBuf> {
+    ensure_command_available("curl")?;
+    let final_path = model_dir.join(&bootstrap.file_name);
+    let part_path = model_dir.join(format!("{}.part", bootstrap.file_name));
+    let part_path_string = part_path.display().to_string();
+    let final_path_string = final_path.display().to_string();
+    let model_dir_string = model_dir.display().to_string();
+    let _ = remove_if_exists(&part_path);
+
+    let download_result = run_command_in_dir_as_user(
+        "curl",
+        &[
+            "-fL",
+            "--retry",
+            "3",
+            "--retry-delay",
+            "2",
+            "--connect-timeout",
+            "20",
+            "--progress-bar",
+            "-o",
+            part_path_string.as_str(),
+            bootstrap.url.as_str(),
+        ],
+        repo_root,
+        &user_context.name,
+    );
+
+    if let Err(error) = download_result {
+        let _ = remove_if_exists(&part_path);
+        return Err(error);
+    }
+
+    if !part_path.exists() {
+        bail!(
+            "starter AI model download did not produce {}",
+            part_path.display()
+        );
+    }
+
+    fs::rename(&part_path, &final_path).with_context(|| {
+        format!(
+            "failed to move downloaded starter AI model into place at {}",
+            final_path.display()
+        )
+    })?;
+    fs::set_permissions(&final_path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("failed to chmod {}", final_path.display()))?;
+    println!(
+        "[rustfin-installer] Starter AI model stored at {}",
+        final_path_string
+    );
+    println!(
+        "[rustfin-installer] Active AI model directory for first boot: {}",
+        model_dir_string
+    );
+    Ok(final_path)
 }
 
 fn build_native_binaries(
@@ -2455,7 +2720,6 @@ fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
 
 /// Returns true when a CUDA build toolchain is detectable on this host.
 
-
 fn is_ipv4(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     if parts.len() != 4 {
@@ -2889,20 +3153,49 @@ fn process_cmdline(pid: &str) -> Option<String> {
 
 fn cmdline_matches_pidfile_name(file_name: &str, cmdline: &str) -> bool {
     match file_name {
-        "rustfin.pid" => cmdline.contains("rustfin-server"),
-        "rustfin-calendar.pid" => cmdline.contains("rustfin-calendar"),
-        "rustfin-tmdb-agent.pid" => cmdline.contains("rustfin-tmdb-agent"),
-        "rustfin-youtube-agent.pid" => cmdline.contains("rustfin-youtube-agent"),
-        "rustfin-transcription-agent.pid" => cmdline.contains("rustfin-transcription-agent"),
-        "rustfin-servers-agent.pid" => cmdline.contains("rustfin-servers-agent"),
+        "rustfin.pid" => cmdline_has_executable(cmdline, "rustfin-server"),
+        "rustfin-calendar.pid" => cmdline_has_executable(cmdline, "rustfin-calendar"),
+        "rustfin-tmdb-agent.pid" => cmdline_has_executable(cmdline, "rustfin-tmdb-agent"),
+        "rustfin-youtube-agent.pid" => cmdline_has_executable(cmdline, "rustfin-youtube-agent"),
+        "rustfin-transcription-agent.pid" => {
+            cmdline_has_executable(cmdline, "rustfin-transcription-agent")
+        }
+        "rustfin-servers-agent.pid" => cmdline_has_executable(cmdline, "rustfin-servers-agent"),
         "rustfin-ui.pid" => {
-            (cmdline.contains("node") && cmdline.contains("server.js"))
+            (cmdline_has_executable(cmdline, "node") && cmdline_has_argument(cmdline, "server.js"))
                 || cmdline.contains("next-server")
         }
-        "rustfin-edge.pid" => cmdline.contains("caddy") && cmdline.contains("Caddyfile.native"),
-        "directory-picker-helper.pid" => cmdline.contains("directory-picker-helper.py"),
+        "rustfin-edge.pid" => {
+            cmdline_has_executable(cmdline, "caddy") && cmdline.contains("Caddyfile.native")
+        }
+        "directory-picker-helper.pid" => {
+            cmdline_has_argument(cmdline, "directory-picker-helper.py")
+        }
         _ => false,
     }
+}
+
+fn cmdline_has_executable(cmdline: &str, expected: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|arg| cmdline_arg_matches(arg, expected))
+}
+
+fn cmdline_has_argument(cmdline: &str, expected: &str) -> bool {
+    cmdline
+        .split_whitespace()
+        .any(|arg| cmdline_arg_matches(arg, expected))
+}
+
+fn cmdline_arg_matches(arg: &str, expected: &str) -> bool {
+    let trimmed = arg.trim_matches(|ch| ch == '"' || ch == '\'');
+    if trimmed == expected {
+        return true;
+    }
+    Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some(expected)
 }
 
 fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
@@ -2939,7 +3232,12 @@ fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::cmdline_matches_pidfile_name;
+    use super::{
+        BootstrapAiModelConfig, cmdline_matches_pidfile_name, derive_gguf_file_name_from_url,
+        parse_ai_bootstrap_model_enabled, resolve_bootstrap_ai_model_config_with_overrides,
+        resolve_installer_ai_model_dir_from_env,
+    };
+    use std::path::PathBuf;
 
     #[test]
     fn pidfile_match_requires_expected_service_binary() {
@@ -2950,6 +3248,18 @@ mod tests {
         assert!(!cmdline_matches_pidfile_name(
             "rustfin-tmdb-agent.pid",
             "cargo run -p rustfin-installer -- plan-native-runtime"
+        ));
+    }
+
+    #[test]
+    fn pidfile_match_distinguishes_backend_from_servers_agent() {
+        assert!(cmdline_matches_pidfile_name(
+            "rustfin.pid",
+            "/home/tempo/Rustyfin/.native-bins/x86_64-unknown-linux-gnu/dev/rustfin-server"
+        ));
+        assert!(!cmdline_matches_pidfile_name(
+            "rustfin.pid",
+            "/home/tempo/Rustyfin/.native-bins/x86_64-unknown-linux-gnu/dev/rustfin-servers-agent"
         ));
     }
 
@@ -2971,6 +3281,82 @@ mod tests {
             "rustfin-ui.pid",
             "node unrelated.js"
         ));
+    }
+
+    #[test]
+    fn ai_bootstrap_model_enabled_defaults_to_true() {
+        assert!(parse_ai_bootstrap_model_enabled(None));
+        assert!(parse_ai_bootstrap_model_enabled(Some("")));
+        assert!(parse_ai_bootstrap_model_enabled(Some("1")));
+    }
+
+    #[test]
+    fn ai_bootstrap_model_enabled_honors_disabled_values() {
+        for value in ["0", "false", "False", "off", "disabled", "no"] {
+            assert!(
+                !parse_ai_bootstrap_model_enabled(Some(value)),
+                "expected {value} to disable bootstrap"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_ai_model_config_defaults_to_small_qwen() {
+        let config = resolve_bootstrap_ai_model_config_with_overrides(None, None)
+            .expect("default bootstrap config");
+        assert_eq!(
+            config,
+            BootstrapAiModelConfig {
+                url: "https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
+                file_name: "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf".to_string(),
+                strict: false,
+            }
+        );
+    }
+
+    #[test]
+    fn bootstrap_ai_model_config_marks_overrides_strict() {
+        let config = resolve_bootstrap_ai_model_config_with_overrides(
+            Some("https://example.com/custom.gguf"),
+            Some("custom.gguf"),
+        )
+        .expect("override config");
+        assert_eq!(
+            config,
+            BootstrapAiModelConfig {
+                url: "https://example.com/custom.gguf".to_string(),
+                file_name: "custom.gguf".to_string(),
+                strict: true,
+            }
+        );
+    }
+
+    #[test]
+    fn bootstrap_ai_model_config_rejects_non_gguf_file_names() {
+        let error = resolve_bootstrap_ai_model_config_with_overrides(None, Some("not-a-model.bin"))
+            .expect_err("non-gguf override should fail");
+        assert!(error.to_string().contains("must end with .gguf"));
+    }
+
+    #[test]
+    fn derive_gguf_file_name_from_url_strips_query_and_fragment() {
+        let file_name = derive_gguf_file_name_from_url(
+            "https://example.com/models/qwen.gguf?download=1#fragment",
+        )
+        .expect("filename from url");
+        assert_eq!(file_name, "qwen.gguf");
+    }
+
+    #[test]
+    fn resolve_installer_ai_model_dir_uses_default_when_unset() {
+        let path = resolve_installer_ai_model_dir_from_env(None);
+        assert_eq!(path, PathBuf::from("/var/lib/rustyfin/ai/models"));
+    }
+
+    #[test]
+    fn resolve_installer_ai_model_dir_prefers_env_value() {
+        let path = resolve_installer_ai_model_dir_from_env(Some("/srv/rustyfin/models"));
+        assert_eq!(path, PathBuf::from("/srv/rustyfin/models"));
     }
 }
 
@@ -3584,10 +3970,6 @@ fn temp_file_path(destination: &Path) -> PathBuf {
     env::temp_dir().join(format!("{name}.{nonce}.tmp"))
 }
 
-
-
-
-
 fn run_postgres_command(
     program: &str,
     args: &[&str],
@@ -3658,8 +4040,6 @@ fn run_postgres_command_allow_failure(
         .status()
         .with_context(|| format!("failed to execute runuser -u postgres -- {program}"))
 }
-
-
 
 #[derive(Debug, Clone)]
 struct RustToolchainCommand {
@@ -3953,10 +4333,6 @@ fn generate_secret_hex() -> String {
     hex::encode(bytes)
 }
 
-
-
-
-
 fn validate_sql_identifier(var_name: &str, value: &str) -> anyhow::Result<()> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
@@ -3974,5 +4350,3 @@ fn validate_sql_identifier(var_name: &str, value: &str) -> anyhow::Result<()> {
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
-
-

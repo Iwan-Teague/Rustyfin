@@ -11,6 +11,7 @@ use crate::state::AppState;
 pub struct AiRuntimeResponse {
     pub model: AiRuntimeModelSummary,
     pub turn: AiRuntimeTurnSummary,
+    pub scheduler: AiRuntimeSchedulerSummary,
     pub resources: AiRuntimeResourcesSummary,
     pub gpus: Vec<AiRuntimeGpuSummary>,
 }
@@ -32,6 +33,37 @@ pub struct AiRuntimeTurnSummary {
     pub phase: AssistantRuntimePhase,
     pub queue_depth: u64,
     pub active_request_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeSchedulerSummary {
+    pub max_concurrent_turns: u64,
+    pub queue_limit: u64,
+    pub active_turns: u64,
+    pub queued_turns: u64,
+    pub overload_state: String,
+    pub warm_pool_bytes: u64,
+    pub warm_pool_budget_bytes: u64,
+    pub active_by_priority: Vec<AiRuntimeSchedulerPriorityCount>,
+    pub queued_by_priority: Vec<AiRuntimeSchedulerPriorityCount>,
+    pub warm_models: Vec<AiRuntimeWarmModel>,
+    pub rejected_turns_total: u64,
+    pub degraded_turns_total: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeSchedulerPriorityCount {
+    pub priority: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeWarmModel {
+    pub model_name: String,
+    pub estimated_bytes: u64,
+    pub loaded_ts_ms: i64,
+    pub last_used_ts_ms: i64,
+    pub load_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +122,7 @@ pub async fn get_ai_runtime(
         n_gpu_layers,
         split_mode,
         device_indices,
+        scheduler_snapshot,
     ) = {
         let guard = state.engine.lock().await;
         let loaded_model = guard.loaded_model.clone();
@@ -108,6 +141,7 @@ pub async fn get_ai_runtime(
             params.n_gpu_layers,
             params.split_mode.as_str().to_string(),
             params.device_indices,
+            guard.scheduler.snapshot(),
         )
     };
 
@@ -134,6 +168,44 @@ pub async fn get_ai_runtime(
             phase,
             queue_depth,
             active_request_count,
+        },
+        scheduler: AiRuntimeSchedulerSummary {
+            max_concurrent_turns: scheduler_snapshot.max_concurrent_turns,
+            queue_limit: scheduler_snapshot.queue_limit,
+            active_turns: scheduler_snapshot.active_turns,
+            queued_turns: scheduler_snapshot.queued_turns,
+            overload_state: scheduler_snapshot.overload_state,
+            warm_pool_bytes: scheduler_snapshot.warm_pool_bytes,
+            warm_pool_budget_bytes: scheduler_snapshot.warm_pool_budget_bytes,
+            active_by_priority: scheduler_snapshot
+                .active_by_priority
+                .into_iter()
+                .map(|entry| AiRuntimeSchedulerPriorityCount {
+                    priority: entry.priority,
+                    count: entry.count,
+                })
+                .collect(),
+            queued_by_priority: scheduler_snapshot
+                .queued_by_priority
+                .into_iter()
+                .map(|entry| AiRuntimeSchedulerPriorityCount {
+                    priority: entry.priority,
+                    count: entry.count,
+                })
+                .collect(),
+            warm_models: scheduler_snapshot
+                .warm_models
+                .into_iter()
+                .map(|entry| AiRuntimeWarmModel {
+                    model_name: entry.model_name,
+                    estimated_bytes: entry.estimated_bytes,
+                    loaded_ts_ms: entry.loaded_ts_ms,
+                    last_used_ts_ms: entry.last_used_ts_ms,
+                    load_count: entry.load_count,
+                })
+                .collect(),
+            rejected_turns_total: scheduler_snapshot.rejected_turns_total,
+            degraded_turns_total: scheduler_snapshot.degraded_turns_total,
         },
         resources: AiRuntimeResourcesSummary {
             process_rss_human: process_rss_bytes.map(human_bytes),

@@ -1,7 +1,7 @@
 # Rustyfin AI Assistant Delta Plan
 
 Date: 2026-04-01  
-Status: design delta and phased implementation plan  
+Status: design delta, phased implementation plan, and 2026-04-02 implementation audit snapshot  
 Scope: `/ai` UX, grounded assistant correctness, conversation persistence, calendar behavior, voice input, and live AI runtime telemetry
 
 ## Executive Summary
@@ -19,6 +19,7 @@ What is currently broken or incomplete:
 
 - `/ai` is effectively single-chat only
 - mobile does not expose a ChatGPT-style conversation drawer
+- users cannot queue a second prompt while the current turn is still running
 - the assistant activity view is split awkwardly across thinking text, status rows, and source badges
 - host runtime answers can surface raw byte counts instead of human units
 - the UI labels model generation time as if it were the total turn time
@@ -43,6 +44,37 @@ The recommended implementation order is:
 4. add safe calendar write tools with confirmation and read-after-write verification
 5. add voice input
 6. add live AI runtime and GPU telemetry
+
+## Implementation Audit Snapshot (2026-04-02)
+
+This snapshot records the repository state after the follow-on implementation work that landed after the original plan was written. It exists to prevent future agent runs from re-implementing already-complete phases or assuming the entire delta is still outstanding.
+
+Treat this section as the current repository truth when deciding what remains to be built.
+
+Completed in the current repository:
+
+- Phase 0 correctness/honesty/timing goals are implemented
+- Phase 1 conversation persistence, CRUD APIs, stored history, rename/archive/delete, desktop rail, and mobile drawer are implemented
+- Phase 2 assistant activity view and per-stage observability are implemented
+- Phase 3 confirmation-gated calendar creation and birthday creation are implemented
+- Phase 4 voice-input code paths are implemented
+- Phase 5 backend/runtime telemetry and the live runtime panel are implemented
+
+Repository implementation status after the current `/ai` UI completion pass:
+
+- `WBS 2.6` queued follow-up composer UX is implemented
+- `WBS 2.7` page-native AI shell and surface unification is implemented
+- the desktop/runtime-control cleanup is included in that `WBS 2.7` implementation
+- live server verification of the voice-input fallback path should still be repeated as an operational follow-up, because code-level completion is ahead of refreshed end-to-end live proof
+
+Do not mark the delta complete until all of the following are true:
+
+- users can queue one follow-up prompt per conversation while a turn is actively streaming
+- the queued prompt can be edited, replaced, or canceled before auto-send
+- the queued prompt auto-sends only after a normal terminal `done` event
+- the main `/ai` conversation reads as the page body instead of a smaller fixed-height embedded app shell
+- the conversation rail, main conversation column, runtime panel, and composer use one coherent primary background/surface treatment
+- desktop does not expose inert hamburger/runtime controls at desktop-class widths
 
 ## Why This Delta Exists
 
@@ -69,6 +101,10 @@ The following issues were reported from live use and are treated as authoritativ
 9. When asked to add a birthday to the calendar, the assistant eventually claimed success but no recurring birthday was visible in the calendar afterward.
 10. The `/ai` page should show a Codex-style visible `Thinking...` state while the assistant is working.
 11. Tool and function calls should be listed neatly beneath that thinking state instead of appearing as loose chips above the answer.
+12. Users should be able to type a second prompt while the current turn is still running, have it queue automatically for immediate send after the current turn finishes, and still be able to edit or cancel that queued prompt before it sends.
+13. On desktop, the hamburger control and runtime toggle should not render as clickable controls when their panels are already permanently visible.
+14. The `/ai` page currently looks visually patchy because the conversation rail, runtime area, and composer sit on mismatched background surfaces.
+15. The main `/ai` experience should feel like the page itself, not like a smaller fixed-height chat box embedded inside another scrolling page.
 
 ## Resolved Design Decisions
 
@@ -87,8 +123,19 @@ This section removes ambiguity for the implementation phases below. Unless this 
 - the canonical `/ai` layout target is:
   - desktop left rail
   - mobile hamburger + left drawer
-  - active conversation in the main panel
+  - active conversation in a page-native main column
+  - sticky composer anchored to the bottom of the page viewport
+  - when present, the desktop runtime panel is visible as a sibling page column rather than hidden behind a no-op toggle
   - assistant activity stack inside each assistant turn
+  - composer support for one queued follow-up message per conversation
+- `/ai` should not be presented as a smaller framed app embedded inside another page-sized container
+- desktop controls must not be rendered as fake toggles:
+  - if the conversation rail is already visible on desktop, do not show a hamburger button there
+  - if the runtime panel is already visible on desktop, do not show a runtime-toggle button there
+- the main visual surfaces for the conversation rail, conversation column, runtime panel, and composer must use one coherent background treatment and border language
+- avoid a patchwork of different blacks/navies for adjacent primary AI surfaces unless there is a strong documented semantic reason
+- the primary conversation reading experience should prefer page-level scrolling over trapping the entire chat history inside a fixed-height inner box
+- if independent scroll regions remain, they should be limited to secondary navigation surfaces such as the conversation rail and not the main conversation body
 - the canonical assistant activity presentation is:
   - `Thinking...`
   - ordered tool rows
@@ -99,15 +146,29 @@ This section removes ambiguity for the implementation phases below. Unless this 
 ### Data And Persistence Decisions
 
 - conversation persistence will use dedicated PostgreSQL tables and not reuse `ai_assistant_audit_event`
-- conversation ids and turn ids should use UUID strings stored as `TEXT`, matching current Rustyfin DB patterns
+- conversation ids and turn ids should use UUID strings stored as `TEXT`, matching current Rustyfin DB patterns and the implemented AI conversation migrations
+- `user_id` fields should use `TEXT` foreign keys to `"user"(id)`, matching existing Rustyfin schema conventions
+- conversation timestamps in this slice should use `BIGINT` epoch-style fields, matching the current AI audit and conversation persistence patterns
+- JSON-rich assistant fields in this slice should be stored as serialized JSON `TEXT` columns unless there is a strong documented reason to introduce `jsonb`
 - archived conversations are hidden by default but still restorable
 - deleting a conversation removes user-visible turns but does not delete admin audit history
+- queued prompts are not persisted as conversation turns until they are actually sent
+- v1 queued prompting is single-slot per conversation:
+  - one active streaming turn
+  - zero or one queued user prompt waiting behind it
+  - no arbitrary multi-item FIFO backlog in this delta
 
 ### Event And Transport Decisions
 
 - streaming remains SSE-based
 - the current `status` and `grounding` events are sufficient for v1 compatibility, but the target contract should add explicit phase/activity semantics
 - exact internal tool names remain available to the client, but the default UI label must be user-readable
+- queued follow-up sending should stay client-orchestrated in this delta:
+  - the browser waits for the active conversation stream to reach its normal terminal `done` event
+  - then the browser immediately opens the next request with the queued prompt
+  - do not add a separate server-side prompt queue for v1
+- if the active turn ends in a transport or API error, keep the queued prompt editable and unsent rather than firing it blindly
+- if the active turn ends with a confirmation-required write card, the queued prompt must not auto-send until that pending confirmation state is resolved or dismissed
 
 ### Calendar Decisions
 
@@ -136,6 +197,10 @@ This section removes ambiguity for the implementation phases below. Unless this 
   - current turn phase
   - queue depth
   - AI-related host/GPU usage when available
+- phase ownership rule:
+  - Phase 1 owns the page-native desktop/mobile shell, sticky composer, and removal of inert desktop controls
+  - Phase 5 owns the actual curated runtime panel content and live telemetry transport
+  - Phase 1 should not be blocked on Phase 5 telemetry implementation
 
 ### File-Layout Decisions
 
@@ -740,6 +805,7 @@ Required changes:
 2. Add conversation list APIs.
 3. Add desktop sidebar and mobile hamburger drawer.
 4. Add real new-chat creation, rename, archive, and delete.
+5. Add one queued follow-up prompt slot per conversation, editable and cancelable while waiting.
 
 ### Data Model
 
@@ -751,30 +817,36 @@ Add new PostgreSQL tables, separate from admin audit:
 Recommended shape:
 
 - `ai_conversation`
-  - `id uuid primary key`
-  - `user_id bigint not null`
+  - `id text primary key`
+  - `user_id text not null references "user"(id) on delete cascade`
   - `title text not null`
   - `archived boolean not null default false`
   - `last_message_preview text`
-  - `created_ts timestamptz not null`
-  - `updated_ts timestamptz not null`
+  - `last_model_name text`
+  - `created_ts bigint not null`
+  - `updated_ts bigint not null`
 - `ai_conversation_turn`
-  - `id uuid primary key`
-  - `conversation_id uuid not null`
-  - `user_id bigint not null`
+  - `id text primary key`
+  - `conversation_id text not null references ai_conversation(id) on delete cascade`
+  - `user_id text not null references "user"(id) on delete cascade`
   - `role text not null`
   - `content text not null`
   - `model_name text`
-  - `grounding_tools jsonb not null default '[]'`
-  - `stats jsonb`
+  - `grounding_tools_json text not null`
+  - `follow_up_contexts_json text not null`
+  - `grounding_sources_json text not null`
+  - `activity_trace_json text not null`
+  - `stats_json text`
   - `trace_id text`
-  - `created_ts timestamptz not null`
-  - `turn_index integer not null`
+  - `created_ts bigint not null`
+  - `turn_index bigint not null`
+  - `pending_action_json text` when Phase 3 confirmation cards need to survive reloads
 
 Reason to keep this separate from existing audit:
 
 - audit exists for admin diagnostics and retention
 - user-visible chat history has different retention, UX, and privacy expectations
+- the detailed migration example later in this document is canonical if a high-level summary here ever drifts
 
 ### Backend Changes
 
@@ -792,13 +864,20 @@ Required API surface:
 - `GET /api/v1/ai/conversations/:id`
 - `PATCH /api/v1/ai/conversations/:id`
 - `DELETE /api/v1/ai/conversations/:id`
-- `POST /api/v1/ai/conversations/:id/messages`
+- `POST /api/v1/ai/conversations/:id/messages/stream`
+
+Canonical route rule:
+
+- the conversation message route in this delta is the streaming route above
+- do not introduce a second canonical `POST /api/v1/ai/conversations/:id/messages` route in the same slice unless a later document explicitly defines why both are needed
 
 Rules:
 
 - strict per-user ownership
 - archived conversations remain hidden by default
 - admin audit does not become a user chat API
+- queued prompts are not API-visible conversation turns until the client actually sends them
+- do not introduce a server-persisted background prompt queue for this phase
 
 ### UI Changes
 
@@ -812,7 +891,9 @@ Recommended layout:
 - desktop:
   - fixed left rail with recent chats
   - `New chat` at the top
-  - active chat in the main panel
+  - active chat in a page-native main column rather than a nested framed window
+  - sticky composer pinned to the bottom edge of the viewport
+  - layout should leave room for the future sibling runtime column introduced in Phase 5 without requiring a structural rewrite
 - mobile:
   - top-left hamburger
   - slide-out drawer from left to right
@@ -825,12 +906,24 @@ Required UX:
 - archive chat
 - delete chat
 - conversation switching without losing current thread state
+- on desktop, do not render a hamburger button when the rail is already visible
+- on desktop, do not render a runtime-toggle button before a real runtime panel exists
+- while a turn is streaming, the user can still type in the composer
+- pressing send during an active turn creates or updates a single queued prompt for that conversation instead of being rejected
+- the queued prompt is shown clearly in the composer area as `Queued`
+- the queued prompt can be edited before send
+- the queued prompt can be canceled before send
+- if the user submits again while a queued prompt already exists, update the existing queued prompt rather than stacking another queued item
+- once the active turn completes normally, the queued prompt auto-sends immediately in the same conversation
+- the main conversation body should scroll as part of the page experience rather than being trapped inside a smaller fixed-height chat box
+- the primary AI surfaces should share a unified background treatment so the page does not read as a stack of mismatched panels
 
 ### Tests
 
 - repo tests for ownership and ordering
 - API tests for create/list/get/update/delete conversation flows
 - UI tests for mobile drawer opening and conversation switching
+- UI tests for queued-prompt create, edit, cancel, replace, and auto-send behavior
 
 ### Acceptance Criteria
 
@@ -838,6 +931,19 @@ Required UX:
 - mobile users can open a left drawer and switch threads
 - `New chat` creates a real stored conversation
 - refreshing the page preserves thread history
+- while one answer is streaming, a second prompt can be queued from the same composer
+- the queued prompt can be edited or canceled before it sends
+- only one queued prompt exists per conversation in v1
+- after a normal `done` event, the queued prompt sends automatically without another user click
+- desktop does not show inactive hamburger controls for already-visible navigation
+- desktop does not show a runtime toggle until Phase 5 introduces a real runtime panel
+- the conversation view reads as the page itself rather than a smaller embedded app window
+
+Current audit note:
+
+- the stored conversation/navigation work in this phase is already implemented in the repository
+- the queued-prompt UX and the page-native shell/surface cleanup described above are now implemented in the repository
+- the remaining follow-up for this phase is live verification, not more repo implementation
 
 ## Phase 2: Assistant Activity View And Better Observability
 
@@ -1160,16 +1266,22 @@ Recommended routes:
 - compact runtime panel in `/ai`
 - live during an active turn
 - collapsed by default on mobile
+- always visible on desktop as a sibling page column
+- do not render a runtime-toggle button on desktop when the panel is already visible
 - clearly separate:
   - model/backend info
   - turn status
   - host/GPU utilization
+- use the same primary surface/background treatment as the rest of the `/ai` page instead of a visually disconnected black panel
 
 ### Acceptance Criteria
 
 - the user can see what backend and model are active
 - the user can see resource usage change during prompts when the host can supply it
 - unsupported metrics degrade gracefully instead of showing fake zeroes
+- mobile can still collapse or open runtime details without affecting desktop behavior
+- desktop runtime information is visible without requiring a no-op control
+- the Phase 5 panel drops cleanly into the page-native shell established in Phase 1 without reintroducing an embedded fixed-height chat frame
 
 ## Detailed Delta Execution Notes
 
@@ -1525,7 +1637,17 @@ Suggested state ownership:
 - conversation-level:
   - loaded turns
   - streaming state
+  - queued prompt draft
   - optimistic title updates
+
+Queued-prompt state rules:
+
+- scope queued prompts per conversation, not globally
+- queued prompts remain client-side transient state until actually sent
+- switching conversations must preserve each conversation's queued draft in memory for the current page session
+- deleting or archiving a conversation drops any queued prompt tied to that conversation
+- creating `New chat` starts with no queued prompt
+- auto-send must be blocked if another request is already opening for that conversation
 
 Recommended mobile behavior:
 
@@ -1533,15 +1655,24 @@ Recommended mobile behavior:
 - use a full-height drawer on the left
 - on small screens, close the drawer after selecting a conversation
 
+Recommended desktop behavior:
+
+- treat the conversation experience as the page body, not as a smaller fixed-height app window inside the page
+- keep the composer visually anchored to the bottom of the viewport
+- avoid nested main-column scroll containers when page-level scrolling can satisfy the interaction cleanly
+- reserve independent scrolling for secondary side columns only when needed
+
 ### Ordered Implementation Steps
 
 1. add migration and DB repo for conversations
 2. add server CRUD routes with strict ownership checks
 3. add streaming-by-conversation route
 4. switch `/ai` page to server-backed conversation summaries
-5. add desktop rail
+5. add desktop rail and remove desktop hamburger no-op behavior
 6. add mobile drawer using the Channels pattern
-7. remove local-only `handleNewChat()` semantics
+7. move the main conversation layout to a page-native surface with a sticky bottom composer
+8. add single-slot queued-prompt composer state and UI
+9. remove local-only `handleNewChat()` semantics
 
 ### Search Targets
 
@@ -1682,6 +1813,10 @@ Recommended behavior:
 - animate opacity, not height explosions
 
 ### CSS Direction
+
+- define a shared primary AI surface token and reuse it across the conversation rail, main conversation column, runtime panel, and composer
+- do not use different unrelated blacks/navies for adjacent primary `/ai` regions
+- keep any visual separation driven by borders, spacing, and hierarchy rather than by patchwork background color changes
 
 Recommended CSS classes:
 
@@ -2043,6 +2178,8 @@ This avoids making the entire `/ai` page SSE-heavy when idle while still giving 
 2.3 Desktop sidebar UI
 2.4 Mobile hamburger drawer
 2.5 Rename/archive/delete flows
+2.6 Queued follow-up composer UX
+2.7 Page-native AI shell and surface unification
 3. AI Assistant Activity View And Observability
 3.1 Assistant activity stack
 3.2 Planner short-circuiting
@@ -2062,6 +2199,11 @@ This avoids making the entire `/ai` page SSE-heavy when idle while still giving 
 6.2 GPU metric integration where supported
 6.3 `/ai` live resource panel
 
+Current audit status for this WBS tree:
+
+- complete in the current repository: `1.1` through `1.5`, `2.1` through `2.7`, `3.1` through `3.4`, `4.1` through `4.4`, `5.1` through `5.3`, and `6.1` through `6.3`
+- no additional repo implementation work remains in this WBS tree; only live verification and deployment follow-up remain
+
 ### WBS Dictionary
 
 | WBS | Work Package | Primary Repo Areas | Definition of Done |
@@ -2076,6 +2218,8 @@ This avoids making the entire `/ai` page SSE-heavy when idle while still giving 
 | 2.3 | Desktop sidebar UI | `ui/src/app/ai/page.tsx` | desktop users can navigate chats from a left rail |
 | 2.4 | Mobile drawer | `ui/src/app/ai/page.tsx` | mobile users can open and close a left drawer from a hamburger button |
 | 2.5 | Conversation lifecycle UX | `ui/src/app/ai/page.tsx`, `ui/src/lib/aiApi.ts` | users can rename, archive, delete, and switch chats |
+| 2.6 | Queued follow-up composer UX | `ui/src/app/ai/page.tsx`, `ui/src/lib/aiApi.ts` | users can queue one follow-up prompt per conversation, edit or cancel it while waiting, and have it auto-send after the active turn finishes normally |
+| 2.7 | Page-native AI shell and surface unification | `ui/src/app/ai/page.tsx`, shared AI CSS | the main conversation reads as the page body with a sticky composer, unified primary surfaces, and no inert desktop hamburger/runtime buttons |
 | 3.1 | Assistant activity stack | `ui/src/app/ai/page.tsx`, `ui/src/lib/aiApi.ts` | `/ai` renders `Thinking...`, tool calls, and answer as one coherent flow |
 | 3.2 | Planner short-circuiting | `crates/server/src/ai_assistant/orchestrator.rs` | obvious prompts avoid unnecessary planner-model passes |
 | 3.3 | Planner observability | `crates/server/src/ai_enabled.rs` | per-stage timings and status timestamps are emitted |
@@ -2089,7 +2233,7 @@ This avoids making the entire `/ai` page SSE-heavy when idle while still giving 
 | 5.3 | Voice UX polish | `/ai` UI | recording, transcript preview, and error states are clear |
 | 6.1 | AI runtime status API | server routes + AI engine instrumentation | `/ai` can fetch backend/model/runtime status |
 | 6.2 | GPU metric integration | host/runtime telemetry module | supported hosts expose live GPU usage |
-| 6.3 | Live runtime panel | `/ai` UI | users can observe active model and resource usage during prompts |
+| 6.3 | Live runtime panel | `/ai` UI | users can observe active model and resource usage during prompts, and the desktop panel is visible as a sibling column without a no-op toggle |
 
 ## Code-Level Implementation Map
 
@@ -2098,6 +2242,8 @@ This avoids making the entire `/ai` page SSE-heavy when idle while still giving 
 - `/Users/iwanteague/Desktop/Rustyfin/ui/src/app/ai/page.tsx`
   - conversation shell
   - mobile drawer
+  - queued prompt state and queued-send orchestration
+  - page-native layout and shared primary surface treatment
   - assistant activity stack
   - thinking shimmer row
   - tool-call listing

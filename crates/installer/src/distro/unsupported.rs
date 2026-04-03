@@ -1,6 +1,6 @@
-use crate::distro::DistroAdapter;
 use crate::NativeUserContext;
-use anyhow::{bail, Result};
+use crate::distro::DistroAdapter;
+use anyhow::{Result, bail};
 
 pub struct UnsupportedAdapter {
     id: String,

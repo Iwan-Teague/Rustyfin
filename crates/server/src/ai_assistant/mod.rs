@@ -1,8 +1,11 @@
 pub mod confirmation;
 pub mod context;
 pub mod dates;
+pub mod memory;
 pub mod orchestrator;
 pub mod registry;
+pub mod replies;
+pub mod scheduler;
 pub mod tools;
 pub mod types;
 pub mod weather;

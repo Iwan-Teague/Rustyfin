@@ -9,7 +9,7 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 #[cfg(not(feature = "rustyvault"))]
 use axum::routing::any;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
@@ -375,6 +375,14 @@ fn api_router(state: AppState) -> Router<AppState> {
             get(crate::ai_admin::get_ai_admin_state).put(crate::ai_admin::update_ai_admin_config),
         )
         .route(
+            "/system/ai/backend",
+            put(crate::ai_admin::update_ai_remote_backend),
+        )
+        .route(
+            "/system/ai/benchmarks/run",
+            post(crate::ai_admin::run_ai_model_benchmark),
+        )
+        .route(
             "/system/ai/models/pull",
             post(crate::ai_admin::pull_ai_model),
         )
@@ -388,7 +396,10 @@ fn api_router(state: AppState) -> Router<AppState> {
         )
         .route("/system/runtime-diagnostics", get(get_runtime_diagnostics))
         .route("/system/network", get(get_network_topology))
-        .route("/system/smart-home", get(crate::smart_home::get_smart_home_state))
+        .route(
+            "/system/smart-home",
+            get(crate::smart_home::get_smart_home_state),
+        )
         .nest("/system/backups", crate::backups::router(state.clone()))
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
