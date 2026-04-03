@@ -215,6 +215,37 @@ export interface AiRuntimeResponse {
       used_memory_summary: boolean;
       memory_turn_index: number;
       memory_summary_chars: number;
+      compact_boundary_count: number;
+      recovered_from_compact_boundary: boolean;
+    } | null;
+    last_stats?: {
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_duration_ms: number;
+      generation_duration_ms: number;
+      planner_duration_ms: number;
+      tool_duration_ms: number;
+      end_to_end_duration_ms: number;
+      queue_duration_ms: number;
+      model_load_duration_ms: number;
+      tokens_per_second: number;
+      context_length_tokens: number;
+      prompt_budget_tokens: number;
+      reserved_completion_tokens: number;
+      completion_budget_tokens: number;
+      loaded_history_turns: number;
+      retained_raw_turns: number;
+      summarized_turns: number;
+      recent_grounded_context_count: number;
+      memory_turn_index: number;
+      compact_boundary_count: number;
+      planner_validation_error_count: number;
+      planner_repair_count: number;
+      journal_persisted: boolean;
+      overload: boolean;
+      overload_reason?: string | null;
+      artifact_verification_attempts: number;
+      artifact_revision_count: number;
     } | null;
   };
   resources: {

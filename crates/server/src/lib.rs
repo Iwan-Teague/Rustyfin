@@ -20,6 +20,8 @@ pub mod ai_runtime;
 pub mod ai_storage;
 #[cfg(feature = "ai")]
 pub mod ai_transcribe;
+#[cfg(feature = "ai")]
+pub mod ai_turn_journal;
 pub mod artwork;
 pub mod audit_log;
 pub mod auth;

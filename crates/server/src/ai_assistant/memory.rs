@@ -23,7 +23,7 @@ pub struct ConversationMemoryState {
     pub active_topics: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConversationPromptDebug {
     pub context_length: u32,
     pub prompt_budget_tokens: u32,
@@ -36,6 +36,8 @@ pub struct ConversationPromptDebug {
     pub used_memory_summary: bool,
     pub memory_turn_index: i64,
     pub memory_summary_chars: usize,
+    pub compact_boundary_count: u32,
+    pub recovered_from_compact_boundary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +172,8 @@ where
             used_memory_summary: !memory_state.is_empty(),
             memory_turn_index,
             memory_summary_chars: memory_state.summary.len(),
+            compact_boundary_count: 0,
+            recovered_from_compact_boundary: false,
         },
         pending_summary_turns,
         pending_summary_last_turn_index,

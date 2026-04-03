@@ -158,10 +158,41 @@ impl AssistantPlannerMode {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantPlannerDebug {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub raw_response: Option<String>,
+    #[serde(default)]
+    pub repaired_response: Option<String>,
+    #[serde(default)]
+    pub validation_errors: Vec<String>,
+    #[serde(default)]
+    pub repair_attempt_count: u32,
+    #[serde(default)]
+    pub used_repaired_response: bool,
+    #[serde(default)]
+    pub validated_call_count: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct PlannedToolSet {
     pub mode: AssistantPlannerMode,
     pub calls: Vec<PlannedToolCall>,
+    pub debug: AssistantPlannerDebug,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantArtifactVerificationDebug {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub revision_count: u32,
+    #[serde(default)]
+    pub issues: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +268,40 @@ pub struct AssistantTurnStats {
     pub queue_duration_ms: u64,
     pub model_load_duration_ms: u64,
     pub tokens_per_second: f64,
+    #[serde(default)]
+    pub context_length_tokens: u32,
+    #[serde(default)]
+    pub prompt_budget_tokens: u32,
+    #[serde(default)]
+    pub reserved_completion_tokens: u32,
+    #[serde(default)]
+    pub completion_budget_tokens: u32,
+    #[serde(default)]
+    pub loaded_history_turns: u32,
+    #[serde(default)]
+    pub retained_raw_turns: u32,
+    #[serde(default)]
+    pub summarized_turns: u32,
+    #[serde(default)]
+    pub recent_grounded_context_count: u32,
+    #[serde(default)]
+    pub memory_turn_index: i64,
+    #[serde(default)]
+    pub compact_boundary_count: u32,
+    #[serde(default)]
+    pub planner_validation_error_count: u32,
+    #[serde(default)]
+    pub planner_repair_count: u32,
+    #[serde(default)]
+    pub journal_persisted: bool,
+    #[serde(default)]
+    pub overload: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overload_reason: Option<String>,
+    #[serde(default)]
+    pub artifact_verification_attempts: u32,
+    #[serde(default)]
+    pub artifact_revision_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

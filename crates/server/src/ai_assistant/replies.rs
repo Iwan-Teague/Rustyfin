@@ -112,6 +112,97 @@ struct GroundedHostRuntimeAiSummary {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedAccountProfileSummary {
+    username: String,
+    display_name: String,
+    role: String,
+    time_zone: Option<String>,
+    accessible_library_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDownloadsEnvelope {
+    total_count: usize,
+    query: Option<String>,
+    availability_filter: Option<String>,
+    artifacts: Vec<GroundedDownloadArtifactSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedDownloadArtifactSummary {
+    title: String,
+    availability: String,
+    version: Option<String>,
+    install_mode: Option<String>,
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedBackupSummary {
+    configured: bool,
+    restore_supported: bool,
+    last_successful_backup_ts: Option<i64>,
+    policy_count: i64,
+    total_job_count: i64,
+    successful_job_count: i64,
+    failed_job_count: i64,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedServiceHealthSummary {
+    all_healthy: bool,
+    components: Vec<GroundedServiceHealthComponent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedServiceHealthComponent {
+    name: String,
+    status: String,
+    configured: bool,
+    detail: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedTranscodeSummary {
+    active_sessions: usize,
+    created_total: u64,
+    create_failures_total: u64,
+    create_failures_last_minute: u64,
+    create_failures_last_five_minutes: u64,
+    cleaned_total: u64,
+    hw_accel: Option<String>,
+    hw_accel_required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedStorageSummary {
+    available: bool,
+    reason: Option<String>,
+    mounts: Vec<GroundedStorageMount>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedStorageMount {
+    mount_point: String,
+    tracked_paths: Vec<String>,
+    total_human: Option<String>,
+    available_human: Option<String>,
+    used_percent: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedRecentErrorsSummary {
+    recent_failed_jobs: Vec<GroundedRecentErrorItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedRecentErrorItem {
+    kind: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedRoomSummary {
     title: String,
     room_mode: String,
@@ -225,6 +316,227 @@ pub fn deterministic_runtime_reply(
             .map(|message| format!("I couldn't load the Rustyfin AI runtime status. {message}"))
             .unwrap_or_else(|| "I couldn't load the Rustyfin AI runtime status.".to_string())
     })
+}
+
+pub fn deterministic_profile_reply(
+    _message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "account_get_profile_summary")?;
+
+    Some(if block.status == "ok" {
+        let profile =
+            serde_json::from_value::<GroundedAccountProfileSummary>(block.data.clone()).ok()?;
+        let time_zone = profile
+            .time_zone
+            .as_deref()
+            .map(|value| format!(" Time zone: {value}."))
+            .unwrap_or_default();
+        format!(
+            "You are signed into Rustyfin as {} (@{}). Role: {}. Accessible libraries: {}.{}",
+            profile.display_name,
+            profile.username,
+            profile.role,
+            profile.accessible_library_count,
+            time_zone
+        )
+    } else {
+        block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load your Rustyfin account details. {message}"))
+            .unwrap_or_else(|| "I couldn't load your Rustyfin account details.".to_string())
+    })
+}
+
+pub fn deterministic_downloads_reply(
+    _message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks
+        .iter()
+        .find(|block| block.tool == "downloads_list_available_artifacts")?;
+
+    let reply = if block.status == "ok" {
+        let envelope =
+            serde_json::from_value::<GroundedDownloadsEnvelope>(block.data.clone()).ok()?;
+        if envelope.artifacts.is_empty() {
+            match envelope.query.as_deref() {
+                Some(query) => {
+                    format!("I couldn't find any downloads matching \"{query}\" right now.")
+                }
+                None => "There are no Rustyfin downloads available right now.".to_string(),
+            }
+        } else {
+            let heading = match (
+                envelope.query.as_deref(),
+                envelope.availability_filter.as_deref(),
+            ) {
+                (Some(query), Some(availability)) => {
+                    format!("Rustyfin downloads matching \"{query}\" with status {availability}:")
+                }
+                (Some(query), None) => format!("Rustyfin downloads matching \"{query}\":"),
+                (None, Some(availability)) => {
+                    format!("Rustyfin downloads with status {availability}:")
+                }
+                (None, None) => "Rustyfin downloads available right now:".to_string(),
+            };
+
+            let mut lines = vec![heading];
+            for artifact in envelope.artifacts.iter().take(8) {
+                let version = artifact
+                    .version
+                    .as_deref()
+                    .map(|value| format!(" {value}"))
+                    .unwrap_or_default();
+                let install_mode = artifact
+                    .install_mode
+                    .as_deref()
+                    .map(|value| format!(" via {value}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- {} ({}){}{}: {}",
+                    artifact.title, artifact.availability, version, install_mode, artifact.summary
+                ));
+            }
+            lines.join("\n")
+        }
+    } else {
+        block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load the Rustyfin downloads catalog. {message}"))
+            .unwrap_or_else(|| "I couldn't load the Rustyfin downloads catalog.".to_string())
+    };
+
+    Some(reply)
+}
+
+pub fn deterministic_service_reply(
+    _message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let block = grounding_blocks.iter().find(|block| {
+        matches!(
+            block.tool,
+            "system_get_backup_summary"
+                | "system_get_service_health"
+                | "system_get_transcode_summary"
+                | "system_get_storage_summary"
+                | "system_get_recent_errors"
+        )
+    })?;
+
+    let reply = match block.tool {
+        "system_get_backup_summary" if block.status == "ok" => {
+            let summary =
+                serde_json::from_value::<GroundedBackupSummary>(block.data.clone()).ok()?;
+            let last_success = summary
+                .last_successful_backup_ts
+                .map(|value| format!(" Last successful backup timestamp: {value}."))
+                .unwrap_or_default();
+            format!(
+                "{}{} Restore supported: {}.",
+                summary.message, last_success, summary.restore_supported
+            )
+        }
+        "system_get_service_health" if block.status == "ok" => {
+            let summary =
+                serde_json::from_value::<GroundedServiceHealthSummary>(block.data.clone()).ok()?;
+            if summary.all_healthy {
+                format!(
+                    "Rustyfin services are healthy. Checked {} component{}.",
+                    summary.components.len(),
+                    plural_suffix(summary.components.len())
+                )
+            } else {
+                let degraded = summary
+                    .components
+                    .iter()
+                    .filter(|component| component.configured && component.status != "healthy")
+                    .map(|component| format!("{} ({})", component.name, component.detail))
+                    .collect::<Vec<_>>();
+                format!("Rustyfin has degraded services: {}.", degraded.join("; "))
+            }
+        }
+        "system_get_transcode_summary" if block.status == "ok" => {
+            let summary =
+                serde_json::from_value::<GroundedTranscodeSummary>(block.data.clone()).ok()?;
+            let accel = summary
+                .hw_accel
+                .as_deref()
+                .map(|value| format!(" Hardware acceleration: {value}."))
+                .unwrap_or_default();
+            format!(
+                "Rustyfin transcode runtime has {} active session{}. Total created: {}. Failures: {} total, {} in the last minute, {} in the last five minutes. Cleaned total: {}.{} Required: {}.",
+                summary.active_sessions,
+                plural_suffix(summary.active_sessions),
+                summary.created_total,
+                summary.create_failures_total,
+                summary.create_failures_last_minute,
+                summary.create_failures_last_five_minutes,
+                summary.cleaned_total,
+                accel,
+                summary.hw_accel_required
+            )
+        }
+        "system_get_storage_summary" if block.status == "ok" => {
+            let summary =
+                serde_json::from_value::<GroundedStorageSummary>(block.data.clone()).ok()?;
+            if !summary.available {
+                summary
+                    .reason
+                    .unwrap_or_else(|| "I couldn't load the Rustyfin storage summary.".to_string())
+            } else if summary.mounts.is_empty() {
+                "Rustyfin does not have any tracked storage mounts right now.".to_string()
+            } else {
+                let mut lines = vec!["Rustyfin storage summary:".to_string()];
+                for mount in summary.mounts.iter().take(6) {
+                    let capacity = match (&mount.available_human, &mount.total_human) {
+                        (Some(available), Some(total)) => format!("{available} free of {total}"),
+                        _ => "capacity unavailable".to_string(),
+                    };
+                    let used = mount
+                        .used_percent
+                        .map(|value| format!(" ({value:.0}% used)"))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "- {}: {}{} [{}]",
+                        mount.mount_point,
+                        capacity,
+                        used,
+                        mount.tracked_paths.join(", ")
+                    ));
+                }
+                lines.join("\n")
+            }
+        }
+        "system_get_recent_errors" if block.status == "ok" => {
+            let summary =
+                serde_json::from_value::<GroundedRecentErrorsSummary>(block.data.clone()).ok()?;
+            if summary.recent_failed_jobs.is_empty() {
+                "Rustyfin has no recent failed jobs or recorded assistant/runtime errors in the current summary.".to_string()
+            } else {
+                let mut lines = vec!["Recent Rustyfin failures:".to_string()];
+                for item in summary.recent_failed_jobs.iter().take(6) {
+                    lines.push(format!("- {}: {}", item.kind, item.message));
+                }
+                lines.join("\n")
+            }
+        }
+        _ => block
+            .data
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|message| format!("I couldn't load the Rustyfin service summary. {message}"))
+            .unwrap_or_else(|| "I couldn't load the Rustyfin service summary.".to_string()),
+    };
+
+    Some(reply)
 }
 
 fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
@@ -688,8 +1000,9 @@ fn plural_suffix(count: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_calendar_reply, deterministic_network_reply, deterministic_rooms_reply,
-        deterministic_runtime_reply,
+        deterministic_calendar_reply, deterministic_downloads_reply, deterministic_network_reply,
+        deterministic_profile_reply, deterministic_rooms_reply, deterministic_runtime_reply,
+        deterministic_service_reply,
     };
     use crate::ai_assistant::types::AssistantToolContextBlock;
     use serde_json::json;
@@ -952,5 +1265,88 @@ mod tests {
         assert!(reply.contains("Active AI requests: 1"));
         assert!(reply.contains("not separate AI instances"));
         assert!(reply.contains("tiny.gguf"));
+    }
+
+    #[test]
+    fn deterministic_downloads_reply_lists_available_artifacts() {
+        let reply = deterministic_downloads_reply(
+            "Which downloads are available right now?",
+            &[AssistantToolContextBlock {
+                tool: "downloads_list_available_artifacts",
+                label: "Available downloads".to_string(),
+                status: "ok",
+                data: json!({
+                    "total_count": 1,
+                    "query": null,
+                    "availability_filter": null,
+                    "artifacts": [
+                        {
+                            "title": "Rustyfin Desktop",
+                            "availability": "ready",
+                            "version": "1.2.3",
+                            "install_mode": "manual",
+                            "summary": "macOS build"
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic downloads reply");
+
+        assert!(reply.contains("Rustyfin downloads available right now"));
+        assert!(reply.contains("Rustyfin Desktop"));
+        assert!(reply.contains("1.2.3"));
+    }
+
+    #[test]
+    fn deterministic_profile_reply_formats_account_summary() {
+        let reply = deterministic_profile_reply(
+            "Who am I signed in as?",
+            &[AssistantToolContextBlock {
+                tool: "account_get_profile_summary",
+                label: "Signed-in Rustyfin account summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "username": "iwan",
+                    "display_name": "Iwan",
+                    "role": "admin",
+                    "time_zone": "Europe/Dublin",
+                    "accessible_library_count": 5
+                }),
+            }],
+        )
+        .expect("expected deterministic profile reply");
+
+        assert!(reply.contains("Iwan"));
+        assert!(reply.contains("@iwan"));
+        assert!(reply.contains("Accessible libraries: 5"));
+        assert!(reply.contains("Europe/Dublin"));
+    }
+
+    #[test]
+    fn deterministic_service_reply_formats_transcode_summary() {
+        let reply = deterministic_service_reply(
+            "What is the transcode runtime status?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_transcode_summary",
+                label: "Rustyfin transcode summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "active_sessions": 1,
+                    "created_total": 12,
+                    "create_failures_total": 2,
+                    "create_failures_last_minute": 1,
+                    "create_failures_last_five_minutes": 2,
+                    "cleaned_total": 9,
+                    "hw_accel": "nvenc",
+                    "hw_accel_required": false
+                }),
+            }],
+        )
+        .expect("expected deterministic service reply");
+
+        assert!(reply.contains("Total created: 12"));
+        assert!(reply.contains("Failures: 2 total"));
+        assert!(reply.contains("Hardware acceleration: nvenc"));
     }
 }

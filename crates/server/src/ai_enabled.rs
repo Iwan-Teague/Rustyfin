@@ -22,28 +22,36 @@ use crate::ai_assistant::memory::{
     ConversationMemoryState, ConversationPromptDebug, build_generation_prompt_messages,
     build_memory_update_messages, fallback_memory_update, parse_memory_update_response,
 };
+use crate::ai_assistant::profiles::{
+    AssistantModelProfile, assistant_model_profile, configured_ai_max_concurrent_requests,
+};
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
 use crate::ai_assistant::types::{
-    AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
-    AssistantFollowUpContext, AssistantGroundingSource, AssistantHistoryMessage,
-    AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantResponseMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
-    AssistantToolActivityEvent, AssistantToolActivityState, AssistantToolContextBlock,
-    AssistantToolInput, AssistantTurnStats,
+    AssistantActivityTraceItem, AssistantArtifactVerificationDebug, AssistantConfirmationPayload,
+    AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantGroundingSource,
+    AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase,
+    AssistantPhaseEvent, AssistantPlannerDebug, AssistantResponseMode, AssistantRuntimePhase,
+    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
+    AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_system_prompt, deterministic_calendar_reply,
-    deterministic_current_datetime_reply, deterministic_network_reply, deterministic_rooms_reply,
-    deterministic_runtime_reply, immediate_response_for_message, plan_tool_calls_with_model_assist,
-    status_label_for_tool_call, unsupported_write_response_for_message,
+    deterministic_current_datetime_reply, deterministic_downloads_reply,
+    deterministic_network_reply, deterministic_profile_reply, deterministic_rooms_reply,
+    deterministic_runtime_reply, deterministic_service_reply, immediate_response_for_message,
+    plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    unsupported_write_response_for_message,
 };
 use crate::ai_audit::{AiAssistantAuditResponseKind, persist_chat_audit_event};
 use crate::ai_conversations::{
-    ConversationMessageRequest, conversation_memory_state, persist_conversation_memory,
+    ConversationMessageRequest, load_conversation_memory_checkpoint, persist_conversation_memory,
 };
 use crate::ai_storage::{
     AiModelSummary, current_model_dir, list_models_with_storage_status, model_file_path,
+};
+use crate::ai_turn_journal::{
+    AiTurnJournalStatus, TurnJournalHandle, create_turn_journal, update_turn_journal,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -54,6 +62,7 @@ pub struct EngineState {
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
     pub active_phase: AssistantRuntimePhase,
     pub last_prompt_debug: Option<ConversationPromptDebug>,
+    pub last_turn_stats: Option<AssistantTurnStats>,
 }
 
 impl Default for EngineState {
@@ -63,6 +72,7 @@ impl Default for EngineState {
             engine: None,
             active_phase: AssistantRuntimePhase::Idle,
             last_prompt_debug: None,
+            last_turn_stats: None,
         }
     }
 }
@@ -70,14 +80,16 @@ impl Default for EngineState {
 #[derive(Clone)]
 struct ConversationPersistence {
     conversation_id: String,
+    request_turn_id: String,
+    request_turn_index: i64,
     memory_state: ConversationMemoryState,
     memory_turn_index: i64,
+    recovered_from_compact_boundary: bool,
 }
 
 const MIN_CONTEXT_WINDOW_TOKENS: u32 = 1024;
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u32 = 4096;
 const MAX_CONTEXT_WINDOW_TOKENS: u32 = 32768;
-const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 192;
 const MEMORY_SUMMARY_MAX_DURATION_MS: u64 = 15_000;
 
 pub fn ai_router() -> Router<AppState> {
@@ -160,13 +172,15 @@ async fn stream_conversation_message(
     )
     .await?;
 
-    crate::ai_conversations::persist_user_turn(
+    let user_turn = crate::ai_conversations::persist_user_turn(
         &state,
         &user.user_id,
         &conversation_id,
         &req.message,
     )
     .await?;
+    let (memory_state, memory_turn_index, recovered_from_compact_boundary) =
+        load_conversation_memory_checkpoint(&state, &user.user_id, &conversation).await?;
 
     Ok(stream_chat_response(
         state,
@@ -180,8 +194,11 @@ async fn stream_conversation_message(
         },
         Some(ConversationPersistence {
             conversation_id,
-            memory_state: conversation_memory_state(&conversation),
-            memory_turn_index: conversation.memory_turn_index,
+            request_turn_id: user_turn.id,
+            request_turn_index: user_turn.turn_index,
+            memory_state,
+            memory_turn_index,
+            recovered_from_compact_boundary,
         }),
     ))
 }
@@ -196,9 +213,21 @@ fn stream_chat_response(
     let history_len = req.history.len();
     let sse_stream = stream! {
         let trace_id = uuid::Uuid::new_v4().to_string();
+        let journal_handle = TurnJournalHandle {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user.user_id.clone(),
+            conversation_id: persistence.as_ref().map(|value| value.conversation_id.clone()),
+            request_turn_id: persistence.as_ref().map(|value| value.request_turn_id.clone()),
+            request_turn_index: persistence.as_ref().map(|value| value.request_turn_index),
+            trace_id: trace_id.clone(),
+            request_message: req.message.clone(),
+            model_name: model_name.clone(),
+            response_mode: req.response_mode.as_str().to_string(),
+        };
         let turn_started = Instant::now();
         let chat_metrics = state.runtime_metrics.start_ai_chat_request();
         set_last_prompt_debug(&state, None).await;
+        set_last_turn_stats(&state, None).await;
         let mut audit_written = false;
         let mut assistant_content = String::new();
         let mut activity_trace = Vec::<AssistantActivityTraceItem>::new();
@@ -207,6 +236,11 @@ fn stream_chat_response(
         let mut follow_up_contexts = Vec::<AssistantFollowUpContext>::new();
         let mut stats: Option<AssistantTurnStats> = None;
         let mut tool_duration_ms = 0_u64;
+        let mut planner_debug = AssistantPlannerDebug::default();
+        planner_debug.schema_version = crate::ai_assistant::profiles::PLANNER_SCHEMA_VERSION;
+        let mut prompt_debug: Option<ConversationPromptDebug> = None;
+        let mut compact_boundary_count = 0_u32;
+        let mut artifact_verification = AssistantArtifactVerificationDebug::default();
 
         info!(
             trace_id = %trace_id,
@@ -216,6 +250,76 @@ fn stream_chat_response(
             history_len,
             "ai chat request received"
         );
+
+        if let Err(error) = create_turn_journal(&state, &journal_handle, req.history.len()).await {
+            let error_message = format!("failed to persist AI turn journal before planning: {error:?}");
+            warn!(
+                trace_id = %trace_id,
+                user_id = %user.user_id,
+                model = %model_name,
+                error = %error_message,
+                "ai chat failed before turn journal persistence"
+            );
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("error")
+                    .data(json!({ "message": error_message }).to_string()),
+            );
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            return;
+        }
+
+        let max_concurrent_requests = configured_ai_max_concurrent_requests();
+        let active_request_count = state.runtime_metrics.snapshot().assistant.chats.calls_in_flight;
+        if active_request_count > max_concurrent_requests {
+            let overload_message = format!(
+                "Rustyfin AI is busy right now with {active_request_count} active turn{} on this host. Please retry in a moment.",
+                if active_request_count == 1 { "" } else { "s" }
+            );
+            let mut overload_stats = build_turn_stats(
+                0,
+                0,
+                0,
+                0,
+                0,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                0.0,
+            );
+            overload_stats.overload = true;
+            overload_stats.overload_reason = Some(format!(
+                "active_requests={active_request_count} exceeded limit={max_concurrent_requests}"
+            ));
+            overload_stats.journal_persisted = true;
+            stats = Some(overload_stats.clone());
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Overloaded,
+                req.history.len(),
+                None,
+                &planner_debug,
+                None,
+                Some(&overload_stats),
+                overload_stats.overload_reason.as_deref(),
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
+            set_last_turn_stats(&state, stats.clone()).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": overload_message }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            return;
+        }
 
         let planning_started_ts_ms = now_ts_ms();
         set_engine_phase(&state, AssistantRuntimePhase::Planning).await;
@@ -267,6 +371,16 @@ fn stream_chat_response(
                         0,
                         0.0,
                     ));
+                    if let Some(stats_mut) = stats.as_mut() {
+                        enrich_turn_stats(
+                            stats_mut,
+                            &planner_debug,
+                            prompt_debug.as_ref(),
+                            compact_boundary_count,
+                            None,
+                            None,
+                        );
+                    }
                     persist_chat_audit_event(
                         &state,
                         &user,
@@ -296,7 +410,24 @@ fn stream_chat_response(
                         )
                         .await;
                     }
+                    let _ = update_turn_journal(
+                        &state,
+                        &journal_handle,
+                        AiTurnJournalStatus::Completed,
+                        req.history.len(),
+                        None,
+                        &planner_debug,
+                        prompt_debug.as_ref(),
+                        stats.as_ref(),
+                        None,
+                        None,
+                        compact_boundary_count,
+                        None,
+                        Some(now_ts_ms()),
+                    )
+                    .await;
                     chat_metrics.mark_success();
+                    set_last_turn_stats(&state, stats.clone()).await;
                     set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                     yield Ok::<Event, Infallible>(
                         Event::default()
@@ -341,6 +472,9 @@ fn stream_chat_response(
             tool_duration_ms = tool_started.elapsed().as_millis() as u64;
             let source = source_from_block(payload.call.tool, &block);
             let follow_up_context = build_follow_up_context(&payload.call, &block);
+            if let Some(verification) = artifact_verification_from_block(&block) {
+                artifact_verification = verification;
+            }
             grounding_blocks.push(block.clone());
             grounding_sources.push(source.clone());
             follow_up_contexts.push(follow_up_context);
@@ -405,6 +539,16 @@ fn stream_chat_response(
                 0,
                 0.0,
             ));
+            if let Some(stats_mut) = stats.as_mut() {
+                enrich_turn_stats(
+                    stats_mut,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    Some(&artifact_verification),
+                    None,
+                );
+            }
 
             if let Some(persistence) = &persistence {
                 let grounding_tool_names = planned_tools
@@ -428,6 +572,23 @@ fn stream_chat_response(
                 .await;
             }
 
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Completed,
+                req.history.len(),
+                None,
+                &planner_debug,
+                prompt_debug.as_ref(),
+                stats.as_ref(),
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
+
             persist_chat_audit_event(
                 &state,
                 &user,
@@ -441,6 +602,7 @@ fn stream_chat_response(
             )
             .await;
             chat_metrics.mark_success();
+            set_last_turn_stats(&state, stats.clone()).await;
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -518,6 +680,16 @@ fn stream_chat_response(
                 0,
                 0.0,
             ));
+            if let Some(stats_mut) = stats.as_mut() {
+                enrich_turn_stats(
+                    stats_mut,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    Some(&artifact_verification),
+                    None,
+                );
+            }
             persist_chat_audit_event(
                 &state,
                 &user,
@@ -547,7 +719,24 @@ fn stream_chat_response(
                 )
                 .await;
             }
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Completed,
+                req.history.len(),
+                None,
+                &planner_debug,
+                prompt_debug.as_ref(),
+                stats.as_ref(),
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
             chat_metrics.mark_success();
+            set_last_turn_stats(&state, stats.clone()).await;
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -587,6 +776,16 @@ fn stream_chat_response(
                 0,
                 0.0,
             ));
+            if let Some(stats_mut) = stats.as_mut() {
+                enrich_turn_stats(
+                    stats_mut,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+            }
             persist_chat_audit_event(
                 &state,
                 &user,
@@ -616,7 +815,24 @@ fn stream_chat_response(
                 )
                 .await;
             }
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Completed,
+                req.history.len(),
+                None,
+                &planner_debug,
+                prompt_debug.as_ref(),
+                stats.as_ref(),
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
             chat_metrics.mark_success();
+            set_last_turn_stats(&state, stats.clone()).await;
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -656,6 +872,16 @@ fn stream_chat_response(
                 0,
                 0.0,
             ));
+            if let Some(stats_mut) = stats.as_mut() {
+                enrich_turn_stats(
+                    stats_mut,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+            }
             persist_chat_audit_event(
                 &state,
                 &user,
@@ -685,7 +911,24 @@ fn stream_chat_response(
                 )
                 .await;
             }
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Completed,
+                req.history.len(),
+                None,
+                &planner_debug,
+                prompt_debug.as_ref(),
+                stats.as_ref(),
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
             chat_metrics.mark_success();
+            set_last_turn_stats(&state, stats.clone()).await;
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -702,6 +945,42 @@ fn stream_chat_response(
             Ok(path) => path,
             Err(error) => {
                 let error_message = error.to_string();
+                let mut error_stats = build_turn_stats(
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    turn_started.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    0.0,
+                );
+                enrich_turn_stats(
+                    &mut error_stats,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+                stats = Some(error_stats.clone());
+                let _ = update_turn_journal(
+                    &state,
+                    &journal_handle,
+                    AiTurnJournalStatus::Failed,
+                    req.history.len(),
+                    None,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    Some(&error_stats),
+                    None,
+                    Some(&error_message),
+                    compact_boundary_count,
+                    None,
+                    Some(now_ts_ms()),
+                )
+                .await;
                 persist_chat_audit_event(
                     &state,
                     &user,
@@ -719,6 +998,7 @@ fn stream_chat_response(
                         .event("error")
                         .data(json!({ "message": error_message }).to_string()),
                 );
+                set_last_turn_stats(&state, stats.clone()).await;
                 set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 return;
             }
@@ -728,6 +1008,42 @@ fn stream_chat_response(
             match load_engine_for_chat(&state, &model_name, &gguf_path).await {
             Ok((engine, queue_ms, load_ms)) => (engine, queue_ms, load_ms),
             Err(error_message) => {
+                let mut error_stats = build_turn_stats(
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    turn_started.elapsed().as_millis() as u64,
+                    0,
+                    0,
+                    0.0,
+                );
+                enrich_turn_stats(
+                    &mut error_stats,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+                stats = Some(error_stats.clone());
+                let _ = update_turn_journal(
+                    &state,
+                    &journal_handle,
+                    AiTurnJournalStatus::Failed,
+                    req.history.len(),
+                    None,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    Some(&error_stats),
+                    None,
+                    Some(&error_message),
+                    compact_boundary_count,
+                    None,
+                    Some(now_ts_ms()),
+                )
+                .await;
                 persist_chat_audit_event(
                     &state,
                     &user,
@@ -753,6 +1069,7 @@ fn stream_chat_response(
                     error = %error_message,
                     "ai chat failed to load model"
                 );
+                set_last_turn_stats(&state, stats.clone()).await;
                 return;
             }
         };
@@ -761,6 +1078,7 @@ fn stream_chat_response(
         let planned_tool_set =
             plan_tool_calls_with_model_assist(&engine, &user, &req.message, &req.history).await;
         let planner_duration_ms = planner_started.elapsed().as_millis() as u64;
+        planner_debug = planned_tool_set.debug.clone();
         let planned_tools = planned_tool_set.calls;
         info!(
             trace_id = %trace_id,
@@ -774,6 +1092,23 @@ fn stream_chat_response(
                 .join(","),
             "ai chat planned grounded tools"
         );
+
+        let _ = update_turn_journal(
+            &state,
+            &journal_handle,
+            AiTurnJournalStatus::Accepted,
+            req.history.len(),
+            Some(planned_tool_set.mode.as_str()),
+            &planner_debug,
+            None,
+            None,
+            None,
+            None,
+            compact_boundary_count,
+            None,
+            None,
+        )
+        .await;
 
         let planning_finished_ts_ms = now_ts_ms();
         finish_phase(
@@ -892,6 +1227,9 @@ fn stream_chat_response(
                     },
                 ));
                 follow_up_contexts.push(build_follow_up_context(&call, &block));
+                if let Some(verification) = artifact_verification_from_block(&block) {
+                    artifact_verification = verification;
+                }
                 grounding_blocks.push(block);
                 grounding_sources.push(source);
             }
@@ -906,12 +1244,29 @@ fn stream_chat_response(
                         }).to_string()),
                 );
             }
+
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Grounded,
+                req.history.len(),
+                Some(planned_tool_set.mode.as_str()),
+                &planner_debug,
+                None,
+                None,
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                None,
+            )
+            .await;
         }
 
-        if let Some(datetime_reply) =
-            deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
+        if let Some(deterministic_reply) =
+            deterministic_grounded_reply(&req.message, &req.history, &grounding_blocks)
         {
-            assistant_content = datetime_reply;
+            assistant_content = deterministic_reply;
             stats = Some(build_turn_stats(
                 0,
                 0,
@@ -923,6 +1278,16 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
             ));
+            if let Some(stats_mut) = stats.as_mut() {
+                enrich_turn_stats(
+                    stats_mut,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+            }
             let grounding_tools = planned_tools
                 .iter()
                 .map(|call| call.tool.as_str().to_string())
@@ -944,6 +1309,22 @@ fn stream_chat_response(
                 )
                 .await;
             }
+            let _ = update_turn_journal(
+                &state,
+                &journal_handle,
+                AiTurnJournalStatus::Completed,
+                req.history.len(),
+                Some(planned_tool_set.mode.as_str()),
+                &planner_debug,
+                prompt_debug.as_ref(),
+                stats.as_ref(),
+                None,
+                None,
+                compact_boundary_count,
+                None,
+                Some(now_ts_ms()),
+            )
+            .await;
             persist_chat_audit_event(
                 &state,
                 &user,
@@ -957,296 +1338,7 @@ fn stream_chat_response(
             )
             .await;
             chat_metrics.mark_success();
-            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .event("token")
-                    .data(json!({ "text": assistant_content }).to_string()),
-            );
-            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-            return;
-        } else if let Some(calendar_reply) =
-            deterministic_calendar_reply(&req.message, &grounding_blocks)
-        {
-            assistant_content = calendar_reply;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
-                planner_duration_ms,
-                tool_duration_ms,
-                turn_started.elapsed().as_millis() as u64,
-                queue_duration_ms,
-                model_load_duration_ms,
-                0.0,
-            ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
-                    &state,
-                    &user.user_id,
-                    &persistence.conversation_id,
-                    &assistant_content,
-                    &model_name,
-                    &grounding_tools,
-                    &follow_up_contexts,
-                    &grounding_sources,
-                    &activity_trace,
-                    stats.as_ref(),
-                    None,
-                    Some(&trace_id),
-                )
-                .await;
-            }
-            persist_chat_audit_event(
-                &state,
-                &user,
-                &req,
-                &trace_id,
-                AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
-                &grounding_blocks,
-                &grounding_sources,
-                None,
-            )
-            .await;
-            chat_metrics.mark_success();
-            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .event("token")
-                    .data(json!({ "text": assistant_content }).to_string()),
-            );
-            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-            return;
-        } else if let Some(network_reply) =
-            deterministic_network_reply(&req.message, &grounding_blocks)
-        {
-            assistant_content = network_reply;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
-                planner_duration_ms,
-                tool_duration_ms,
-                turn_started.elapsed().as_millis() as u64,
-                queue_duration_ms,
-                model_load_duration_ms,
-                0.0,
-            ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
-                    &state,
-                    &user.user_id,
-                    &persistence.conversation_id,
-                    &assistant_content,
-                    &model_name,
-                    &grounding_tools,
-                    &follow_up_contexts,
-                    &grounding_sources,
-                    &activity_trace,
-                    stats.as_ref(),
-                    None,
-                    Some(&trace_id),
-                )
-                .await;
-            }
-            persist_chat_audit_event(
-                &state,
-                &user,
-                &req,
-                &trace_id,
-                AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
-                &grounding_blocks,
-                &grounding_sources,
-                None,
-            )
-            .await;
-            chat_metrics.mark_success();
-            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .event("token")
-                    .data(json!({ "text": assistant_content }).to_string()),
-            );
-            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-            return;
-        } else if let Some(runtime_reply) =
-            deterministic_runtime_reply(&req.message, &grounding_blocks)
-        {
-            assistant_content = runtime_reply;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
-                planner_duration_ms,
-                tool_duration_ms,
-                turn_started.elapsed().as_millis() as u64,
-                queue_duration_ms,
-                model_load_duration_ms,
-                0.0,
-            ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
-                    &state,
-                    &user.user_id,
-                    &persistence.conversation_id,
-                    &assistant_content,
-                    &model_name,
-                    &grounding_tools,
-                    &follow_up_contexts,
-                    &grounding_sources,
-                    &activity_trace,
-                    stats.as_ref(),
-                    None,
-                    Some(&trace_id),
-                )
-                .await;
-            }
-            persist_chat_audit_event(
-                &state,
-                &user,
-                &req,
-                &trace_id,
-                AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
-                &grounding_blocks,
-                &grounding_sources,
-                None,
-            )
-            .await;
-            chat_metrics.mark_success();
-            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .event("token")
-                    .data(json!({ "text": assistant_content }).to_string()),
-            );
-            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-            return;
-        } else if let Some(rooms_reply) =
-            deterministic_rooms_reply(&req.message, &grounding_blocks)
-        {
-            assistant_content = rooms_reply;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
-                planner_duration_ms,
-                tool_duration_ms,
-                turn_started.elapsed().as_millis() as u64,
-                queue_duration_ms,
-                model_load_duration_ms,
-                0.0,
-            ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
-                    &state,
-                    &user.user_id,
-                    &persistence.conversation_id,
-                    &assistant_content,
-                    &model_name,
-                    &grounding_tools,
-                    &follow_up_contexts,
-                    &grounding_sources,
-                    &activity_trace,
-                    stats.as_ref(),
-                    None,
-                    Some(&trace_id),
-                )
-                .await;
-            }
-            persist_chat_audit_event(
-                &state,
-                &user,
-                &req,
-                &trace_id,
-                AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
-                &grounding_blocks,
-                &grounding_sources,
-                None,
-            )
-            .await;
-            chat_metrics.mark_success();
-            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .event("token")
-                    .data(json!({ "text": assistant_content }).to_string()),
-            );
-            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-            return;
-        } else if let Some(weather_reply) =
-            deterministic_weather_reply(&req.message, &grounding_blocks)
-        {
-            assistant_content = weather_reply;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
-                planner_duration_ms,
-                tool_duration_ms,
-                turn_started.elapsed().as_millis() as u64,
-                queue_duration_ms,
-                model_load_duration_ms,
-                0.0,
-            ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
-            if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
-                    &state,
-                    &user.user_id,
-                    &persistence.conversation_id,
-                    &assistant_content,
-                    &model_name,
-                    &grounding_tools,
-                    &follow_up_contexts,
-                    &grounding_sources,
-                    &activity_trace,
-                    stats.as_ref(),
-                    None,
-                    Some(&trace_id),
-                )
-                .await;
-            }
-            persist_chat_audit_event(
-                &state,
-                &user,
-                &req,
-                &trace_id,
-                AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
-                &grounding_blocks,
-                &grounding_sources,
-                None,
-            )
-            .await;
-            chat_metrics.mark_success();
+            set_last_turn_stats(&state, stats.clone()).await;
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -1277,7 +1369,7 @@ fn stream_chat_response(
             },
         ));
 
-        let (messages, prompt_debug, completion_budget) = match prepare_generation_messages(
+        let (messages, prepared_prompt_debug, completion_budget, profile, compacted_boundaries) = match prepare_generation_messages(
             &state,
             &user,
             persistence.as_ref(),
@@ -1288,6 +1380,42 @@ fn stream_chat_response(
         .await {
             Ok(prepared) => prepared,
             Err(error_message) => {
+                let mut error_stats = build_turn_stats(
+                    0,
+                    0,
+                    0,
+                    planner_duration_ms,
+                    tool_duration_ms,
+                    turn_started.elapsed().as_millis() as u64,
+                    queue_duration_ms,
+                    model_load_duration_ms,
+                    0.0,
+                );
+                enrich_turn_stats(
+                    &mut error_stats,
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    compact_boundary_count,
+                    None,
+                    None,
+                );
+                stats = Some(error_stats.clone());
+                let _ = update_turn_journal(
+                    &state,
+                    &journal_handle,
+                    AiTurnJournalStatus::Failed,
+                    req.history.len(),
+                    Some(planned_tool_set.mode.as_str()),
+                    &planner_debug,
+                    prompt_debug.as_ref(),
+                    Some(&error_stats),
+                    None,
+                    Some(&error_message),
+                    compact_boundary_count,
+                    None,
+                    Some(now_ts_ms()),
+                )
+                .await;
                 persist_chat_audit_event(
                     &state,
                     &user,
@@ -1305,6 +1433,7 @@ fn stream_chat_response(
                         .event("error")
                         .data(json!({ "message": error_message }).to_string()),
                 );
+                set_last_turn_stats(&state, stats.clone()).await;
                 set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 warn!(
                     trace_id = %trace_id,
@@ -1316,22 +1445,40 @@ fn stream_chat_response(
                 return;
             }
         };
-        set_last_prompt_debug(&state, Some(prompt_debug.clone())).await;
-        if prompt_debug.summarized_turns > 0 {
+        compact_boundary_count = compact_boundary_count.max(compacted_boundaries);
+        prompt_debug = Some(prepared_prompt_debug.clone());
+        set_last_prompt_debug(&state, Some(prepared_prompt_debug.clone())).await;
+        if prepared_prompt_debug.summarized_turns > 0 {
             info!(
                 trace_id = %trace_id,
                 user_id = %user.user_id,
                 model = %model_name,
-                prompt_tokens = prompt_debug.prompt_tokens_estimate,
-                retained_raw_turns = prompt_debug.retained_raw_turns,
-                summarized_turns = prompt_debug.summarized_turns,
-                context_window_tokens = prompt_debug.context_length,
+                prompt_tokens = prepared_prompt_debug.prompt_tokens_estimate,
+                retained_raw_turns = prepared_prompt_debug.retained_raw_turns,
+                summarized_turns = prepared_prompt_debug.summarized_turns,
+                context_window_tokens = prepared_prompt_debug.context_length,
                 "ai chat compacted conversation history to fit context window"
             );
         }
 
-        let mut sampling = sampling_params_for_response_mode(req.response_mode);
+        let mut sampling = profile.answer_sampling.clone();
         sampling.max_tokens = sampling.max_tokens.min(completion_budget);
+        let _ = update_turn_journal(
+            &state,
+            &journal_handle,
+            AiTurnJournalStatus::Generating,
+            req.history.len(),
+            Some(planned_tool_set.mode.as_str()),
+            &planner_debug,
+            prompt_debug.as_ref(),
+            None,
+            None,
+            None,
+            compact_boundary_count,
+            None,
+            None,
+        )
+        .await;
         let raw_stream = engine.chat_stream(messages, sampling);
         futures::pin_mut!(raw_stream);
 
@@ -1377,6 +1524,17 @@ fn stream_chat_response(
                         model_load_duration_ms,
                         tokens_per_second,
                     ));
+                    if let Some(stats_mut) = stats.as_mut() {
+                        stats_mut.completion_budget_tokens = completion_budget;
+                        enrich_turn_stats(
+                            stats_mut,
+                            &planner_debug,
+                            prompt_debug.as_ref(),
+                            compact_boundary_count,
+                            Some(&artifact_verification),
+                            None,
+                        );
+                    }
                     yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                 }
                 Ok(rustfin_ai_agent::ChatChunk::Done) => {
@@ -1409,6 +1567,17 @@ fn stream_chat_response(
                             model_load_duration_ms,
                             0.0,
                         ));
+                        if let Some(stats_mut) = stats.as_mut() {
+                            stats_mut.completion_budget_tokens = completion_budget;
+                            enrich_turn_stats(
+                                stats_mut,
+                                &planner_debug,
+                                prompt_debug.as_ref(),
+                                compact_boundary_count,
+                                Some(&artifact_verification),
+                                None,
+                            );
+                        }
                         yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                     }
 
@@ -1434,6 +1603,23 @@ fn stream_chat_response(
                         .await;
                     }
 
+                    let _ = update_turn_journal(
+                        &state,
+                        &journal_handle,
+                        AiTurnJournalStatus::Completed,
+                        req.history.len(),
+                        Some(planned_tool_set.mode.as_str()),
+                        &planner_debug,
+                        prompt_debug.as_ref(),
+                        stats.as_ref(),
+                        None,
+                        None,
+                        compact_boundary_count,
+                        Some(&artifact_verification),
+                        Some(now_ts_ms()),
+                    )
+                    .await;
+
                     persist_chat_audit_event(
                         &state,
                         &user,
@@ -1447,6 +1633,7 @@ fn stream_chat_response(
                     )
                     .await;
                     chat_metrics.mark_success();
+                    set_last_turn_stats(&state, stats.clone()).await;
                     set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                     info!(
                         trace_id = %trace_id,
@@ -1475,6 +1662,42 @@ fn stream_chat_response(
                         },
                     ));
                     if !audit_written {
+                        let mut error_stats = build_turn_stats(
+                            0,
+                            0,
+                            0,
+                            planner_duration_ms,
+                            tool_duration_ms,
+                            turn_started.elapsed().as_millis() as u64,
+                            queue_duration_ms,
+                            model_load_duration_ms,
+                            0.0,
+                        );
+                        enrich_turn_stats(
+                            &mut error_stats,
+                            &planner_debug,
+                            prompt_debug.as_ref(),
+                            compact_boundary_count,
+                            Some(&artifact_verification),
+                            None,
+                        );
+                        stats = Some(error_stats.clone());
+                        let _ = update_turn_journal(
+                            &state,
+                            &journal_handle,
+                            AiTurnJournalStatus::Failed,
+                            req.history.len(),
+                            Some(planned_tool_set.mode.as_str()),
+                            &planner_debug,
+                            prompt_debug.as_ref(),
+                            Some(&error_stats),
+                            None,
+                            Some(&error_message),
+                            compact_boundary_count,
+                            Some(&artifact_verification),
+                            Some(now_ts_ms()),
+                        )
+                        .await;
                         persist_chat_audit_event(
                             &state,
                             &user,
@@ -1501,6 +1724,7 @@ fn stream_chat_response(
                             .event("error")
                             .data(json!({ "message": error_message }).to_string()),
                     );
+                    set_last_turn_stats(&state, stats.clone()).await;
                     set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 }
             }
@@ -1711,30 +1935,6 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
         .collect()
 }
 
-fn response_mode_completion_reserve_tokens(
-    response_mode: AssistantResponseMode,
-    context_window_tokens: u32,
-) -> u32 {
-    let dynamic = match response_mode {
-        AssistantResponseMode::Instant => context_window_tokens / 6,
-        AssistantResponseMode::Thinking => context_window_tokens / 4,
-        AssistantResponseMode::Extended => context_window_tokens / 3,
-    };
-
-    match response_mode {
-        AssistantResponseMode::Instant => dynamic.clamp(384, 640),
-        AssistantResponseMode::Thinking => dynamic.clamp(768, 1536),
-        AssistantResponseMode::Extended => dynamic.clamp(1024, 4096),
-    }
-}
-
-fn prompt_budget_tokens(response_mode: AssistantResponseMode, context_window_tokens: u32) -> u32 {
-    context_window_tokens.saturating_sub(
-        response_mode_completion_reserve_tokens(response_mode, context_window_tokens)
-            + CONTEXT_SAFETY_MARGIN_TOKENS,
-    )
-}
-
 async fn prepare_generation_messages(
     state: &AppState,
     user: &AuthUser,
@@ -1747,13 +1947,15 @@ async fn prepare_generation_messages(
         Vec<rustfin_ai_agent::ChatMessage>,
         ConversationPromptDebug,
         u32,
+        AssistantModelProfile,
+        u32,
     ),
     String,
 > {
-    let context_length = engine.params().n_ctx;
-    let reserved_completion_tokens =
-        response_mode_completion_reserve_tokens(request.response_mode, context_length);
-    let prompt_budget = prompt_budget_tokens(request.response_mode, context_length);
+    let profile = assistant_model_profile(request.response_mode, engine.params().n_ctx);
+    let context_length = profile.turn_budget.context_length_tokens;
+    let reserved_completion_tokens = profile.turn_budget.reserved_completion_tokens;
+    let prompt_budget = profile.turn_budget.prompt_budget_tokens;
     let system_prompt = build_system_prompt();
     let local_now_text = format!(
         "Current Rustyfin host local date/time for this turn: {}. Use this when interpreting relative dates like today, tomorrow, and next Tuesday.",
@@ -1766,9 +1968,13 @@ async fn prepare_generation_messages(
     let mut memory_turn_index = persistence
         .map(|value| value.memory_turn_index)
         .unwrap_or(-1);
+    let mut compact_boundary_count = 0_u32;
+    let recovered_from_compact_boundary = persistence
+        .map(|value| value.recovered_from_compact_boundary)
+        .unwrap_or(false);
 
     for _ in 0..3 {
-        let assembly = build_generation_prompt_messages(
+        let mut assembly = build_generation_prompt_messages(
             &system_prompt,
             &local_now_text,
             grounding_blocks,
@@ -1781,6 +1987,8 @@ async fn prepare_generation_messages(
             reserved_completion_tokens,
             |messages| engine.count_chat_tokens(messages).unwrap_or(u32::MAX),
         );
+        assembly.debug.compact_boundary_count = compact_boundary_count;
+        assembly.debug.recovered_from_compact_boundary = recovered_from_compact_boundary;
 
         if assembly.pending_summary_turns.is_empty() || persistence.is_none() {
             let remaining_tokens = context_length
@@ -1794,11 +2002,13 @@ async fn prepare_generation_messages(
                 assembly.messages,
                 assembly.debug,
                 remaining_tokens.min(reserved_completion_tokens.max(1)),
+                profile,
+                compact_boundary_count,
             ));
         }
 
         let persistence = persistence.expect("checked is_some above");
-        let updated_memory = refresh_conversation_memory(
+        let refresh = refresh_conversation_memory(
             state,
             user,
             persistence,
@@ -1810,13 +2020,15 @@ async fn prepare_generation_messages(
                 .expect("missing summary boundary"),
         )
         .await?;
-        memory_state = updated_memory;
+        memory_state = refresh.memory_state;
         memory_turn_index = assembly
             .pending_summary_last_turn_index
             .unwrap_or(memory_turn_index);
+        compact_boundary_count =
+            compact_boundary_count.saturating_add(refresh.compact_boundary_count);
     }
 
-    let assembly = build_generation_prompt_messages(
+    let mut assembly = build_generation_prompt_messages(
         &system_prompt,
         &local_now_text,
         grounding_blocks,
@@ -1829,6 +2041,8 @@ async fn prepare_generation_messages(
         reserved_completion_tokens,
         |messages| engine.count_chat_tokens(messages).unwrap_or(u32::MAX),
     );
+    assembly.debug.compact_boundary_count = compact_boundary_count;
+    assembly.debug.recovered_from_compact_boundary = recovered_from_compact_boundary;
     let remaining_tokens =
         context_length.saturating_sub(assembly.debug.prompt_tokens_estimate.saturating_add(8));
     if remaining_tokens == 0 {
@@ -1839,7 +2053,14 @@ async fn prepare_generation_messages(
         assembly.messages,
         assembly.debug,
         remaining_tokens.min(reserved_completion_tokens.max(1)),
+        profile,
+        compact_boundary_count,
     ))
+}
+
+struct ConversationMemoryRefreshResult {
+    memory_state: ConversationMemoryState,
+    compact_boundary_count: u32,
 }
 
 async fn refresh_conversation_memory(
@@ -1850,9 +2071,12 @@ async fn refresh_conversation_memory(
     existing_memory: &ConversationMemoryState,
     turns: &[AssistantHistoryMessage],
     memory_turn_index: i64,
-) -> Result<ConversationMemoryState, String> {
+) -> Result<ConversationMemoryRefreshResult, String> {
     if turns.is_empty() {
-        return Ok(existing_memory.clone());
+        return Ok(ConversationMemoryRefreshResult {
+            memory_state: existing_memory.clone(),
+            compact_boundary_count: 0,
+        });
     }
 
     let updated_memory = generate_memory_state_with_model(engine, existing_memory, turns).await;
@@ -1866,7 +2090,27 @@ async fn refresh_conversation_memory(
     .await
     .map_err(|error| format!("{error:?}"))?;
 
-    Ok(updated_memory)
+    let from_turn_index = persistence.memory_turn_index.saturating_add(1).max(0);
+    let memory_state_json = crate::ai_assistant::memory::memory_state_json(&updated_memory);
+    let _ = rustfin_db::repo::ai_compact_boundaries::create_compact_boundary(
+        &state.db,
+        rustfin_db::repo::ai_compact_boundaries::CreateAiConversationCompactBoundaryParams {
+            conversation_id: &persistence.conversation_id,
+            user_id: &user.user_id,
+            trace_id: None,
+            from_turn_index,
+            to_turn_index: memory_turn_index,
+            summarized_turn_count: turns.len() as i64,
+            memory_state_json: &memory_state_json,
+        },
+    )
+    .await
+    .map_err(|error| format!("failed to store conversation compact boundary: {error}"))?;
+
+    Ok(ConversationMemoryRefreshResult {
+        memory_state: updated_memory,
+        compact_boundary_count: 1,
+    })
 }
 
 async fn generate_memory_state_with_model(
@@ -1879,17 +2123,11 @@ async fn generate_memory_state_with_model(
     }
 
     let messages = build_memory_update_messages(existing_memory, turns);
-    let stream = engine.chat_stream(
-        messages,
-        rustfin_ai_agent::SamplingParams {
-            temperature: 0.2,
-            top_p: 0.9,
-            top_k: 20,
-            repeat_penalty: 1.05,
-            max_tokens: 384,
-            max_duration_ms: Some(MEMORY_SUMMARY_MAX_DURATION_MS),
-        },
-    );
+    let mut sampling =
+        assistant_model_profile(AssistantResponseMode::Thinking, engine.params().n_ctx)
+            .memory_sampling;
+    sampling.max_duration_ms = Some(MEMORY_SUMMARY_MAX_DURATION_MS);
+    let stream = engine.chat_stream(messages, sampling);
     futures::pin_mut!(stream);
 
     let mut content = String::new();
@@ -1911,44 +2149,19 @@ async fn set_last_prompt_debug(state: &AppState, debug: Option<ConversationPromp
     guard.last_prompt_debug = debug;
 }
 
-fn sampling_params_for_response_mode(
-    response_mode: AssistantResponseMode,
-) -> rustfin_ai_agent::SamplingParams {
-    match response_mode {
-        AssistantResponseMode::Instant => rustfin_ai_agent::SamplingParams {
-            temperature: 0.45,
-            top_p: 0.85,
-            top_k: 24,
-            repeat_penalty: 1.05,
-            max_tokens: 640,
-            max_duration_ms: None,
-        },
-        AssistantResponseMode::Thinking => rustfin_ai_agent::SamplingParams {
-            temperature: 0.72,
-            top_p: 0.94,
-            top_k: 48,
-            repeat_penalty: 1.08,
-            max_tokens: 1536,
-            max_duration_ms: None,
-        },
-        AssistantResponseMode::Extended => rustfin_ai_agent::SamplingParams {
-            temperature: 0.58,
-            top_p: 0.9,
-            top_k: 40,
-            repeat_penalty: 1.1,
-            max_tokens: u32::MAX,
-            max_duration_ms: Some(30 * 60 * 1000),
-        },
-    }
+async fn set_last_turn_stats(state: &AppState, stats: Option<AssistantTurnStats>) {
+    let mut guard = state.engine.lock().await;
+    guard.last_turn_stats = stats;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
-        prompt_budget_tokens, resolve_effective_context_window,
-        response_mode_completion_reserve_tokens, sampling_params_for_response_mode,
-        suggested_context_window_from_host_memory,
+        resolve_effective_context_window, suggested_context_window_from_host_memory,
+    };
+    use crate::ai_assistant::profiles::{
+        answer_sampling_params, prompt_budget_tokens, response_mode_completion_reserve_tokens,
     };
     use crate::ai_assistant::types::AssistantResponseMode;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
@@ -2007,9 +2220,9 @@ mod tests {
 
     #[test]
     fn instant_mode_uses_tighter_sampling_profile() {
-        let instant = sampling_params_for_response_mode(AssistantResponseMode::Instant);
-        let thinking = sampling_params_for_response_mode(AssistantResponseMode::Thinking);
-        let extended = sampling_params_for_response_mode(AssistantResponseMode::Extended);
+        let instant = answer_sampling_params(AssistantResponseMode::Instant);
+        let thinking = answer_sampling_params(AssistantResponseMode::Thinking);
+        let extended = answer_sampling_params(AssistantResponseMode::Extended);
         assert!(instant.max_tokens < thinking.max_tokens);
         assert!(instant.temperature < thinking.temperature);
         assert!(instant.top_k < thinking.top_k);
@@ -2365,7 +2578,76 @@ fn build_turn_stats(
         queue_duration_ms,
         model_load_duration_ms,
         tokens_per_second,
+        ..AssistantTurnStats::default()
     }
+}
+
+fn enrich_turn_stats(
+    stats: &mut AssistantTurnStats,
+    planner_debug: &AssistantPlannerDebug,
+    prompt_debug: Option<&ConversationPromptDebug>,
+    compact_boundary_count: u32,
+    artifact_verification: Option<&AssistantArtifactVerificationDebug>,
+    overload_reason: Option<&str>,
+) {
+    stats.planner_validation_error_count = planner_debug.validation_errors.len() as u32;
+    stats.planner_repair_count = planner_debug.repair_attempt_count;
+    stats.compact_boundary_count = compact_boundary_count;
+    stats.journal_persisted = true;
+
+    if let Some(prompt_debug) = prompt_debug {
+        stats.context_length_tokens = prompt_debug.context_length;
+        stats.prompt_budget_tokens = prompt_debug.prompt_budget_tokens;
+        stats.reserved_completion_tokens = prompt_debug.reserved_completion_tokens;
+        stats.loaded_history_turns = prompt_debug.loaded_history_turns;
+        stats.retained_raw_turns = prompt_debug.retained_raw_turns;
+        stats.summarized_turns = prompt_debug.summarized_turns;
+        stats.recent_grounded_context_count = prompt_debug.recent_grounded_context_count;
+        stats.memory_turn_index = prompt_debug.memory_turn_index;
+        stats.compact_boundary_count = stats
+            .compact_boundary_count
+            .max(prompt_debug.compact_boundary_count);
+    }
+
+    if let Some(artifact_verification) = artifact_verification {
+        stats.artifact_verification_attempts = artifact_verification.attempts;
+        stats.artifact_revision_count = artifact_verification.revision_count;
+    }
+
+    if let Some(overload_reason) = overload_reason {
+        stats.overload = true;
+        stats.overload_reason = Some(overload_reason.to_string());
+    }
+}
+
+fn deterministic_grounded_reply(
+    message: &str,
+    history: &[AssistantHistoryMessage],
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    deterministic_current_datetime_reply(message, history, grounding_blocks)
+        .or_else(|| deterministic_calendar_reply(message, grounding_blocks))
+        .or_else(|| deterministic_network_reply(message, grounding_blocks))
+        .or_else(|| deterministic_runtime_reply(message, grounding_blocks))
+        .or_else(|| deterministic_profile_reply(message, grounding_blocks))
+        .or_else(|| deterministic_service_reply(message, grounding_blocks))
+        .or_else(|| deterministic_downloads_reply(message, grounding_blocks))
+        .or_else(|| deterministic_rooms_reply(message, grounding_blocks))
+        .or_else(|| deterministic_weather_reply(message, grounding_blocks))
+}
+
+fn artifact_verification_from_block(
+    block: &AssistantToolContextBlock,
+) -> Option<AssistantArtifactVerificationDebug> {
+    if block.tool != "document_create_download" || block.status != "ok" {
+        return None;
+    }
+
+    block
+        .data
+        .get("verification")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn clamp_token_count(value: u64) -> u32 {

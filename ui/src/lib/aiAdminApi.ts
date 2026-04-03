@@ -46,6 +46,82 @@ export interface AiAssistantAuditEvent {
   created_ts: number;
 }
 
+export interface AiTurnJournal {
+  id: string;
+  user_id: string;
+  conversation_id?: string | null;
+  request_turn_id?: string | null;
+  request_turn_index?: number | null;
+  trace_id: string;
+  request_message: string;
+  model_name: string;
+  response_mode: string;
+  planner_mode?: string | null;
+  status: string;
+  current_phase: string;
+  history_len: number;
+  planner_debug: {
+    schema_version: number;
+    raw_response?: string | null;
+    repaired_response?: string | null;
+    validation_errors: string[];
+    repair_attempt_count: number;
+    used_repaired_response: boolean;
+    validated_call_count: number;
+  };
+  prompt_debug?: {
+    context_length: number;
+    prompt_budget_tokens: number;
+    reserved_completion_tokens: number;
+    prompt_tokens_estimate: number;
+    loaded_history_turns: number;
+    retained_raw_turns: number;
+    summarized_turns: number;
+    recent_grounded_context_count: number;
+    used_memory_summary: boolean;
+    memory_turn_index: number;
+    memory_summary_chars: number;
+    compact_boundary_count: number;
+    recovered_from_compact_boundary: boolean;
+  } | null;
+  stats?: {
+    planner_repair_count: number;
+    planner_validation_error_count: number;
+    prompt_budget_tokens: number;
+    reserved_completion_tokens: number;
+    completion_budget_tokens: number;
+    compact_boundary_count: number;
+    overload: boolean;
+    overload_reason?: string | null;
+    artifact_verification_attempts: number;
+    artifact_revision_count: number;
+  } | null;
+  overload_reason?: string | null;
+  error_message?: string | null;
+  compact_boundary_count: number;
+  artifact_verification?: {
+    status: string;
+    attempts: number;
+    revision_count: number;
+    issues: string[];
+  } | null;
+  created_ts: number;
+  updated_ts: number;
+  finished_ts?: number | null;
+}
+
+export interface AiCompactBoundary {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  trace_id?: string | null;
+  from_turn_index: number;
+  to_turn_index: number;
+  summarized_turn_count: number;
+  memory_state_json: string;
+  created_ts: number;
+}
+
 export type AdminAiPullEvent =
   | { type: 'progress'; status: string; bytes_done: number; bytes_total: number | null; percent: number }
   | { type: 'done' }
@@ -66,6 +142,18 @@ export async function fetchAiAuditEvents(limit = 40): Promise<AiAssistantAuditEv
   const params = new URLSearchParams();
   params.set('limit', String(limit));
   return apiJson<AiAssistantAuditEvent[]>(`/system/ai/audit?${params.toString()}`);
+}
+
+export async function fetchAiTurnJournals(limit = 30): Promise<AiTurnJournal[]> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  return apiJson<AiTurnJournal[]>(`/system/ai/journals?${params.toString()}`);
+}
+
+export async function fetchAiCompactBoundaries(limit = 20): Promise<AiCompactBoundary[]> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  return apiJson<AiCompactBoundary[]>(`/system/ai/compact-boundaries?${params.toString()}`);
 }
 
 export async function deleteAiModel(name: string): Promise<void> {

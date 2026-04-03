@@ -7,9 +7,13 @@ import {
   deleteAiModel,
   fetchAiAuditEvents,
   fetchAiAdminState,
+  fetchAiCompactBoundaries,
+  fetchAiTurnJournals,
   type AiAssistantAuditEvent,
+  type AiCompactBoundary,
   pullAiModelFromUrl,
   type AiAdminState,
+  type AiTurnJournal,
   type AdminAiPullEvent,
   updateAiModelDir,
 } from '@/lib/aiAdminApi';
@@ -448,6 +452,9 @@ export default function AdminPage() {
   const [aiAdminLoading, setAiAdminLoading] = useState(false);
   const [aiAuditEvents, setAiAuditEvents] = useState<AiAssistantAuditEvent[]>([]);
   const [aiAuditError, setAiAuditError] = useState('');
+  const [aiTurnJournals, setAiTurnJournals] = useState<AiTurnJournal[]>([]);
+  const [aiCompactBoundaries, setAiCompactBoundaries] = useState<AiCompactBoundary[]>([]);
+  const [aiJournalError, setAiJournalError] = useState('');
   const [aiModelDirInput, setAiModelDirInput] = useState('');
   const [savingAiModelDir, setSavingAiModelDir] = useState(false);
   const [aiModelPullUrl, setAiModelPullUrl] = useState('');
@@ -743,9 +750,12 @@ export default function AdminPage() {
     try {
       setAiAdminLoading(true);
       setAiAuditError('');
-      const [stateResult, auditResult] = await Promise.allSettled([
+      setAiJournalError('');
+      const [stateResult, auditResult, journalResult, boundaryResult] = await Promise.allSettled([
         fetchAiAdminState(),
         fetchAiAuditEvents(40),
+        fetchAiTurnJournals(30),
+        fetchAiCompactBoundaries(20),
       ]);
 
       if (stateResult.status === 'fulfilled') {
@@ -762,9 +772,28 @@ export default function AdminPage() {
         setAiAuditEvents([]);
         setAiAuditError(clientErrorMessage(auditResult.reason, 'Failed to load AI assistant audit'));
       }
+
+      if (journalResult.status === 'fulfilled') {
+        setAiTurnJournals(journalResult.value);
+      } else {
+        setAiTurnJournals([]);
+        setAiJournalError(clientErrorMessage(journalResult.reason, 'Failed to load AI turn journals'));
+      }
+
+      if (boundaryResult.status === 'fulfilled') {
+        setAiCompactBoundaries(boundaryResult.value);
+      } else {
+        setAiCompactBoundaries([]);
+        setAiJournalError((current) =>
+          current || clientErrorMessage(boundaryResult.reason, 'Failed to load AI compact boundaries'),
+        );
+      }
     } catch (err: unknown) {
       setAiAdminState(null);
       setAiAuditEvents([]);
+      setAiTurnJournals([]);
+      setAiCompactBoundaries([]);
+      setAiJournalError('');
       setErr(clientErrorMessage(err, 'Failed to load AI admin state'));
     } finally {
       setAiAdminLoading(false);
@@ -3000,6 +3029,159 @@ export default function AdminPage() {
                       ))}
                     </div>
                   )}
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[1.35fr,1fr]">
+                  <div className="panel-soft rounded-2xl border border-[var(--border)] p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">Turn Journals</p>
+                        <p className="text-xs muted">
+                          Durable per-turn planner, prompt-budget, compaction, overload, and artifact verification records.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void loadAiAdmin();
+                        }}
+                        className="btn-ghost px-3 py-1.5 text-sm"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+
+                    {aiJournalError ? (
+                      <div className="notice-error rounded-xl px-4 py-3 text-sm">{aiJournalError}</div>
+                    ) : aiAdminLoading && aiTurnJournals.length === 0 ? (
+                      <p className="text-sm muted">Loading turn journals…</p>
+                    ) : aiTurnJournals.length === 0 ? (
+                      <p className="text-sm muted">No AI turn journals recorded yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {aiTurnJournals.map((journal) => (
+                          <div
+                            key={journal.id}
+                            className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3"
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-medium text-sm">{journal.request_message}</p>
+                                  <span className="chip">{titleCase(journal.status)}</span>
+                                  <span className="chip border-[var(--border)] text-[var(--text-muted)]">
+                                    {titleCase(journal.response_mode)}
+                                  </span>
+                                </div>
+                                <p className="text-xs muted">
+                                  {formatTs(journal.created_ts)} · model {journal.model_name} · phase {titleCase(journal.current_phase)}
+                                  {journal.planner_mode ? ` · planner ${journal.planner_mode}` : ''}
+                                </p>
+                              </div>
+                              <p className="text-[11px] muted sm:text-right">
+                                trace {journal.trace_id.slice(0, 8)}
+                              </p>
+                            </div>
+
+                            <div className="mt-3 grid gap-2 text-xs text-[var(--text-main)] md:grid-cols-2 xl:grid-cols-4">
+                              <div>
+                                <span className="muted">History</span>
+                                <div>{journal.history_len} turns</div>
+                              </div>
+                              <div>
+                                <span className="muted">Prompt budget</span>
+                                <div>{journal.prompt_debug?.prompt_budget_tokens ?? journal.stats?.prompt_budget_tokens ?? 0} tokens</div>
+                              </div>
+                              <div>
+                                <span className="muted">Compactions</span>
+                                <div>{journal.compact_boundary_count}</div>
+                              </div>
+                              <div>
+                                <span className="muted">Planner repairs</span>
+                                <div>{journal.planner_debug.repair_attempt_count} repair / {journal.planner_debug.validation_errors.length} validation errors</div>
+                              </div>
+                            </div>
+
+                            {(journal.artifact_verification || journal.error_message || journal.overload_reason) && (
+                              <div className="mt-3 space-y-2 text-xs">
+                                {journal.artifact_verification && (
+                                  <div className="rounded-lg border border-[var(--border)] bg-black/10 px-3 py-2">
+                                    <span className="font-medium text-[var(--text-main)]">Artifact verification:</span>{' '}
+                                    {titleCase(journal.artifact_verification.status)} · {journal.artifact_verification.attempts} attempt
+                                    {journal.artifact_verification.attempts === 1 ? '' : 's'} · {journal.artifact_verification.revision_count} revision
+                                    {journal.artifact_verification.revision_count === 1 ? '' : 's'}
+                                    {journal.artifact_verification.issues.length > 0 && (
+                                      <div className="mt-1 muted">
+                                        {journal.artifact_verification.issues.join('; ')}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {journal.overload_reason && (
+                                  <div className="rounded-lg border border-[var(--border)] bg-black/10 px-3 py-2">
+                                    <span className="font-medium text-[var(--text-main)]">Overload:</span> {journal.overload_reason}
+                                  </div>
+                                )}
+                                {journal.error_message && (
+                                  <div className="rounded-lg border border-[var(--border)] bg-black/10 px-3 py-2">
+                                    <span className="font-medium text-[var(--text-main)]">Error:</span> {journal.error_message}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="panel-soft rounded-2xl border border-[var(--border)] p-4">
+                    <div className="mb-3 space-y-1">
+                      <p className="text-sm font-semibold">Compact Boundaries</p>
+                      <p className="text-xs muted">
+                        Stored memory checkpoints created when long conversations are compacted.
+                      </p>
+                    </div>
+
+                    {aiJournalError ? (
+                      <div className="notice-error rounded-xl px-4 py-3 text-sm">{aiJournalError}</div>
+                    ) : aiAdminLoading && aiCompactBoundaries.length === 0 ? (
+                      <p className="text-sm muted">Loading compact boundaries…</p>
+                    ) : aiCompactBoundaries.length === 0 ? (
+                      <p className="text-sm muted">No compact boundaries recorded yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {aiCompactBoundaries.map((boundary) => (
+                          <div
+                            key={boundary.id}
+                            className="rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-4 py-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <p className="text-sm font-medium">
+                                  Turns {boundary.from_turn_index} to {boundary.to_turn_index}
+                                </p>
+                                <p className="text-xs muted">
+                                  {boundary.summarized_turn_count} summarized · {formatTs(boundary.created_ts)}
+                                </p>
+                              </div>
+                              <p className="text-[11px] muted">
+                                {boundary.trace_id ? `trace ${boundary.trace_id.slice(0, 8)}` : 'no trace'}
+                              </p>
+                            </div>
+                            <p className="mt-2 text-[11px] muted">
+                              conversation {boundary.conversation_id.slice(0, 8)}
+                            </p>
+                            <pre className="mt-3 overflow-x-auto rounded-lg border border-[var(--border)] bg-black/10 p-3 text-[11px] leading-5 text-[var(--text-muted)]">
+                              {boundary.memory_state_json.length > 480
+                                ? `${boundary.memory_state_json.slice(0, 480)}…`
+                                : boundary.memory_state_json}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </>
             )}
