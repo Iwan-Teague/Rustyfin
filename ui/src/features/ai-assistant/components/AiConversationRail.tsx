@@ -100,59 +100,6 @@ function buildRailEntries(
   return entries;
 }
 
-function NewChatIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M3.5 12.5h2.25L12.5 5.75 10.25 3.5 3.5 10.25v2.25Z" />
-      <path d="M9.75 4 12 6.25" />
-    </svg>
-  );
-}
-
-function FolderIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M1.75 4.5h4l1.3 1.55h7.2v5.95a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5V4.5Z" />
-      <path d="M1.75 4.5V4a1.5 1.5 0 0 1 1.5-1.5h2.1l1.1 1.25h2.3" />
-    </svg>
-  );
-}
-
-function ThreadIcon() {
-  return (
-    <svg
-      className="h-3.5 w-3.5"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5.25 3.25h5.5M4 6.5h8M5.25 9.75h5.5M6.5 13h3" />
-    </svg>
-  );
-}
-
 function ChevronIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -238,9 +185,9 @@ function ConversationRow({
       className={`group relative ${indent ? 'pl-5' : ''}`}
     >
       <div
-        className={`flex items-center gap-2 rounded-xl border px-2 py-1 transition-colors ${
+        className={`flex items-center gap-1.5 rounded-[1.2rem] border px-1.5 py-1 transition-all ${
           active
-            ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.06)]'
+            ? 'border-transparent bg-[rgba(222,230,255,0.11)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
             : 'border-transparent hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.04)]'
         }`}
       >
@@ -248,17 +195,16 @@ function ConversationRow({
           type="button"
           onClick={onSelect}
           disabled={disabled}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-[1rem] px-2.5 py-1.5 text-left disabled:opacity-60"
         >
-          <span className="shrink-0 text-[var(--text-muted)]">
-            <ThreadIcon />
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[0.92rem] text-[var(--text-main)]">
-            {conversation.title}
-          </span>
-          <span className="shrink-0 text-[0.78rem] text-[var(--text-muted)]">
-            {formatUpdated(conversation.updated_ts)}
-          </span>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 truncate text-[0.82rem] font-medium text-[var(--text-main)]">
+              {conversation.title}
+            </div>
+            <span className="shrink-0 text-[0.74rem] muted">
+              {formatUpdated(conversation.updated_ts)}
+            </span>
+          </div>
         </button>
 
         <div ref={menuRef} className="relative shrink-0">
@@ -266,10 +212,12 @@ function ConversationRow({
             type="button"
             onClick={() => setMenuOpen((current) => !current)}
             disabled={disabled}
-            className={`flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-[var(--text-muted)] transition-colors disabled:opacity-40 ${
+            className={`flex h-7 w-7 items-center justify-center rounded-full p-0 text-base leading-none transition-colors disabled:opacity-40 ${
               menuOpen
-                ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.06)] text-[var(--text-main)]'
-                : 'opacity-0 group-hover:opacity-100 hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.05)] hover:text-[var(--text-main)]'
+                ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)]'
+                : active
+                  ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)] hover:bg-[rgba(255,255,255,0.09)]'
+                  : 'text-[var(--text-muted)] opacity-0 group-hover:opacity-100 hover:bg-[rgba(255,255,255,0.05)]'
             }`}
             aria-label="Conversation actions"
           >
@@ -366,9 +314,6 @@ function GroupEntry({
       >
         <span className="shrink-0 text-[var(--text-muted)]">
           <ChevronIcon open={!collapsed} />
-        </span>
-        <span className="shrink-0 text-[var(--text-muted)]">
-          <FolderIcon />
         </span>
         <span className="min-w-0 flex-1 truncate text-[0.92rem] font-medium text-[var(--text-main)]">
           {entry.title}
@@ -551,12 +496,9 @@ export default function AiConversationRail({
           type="button"
           onClick={onNewChat}
           disabled={disabled}
-          className="flex w-full items-center gap-2 rounded-xl border border-transparent px-2 py-2 text-left text-[0.95rem] text-[var(--text-main)] transition-colors hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.03)] disabled:opacity-40"
+          className="w-full rounded-[1rem] border border-transparent px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.03)] disabled:opacity-40"
         >
-          <span className="shrink-0 text-[var(--text-muted)]">
-            <NewChatIcon />
-          </span>
-          <span>New chat</span>
+          New chat
         </button>
       </div>
 
