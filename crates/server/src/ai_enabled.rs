@@ -13,7 +13,7 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use crate::ai_assistant::confirmation::{
-    CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message,
+    CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message_with_state,
 };
 use crate::ai_assistant::context::AssistantContext;
 use crate::ai_assistant::memory::{
@@ -31,7 +31,9 @@ use crate::ai_assistant::types::{
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
-    AssistantChatRequest, build_assistant_messages, immediate_response_for_message,
+    AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
+    deterministic_current_datetime_reply, deterministic_network_reply,
+    deterministic_tool_inventory_reply, immediate_response_for_message,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
@@ -449,11 +451,15 @@ fn stream_chat_response(
             return;
         }
 
-        if let Some(result) = pending_action_request_for_message(
+        if let Some(result) = pending_action_request_for_message_with_state(
+            &state,
             &user,
             &req.message,
             persistence.as_ref().map(|value| value.conversation_id.as_str()),
-        ) {
+            &req.model,
+        )
+        .await
+        {
             let planning_finished_ts_ms = now_ts_ms();
             finish_phase(
                 &mut activity_trace,
@@ -628,6 +634,75 @@ fn stream_chat_response(
                     turn_result,
                     &grounding_chunks,
                     &follow_up_contexts,
+                )
+                .await;
+            }
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(message) = deterministic_tool_inventory_reply(&user, &req.message) {
+            let planning_finished_ts_ms = now_ts_ms();
+            finish_phase(
+                &mut activity_trace,
+                AssistantPhase::Planning,
+                planning_finished_ts_ms,
+            );
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "phase",
+                &AssistantPhaseEvent {
+                    phase: AssistantPhase::Planning,
+                    label: "Thinking...".to_string(),
+                    started_ts_ms: planning_started_ts_ms,
+                    finished_ts_ms: Some(planning_finished_ts_ms),
+                },
+            ));
+            assistant_content = message;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                0,
+                0,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                0.0,
+            ));
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &[],
+                &[],
+                &[],
+                None,
+            )
+            .await;
+            if let Some(persistence) = &persistence {
+                let _ = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &[],
+                    &[],
+                    &[],
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
                 )
                 .await;
             }
@@ -1039,6 +1114,212 @@ fn stream_chat_response(
             );
         }
 
+        let grounding_tools = planned_tools
+            .iter()
+            .map(|call| call.tool.as_str().to_string())
+            .collect::<Vec<_>>();
+
+        if let Some(datetime_reply) =
+            deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
+        {
+            assistant_content = datetime_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(calendar_reply) =
+            deterministic_calendar_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = calendar_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(network_reply) =
+            deterministic_network_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = network_reply;
+            stats = Some(build_turn_stats(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
         if let Some(weather_reply) = deterministic_weather_reply(&req.message, &grounding_blocks) {
             assistant_content = weather_reply;
             stats = Some(build_turn_stats(
@@ -1052,10 +1333,6 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
             ));
-            let grounding_tools = planned_tools
-                .iter()
-                .map(|call| call.tool.as_str().to_string())
-                .collect::<Vec<_>>();
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
