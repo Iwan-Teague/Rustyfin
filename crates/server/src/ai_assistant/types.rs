@@ -1,6 +1,19 @@
 use rustfin_ai_agent::ChatMessage;
 use serde::{Deserialize, Serialize};
 
+pub const ASSISTANT_CLARIFICATION_PREFIX: &str = "clarification:";
+
+pub fn encode_assistant_clarification_message(message: &str) -> String {
+    format!("{ASSISTANT_CLARIFICATION_PREFIX}{}", message.trim())
+}
+
+pub fn decode_assistant_clarification_message(message: &str) -> Option<&str> {
+    message
+        .strip_prefix(ASSISTANT_CLARIFICATION_PREFIX)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantResponseMode {
