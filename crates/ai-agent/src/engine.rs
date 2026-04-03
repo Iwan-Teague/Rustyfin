@@ -1,10 +1,11 @@
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_stream::stream;
 use futures::Stream;
+use futures::stream::BoxStream;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::{LlamaModelParams, LlamaSplitMode};
@@ -16,9 +17,7 @@ use tracing::warn;
 
 use crate::backend::shared_backend;
 use crate::error::AiError;
-use crate::types::{ChatChunk, ChatMessage};
-
-const MAX_PROMPT_DECODE_BATCH_TOKENS: usize = 512;
+use crate::types::{BackendCapabilities, BackendKind, ChatChunk, ChatMessage, PromptCacheHint};
 
 #[derive(Debug, Clone)]
 pub struct LlamaEngineParams {
@@ -79,7 +78,6 @@ pub struct SamplingParams {
     pub top_k: i32,
     pub repeat_penalty: f32,
     pub max_tokens: u32,
-    pub max_duration_ms: Option<u64>,
 }
 
 impl Default for SamplingParams {
@@ -90,7 +88,6 @@ impl Default for SamplingParams {
             top_k: 40,
             repeat_penalty: 1.1,
             max_tokens: 2048,
-            max_duration_ms: None,
         }
     }
 }
@@ -175,10 +172,38 @@ impl LlamaEngine {
         &self.params
     }
 
-    pub fn count_chat_tokens(&self, messages: &[ChatMessage]) -> Result<u32, AiError> {
-        let prompt_tokens = build_prompt_tokens(&self.model, messages)?;
-        u32::try_from(prompt_tokens.len())
-            .map_err(|_| AiError::ContextError("prompt token count exceeded u32 range".to_string()))
+    pub fn backend_kind(&self) -> BackendKind {
+        BackendKind::Local
+    }
+
+    pub fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            kind: self.backend_kind(),
+            supports_streaming: true,
+            supports_prompt_cache: false,
+            supports_structured_output: true,
+            can_degrade: true,
+            max_parallel_requests: 1,
+        }
+    }
+}
+
+impl crate::backends::PromptBackend for LlamaEngine {
+    fn backend_kind(&self) -> BackendKind {
+        self.backend_kind()
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        self.capabilities()
+    }
+
+    fn chat_stream_boxed(
+        &self,
+        messages: Vec<ChatMessage>,
+        sampling: SamplingParams,
+        _prompt_cache: Option<PromptCacheHint>,
+    ) -> BoxStream<'static, Result<ChatChunk, AiError>> {
+        Box::pin(self.chat_stream(messages, sampling))
     }
 }
 
@@ -233,7 +258,30 @@ fn run_decode_loop(
     sampling: SamplingParams,
     tx: &mpsc::UnboundedSender<Result<ChatChunk, AiError>>,
 ) -> Result<(), AiError> {
-    let prompt_tokens = build_prompt_tokens(model, &messages)?;
+    let template = match model.chat_template(None) {
+        Ok(template) => template,
+        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
+            AiError::ContextError(format!("failed to create chat template: {error}"))
+        })?,
+    };
+
+    let chat_messages = messages
+        .into_iter()
+        .map(|message| {
+            LlamaChatMessage::new(message.role, message.content)
+                .map_err(|error| AiError::ContextError(format!("invalid chat message: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let prompt = model
+        .apply_chat_template(&template, &chat_messages, true)
+        .map_err(|error| {
+            AiError::ContextError(format!("failed to apply chat template: {error}"))
+        })?;
+
+    let prompt_tokens = model
+        .str_to_token(&prompt, AddBos::Never)
+        .map_err(|error| AiError::ContextError(format!("failed to tokenize prompt: {error}")))?;
 
     if prompt_tokens.is_empty() {
         return Err(AiError::ContextError(
@@ -265,31 +313,24 @@ fn run_decode_loop(
         )));
     }
 
-    let prompt_batch_capacity = prompt_decode_batch_capacity(prompt_tokens.len());
-    let mut prompt_tokens_decoded = 0_usize;
-    let mut last_batch_tokens = 0;
-
-    for chunk in prompt_tokens.chunks(prompt_batch_capacity) {
-        let mut prompt_batch = LlamaBatch::new(chunk.len().max(1), 1);
-        for (chunk_index, token) in chunk.iter().enumerate() {
-            let index = prompt_tokens_decoded + chunk_index;
-            let position = i32::try_from(index).map_err(|_| {
-                AiError::ContextError("prompt too large to fit decode positions".to_string())
-            })?;
-            let is_last = index + 1 == prompt_tokens.len();
-            prompt_batch
-                .add(*token, position, &[0], is_last)
-                .map_err(|error| {
-                    AiError::ContextError(format!("failed to build prompt batch: {error}"))
-                })?;
-        }
-
-        ctx.decode(&mut prompt_batch).map_err(|error| {
-            AiError::InferenceError(format!("llama decode failed on prompt: {error}"))
+    let mut prompt_batch = LlamaBatch::new(prompt_tokens.len().max(1), 1);
+    for (index, token) in prompt_tokens.iter().enumerate() {
+        let position = i32::try_from(index).map_err(|_| {
+            AiError::ContextError("prompt too large to fit decode positions".to_string())
         })?;
-        last_batch_tokens = prompt_batch.n_tokens();
-        prompt_tokens_decoded += chunk.len();
+        let is_last = index + 1 == prompt_tokens.len();
+        prompt_batch
+            .add(*token, position, &[0], is_last)
+            .map_err(|error| {
+                AiError::ContextError(format!("failed to build prompt batch: {error}"))
+            })?;
     }
+
+    let prefill_started = Instant::now();
+    ctx.decode(&mut prompt_batch).map_err(|error| {
+        AiError::InferenceError(format!("llama decode failed on prompt: {error}"))
+    })?;
+    let prefill_duration_ms = prefill_started.elapsed().as_millis() as u64;
 
     let temperature = if sampling.temperature.is_finite() {
         sampling.temperature.max(0.0)
@@ -319,22 +360,13 @@ fn run_decode_loop(
 
     let started = Instant::now();
     let prompt_token_count = prompt_tokens.len() as u64;
-    let max_completion_tokens = sampling
-        .max_tokens
-        .min(ctx.n_ctx().saturating_sub(prompt_tokens.len() as u32));
-    let max_duration = sampling
-        .max_duration_ms
-        .filter(|value| *value > 0)
-        .map(Duration::from_millis);
     let mut completion_tokens = 0_u64;
+    let mut last_batch_tokens = prompt_batch.n_tokens();
     let mut next_position = i32::try_from(prompt_tokens.len()).unwrap_or(i32::MAX);
     let mut token_decoder = encoding_rs::UTF_8.new_decoder();
     let mut decode_batch = LlamaBatch::new(1, 1);
 
-    for _ in 0..max_completion_tokens {
-        if max_duration.is_some_and(|limit| started.elapsed() >= limit) {
-            break;
-        }
+    for _ in 0..sampling.max_tokens {
         let token = sampler.sample(&ctx, last_batch_tokens - 1);
         sampler.accept(token);
 
@@ -377,6 +409,7 @@ fn run_decode_loop(
     let _ = tx.send(Ok(ChatChunk::Stats {
         prompt_tokens: prompt_token_count,
         completion_tokens,
+        prefill_duration_ms,
         total_duration_ms,
         tokens_per_second,
     }));
@@ -385,47 +418,9 @@ fn run_decode_loop(
     Ok(())
 }
 
-fn prompt_decode_batch_capacity(prompt_token_count: usize) -> usize {
-    prompt_token_count.clamp(1, MAX_PROMPT_DECODE_BATCH_TOKENS)
-}
-
-fn build_prompt_tokens(
-    model: &LlamaModel,
-    messages: &[ChatMessage],
-) -> Result<Vec<llama_cpp_2::token::LlamaToken>, AiError> {
-    let template = match model.chat_template(None) {
-        Ok(template) => template,
-        Err(_) => LlamaChatTemplate::new("chatml").map_err(|error| {
-            AiError::ContextError(format!("failed to create chat template: {error}"))
-        })?,
-    };
-
-    let chat_messages = messages
-        .iter()
-        .cloned()
-        .map(|message| {
-            LlamaChatMessage::new(message.role, message.content)
-                .map_err(|error| AiError::ContextError(format!("invalid chat message: {error}")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let prompt = model
-        .apply_chat_template(&template, &chat_messages, true)
-        .map_err(|error| {
-            AiError::ContextError(format!("failed to apply chat template: {error}"))
-        })?;
-
-    model
-        .str_to_token(&prompt, AddBos::Never)
-        .map_err(|error| AiError::ContextError(format!("failed to tokenize prompt: {error}")))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        LlamaGpuSplitMode, MAX_PROMPT_DECODE_BATCH_TOKENS, SamplingParams,
-        normalize_device_indices, prompt_decode_batch_capacity,
-    };
+    use super::{LlamaGpuSplitMode, normalize_device_indices};
 
     #[test]
     fn normalize_device_indices_keeps_all_unique_devices_for_split_modes() {
@@ -457,22 +452,5 @@ mod tests {
             normalize_device_indices(vec![], LlamaGpuSplitMode::None, Some(1)),
             vec![1]
         );
-    }
-
-    #[test]
-    fn prompt_decode_batch_capacity_clamps_to_safe_prefill_chunks() {
-        assert_eq!(prompt_decode_batch_capacity(0), 1);
-        assert_eq!(prompt_decode_batch_capacity(1), 1);
-        assert_eq!(prompt_decode_batch_capacity(128), 128);
-        assert_eq!(
-            prompt_decode_batch_capacity(MAX_PROMPT_DECODE_BATCH_TOKENS + 900),
-            MAX_PROMPT_DECODE_BATCH_TOKENS
-        );
-    }
-
-    #[test]
-    fn sampling_params_default_has_no_duration_cap() {
-        let params = SamplingParams::default();
-        assert_eq!(params.max_duration_ms, None);
     }
 }

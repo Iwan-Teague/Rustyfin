@@ -1,6 +1,6 @@
+use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use rustfin_core::error::ApiError;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupPolicy {
@@ -20,8 +20,19 @@ pub struct BackupPolicy {
 }
 
 type PolicyTuple = (
-    String, String, Option<String>, i32, String, Option<String>,
-    bool, bool, bool, bool, Option<i64>, i64, i64,
+    String,
+    String,
+    Option<String>,
+    i32,
+    String,
+    Option<String>,
+    bool,
+    bool,
+    bool,
+    bool,
+    Option<i64>,
+    i64,
+    i64,
 );
 
 fn map_policy(row: PolicyTuple) -> BackupPolicy {
@@ -56,8 +67,15 @@ pub struct BackupJob {
 }
 
 type JobTuple = (
-    String, Option<String>, String, String, i64, Option<i64>,
-    Option<String>, Option<String>, Option<i64>,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
 );
 
 fn map_job(row: JobTuple) -> BackupJob {
@@ -169,7 +187,14 @@ pub async fn get_job(pool: &PgPool, id: &str) -> Result<Option<BackupJob>, ApiEr
     Ok(row.map(map_job))
 }
 
-pub async fn update_job_status(pool: &PgPool, id: &str, status: &str, end_ts: Option<i64>, error: Option<&str>, size: Option<i64>) -> Result<(), ApiError> {
+pub async fn update_job_status(
+    pool: &PgPool,
+    id: &str,
+    status: &str,
+    end_ts: Option<i64>,
+    error: Option<&str>,
+    size: Option<i64>,
+) -> Result<(), ApiError> {
     sqlx::query(
         "UPDATE backup_job SET status = $1, end_ts = $2, error_message = $3, total_size_bytes = $4 WHERE id = $5"
     )
@@ -184,14 +209,16 @@ pub async fn update_job_status(pool: &PgPool, id: &str, status: &str, end_ts: Op
     Ok(())
 }
 
-pub async fn update_policy_last_run(pool: &PgPool, id: &str, last_run: i64) -> Result<(), ApiError> {
-    sqlx::query(
-        "UPDATE backup_policy SET last_run_ts = $1 WHERE id = $2"
-    )
-    .bind(last_run)
-    .bind(id)
-    .execute(pool)
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {}", e)))?;
+pub async fn update_policy_last_run(
+    pool: &PgPool,
+    id: &str,
+    last_run: i64,
+) -> Result<(), ApiError> {
+    sqlx::query("UPDATE backup_policy SET last_run_ts = $1 WHERE id = $2")
+        .bind(last_run)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {}", e)))?;
     Ok(())
 }

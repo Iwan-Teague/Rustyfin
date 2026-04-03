@@ -24,6 +24,101 @@ pub struct AiModelSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AiRemoteBackendState {
+    pub enabled: bool,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub api_key_env: Option<String>,
+    pub timeout_secs: u64,
+    pub supports_prompt_cache: bool,
+    pub supports_structured_output: bool,
+    pub max_parallel_requests: u32,
+    pub overload_fallback: bool,
+    pub route_roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSchedulerPriorityCount {
+    pub priority: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSchedulerWarmModel {
+    pub model_name: String,
+    pub estimated_bytes: u64,
+    pub loaded_ts_ms: i64,
+    pub last_used_ts_ms: i64,
+    pub load_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiSchedulerState {
+    pub max_concurrent_turns: u64,
+    pub queue_limit: u64,
+    pub active_turns: u64,
+    pub queued_turns: u64,
+    pub overload_state: String,
+    pub warm_pool_bytes: u64,
+    pub warm_pool_budget_bytes: u64,
+    pub active_by_priority: Vec<AiSchedulerPriorityCount>,
+    pub queued_by_priority: Vec<AiSchedulerPriorityCount>,
+    pub warm_models: Vec<AiSchedulerWarmModel>,
+    pub rejected_turns_total: u64,
+    pub degraded_turns_total: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiModelBenchmarkSummary {
+    pub id: String,
+    pub model_name: String,
+    pub model_checksum: String,
+    pub benchmark_label: String,
+    pub backend_kind: String,
+    pub n_threads: i32,
+    pub n_gpu_layers: i32,
+    pub split_mode: String,
+    pub main_gpu: Option<i32>,
+    pub load_duration_ms: i64,
+    pub prefill_tokens: i64,
+    pub prefill_duration_ms: i64,
+    pub decode_tokens: i64,
+    pub decode_duration_ms: i64,
+    pub first_token_ms: i64,
+    pub total_duration_ms: i64,
+    pub tokens_per_second: f64,
+    pub failure_message: Option<String>,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiModelProfileSummary {
+    pub id: String,
+    pub model_name: String,
+    pub model_checksum: String,
+    pub context_window: i32,
+    pub preferred_completion_tokens: i32,
+    pub planner_max_output: i32,
+    pub summary_max_output: i32,
+    pub safety_headroom: i32,
+    pub warmup_cost_class: String,
+    pub supports_structured_output: bool,
+    pub supports_prompt_cache: bool,
+    pub recommended_n_threads: i32,
+    pub recommended_n_gpu_layers: i32,
+    pub recommended_split_mode: String,
+    pub recommended_main_gpu: Option<i32>,
+    pub estimated_model_bytes: i64,
+    pub last_benchmark_label: String,
+    pub last_load_duration_ms: i64,
+    pub last_tokens_per_second: f64,
+    pub benchmark_count: i64,
+    pub created_ts: i64,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiModelDirectoryState {
     pub available: bool,
     pub model_dir: String,
@@ -34,6 +129,10 @@ pub struct AiModelDirectoryState {
     pub audit_retention_days: i64,
     pub audit_prune_interval_seconds: u64,
     pub models: Vec<AiModelSummary>,
+    pub remote_backend: Option<AiRemoteBackendState>,
+    pub scheduler: AiSchedulerState,
+    pub model_benchmarks: Vec<AiModelBenchmarkSummary>,
+    pub model_profiles: Vec<AiModelProfileSummary>,
 }
 
 #[derive(Debug, Clone)]

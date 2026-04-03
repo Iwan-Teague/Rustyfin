@@ -491,9 +491,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::{
-        IpAddressShowRow, NetworkAddressSummary, NetworkNodeSummary,
-        classify_network_node_status, is_loopback_address, parse_linux_network_rows,
-        preferred_local_ipv4, status_rank,
+        IpAddressShowRow, NetworkAddressSummary, NetworkNodeSummary, classify_network_node_status,
+        is_loopback_address, parse_linux_network_rows, preferred_local_ipv4, status_rank,
     };
 
     #[test]

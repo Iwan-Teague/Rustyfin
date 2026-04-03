@@ -281,6 +281,26 @@ export interface AiRuntimeResponse {
       artifact_revision_count: number;
     } | null;
   };
+  scheduler: {
+    max_concurrent_turns: number;
+    queue_limit: number;
+    active_turns: number;
+    queued_turns: number;
+    overload_state: string;
+    warm_pool_bytes: number;
+    warm_pool_budget_bytes: number;
+    active_by_priority: Array<{ priority: string; count: number }>;
+    queued_by_priority: Array<{ priority: string; count: number }>;
+    warm_models: Array<{
+      model_name: string;
+      estimated_bytes: number;
+      loaded_ts_ms: number;
+      last_used_ts_ms: number;
+      load_count: number;
+    }>;
+    rejected_turns_total: number;
+    degraded_turns_total: number;
+  };
   resources: {
     process_rss_bytes?: number | null;
     process_rss_human?: string | null;

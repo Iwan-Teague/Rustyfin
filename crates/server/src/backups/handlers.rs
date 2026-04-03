@@ -1,13 +1,13 @@
-use axum::{
-    extract::{Path, State},
-    Json,
-};
-use rustfin_core::error::ApiError;
-use crate::error::AppError;
-use crate::state::AppState;
-use crate::auth::AuthUser;
 use super::repo;
 use super::service;
+use crate::auth::AuthUser;
+use crate::error::AppError;
+use crate::state::AppState;
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use rustfin_core::error::ApiError;
 
 pub async fn list_policies(
     _auth: AuthUser,
@@ -40,7 +40,9 @@ pub async fn create_backup_job(
     State(state): State<AppState>,
     // Optional policy ID in body? or just trigger manual
 ) -> Result<Json<String>, AppError> {
-    let job_id = service::trigger_backup(&state.db, None).await.map_err(|e| ApiError::Internal(e))?;
+    let job_id = service::trigger_backup(&state.db, None)
+        .await
+        .map_err(|e| ApiError::Internal(e))?;
     Ok(Json(job_id))
 }
 
@@ -49,6 +51,8 @@ pub async fn restore_backup(
     State(state): State<AppState>,
     Path(job_id): Path<String>,
 ) -> Result<(), AppError> {
-    service::restore_backup(&state.db, &job_id).await.map_err(|e| ApiError::Internal(e))?;
+    service::restore_backup(&state.db, &job_id)
+        .await
+        .map_err(|e| ApiError::Internal(e))?;
     Ok(())
 }

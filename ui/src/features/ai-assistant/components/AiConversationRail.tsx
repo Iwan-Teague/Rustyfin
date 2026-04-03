@@ -1,45 +1,13 @@
-import { type DragEvent, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { type AiConversationSummary } from '@/lib/aiApi';
 
-const COLLAPSED_GROUPS_STORAGE_KEY = 'rustyfin-ai-collapsed-groups-v1';
-
-export type AiConversationDropTarget =
-  | {
-      kind: 'row';
-      archived: boolean;
-      targetConversationId: string;
-      groupName: string | null;
-      placement: 'before' | 'after';
-    }
-  | {
-      kind: 'group';
-      archived: boolean;
-      groupName: string;
-    }
-  | {
-      kind: 'section';
-      archived: boolean;
-    };
-
-type RailConversationItem = {
-  conversation: AiConversationSummary;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
+type ConversationGroup = {
+  id: string;
+  title: string;
+  items: AiConversationSummary[];
+  archiveLabel: string;
 };
-
-type RailEntry =
-  | {
-      kind: 'chat';
-      item: RailConversationItem;
-    }
-  | {
-      kind: 'group';
-      id: string;
-      title: string;
-      items: RailConversationItem[];
-      archived: boolean;
-    };
 
 function formatUpdated(updatedTs: number): string {
   const date = new Date(updatedTs * 1000);
@@ -56,149 +24,25 @@ function formatUpdated(updatedTs: number): string {
   return date.toLocaleDateString();
 }
 
-function normalizedGroupName(value?: string | null): string | null {
-  const normalized = value?.trim();
-  return normalized ? normalized : null;
-}
-
-function rowDropPlacement(event: DragEvent<HTMLDivElement>): 'before' | 'after' {
-  const rect = event.currentTarget.getBoundingClientRect();
-  return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-}
-
-function buildRailEntries(
-  conversations: AiConversationSummary[],
-  archived: boolean,
-): RailEntry[] {
-  const groupBuckets = new Map<string, AiConversationSummary[]>();
-  const ungrouped = conversations.filter(
-    (conversation) => !normalizedGroupName(conversation.group_name),
-  );
-
-  for (const conversation of conversations) {
-    const groupName = normalizedGroupName(conversation.group_name);
-    if (!groupName) continue;
-    const existing = groupBuckets.get(groupName) ?? [];
-    existing.push(conversation);
-    groupBuckets.set(groupName, existing);
-  }
-
-  const entries: RailEntry[] = [];
-  const seenGroups = new Set<string>();
-
-  for (const conversation of conversations) {
-    const groupName = normalizedGroupName(conversation.group_name);
-    if (!groupName) {
-      const index = ungrouped.findIndex((item) => item.id === conversation.id);
-      entries.push({
-        kind: 'chat',
-        item: {
-          conversation,
-          canMoveUp: index > 0,
-          canMoveDown: index >= 0 && index + 1 < ungrouped.length,
-        },
-      });
-      continue;
-    }
-
-    if (seenGroups.has(groupName)) {
-      continue;
-    }
-    seenGroups.add(groupName);
-
-    const items = groupBuckets.get(groupName) ?? [];
-    entries.push({
-      kind: 'group',
-      id: `${archived ? 'archived' : 'live'}::${groupName}`,
-      title: groupName,
-      archived,
-      items: items.map((item, index) => ({
-        conversation: item,
-        canMoveUp: index > 0,
-        canMoveDown: index + 1 < items.length,
-      })),
-    });
-  }
-
-  return entries;
-}
-
-function ChevronIcon({ open }: { open: boolean }) {
-  return (
-    <svg
-      className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-90' : ''}`}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M6 3.5 10.5 8 6 12.5" />
-    </svg>
-  );
-}
-
-function DotsIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <circle cx="3" cy="8" r="1.2" />
-      <circle cx="8" cy="8" r="1.2" />
-      <circle cx="13" cy="8" r="1.2" />
-    </svg>
-  );
-}
-
 function ConversationRow({
-  item,
+  conversation,
   active,
   disabled,
   archiveLabel,
-  indent = false,
-  isDragging,
-  dropPlacement,
   onSelect,
   onRename,
-  onMoveToGroup,
-  onMoveUp,
-  onMoveDown,
   onArchive,
   onDelete,
-  onDragStart,
-  onDragEnd,
-  onDragOverRow,
-  onDropOnRow,
 }: {
-  item: RailConversationItem;
+  conversation: AiConversationSummary;
   active: boolean;
   disabled: boolean;
   archiveLabel: string;
-  indent?: boolean;
-  isDragging: boolean;
-  dropPlacement: 'before' | 'after' | null;
   onSelect: () => void;
   onRename: () => void;
-  onMoveToGroup: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
   onArchive: () => void;
   onDelete: () => void;
-  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
-  onDragEnd: () => void;
-  onDragOverRow: (
-    event: DragEvent<HTMLDivElement>,
-    conversation: AiConversationSummary,
-    placement: 'before' | 'after',
-  ) => void;
-  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
 }) {
-  const { conversation, canMoveUp, canMoveDown } = item;
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -219,47 +63,19 @@ function ConversationRow({
   };
 
   return (
-    <div
-      data-ai-conversation-row-id={conversation.id}
-      draggable={!disabled}
-      onDragStart={(event) => onDragStart(event, conversation)}
-      onDragEnd={onDragEnd}
-      onDragOver={(event) =>
-        onDragOverRow(event, conversation, rowDropPlacement(event))
-      }
-      onDrop={(event) =>
-        onDropOnRow(event, {
-          kind: 'row',
-          archived: conversation.archived,
-          targetConversationId: conversation.id,
-          groupName: normalizedGroupName(conversation.group_name),
-          placement: rowDropPlacement(event),
-        })
-      }
-      className={`group relative ${indent ? 'pl-5' : ''} ${
-        isDragging ? 'opacity-45' : ''
-      }`}
-    >
-      {dropPlacement ? (
-        <div
-          className={`pointer-events-none absolute left-1 right-1 z-10 h-px bg-[rgba(233,236,255,0.55)] ${
-            dropPlacement === 'before' ? 'top-0' : 'bottom-0'
-          }`}
-        />
-      ) : null}
+    <div data-ai-conversation-row-id={conversation.id} className="relative px-1">
       <div
-        className={`flex items-center gap-1.5 rounded-[0.95rem] px-1 py-0.5 transition-colors ${
+        className={`flex items-center gap-1.5 rounded-[1.2rem] px-1.5 py-1 transition-all ${
           active
-            ? 'bg-[rgba(222,230,255,0.08)]'
-            : 'hover:bg-[rgba(255,255,255,0.03)]'
+            ? 'bg-[rgba(222,230,255,0.11)] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+            : 'hover:bg-[rgba(255,255,255,0.04)]'
         }`}
       >
         <button
           type="button"
           onClick={onSelect}
           disabled={disabled}
-          draggable={false}
-          className="min-w-0 flex-1 cursor-grab rounded-[0.8rem] px-2.5 py-1.5 text-left active:cursor-grabbing disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-[1rem] px-2.5 py-1.5 text-left disabled:opacity-60"
         >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 truncate text-[0.82rem] font-medium text-[var(--text-main)]">
@@ -276,49 +92,23 @@ function ConversationRow({
             type="button"
             onClick={() => setMenuOpen((current) => !current)}
             disabled={disabled}
-            draggable={false}
             className={`flex h-7 w-7 items-center justify-center rounded-full p-0 text-base leading-none transition-colors disabled:opacity-40 ${
-              menuOpen
-                ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)]'
-                : active
-                  ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)] hover:bg-[rgba(255,255,255,0.09)]'
-                  : 'text-[var(--text-muted)] opacity-0 group-hover:opacity-100 hover:bg-[rgba(255,255,255,0.05)]'
+              active
+                ? 'bg-[rgba(255,255,255,0.05)] text-[var(--text-main)] hover:bg-[rgba(255,255,255,0.09)]'
+                : 'text-[var(--text-muted)] hover:bg-[rgba(255,255,255,0.05)]'
             }`}
             aria-label="Conversation actions"
           >
-            <DotsIcon />
+            ⋯
           </button>
           {menuOpen ? (
-            <div className="absolute right-0 top-[calc(100%+0.35rem)] z-20 min-w-[10.5rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(31,37,54,0.98)] shadow-[0_18px_44px_rgba(0,0,0,0.24)] backdrop-blur-xl">
+            <div className="absolute right-0 top-[calc(100%+0.35rem)] z-20 min-w-[9rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(46,53,80,0.96)] shadow-[0_18px_44px_rgba(0,0,0,0.22)] backdrop-blur-xl">
               <button
                 type="button"
                 onClick={() => runAction(onRename)}
                 className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
               >
                 Rename
-              </button>
-              <button
-                type="button"
-                onClick={() => runAction(onMoveToGroup)}
-                className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-              >
-                {conversation.group_name ? 'Edit group…' : 'Move to group…'}
-              </button>
-              <button
-                type="button"
-                onClick={() => runAction(onMoveUp)}
-                disabled={!canMoveUp}
-                className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Move up
-              </button>
-              <button
-                type="button"
-                onClick={() => runAction(onMoveDown)}
-                disabled={!canMoveDown}
-                className="block w-full px-3 py-2 text-left text-xs text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Move down
               </button>
               <button
                 type="button"
@@ -342,256 +132,42 @@ function ConversationRow({
   );
 }
 
-function GroupEntry({
-  entry,
-  activeConversationId,
-  collapsed,
-  disabled,
-  dropActive,
-  draggedConversationId,
-  rowDropTarget,
-  onToggle,
-  onSelect,
-  onRename,
-  onMoveToGroup,
-  onMoveUp,
-  onMoveDown,
-  onArchiveToggle,
-  onDelete,
-  onDragStart,
-  onDragEnd,
-  onDragOverRow,
-  onDropOnRow,
-  onDragOverGroup,
-  onDropOnGroup,
-}: {
-  entry: Extract<RailEntry, { kind: 'group' }>;
-  activeConversationId: string | null;
-  collapsed: boolean;
-  disabled: boolean;
-  dropActive: boolean;
-  draggedConversationId: string | null;
-  rowDropTarget: Extract<AiConversationDropTarget, { kind: 'row' }> | null;
-  onToggle: () => void;
-  onSelect: (conversationId: string) => void;
-  onRename: (conversation: AiConversationSummary) => void;
-  onMoveToGroup: (conversation: AiConversationSummary) => void;
-  onMoveUp: (conversation: AiConversationSummary) => void;
-  onMoveDown: (conversation: AiConversationSummary) => void;
-  onArchiveToggle: (conversation: AiConversationSummary) => void;
-  onDelete: (conversation: AiConversationSummary) => void;
-  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
-  onDragEnd: () => void;
-  onDragOverRow: (
-    event: DragEvent<HTMLDivElement>,
-    conversation: AiConversationSummary,
-    placement: 'before' | 'after',
-  ) => void;
-  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
-  onDragOverGroup: (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => void;
-  onDropOnGroup: (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => void;
-}) {
-  return (
-    <div className="space-y-1">
-      <button
-        type="button"
-        onClick={onToggle}
-        onDragOver={(event) => onDragOverGroup(event, entry)}
-        onDrop={(event) => onDropOnGroup(event, entry)}
-        className={`flex w-full items-center gap-2 rounded-[0.95rem] px-2 py-1.5 text-left transition-colors hover:bg-[rgba(255,255,255,0.03)] ${
-          dropActive ? 'bg-[rgba(233,236,255,0.08)]' : ''
-        }`}
-        aria-expanded={!collapsed}
-      >
-        <span className="shrink-0 text-[var(--text-muted)]">
-          <ChevronIcon open={!collapsed} />
-        </span>
-        <span className="min-w-0 flex-1 truncate text-[0.92rem] font-medium text-[var(--text-main)]">
-          {entry.title}
-        </span>
-        <span className="shrink-0 text-[0.76rem] text-[var(--text-muted)]">
-          {entry.items.length}
-        </span>
-      </button>
-
-      {!collapsed ? (
-        <div className="space-y-1">
-          {entry.items.map((item) => (
-            <ConversationRow
-              key={item.conversation.id}
-              item={item}
-              active={item.conversation.id === activeConversationId}
-              disabled={disabled}
-              archiveLabel={entry.archived ? 'Restore' : 'Archive'}
-              indent
-              isDragging={draggedConversationId === item.conversation.id}
-              dropPlacement={
-                rowDropTarget?.targetConversationId === item.conversation.id
-                  ? rowDropTarget.placement
-                  : null
-              }
-              onSelect={() => onSelect(item.conversation.id)}
-              onRename={() => onRename(item.conversation)}
-              onMoveToGroup={() => onMoveToGroup(item.conversation)}
-              onMoveUp={() => onMoveUp(item.conversation)}
-              onMoveDown={() => onMoveDown(item.conversation)}
-              onArchive={() => onArchiveToggle(item.conversation)}
-              onDelete={() => onDelete(item.conversation)}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onDragOverRow={onDragOverRow}
-              onDropOnRow={onDropOnRow}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function RailSection({
-  title,
-  archived,
-  entries,
+function ConversationGroupSection({
+  group,
   activeConversationId,
   disabled,
-  collapsedGroups,
-  sectionDropActive,
-  draggedConversationId,
-  groupDropTarget,
-  rowDropTarget,
-  onToggleGroup,
   onSelect,
   onRename,
-  onMoveToGroup,
-  onMoveUp,
-  onMoveDown,
   onArchiveToggle,
   onDelete,
-  onDragStart,
-  onDragEnd,
-  onDragOverRow,
-  onDropOnRow,
-  onDragOverGroup,
-  onDropOnGroup,
-  onDragOverSection,
-  onDropOnSection,
 }: {
-  title: string;
-  archived: boolean;
-  entries: RailEntry[];
+  group: ConversationGroup;
   activeConversationId: string | null;
   disabled: boolean;
-  collapsedGroups: Record<string, boolean>;
-  sectionDropActive: boolean;
-  draggedConversationId: string | null;
-  groupDropTarget: Extract<AiConversationDropTarget, { kind: 'group' }> | null;
-  rowDropTarget: Extract<AiConversationDropTarget, { kind: 'row' }> | null;
-  onToggleGroup: (groupId: string) => void;
   onSelect: (conversationId: string) => void;
   onRename: (conversation: AiConversationSummary) => void;
-  onMoveToGroup: (conversation: AiConversationSummary) => void;
-  onMoveUp: (conversation: AiConversationSummary) => void;
-  onMoveDown: (conversation: AiConversationSummary) => void;
   onArchiveToggle: (conversation: AiConversationSummary) => void;
   onDelete: (conversation: AiConversationSummary) => void;
-  onDragStart: (event: DragEvent<HTMLDivElement>, conversation: AiConversationSummary) => void;
-  onDragEnd: () => void;
-  onDragOverRow: (
-    event: DragEvent<HTMLDivElement>,
-    conversation: AiConversationSummary,
-    placement: 'before' | 'after',
-  ) => void;
-  onDropOnRow: (event: DragEvent<HTMLDivElement>, target: AiConversationDropTarget) => void;
-  onDragOverGroup: (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => void;
-  onDropOnGroup: (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => void;
-  onDragOverSection: (event: DragEvent<HTMLDivElement>, archived: boolean) => void;
-  onDropOnSection: (event: DragEvent<HTMLDivElement>, archived: boolean) => void;
 }) {
-  if (entries.length === 0) return null;
-
   return (
     <section className="space-y-2">
-      <div
-        onDragOver={(event) => onDragOverSection(event, archived)}
-        onDrop={(event) => onDropOnSection(event, archived)}
-        className={`rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)] transition-colors ${
-          sectionDropActive ? 'bg-[rgba(233,236,255,0.08)] text-[var(--text-main)]' : ''
-        }`}
-      >
-        {title}
+      <div className="px-2 text-[0.64rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+        {group.title}
       </div>
-      <div className="space-y-1">
-        {entries.map((entry) =>
-          entry.kind === 'group' ? (
-            <GroupEntry
-              key={entry.id}
-              entry={entry}
-              activeConversationId={activeConversationId}
-              collapsed={Boolean(collapsedGroups[entry.id])}
-              disabled={disabled}
-              dropActive={Boolean(
-                !sectionDropActive &&
-                  groupDropTarget &&
-                  groupDropTarget.archived === entry.archived &&
-                  groupDropTarget.groupName === entry.title,
-              )}
-              draggedConversationId={draggedConversationId}
-              rowDropTarget={rowDropTarget}
-              onToggle={() => onToggleGroup(entry.id)}
-              onSelect={onSelect}
-              onRename={onRename}
-              onMoveToGroup={onMoveToGroup}
-              onMoveUp={onMoveUp}
-              onMoveDown={onMoveDown}
-              onArchiveToggle={onArchiveToggle}
-              onDelete={onDelete}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onDragOverRow={onDragOverRow}
-              onDropOnRow={onDropOnRow}
-              onDragOverGroup={onDragOverGroup}
-              onDropOnGroup={onDropOnGroup}
-            />
-          ) : (
-            <ConversationRow
-              key={entry.item.conversation.id}
-              item={entry.item}
-              active={entry.item.conversation.id === activeConversationId}
-              disabled={disabled}
-              archiveLabel={entry.item.conversation.archived ? 'Restore' : 'Archive'}
-              isDragging={draggedConversationId === entry.item.conversation.id}
-              dropPlacement={
-                rowDropTarget?.targetConversationId === entry.item.conversation.id
-                  ? rowDropTarget.placement
-                  : null
-              }
-              onSelect={() => onSelect(entry.item.conversation.id)}
-              onRename={() => onRename(entry.item.conversation)}
-              onMoveToGroup={() => onMoveToGroup(entry.item.conversation)}
-              onMoveUp={() => onMoveUp(entry.item.conversation)}
-              onMoveDown={() => onMoveDown(entry.item.conversation)}
-              onArchive={() => onArchiveToggle(entry.item.conversation)}
-              onDelete={() => onDelete(entry.item.conversation)}
-              onDragStart={onDragStart}
-              onDragEnd={onDragEnd}
-              onDragOverRow={onDragOverRow}
-              onDropOnRow={onDropOnRow}
-            />
-          ),
-        )}
+      <div className="space-y-0.5">
+        {group.items.map((conversation) => (
+          <ConversationRow
+            key={conversation.id}
+            conversation={conversation}
+            active={conversation.id === activeConversationId}
+            disabled={disabled}
+            archiveLabel={group.archiveLabel}
+            onSelect={() => onSelect(conversation.id)}
+            onRename={() => onRename(conversation)}
+            onArchive={() => onArchiveToggle(conversation)}
+            onDelete={() => onDelete(conversation)}
+          />
+        ))}
       </div>
     </section>
   );
@@ -606,12 +182,8 @@ export default function AiConversationRail({
   onSelect,
   onNewChat,
   onRename,
-  onMoveToGroup,
-  onMoveUp,
-  onMoveDown,
   onArchiveToggle,
   onDelete,
-  onDropConversation,
 }: {
   conversations: AiConversationSummary[];
   archivedConversations: AiConversationSummary[];
@@ -621,269 +193,61 @@ export default function AiConversationRail({
   onSelect: (conversationId: string) => void;
   onNewChat: () => void;
   onRename: (conversation: AiConversationSummary) => void;
-  onMoveToGroup: (conversation: AiConversationSummary) => void;
-  onMoveUp: (conversation: AiConversationSummary) => void;
-  onMoveDown: (conversation: AiConversationSummary) => void;
   onArchiveToggle: (conversation: AiConversationSummary) => void;
   onDelete: (conversation: AiConversationSummary) => void;
-  onDropConversation: (
-    conversationId: string,
-    target: AiConversationDropTarget,
-  ) => void;
 }) {
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
-    if (typeof window === 'undefined') {
-      return {};
-    }
-    try {
-      const raw = window.localStorage.getItem(COLLAPSED_GROUPS_STORAGE_KEY);
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object'
-        ? (parsed as Record<string, boolean>)
-        : {};
-    } catch {
-      return {};
-    }
-  });
-  const [draggedConversationId, setDraggedConversationId] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<AiConversationDropTarget | null>(null);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      COLLAPSED_GROUPS_STORAGE_KEY,
-      JSON.stringify(collapsedGroups),
-    );
-  }, [collapsedGroups]);
-
-  const liveEntries = buildRailEntries(conversations, false);
-  const archivedEntries = buildRailEntries(archivedConversations, true);
-  const allConversations = [...conversations, ...archivedConversations];
-  const draggedConversation = draggedConversationId
-    ? allConversations.find((conversation) => conversation.id === draggedConversationId) ?? null
-    : null;
-
-  const clearDragState = () => {
-    setDraggedConversationId(null);
-    setDropTarget(null);
-  };
-
-  const toggleGroup = (groupId: string) => {
-    setCollapsedGroups((current) => ({
-      ...current,
-      [groupId]: !current[groupId],
-    }));
-  };
-
-  const handleConversationDragStart = (
-    event: DragEvent<HTMLDivElement>,
-    conversation: AiConversationSummary,
-  ) => {
-    if (disabled) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', conversation.id);
-    setDraggedConversationId(conversation.id);
-    setDropTarget(null);
-  };
-
-  const handleConversationDragEnd = () => {
-    clearDragState();
-  };
-
-  const handleDragOverRow = (
-    event: DragEvent<HTMLDivElement>,
-    conversation: AiConversationSummary,
-    placement: 'before' | 'after',
-  ) => {
-    if (!draggedConversation || draggedConversation.id === conversation.id) return;
-    if (draggedConversation.archived !== conversation.archived) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    setDropTarget({
-      kind: 'row',
-      archived: conversation.archived,
-      targetConversationId: conversation.id,
-      groupName: normalizedGroupName(conversation.group_name),
-      placement,
+  const groups: ConversationGroup[] = [];
+  if (conversations.length > 0) {
+    groups.push({
+      id: 'recent',
+      title: 'Recent',
+      items: conversations,
+      archiveLabel: 'Archive',
     });
-  };
-
-  const handleDropOnRow = (
-    event: DragEvent<HTMLDivElement>,
-    target: AiConversationDropTarget,
-  ) => {
-    event.preventDefault();
-    if (!draggedConversationId || !draggedConversation) {
-      clearDragState();
-      return;
-    }
-    if (target.kind !== 'row' || draggedConversationId === target.targetConversationId) {
-      clearDragState();
-      return;
-    }
-    if (draggedConversation.archived !== target.archived) {
-      clearDragState();
-      return;
-    }
-    onDropConversation(draggedConversationId, target);
-    clearDragState();
-  };
-
-  const handleDragOverGroup = (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => {
-    if (!draggedConversation || draggedConversation.archived !== entry.archived) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    setDropTarget({
-      kind: 'group',
-      archived: entry.archived,
-      groupName: entry.title,
+  }
+  if (archivedConversations.length > 0) {
+    groups.push({
+      id: 'archived',
+      title: 'Archived',
+      items: archivedConversations,
+      archiveLabel: 'Restore',
     });
-  };
-
-  const handleDropOnGroup = (
-    event: DragEvent<HTMLButtonElement>,
-    entry: Extract<RailEntry, { kind: 'group' }>,
-  ) => {
-    event.preventDefault();
-    if (!draggedConversationId || !draggedConversation) {
-      clearDragState();
-      return;
-    }
-    if (draggedConversation.archived !== entry.archived) {
-      clearDragState();
-      return;
-    }
-    onDropConversation(draggedConversationId, {
-      kind: 'group',
-      archived: entry.archived,
-      groupName: entry.title,
-    });
-    clearDragState();
-  };
-
-  const handleDragOverSection = (
-    event: DragEvent<HTMLDivElement>,
-    archived: boolean,
-  ) => {
-    if (!draggedConversation || draggedConversation.archived !== archived) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    setDropTarget({
-      kind: 'section',
-      archived,
-    });
-  };
-
-  const handleDropOnSection = (
-    event: DragEvent<HTMLDivElement>,
-    archived: boolean,
-  ) => {
-    event.preventDefault();
-    if (!draggedConversationId || !draggedConversation) {
-      clearDragState();
-      return;
-    }
-    if (draggedConversation.archived !== archived) {
-      clearDragState();
-      return;
-    }
-    onDropConversation(draggedConversationId, {
-      kind: 'section',
-      archived,
-    });
-    clearDragState();
-  };
-
-  const activeRowDropTarget =
-    dropTarget?.kind === 'row' ? dropTarget : null;
-  const activeGroupDropTarget =
-    dropTarget?.kind === 'group' ? dropTarget : null;
+  }
 
   return (
     <aside
       className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent ${className}`}
     >
-      <div className="shrink-0 px-3 pb-4 pt-3">
+      <div className="shrink-0 px-3 pb-5 pt-4">
         <button
           type="button"
           onClick={onNewChat}
           disabled={disabled}
-          className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)] disabled:opacity-40"
+          className="btn-primary w-full rounded-xl px-4 py-2 text-sm disabled:opacity-40"
         >
           New chat
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4">
-        {liveEntries.length === 0 && archivedEntries.length === 0 ? (
-          <div className="px-3 py-5 text-center text-[0.82rem] muted">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3 pt-1">
+        {groups.length === 0 ? (
+          <div className="px-3 py-5 text-center text-[0.78rem] muted">
             No saved chats yet
           </div>
         ) : (
           <div className="space-y-5">
-            <RailSection
-              title="Threads"
-              archived={false}
-              entries={liveEntries}
-              activeConversationId={activeConversationId}
-              disabled={disabled}
-              collapsedGroups={collapsedGroups}
-              sectionDropActive={dropTarget?.kind === 'section' && !dropTarget.archived}
-              draggedConversationId={draggedConversationId}
-              groupDropTarget={activeGroupDropTarget}
-              rowDropTarget={activeRowDropTarget}
-              onToggleGroup={toggleGroup}
-              onSelect={onSelect}
-              onRename={onRename}
-              onMoveToGroup={onMoveToGroup}
-              onMoveUp={onMoveUp}
-              onMoveDown={onMoveDown}
-              onArchiveToggle={onArchiveToggle}
-              onDelete={onDelete}
-              onDragStart={handleConversationDragStart}
-              onDragEnd={handleConversationDragEnd}
-              onDragOverRow={handleDragOverRow}
-              onDropOnRow={handleDropOnRow}
-              onDragOverGroup={handleDragOverGroup}
-              onDropOnGroup={handleDropOnGroup}
-              onDragOverSection={handleDragOverSection}
-              onDropOnSection={handleDropOnSection}
-            />
-            <RailSection
-              title="Archived"
-              archived
-              entries={archivedEntries}
-              activeConversationId={activeConversationId}
-              disabled={disabled}
-              collapsedGroups={collapsedGroups}
-              sectionDropActive={dropTarget?.kind === 'section' && dropTarget.archived}
-              draggedConversationId={draggedConversationId}
-              groupDropTarget={activeGroupDropTarget}
-              rowDropTarget={activeRowDropTarget}
-              onToggleGroup={toggleGroup}
-              onSelect={onSelect}
-              onRename={onRename}
-              onMoveToGroup={onMoveToGroup}
-              onMoveUp={onMoveUp}
-              onMoveDown={onMoveDown}
-              onArchiveToggle={onArchiveToggle}
-              onDelete={onDelete}
-              onDragStart={handleConversationDragStart}
-              onDragEnd={handleConversationDragEnd}
-              onDragOverRow={handleDragOverRow}
-              onDropOnRow={handleDropOnRow}
-              onDragOverGroup={handleDragOverGroup}
-              onDropOnGroup={handleDropOnGroup}
-              onDragOverSection={handleDragOverSection}
-              onDropOnSection={handleDropOnSection}
-            />
+            {groups.map((group) => (
+              <ConversationGroupSection
+                key={group.id}
+                group={group}
+                activeConversationId={activeConversationId}
+                disabled={disabled}
+                onSelect={onSelect}
+                onRename={onRename}
+                onArchiveToggle={onArchiveToggle}
+                onDelete={onDelete}
+              />
+            ))}
           </div>
         )}
       </div>

@@ -2375,6 +2375,343 @@ async fn ai_assistant_grounding_handles_transcript_lifecycle_and_visibility() {
 
 #[cfg(feature = "ai")]
 #[tokio::test]
+async fn ai_assistant_grounding_indexes_memory_retrieval_and_entity_graph_rows() {
+    let pool = create_test_pool().await;
+    let user_id = rustfin_db::repo::users::create_user(
+        &pool,
+        "ai_grounding_index_user",
+        "ai_grounding_index_user_pass_123",
+        "user",
+    )
+    .await
+    .unwrap();
+    let admin_id = rustfin_db::repo::users::create_user(
+        &pool,
+        "ai_grounding_index_admin",
+        "ai_grounding_index_admin_pass_123",
+        "admin",
+    )
+    .await
+    .unwrap();
+
+    rustfin_db::repo::ai_grounding::upsert_memory_item(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiMemoryItemParams {
+            user_id: &user_id,
+            memory_key: "memory-backup",
+            memory_type: "assistant_memory",
+            topic_key: Some("topic:alpha"),
+            title: "Backup reminder",
+            content: "The nightly backup finished successfully.",
+            search_text: "nightly backup finished successfully",
+            weight: 1.5,
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_memory_item(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiMemoryItemParams {
+            user_id: &user_id,
+            memory_key: "memory-library",
+            memory_type: "assistant_memory",
+            topic_key: Some("topic:beta"),
+            title: "Library reminder",
+            content: "The library sync finished successfully.",
+            search_text: "library sync finished successfully",
+            weight: 0.8,
+        },
+    )
+    .await
+    .unwrap();
+
+    let memory_hits = rustfin_db::repo::ai_grounding::search_memory_items_for_user(
+        &pool,
+        &user_id,
+        Some("topic:alpha"),
+        Some("backup nightly"),
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(memory_hits.len(), 1);
+    assert_eq!(memory_hits[0].row.memory_key, "memory-backup");
+    assert_eq!(memory_hits[0].row.topic_key.as_deref(), Some("topic:alpha"));
+
+    rustfin_db::repo::ai_grounding::upsert_retrieval_chunk(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiRetrievalChunkParams {
+            chunk_key: "shared-alpha",
+            source_kind: "downloads_list_available_artifacts",
+            source_id: "download-1",
+            source_sub_id: None,
+            owner_user_id: None,
+            access_scope: "shared",
+            access_key: None,
+            topic_key: Some("topic:alpha"),
+            title: "Shared alpha",
+            excerpt: "shared alpha chunk",
+            search_text: "shared alpha chunk",
+            score_boost: 1.0,
+            metadata_json: "{}",
+            source_ts: 100,
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_retrieval_chunk(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiRetrievalChunkParams {
+            chunk_key: "user-alpha",
+            source_kind: "channels_get_transcript_summary",
+            source_id: "session-1",
+            source_sub_id: Some("entry-1"),
+            owner_user_id: Some(&user_id),
+            access_scope: "user",
+            access_key: None,
+            topic_key: Some("topic:alpha"),
+            title: "User alpha",
+            excerpt: "user alpha chunk",
+            search_text: "user alpha chunk",
+            score_boost: 2.0,
+            metadata_json: "{}",
+            source_ts: 200,
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_retrieval_chunk(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiRetrievalChunkParams {
+            chunk_key: "admin-alpha",
+            source_kind: "system_get_recent_errors",
+            source_id: "recent-errors",
+            source_sub_id: None,
+            owner_user_id: Some(&admin_id),
+            access_scope: "admin",
+            access_key: None,
+            topic_key: Some("topic:alpha"),
+            title: "Admin alpha",
+            excerpt: "admin alpha chunk",
+            search_text: "admin alpha chunk",
+            score_boost: 3.0,
+            metadata_json: "{}",
+            source_ts: 300,
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_retrieval_chunk(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiRetrievalChunkParams {
+            chunk_key: "library-alpha",
+            source_kind: "libraries_get_recently_added",
+            source_id: "library-item-1",
+            source_sub_id: None,
+            owner_user_id: None,
+            access_scope: "library",
+            access_key: Some("library-1"),
+            topic_key: Some("topic:alpha"),
+            title: "Library alpha",
+            excerpt: "library alpha chunk",
+            search_text: "library alpha chunk",
+            score_boost: 1.5,
+            metadata_json: "{}",
+            source_ts: 250,
+        },
+    )
+    .await
+    .unwrap();
+
+    let library_ids = vec!["library-1".to_string()];
+    let user_hits = rustfin_db::repo::ai_grounding::search_retrieval_chunks(
+        &pool,
+        &user_id,
+        false,
+        Some(&library_ids),
+        Some("topic:alpha"),
+        Some("alpha"),
+        10,
+    )
+    .await
+    .unwrap();
+    let user_hit_ids: Vec<_> = user_hits
+        .iter()
+        .map(|hit| hit.row.chunk_key.as_str())
+        .collect();
+    assert_eq!(
+        user_hit_ids,
+        vec!["user-alpha", "library-alpha", "shared-alpha"]
+    );
+
+    let admin_hits = rustfin_db::repo::ai_grounding::search_retrieval_chunks(
+        &pool,
+        &user_id,
+        true,
+        None,
+        Some("topic:alpha"),
+        Some("alpha"),
+        10,
+    )
+    .await
+    .unwrap();
+    let admin_hit_ids: Vec<_> = admin_hits
+        .iter()
+        .map(|hit| hit.row.chunk_key.as_str())
+        .collect();
+    assert_eq!(
+        admin_hit_ids,
+        vec!["admin-alpha", "user-alpha", "library-alpha", "shared-alpha"]
+    );
+
+    rustfin_db::repo::ai_grounding::upsert_entity_node(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiEntityNodeParams {
+            node_key: "entity-root-alpha",
+            owner_user_id: Some(&user_id),
+            conversation_id: Some("conversation-1"),
+            turn_id: Some("turn-1"),
+            entity_kind: "library_search_titles",
+            label: "Star Trek",
+            identifier: Some("star-trek"),
+            topic_key: Some("topic:alpha"),
+            source_chunk_id: Some("user-alpha"),
+            access_scope: "user",
+            access_key: None,
+            ordinal: 0,
+            metadata_json: "{}",
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_entity_node(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiEntityNodeParams {
+            node_key: "entity-child-alpha",
+            owner_user_id: Some(&user_id),
+            conversation_id: Some("conversation-1"),
+            turn_id: Some("turn-1"),
+            entity_kind: "item",
+            label: "The Next Generation",
+            identifier: Some("tng"),
+            topic_key: Some("topic:alpha"),
+            source_chunk_id: Some("user-alpha"),
+            access_scope: "user",
+            access_key: None,
+            ordinal: 1,
+            metadata_json: "{}",
+        },
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_grounding::upsert_entity_edge(
+        &pool,
+        rustfin_db::repo::ai_grounding::UpsertAiEntityEdgeParams {
+            edge_key: "entity-edge-alpha",
+            from_node_key: "entity-root-alpha",
+            to_node_key: "entity-child-alpha",
+            relation: "contains",
+            weight: 1.0,
+        },
+    )
+    .await
+    .unwrap();
+
+    let entity_hits = rustfin_db::repo::ai_grounding::search_entity_nodes_for_user(
+        &pool,
+        &user_id,
+        false,
+        Some("topic:alpha"),
+        Some("Star Trek"),
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(entity_hits.len(), 2);
+    assert_eq!(entity_hits[0].row.node_key, "entity-root-alpha");
+    assert_eq!(entity_hits[1].row.node_key, "entity-child-alpha");
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_admin_backend_config_persists_and_requires_admin() {
+    let (server, _state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let unauthorized_resp = server
+        .put("/api/v1/system/ai/backend")
+        .json(&json!({
+            "enabled": true,
+            "base_url": "http://127.0.0.1:9999",
+            "model": "bench-test",
+            "api_key_env": null,
+            "timeout_secs": 30,
+            "supports_prompt_cache": true,
+            "supports_structured_output": true,
+            "max_parallel_requests": 2,
+            "overload_fallback": true,
+            "route_roles": ["planner"]
+        }))
+        .await;
+    unauthorized_resp.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    let resp = server
+        .put("/api/v1/system/ai/backend")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "enabled": true,
+            "base_url": "http://127.0.0.1:9999",
+            "model": "bench-test",
+            "api_key_env": null,
+            "timeout_secs": 30,
+            "supports_prompt_cache": true,
+            "supports_structured_output": true,
+            "max_parallel_requests": 2,
+            "overload_fallback": true,
+            "route_roles": ["planner"]
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    assert_eq!(body["remote_backend"]["enabled"], true);
+    assert_eq!(
+        body["remote_backend"]["base_url"].as_str(),
+        Some("http://127.0.0.1:9999")
+    );
+    assert_eq!(body["remote_backend"]["model"].as_str(), Some("bench-test"));
+    assert!(body["scheduler"]["warm_models"].is_array());
+    assert!(body["model_benchmarks"].is_array());
+    assert!(body["model_profiles"].is_array());
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
+async fn ai_benchmark_endpoint_validates_model_selection() {
+    let server = test_app().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let resp = server
+        .post("/api/v1/system/ai/benchmarks/run")
+        .add_header(admin_hdr.0.clone(), admin_hdr.1.clone())
+        .json(&json!({
+            "model_name": "missing-model",
+            "benchmark_label": "integration-check"
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown AI model")
+    );
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
 async fn ai_assistant_grounding_requires_admin_for_remaining_system_summaries() {
     let (server, state) = test_app_with_state().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;

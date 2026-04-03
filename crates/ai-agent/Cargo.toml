@@ -22,3 +22,4 @@ encoding_rs = "0.8"
 tracing = { workspace = true }
 thiserror = { workspace = true }
 async-stream = "0.3"
+sha2 = { workspace = true }

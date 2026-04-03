@@ -14,13 +14,135 @@ use tracing::warn;
 
 use crate::ai_audit::{AiAssistantAuditEventResponse, parse_audit_event_row};
 use crate::ai_storage::{
-    AI_MODEL_DIR_SETTING_KEY, AiModelDirectoryState, ModelPullChunk, current_model_dir,
-    delete_model_file, download_model_from_url, list_models_with_storage_status, resolve_model_dir,
-    resolve_runtime_model_dir, set_model_dir, validate_model_dir,
+    AI_MODEL_DIR_SETTING_KEY, AiModelBenchmarkSummary, AiModelDirectoryState,
+    AiModelProfileSummary, AiRemoteBackendState, AiSchedulerState, ModelPullChunk,
+    current_model_dir, delete_model_file, download_model_from_url, list_models_with_storage_status,
+    resolve_model_dir, resolve_runtime_model_dir, set_model_dir, validate_model_dir,
 };
 use crate::auth::AdminUser;
 use crate::error::AppError;
 use crate::state::AppState;
+
+pub const AI_REMOTE_BACKEND_SETTING_KEY: &str = "ai_remote_backend_config";
+
+#[derive(Deserialize)]
+pub struct UpdateAiAdminConfigRequest {
+    pub model_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AiRemoteBackendConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub supports_prompt_cache: bool,
+    #[serde(default)]
+    pub supports_structured_output: bool,
+    #[serde(default)]
+    pub max_parallel_requests: u32,
+    #[serde(default)]
+    pub overload_fallback: bool,
+    #[serde(default)]
+    pub route_roles: Vec<String>,
+}
+
+impl AiRemoteBackendConfig {
+    pub fn normalized(mut self) -> Self {
+        self.base_url = self.base_url.trim().to_string();
+        self.model = self.model.trim().to_string();
+        self.route_roles = self
+            .route_roles
+            .into_iter()
+            .map(|role| role.trim().to_ascii_lowercase())
+            .filter(|role| !role.is_empty())
+            .collect::<Vec<_>>();
+        self.route_roles.sort();
+        self.route_roles.dedup();
+        if self.timeout_secs == 0 {
+            self.timeout_secs = 120;
+        }
+        if self.max_parallel_requests == 0 {
+            self.max_parallel_requests = 1;
+        }
+        self
+    }
+
+    pub fn should_route_planner_remote(&self) -> bool {
+        self.enabled && !self.base_url.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
+#[cfg(feature = "ai")]
+impl From<&AiRemoteBackendConfig> for rustfin_ai_agent::RemoteBackendConfig {
+    fn from(value: &AiRemoteBackendConfig) -> Self {
+        Self {
+            base_url: value.base_url.clone(),
+            model: value.model.clone(),
+            api_key_env: value.api_key_env.clone(),
+            timeout_secs: if value.timeout_secs == 0 {
+                120
+            } else {
+                value.timeout_secs
+            },
+            supports_prompt_cache: value.supports_prompt_cache,
+            supports_structured_output: value.supports_structured_output,
+            max_parallel_requests: if value.max_parallel_requests == 0 {
+                1
+            } else {
+                value.max_parallel_requests
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateAiRemoteBackendRequest {
+    pub enabled: bool,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub supports_prompt_cache: bool,
+    #[serde(default)]
+    pub supports_structured_output: bool,
+    #[serde(default)]
+    pub max_parallel_requests: u32,
+    #[serde(default)]
+    pub overload_fallback: bool,
+    #[serde(default)]
+    pub route_roles: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RunAiBenchmarkRequest {
+    #[serde(default)]
+    pub model_name: Option<String>,
+    #[serde(default)]
+    pub benchmark_label: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PullAiModelRequest {
+    pub url: String,
+}
+
+#[derive(Deserialize)]
+pub struct ListAiAuditQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct ListAiTurnJournalQuery {
+    pub limit: Option<i64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiTurnJournalSummary {
@@ -128,26 +250,6 @@ fn parse_compact_boundary_row(
     }
 }
 
-#[derive(Deserialize)]
-pub struct UpdateAiAdminConfigRequest {
-    pub model_dir: String,
-}
-
-#[derive(Deserialize)]
-pub struct PullAiModelRequest {
-    pub url: String,
-}
-
-#[derive(Deserialize)]
-pub struct ListAiAuditQuery {
-    pub limit: Option<i64>,
-}
-
-#[derive(Deserialize)]
-pub struct ListAiTurnJournalQuery {
-    pub limit: Option<i64>,
-}
-
 pub async fn get_ai_admin_state(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -181,6 +283,95 @@ pub async fn update_ai_admin_config(
 
     crate::ai::clear_loaded_model_state(&state).await;
     Ok(Json(build_ai_admin_state(&state).await?))
+}
+
+#[cfg(feature = "ai")]
+pub async fn update_ai_remote_backend(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Json(body): Json<UpdateAiRemoteBackendRequest>,
+) -> Result<Json<AiModelDirectoryState>, AppError> {
+    let config = AiRemoteBackendConfig {
+        enabled: body.enabled,
+        base_url: body.base_url,
+        model: body.model,
+        api_key_env: body.api_key_env,
+        timeout_secs: body.timeout_secs,
+        supports_prompt_cache: body.supports_prompt_cache,
+        supports_structured_output: body.supports_structured_output,
+        max_parallel_requests: body.max_parallel_requests,
+        overload_fallback: body.overload_fallback,
+        route_roles: body.route_roles,
+    }
+    .normalized();
+
+    if config.should_route_planner_remote() {
+        let remote = rustfin_ai_agent::RemoteBackendConfig::from(&config);
+        remote
+            .validate()
+            .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+        let serialized = serde_json::to_string(&config).map_err(|error| {
+            ApiError::Internal(format!(
+                "failed to serialize remote backend config: {error}"
+            ))
+        })?;
+        rustfin_db::repo::settings::set(&state.db, AI_REMOTE_BACKEND_SETTING_KEY, &serialized)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let scheduler = {
+            let guard = state.engine.lock().await;
+            guard.scheduler.clone()
+        };
+        scheduler.set_remote_backend(Some(config));
+    } else {
+        let _ = rustfin_db::repo::settings::delete(&state.db, AI_REMOTE_BACKEND_SETTING_KEY)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        let scheduler = {
+            let guard = state.engine.lock().await;
+            guard.scheduler.clone()
+        };
+        scheduler.set_remote_backend(None);
+    }
+
+    Ok(Json(build_ai_admin_state(&state).await?))
+}
+
+#[cfg(feature = "ai")]
+pub async fn run_ai_model_benchmark(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    Json(body): Json<RunAiBenchmarkRequest>,
+) -> Result<Json<AiModelDirectoryState>, AppError> {
+    crate::ai_benchmark::run_model_benchmarks(
+        &state,
+        body.model_name.as_deref(),
+        body.benchmark_label.as_deref(),
+    )
+    .await?;
+    Ok(Json(build_ai_admin_state(&state).await?))
+}
+
+#[cfg(not(feature = "ai"))]
+pub async fn update_ai_remote_backend(
+    _admin: AdminUser,
+    _state: State<AppState>,
+    _body: Json<UpdateAiRemoteBackendRequest>,
+) -> Result<Json<AiModelDirectoryState>, AppError> {
+    Err(AppError::from(ApiError::Forbidden(
+        "AI is unavailable on this build".into(),
+    )))
+}
+
+#[cfg(not(feature = "ai"))]
+pub async fn run_ai_model_benchmark(
+    _admin: AdminUser,
+    _state: State<AppState>,
+    _body: Json<RunAiBenchmarkRequest>,
+) -> Result<Json<AiModelDirectoryState>, AppError> {
+    Err(AppError::from(ApiError::Forbidden(
+        "AI is unavailable on this build".into(),
+    )))
 }
 
 pub async fn pull_ai_model(
@@ -291,6 +482,69 @@ pub async fn list_ai_compact_boundaries(
     ))
 }
 
+#[cfg(feature = "ai")]
+async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState, AppError> {
+    let (configured_model_dir, configured_source) = resolve_model_dir(&state.db).await?;
+    let model_dir = current_model_dir(state).await;
+    let source = if configured_source == "default" && model_dir != configured_model_dir {
+        "default_fallback".to_string()
+    } else {
+        configured_source
+    };
+    let (models, model_storage_available, model_storage_error) =
+        list_models_with_storage_status(state).await;
+    let scheduler = {
+        let guard = state.engine.lock().await;
+        guard.scheduler.clone()
+    };
+    if let Some(remote) = load_remote_backend_config(state).await? {
+        scheduler.set_remote_backend(Some(remote.clone()));
+    }
+    let scheduler_snapshot = scheduler.snapshot();
+    let remote_backend = scheduler
+        .remote_backend()
+        .map(|config| AiRemoteBackendState {
+            enabled: config.enabled,
+            base_url: if config.enabled && !config.base_url.trim().is_empty() {
+                Some(config.base_url)
+            } else {
+                None
+            },
+            model: if config.enabled && !config.model.trim().is_empty() {
+                Some(config.model)
+            } else {
+                None
+            },
+            api_key_env: config.api_key_env,
+            timeout_secs: config.timeout_secs,
+            supports_prompt_cache: config.supports_prompt_cache,
+            supports_structured_output: config.supports_structured_output,
+            max_parallel_requests: config.max_parallel_requests,
+            overload_fallback: config.overload_fallback,
+            route_roles: config.route_roles,
+        });
+    let host_fingerprint = host_fingerprint();
+    let model_benchmarks = list_model_benchmarks(&state.db, &host_fingerprint).await?;
+    let model_profiles = list_model_profiles(&state.db, &host_fingerprint).await?;
+
+    Ok(AiModelDirectoryState {
+        available: crate::ai::inference_available(),
+        model_dir: model_dir.to_string_lossy().to_string(),
+        default_model_dir: crate::ai_storage::DEFAULT_AI_MODEL_DIR.to_string(),
+        model_dir_source: source,
+        model_storage_available,
+        model_storage_error,
+        audit_retention_days: crate::ai_audit::audit_retention_days(),
+        audit_prune_interval_seconds: crate::ai_audit::AI_AUDIT_PRUNE_INTERVAL_SECS,
+        models,
+        remote_backend,
+        scheduler: scheduler_state_from_snapshot(&scheduler_snapshot),
+        model_benchmarks,
+        model_profiles,
+    })
+}
+
+#[cfg(not(feature = "ai"))]
 async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState, AppError> {
     let (configured_model_dir, configured_source) = resolve_model_dir(&state.db).await?;
     let model_dir = current_model_dir(state).await;
@@ -312,5 +566,183 @@ async fn build_ai_admin_state(state: &AppState) -> Result<AiModelDirectoryState,
         audit_retention_days: crate::ai_audit::audit_retention_days(),
         audit_prune_interval_seconds: crate::ai_audit::AI_AUDIT_PRUNE_INTERVAL_SECS,
         models,
+        remote_backend: None,
+        scheduler: empty_scheduler_state(),
+        model_benchmarks: Vec::new(),
+        model_profiles: Vec::new(),
     })
+}
+
+#[cfg(feature = "ai")]
+pub(crate) async fn load_remote_backend_config(
+    state: &AppState,
+) -> Result<Option<AiRemoteBackendConfig>, AppError> {
+    let stored = rustfin_db::repo::settings::get(&state.db, AI_REMOTE_BACKEND_SETTING_KEY)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    if let Some(raw) = stored {
+        let parsed = serde_json::from_str::<AiRemoteBackendConfig>(&raw).map_err(|error| {
+            ApiError::BadRequest(format!("invalid remote backend config: {error}"))
+        })?;
+        return Ok(Some(parsed.normalized()));
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "ai")]
+async fn list_model_benchmarks(
+    pool: &rustfin_db::DbPool,
+    host_fingerprint: &str,
+) -> Result<Vec<AiModelBenchmarkSummary>, AppError> {
+    let rows =
+        rustfin_db::repo::ai_models::list_model_benchmarks_for_host(pool, host_fingerprint, 40)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| AiModelBenchmarkSummary {
+            id: row.id,
+            model_name: row.model_name,
+            model_checksum: row.model_checksum,
+            benchmark_label: row.benchmark_label,
+            backend_kind: row.backend_kind,
+            n_threads: row.n_threads,
+            n_gpu_layers: row.n_gpu_layers,
+            split_mode: row.split_mode,
+            main_gpu: row.main_gpu,
+            load_duration_ms: row.load_duration_ms,
+            prefill_tokens: row.prefill_tokens,
+            prefill_duration_ms: row.prefill_duration_ms,
+            decode_tokens: row.decode_tokens,
+            decode_duration_ms: row.decode_duration_ms,
+            first_token_ms: row.first_token_ms,
+            total_duration_ms: row.total_duration_ms,
+            tokens_per_second: row.tokens_per_second,
+            failure_message: row.failure_message,
+            created_ts: row.created_ts,
+            updated_ts: row.updated_ts,
+        })
+        .collect())
+}
+
+#[cfg(feature = "ai")]
+async fn list_model_profiles(
+    pool: &rustfin_db::DbPool,
+    host_fingerprint: &str,
+) -> Result<Vec<AiModelProfileSummary>, AppError> {
+    let rows =
+        rustfin_db::repo::ai_models::list_model_profiles_for_host(pool, host_fingerprint, 40)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| AiModelProfileSummary {
+            id: row.id,
+            model_name: row.model_name,
+            model_checksum: row.model_checksum,
+            context_window: row.context_window,
+            preferred_completion_tokens: row.preferred_completion_tokens,
+            planner_max_output: row.planner_max_output,
+            summary_max_output: row.summary_max_output,
+            safety_headroom: row.safety_headroom,
+            warmup_cost_class: row.warmup_cost_class,
+            supports_structured_output: row.supports_structured_output,
+            supports_prompt_cache: row.supports_prompt_cache,
+            recommended_n_threads: row.recommended_n_threads,
+            recommended_n_gpu_layers: row.recommended_n_gpu_layers,
+            recommended_split_mode: row.recommended_split_mode,
+            recommended_main_gpu: row.recommended_main_gpu,
+            estimated_model_bytes: row.estimated_model_bytes,
+            last_benchmark_label: row.last_benchmark_label,
+            last_load_duration_ms: row.last_load_duration_ms,
+            last_tokens_per_second: row.last_tokens_per_second,
+            benchmark_count: row.benchmark_count,
+            created_ts: row.created_ts,
+            updated_ts: row.updated_ts,
+        })
+        .collect())
+}
+
+#[cfg(feature = "ai")]
+fn scheduler_state_from_snapshot(
+    snapshot: &crate::ai_assistant::scheduler::SchedulerSnapshot,
+) -> AiSchedulerState {
+    AiSchedulerState {
+        max_concurrent_turns: snapshot.max_concurrent_turns,
+        queue_limit: snapshot.queue_limit,
+        active_turns: snapshot.active_turns,
+        queued_turns: snapshot.queued_turns,
+        overload_state: snapshot.overload_state.clone(),
+        warm_pool_bytes: snapshot.warm_pool_bytes,
+        warm_pool_budget_bytes: snapshot.warm_pool_budget_bytes,
+        active_by_priority: snapshot
+            .active_by_priority
+            .iter()
+            .map(|count| crate::ai_storage::AiSchedulerPriorityCount {
+                priority: count.priority.clone(),
+                count: count.count,
+            })
+            .collect(),
+        queued_by_priority: snapshot
+            .queued_by_priority
+            .iter()
+            .map(|count| crate::ai_storage::AiSchedulerPriorityCount {
+                priority: count.priority.clone(),
+                count: count.count,
+            })
+            .collect(),
+        warm_models: snapshot
+            .warm_models
+            .iter()
+            .map(|model| crate::ai_storage::AiSchedulerWarmModel {
+                model_name: model.model_name.clone(),
+                estimated_bytes: model.estimated_bytes,
+                loaded_ts_ms: model.loaded_ts_ms,
+                last_used_ts_ms: model.last_used_ts_ms,
+                load_count: model.load_count,
+            })
+            .collect(),
+        rejected_turns_total: snapshot.rejected_turns_total,
+        degraded_turns_total: snapshot.degraded_turns_total,
+    }
+}
+
+#[cfg(not(feature = "ai"))]
+fn empty_scheduler_state() -> AiSchedulerState {
+    AiSchedulerState {
+        max_concurrent_turns: 0,
+        queue_limit: 0,
+        active_turns: 0,
+        queued_turns: 0,
+        overload_state: "disabled".to_string(),
+        warm_pool_bytes: 0,
+        warm_pool_budget_bytes: 0,
+        active_by_priority: Vec::new(),
+        queued_by_priority: Vec::new(),
+        warm_models: Vec::new(),
+        rejected_turns_total: 0,
+        degraded_turns_total: 0,
+    }
+}
+
+pub(crate) fn host_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+
+    let machine_id = std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            std::fs::read_to_string("/var/lib/dbus/machine-id")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "unknown-machine-id".to_string())
+        });
+    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-host".to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(machine_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(hostname.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
