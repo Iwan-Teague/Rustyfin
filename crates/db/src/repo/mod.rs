@@ -4,6 +4,7 @@ pub mod ai_assistant_turn_journals;
 pub mod ai_compact_boundaries;
 pub mod ai_conversations;
 pub mod ai_generated_artifacts;
+pub mod ai_grounding;
 pub mod calendar;
 pub mod channel_transcripts;
 pub mod channels;

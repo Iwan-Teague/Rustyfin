@@ -13,6 +13,7 @@ use super::confirmation::{
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
 use super::profiles::{PLANNER_SCHEMA_VERSION, planner_sampling_params};
+use super::memory::{augment_history_with_entity_graph, build_grounding_chunks_for_turn};
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
@@ -20,6 +21,8 @@ use super::types::{
     AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode,
     AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
     PreparedAssistantTurn, decode_assistant_clarification_message,
+    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerMode, AssistantToolInput,
+    PlannedToolCall, PlannedToolSet, PreparedAssistantTurn,
 };
 use super::web::public_web_tools_enabled;
 use crate::auth::AuthUser;
@@ -188,7 +191,24 @@ pub async fn prepare_assistant_turn(
         .collect();
     let grounding_sources: Vec<_> = tool_results.into_iter().map(|(_, source)| source).collect();
 
-    let messages = build_assistant_messages(request, &grounding_blocks);
+    let augmented_history =
+        augment_history_with_entity_graph(state, &context, &request.history, &request.message)
+            .await;
+    let grounding_chunks = build_grounding_chunks_for_turn(
+        state,
+        &context,
+        &request,
+        &planned_tools,
+        &grounding_blocks,
+        &grounding_sources,
+        &augmented_history,
+    )
+    .await;
+    let prompt_request = AssistantChatRequest {
+        history: augmented_history,
+        ..request
+    };
+    let messages = build_assistant_messages(prompt_request, &grounding_chunks);
 
     PreparedAssistantTurn {
         messages,
@@ -1533,7 +1553,7 @@ pub fn plan_tool_calls_with_history(
 
 pub fn build_assistant_messages(
     request: AssistantChatRequest,
-    grounding_blocks: &[AssistantToolContextBlock],
+    grounding_chunks: &[AssistantGroundingChunk],
 ) -> Vec<ChatMessage> {
     let local_now = assistant_local_now();
     let mut messages = vec![ChatMessage {
@@ -1554,12 +1574,12 @@ pub fn build_assistant_messages(
         content: response_mode_prompt(request.response_mode).to_string(),
     });
 
-    if !grounding_blocks.is_empty() {
+    if !grounding_chunks.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
                 "Authoritative Rustyfin grounding for this turn:\n{}",
-                serde_json::to_string(grounding_blocks).unwrap_or_else(|_| "[]".to_string())
+                super::replies::grounding_chunks_prompt(grounding_chunks)
             ),
         });
     }
@@ -4846,6 +4866,7 @@ mod tests {
             content: "Grounded answer".to_string(),
             grounding_tools: tool_names.iter().map(|tool| (*tool).to_string()).collect(),
             follow_up_contexts: Vec::new(),
+            grounding_chunks: Vec::new(),
         }]
     }
 
@@ -4869,9 +4890,13 @@ mod tests {
                         ordinal: index + 1,
                         label: (*label).to_string(),
                         identifier: None,
+                        kind: None,
+                        topic_key: None,
+                        source_chunk_id: None,
                     })
                     .collect(),
             }],
+            grounding_chunks: Vec::new(),
         }]
     }
 

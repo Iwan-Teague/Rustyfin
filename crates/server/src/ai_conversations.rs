@@ -11,6 +11,9 @@ use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingSource,
     AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus,
     AssistantResponseMode, AssistantTurnStats,
+    AssistantActivityTraceItem, AssistantFollowUpContext, AssistantGroundingChunk,
+    AssistantGroundingSource, AssistantHistoryMessage, AssistantPendingAction,
+    AssistantPendingActionStatus, AssistantTurnStats,
 };
 use crate::auth::AuthUser;
 use crate::error::AppError;
@@ -94,6 +97,8 @@ pub struct ConversationTurnResponse {
     pub grounding_tools: Vec<String>,
     #[serde(default)]
     pub follow_up_contexts: Vec<AssistantFollowUpContext>,
+    #[serde(default)]
+    pub grounding_chunks: Vec<AssistantGroundingChunk>,
     #[serde(default)]
     pub grounding_sources: Vec<AssistantGroundingSource>,
     #[serde(default)]
@@ -330,6 +335,7 @@ pub async fn load_conversation_request_context(
             content: message.content.clone(),
             grounding_tools: message.grounding_tools.clone(),
             follow_up_contexts: message.follow_up_contexts.clone(),
+            grounding_chunks: message.grounding_chunks.clone(),
         })
         .collect();
 
@@ -352,6 +358,7 @@ pub async fn persist_user_turn(
             model_name: None,
             grounding_tools_json: "[]",
             follow_up_contexts_json: "[]",
+            grounding_chunks_json: "[]",
             grounding_sources_json: "[]",
             activity_trace_json: "[]",
             stats_json: None,
@@ -393,15 +400,18 @@ pub async fn persist_assistant_turn(
     model_name: &str,
     grounding_tools: &[String],
     follow_up_contexts: &[AssistantFollowUpContext],
+    grounding_chunks: &[AssistantGroundingChunk],
     grounding_sources: &[AssistantGroundingSource],
     activity_trace: &[AssistantActivityTraceItem],
     stats: Option<&AssistantTurnStats>,
     pending_action: Option<&AssistantPendingAction>,
     trace_id: Option<&str>,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let grounding_tools_json = serde_json::to_string(grounding_tools)
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
     let follow_up_contexts_json = serde_json::to_string(follow_up_contexts)
+        .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
+    let grounding_chunks_json = serde_json::to_string(grounding_chunks)
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
     let grounding_sources_json = serde_json::to_string(grounding_sources)
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
@@ -416,7 +426,7 @@ pub async fn persist_assistant_turn(
         .transpose()
         .map_err(|e| ApiError::Internal(format!("json error: {e}")))?;
 
-    rustfin_db::repo::ai_conversations::create_turn(
+    let turn = rustfin_db::repo::ai_conversations::create_turn(
         &state.db,
         rustfin_db::repo::ai_conversations::CreateAiConversationTurnParams {
             conversation_id,
@@ -426,6 +436,7 @@ pub async fn persist_assistant_turn(
             model_name: Some(model_name),
             grounding_tools_json: &grounding_tools_json,
             follow_up_contexts_json: &follow_up_contexts_json,
+            grounding_chunks_json: &grounding_chunks_json,
             grounding_sources_json: &grounding_sources_json,
             activity_trace_json: &activity_trace_json,
             stats_json: stats_json.as_deref(),
@@ -447,7 +458,7 @@ pub async fn persist_assistant_turn(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
 
-    Ok(())
+    Ok(turn.id)
 }
 
 pub async fn load_conversation_memory_checkpoint(
@@ -623,6 +634,7 @@ fn turn_response_from_row(
 ) -> Result<ConversationTurnResponse, AppError> {
     let grounding_tools = parse_json_or_default(&row.grounding_tools_json);
     let follow_up_contexts = parse_json_or_default(&row.follow_up_contexts_json);
+    let grounding_chunks = parse_json_or_default(&row.grounding_chunks_json);
     let grounding_sources = parse_json_or_default(&row.grounding_sources_json);
     let activity_trace = parse_json_or_default(&row.activity_trace_json);
     let stats = row
@@ -653,6 +665,7 @@ fn turn_response_from_row(
         model_name: row.model_name.clone(),
         grounding_tools,
         follow_up_contexts,
+        grounding_chunks,
         grounding_sources,
         activity_trace,
         stats,

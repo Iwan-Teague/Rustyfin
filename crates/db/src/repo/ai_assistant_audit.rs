@@ -13,6 +13,7 @@ pub struct AiAssistantAuditEventRow {
     pub response_kind: String,
     pub planned_tools_json: String,
     pub executed_tools_json: String,
+    pub grounding_chunks_json: String,
     pub grounding_sources_json: String,
     pub error_message: Option<String>,
     pub created_ts: i64,
@@ -29,6 +30,7 @@ pub struct CreateAiAssistantAuditEventParams<'a> {
     pub response_kind: &'a str,
     pub planned_tools_json: &'a str,
     pub executed_tools_json: &'a str,
+    pub grounding_chunks_json: &'a str,
     pub grounding_sources_json: &'a str,
     pub error_message: Option<&'a str>,
 }
@@ -44,11 +46,11 @@ pub async fn create_audit_event(
         "INSERT INTO ai_assistant_audit_event (
             id, trace_id, user_id, username, user_role, model_name, message_preview,
             history_len, response_kind, planned_tools_json, executed_tools_json,
-            grounding_sources_json, error_message, created_ts
+            grounding_chunks_json, grounding_sources_json, error_message, created_ts
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11,
-            $12, $13, $14
+            $12, $13, $14, $15
         )",
     )
     .bind(&id)
@@ -62,6 +64,7 @@ pub async fn create_audit_event(
     .bind(params.response_kind)
     .bind(params.planned_tools_json)
     .bind(params.executed_tools_json)
+    .bind(params.grounding_chunks_json)
     .bind(params.grounding_sources_json)
     .bind(params.error_message)
     .bind(now)
@@ -80,6 +83,7 @@ pub async fn create_audit_event(
         response_kind: params.response_kind.to_string(),
         planned_tools_json: params.planned_tools_json.to_string(),
         executed_tools_json: params.executed_tools_json.to_string(),
+        grounding_chunks_json: params.grounding_chunks_json.to_string(),
         grounding_sources_json: params.grounding_sources_json.to_string(),
         error_message: params.error_message.map(str::to_string),
         created_ts: now,
@@ -104,12 +108,13 @@ pub async fn list_audit_events(
         String,
         String,
         String,
+        String,
         Option<String>,
         i64,
     )> = sqlx::query_as(
         "SELECT id, trace_id, user_id, username, user_role, model_name, message_preview,
                 history_len, response_kind, planned_tools_json, executed_tools_json,
-                grounding_sources_json, error_message, created_ts
+                grounding_chunks_json, grounding_sources_json, error_message, created_ts
          FROM ai_assistant_audit_event
          ORDER BY created_ts DESC, id DESC
          LIMIT $1",
@@ -133,6 +138,7 @@ pub async fn list_audit_events(
                 response_kind,
                 planned_tools_json,
                 executed_tools_json,
+                grounding_chunks_json,
                 grounding_sources_json,
                 error_message,
                 created_ts,
@@ -148,6 +154,7 @@ pub async fn list_audit_events(
                 response_kind,
                 planned_tools_json,
                 executed_tools_json,
+                grounding_chunks_json,
                 grounding_sources_json,
                 error_message,
                 created_ts,
