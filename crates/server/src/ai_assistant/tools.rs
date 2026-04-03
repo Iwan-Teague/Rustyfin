@@ -33,6 +33,7 @@ struct AccountProfileSummary {
 
 #[derive(Debug, Serialize)]
 struct LibrarySummary {
+    library_id: String,
     id: String,
     name: String,
     kind: String,
@@ -52,6 +53,7 @@ struct DownloadArtifactSummary {
 
 #[derive(Debug, Serialize)]
 struct LibraryItemMatch {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -61,6 +63,7 @@ struct LibraryItemMatch {
 
 #[derive(Debug, Serialize)]
 struct LibraryItemDetailSummary {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -203,6 +206,10 @@ struct TranscriptSpeakerSummary {
 
 #[derive(Debug, Serialize)]
 struct TranscriptHighlightSummary {
+    entry_id: String,
+    citation_id: String,
+    channel_id: String,
+    session_id: String,
     username: String,
     started_ts_ms: i64,
     ended_ts_ms: i64,
@@ -231,6 +238,7 @@ struct ChannelTranscriptSummary {
 
 #[derive(Debug, Serialize)]
 struct LibraryRecentItemSummary {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -714,6 +722,7 @@ async fn libraries_list_accessible(
         .iter()
         .take(12)
         .map(|lib| LibrarySummary {
+            library_id: lib.id.clone(),
             id: lib.id.clone(),
             name: lib.name.clone(),
             kind: lib.kind.clone(),
@@ -1067,6 +1076,7 @@ async fn library_search_titles(
     let matches: Vec<_> = items
         .into_iter()
         .map(|item| LibraryItemMatch {
+            library_id: item.library_id.clone(),
             id: item.id,
             title: item.title,
             kind: item.kind,
@@ -1129,6 +1139,7 @@ async fn library_get_item_summary(
         .map(|library| library.name);
 
     let summary = LibraryItemDetailSummary {
+        library_id: item.library_id.clone(),
         id: item.id,
         title: item.title,
         kind: item.kind,
@@ -2239,6 +2250,7 @@ async fn libraries_get_recently_added(
     let recent_items: Vec<_> = items
         .into_iter()
         .map(|item| LibraryRecentItemSummary {
+            library_id: item.library_id.clone(),
             id: item.id,
             title: item.title,
             kind: item.kind,
@@ -2624,6 +2636,10 @@ fn transcript_highlights(
     ranked
         .into_iter()
         .map(|(_, _, text, entry)| TranscriptHighlightSummary {
+            entry_id: entry.id.clone(),
+            citation_id: format!("transcript:{}:{}", entry.session_id, entry.id),
+            channel_id: entry.channel_id.clone(),
+            session_id: entry.session_id.clone(),
             username: entry.username.clone(),
             started_ts_ms: entry.started_ts_ms,
             ended_ts_ms: entry.ended_ts_ms,
@@ -3442,6 +3458,107 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
     }
 }
 
+fn follow_up_entity_kind(tool: AssistantToolName) -> &'static str {
+    match tool {
+        AssistantToolName::CalendarListEvents
+        | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::CalendarGetEventDetails
+        | AssistantToolName::CalendarCreateEvent => "calendar_event",
+        AssistantToolName::CalendarUpcomingBirthdays
+        | AssistantToolName::CalendarCreateBirthday => "birthday",
+        AssistantToolName::ChannelsGetTranscriptSummary => "transcript_channel",
+        AssistantToolName::DownloadsListAvailableArtifacts => "download_artifact",
+        AssistantToolName::LibrarySearchTitles
+        | AssistantToolName::LibrariesGetRecentlyAdded
+        | AssistantToolName::LibraryGetItemSummary => "library_item",
+        AssistantToolName::RoomsListActive
+        | AssistantToolName::RoomsListJoinable
+        | AssistantToolName::RoomsGetRoomSummary => "room",
+        AssistantToolName::ServersListMinecraftStatus
+        | AssistantToolName::ServersGetMinecraftServerSummary => "minecraft_server",
+        AssistantToolName::WebSearchPublicWeb | AssistantToolName::WebFetchPublicPageSummary => {
+            "web_result"
+        }
+        _ => "entity",
+    }
+}
+
+fn follow_up_entity_topic_key(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> Option<String> {
+    match tool {
+        AssistantToolName::CalendarListEvents
+        | AssistantToolName::CalendarGetNextEvent
+        | AssistantToolName::CalendarUpcomingBirthdays
+        | AssistantToolName::CalendarGetEventDetails
+        | AssistantToolName::CalendarCreateEvent
+        | AssistantToolName::CalendarCreateBirthday => block
+            .data
+            .get("window")
+            .and_then(|window| window.get("label"))
+            .and_then(serde_json::Value::as_str)
+            .map(|label| format!("calendar:{label}"))
+            .or_else(|| {
+                block
+                    .data
+                    .get("event")
+                    .and_then(|event| event.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|event_id| format!("calendar:{event_id}"))
+            })
+            .or_else(|| {
+                block
+                    .data
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|event_id| format!("calendar:{event_id}"))
+            }),
+        AssistantToolName::ChannelsGetTranscriptSummary => block
+            .data
+            .get("channel_id")
+            .and_then(serde_json::Value::as_str)
+            .map(|channel_id| format!("transcript:{channel_id}")),
+        AssistantToolName::DownloadsListAvailableArtifacts => Some("downloads:catalog".to_string()),
+        AssistantToolName::LibrarySearchTitles
+        | AssistantToolName::LibrariesGetRecentlyAdded
+        | AssistantToolName::LibraryGetItemSummary => block
+            .data
+            .get("library_id")
+            .and_then(serde_json::Value::as_str)
+            .map(|library_id| format!("library:{library_id}"))
+            .or_else(|| Some("libraries:accessible".to_string())),
+        AssistantToolName::RoomsListActive
+        | AssistantToolName::RoomsListJoinable
+        | AssistantToolName::RoomsGetRoomSummary => Some("rooms:catalog".to_string()),
+        AssistantToolName::ServersListMinecraftStatus
+        | AssistantToolName::ServersGetMinecraftServerSummary => {
+            Some("servers:catalog".to_string())
+        }
+        AssistantToolName::WebSearchPublicWeb | AssistantToolName::WebFetchPublicPageSummary => {
+            Some("web:public".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn make_follow_up_entity(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+    ordinal: usize,
+    label: String,
+    identifier: Option<String>,
+) -> AssistantFollowUpEntity {
+    AssistantFollowUpEntity {
+        ordinal,
+        label,
+        identifier,
+        kind: Some(follow_up_entity_kind(tool).to_string()),
+        topic_key: follow_up_entity_topic_key(tool, block),
+        source_chunk_id: None,
+    }
+}
+
 fn follow_up_entities(
     tool: AssistantToolName,
     block: &AssistantToolContextBlock,
@@ -3457,15 +3574,17 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, event)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: format!(
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
                                 event.get("event_date")?.as_str()?
                             ),
-                            identifier: None,
-                        })
+                            None,
+                        ))
                     })
                     .collect()
             })
@@ -3474,9 +3593,11 @@ fn follow_up_entities(
             .data
             .get("next_event")
             .map(|event| {
-                vec![AssistantFollowUpEntity {
-                    ordinal: 1,
-                    label: format!(
+                vec![make_follow_up_entity(
+                    tool,
+                    block,
+                    1,
+                    format!(
                         "{} ({})",
                         event
                             .get("title")
@@ -3488,11 +3609,11 @@ fn follow_up_entities(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                     ),
-                    identifier: event
+                    event
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
-                }]
+                )]
             })
             .unwrap_or_default(),
         AssistantToolName::CalendarUpcomingBirthdays => block
@@ -3505,22 +3626,26 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, event)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: format!(
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            format!(
                                 "{} ({})",
                                 event.get("title")?.as_str()?,
                                 event.get("event_date")?.as_str()?
                             ),
-                            identifier: None,
-                        })
+                            None,
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::CalendarGetEventDetails => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: format!(
+        AssistantToolName::CalendarGetEventDetails => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            format!(
                 "{} ({})",
                 block
                     .data
@@ -3533,19 +3658,21 @@ fn follow_up_entities(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
             ),
-            identifier: block
+            block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => block
             .data
             .get("event")
             .map(|event| {
-                vec![AssistantFollowUpEntity {
-                    ordinal: 1,
-                    label: format!(
+                vec![make_follow_up_entity(
+                    tool,
+                    block,
+                    1,
+                    format!(
                         "{} ({})",
                         event
                             .get("title")
@@ -3556,28 +3683,30 @@ fn follow_up_entities(
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                     ),
-                    identifier: event
+                    event
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
-                }]
+                )]
             })
             .unwrap_or_default(),
         AssistantToolName::ChannelsListUnreadActivity => Vec::new(),
-        AssistantToolName::ChannelsGetTranscriptSummary => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: block
+        AssistantToolName::ChannelsGetTranscriptSummary => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            block
                 .data
                 .get("channel_name")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            identifier: block
+            block
                 .data
                 .get("channel_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::DownloadsListAvailableArtifacts => block
             .data
             .get("artifacts")
@@ -3588,14 +3717,16 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, artifact)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: artifact.get("title")?.as_str()?.to_string(),
-                            identifier: artifact
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            artifact.get("title")?.as_str()?.to_string(),
+                            artifact
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
@@ -3610,14 +3741,15 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, item)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: item.get("title")?.as_str()?.to_string(),
-                            identifier: item
-                                .get("id")
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            item.get("title")?.as_str()?.to_string(),
+                            item.get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
@@ -3632,32 +3764,35 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, item)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: item.get("title")?.as_str()?.to_string(),
-                            identifier: item
-                                .get("id")
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            item.get("title")?.as_str()?.to_string(),
+                            item.get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::LibraryGetItemSummary => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: block
+        AssistantToolName::LibraryGetItemSummary => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            block
                 .data
                 .get("title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            identifier: block
+            block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::RoomsListActive => block
             .data
             .get("rooms")
@@ -3668,14 +3803,15 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, room)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: room.get("title")?.as_str()?.to_string(),
-                            identifier: room
-                                .get("room_id")
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            room.get("title")?.as_str()?.to_string(),
+                            room.get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
@@ -3690,32 +3826,35 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, room)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: room.get("title")?.as_str()?.to_string(),
-                            identifier: room
-                                .get("room_id")
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            room.get("title")?.as_str()?.to_string(),
+                            room.get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::RoomsGetRoomSummary => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: block
+        AssistantToolName::RoomsGetRoomSummary => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            block
                 .data
                 .get("title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            identifier: block
+            block
                 .data
                 .get("room_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::ServersListMinecraftStatus => block
             .data
             .get("servers")
@@ -3726,32 +3865,36 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, server)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: server.get("display_name")?.as_str()?.to_string(),
-                            identifier: server
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            server.get("display_name")?.as_str()?.to_string(),
+                            server
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::ServersGetMinecraftServerSummary => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: block
+        AssistantToolName::ServersGetMinecraftServerSummary => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            block
                 .data
                 .get("display_name")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            identifier: block
+            block
                 .data
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::WebSearchPublicWeb => block
             .data
             .get("results")
@@ -3762,32 +3905,36 @@ fn follow_up_entities(
                     .take(8)
                     .enumerate()
                     .filter_map(|(index, result)| {
-                        Some(AssistantFollowUpEntity {
-                            ordinal: index + 1,
-                            label: result.get("title")?.as_str()?.to_string(),
-                            identifier: result
+                        Some(make_follow_up_entity(
+                            tool,
+                            block,
+                            index + 1,
+                            result.get("title")?.as_str()?.to_string(),
+                            result
                                 .get("url")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
-                        })
+                        ))
                     })
                     .collect()
             })
             .unwrap_or_default(),
-        AssistantToolName::WebFetchPublicPageSummary => vec![AssistantFollowUpEntity {
-            ordinal: 1,
-            label: block
+        AssistantToolName::WebFetchPublicPageSummary => vec![make_follow_up_entity(
+            tool,
+            block,
+            1,
+            block
                 .data
                 .get("page_title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or(&block.label)
                 .to_string(),
-            identifier: block
+            block
                 .data
                 .get("final_url")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
-        }],
+        )],
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
         | AssistantToolName::WeatherGetHistory
