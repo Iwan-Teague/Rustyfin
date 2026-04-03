@@ -4360,15 +4360,82 @@ fn extract_next_numbered_window(message_lower: &str, singular: &str, plural: &st
     let marker = "next ";
     let idx = message_lower.find(marker)?;
     let rest = &message_lower[idx + marker.len()..];
-    let mut parts = rest.split_whitespace();
-    let number = parts.next()?.parse::<i64>().ok()?;
-    let unit = parts
-        .next()?
-        .trim_matches(|c: char| !c.is_ascii_alphabetic());
+    let parts: Vec<&str> = rest.split_whitespace().take(4).collect();
+    let unit_index = parts.iter().position(|part| {
+        let cleaned = part.trim_matches(|c: char| !c.is_ascii_alphabetic());
+        cleaned == singular || cleaned == plural
+    })?;
+    if unit_index == 0 {
+        return None;
+    }
+    let number = parse_number_window_phrase(&parts[..unit_index].join(" "))?;
+    let unit = parts[unit_index].trim_matches(|c: char| !c.is_ascii_alphabetic());
     if unit == singular || unit == plural {
         Some(number.clamp(1, 90))
     } else {
         None
+    }
+}
+
+fn parse_number_window_phrase(raw: &str) -> Option<i64> {
+    let normalized = raw
+        .trim()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != ' ')
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Ok(number) = normalized.parse::<i64>() {
+        return Some(number);
+    }
+
+    let normalized_words = normalized.replace('-', " ");
+    let parts: Vec<&str> = normalized_words.split_whitespace().collect();
+    match parts.as_slice() {
+        [single] => number_word_value(single),
+        [tens, ones] => Some(tens_word_value(tens)? + number_word_value(ones)?),
+        _ => None,
+    }
+}
+
+fn number_word_value(word: &str) -> Option<i64> {
+    match word {
+        "zero" => Some(0),
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        "thirteen" => Some(13),
+        "fourteen" => Some(14),
+        "fifteen" => Some(15),
+        "sixteen" => Some(16),
+        "seventeen" => Some(17),
+        "eighteen" => Some(18),
+        "nineteen" => Some(19),
+        _ => None,
+    }
+}
+
+fn tens_word_value(word: &str) -> Option<i64> {
+    match word {
+        "twenty" => Some(20),
+        "thirty" => Some(30),
+        "forty" => Some(40),
+        "fifty" => Some(50),
+        "sixty" => Some(60),
+        "seventy" => Some(70),
+        "eighty" => Some(80),
+        "ninety" => Some(90),
+        _ => None,
     }
 }
 
@@ -4547,6 +4614,12 @@ mod tests {
     #[test]
     fn clarification_does_not_trigger_for_relative_weekday_calendar_window() {
         let message = "What events do I have next Tuesday?";
+        assert!(clarification_for_message(message).is_none());
+    }
+
+    #[test]
+    fn clarification_does_not_trigger_for_worded_number_calendar_window() {
+        let message = "Show my visible calendar events for the next seven days.";
         assert!(clarification_for_message(message).is_none());
     }
 
@@ -5121,6 +5194,18 @@ mod tests {
         match &tools[0].input {
             AssistantToolInput::CalendarWindow { label, .. } => {
                 assert_eq!(label, "the next 10 days")
+            }
+            _ => panic!("expected calendar window"),
+        }
+    }
+
+    #[test]
+    fn planner_extracts_worded_day_window() {
+        let tools = plan_tool_calls("Show my visible calendar events for the next seven days.");
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarListEvents);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { label, .. } => {
+                assert_eq!(label, "the next 7 days")
             }
             _ => panic!("expected calendar window"),
         }
