@@ -61,10 +61,14 @@ export default function AiAssistantActivity({
           data-state={row.state}
         >
           <div className="ai-activity-line">
-            <span className="ai-activity-primary">{row.primary}</span>
+            <span
+              className="ai-activity-primary"
+              data-active={row.active ? 'true' : 'false'}
+            >
+              {row.primary}
+            </span>
             {row.meta ? <span className="ai-activity-meta">{row.meta}</span> : null}
           </div>
-          {row.active ? <span className="ai-activity-shimmer" aria-hidden="true" /> : null}
         </div>
       ))}
     </div>

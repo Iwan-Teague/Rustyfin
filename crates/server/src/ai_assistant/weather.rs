@@ -543,6 +543,7 @@ fn select_best_geocoding_result(
 fn geocoding_match_score(query: &str, result: &GeocodingResult) -> i32 {
     let query_text = normalize_location_text(query);
     let name = normalize_location_text(&result.name);
+    let country = normalize_location_text(result.country.as_deref().unwrap_or_default());
     let combined = normalize_location_text(&format!(
         "{} {} {} {} {} {}",
         result.name,
@@ -557,6 +558,12 @@ fn geocoding_match_score(query: &str, result: &GeocodingResult) -> i32 {
     let mut score = 0;
     if !name.is_empty() && query_text == name {
         score += 200;
+    }
+    if !country.is_empty() && query_text == country {
+        score += 220;
+        if name == country {
+            score += 120;
+        }
     }
     if !name.is_empty() && query_text.contains(&name) {
         score += 80;
@@ -1072,6 +1079,40 @@ mod tests {
         )
         .expect("expected geocoding selection");
         assert_eq!(selected.admin2.as_deref(), Some("Wexford"));
+    }
+
+    #[test]
+    fn geocoding_result_selection_prefers_exact_country_match_for_country_query() {
+        let selected = select_best_geocoding_result(
+            "Italy",
+            vec![
+                GeocodingResult {
+                    name: "Italy".to_string(),
+                    latitude: 42.0,
+                    longitude: -77.0,
+                    timezone: Some("America/New_York".to_string()),
+                    country: Some("United States".to_string()),
+                    admin1: Some("New York".to_string()),
+                    admin2: Some("Yates".to_string()),
+                    admin3: None,
+                    admin4: None,
+                },
+                GeocodingResult {
+                    name: "Italy".to_string(),
+                    latitude: 41.8719,
+                    longitude: 12.5674,
+                    timezone: Some("Europe/Rome".to_string()),
+                    country: Some("Italy".to_string()),
+                    admin1: None,
+                    admin2: None,
+                    admin3: None,
+                    admin4: None,
+                },
+            ],
+        )
+        .expect("expected geocoding selection");
+        assert_eq!(selected.country.as_deref(), Some("Italy"));
+        assert_eq!(selected.timezone.as_deref(), Some("Europe/Rome"));
     }
 
     #[test]
