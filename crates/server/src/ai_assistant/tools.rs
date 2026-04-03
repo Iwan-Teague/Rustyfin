@@ -33,6 +33,7 @@ struct AccountProfileSummary {
 
 #[derive(Debug, Serialize)]
 struct LibrarySummary {
+    library_id: String,
     id: String,
     name: String,
     kind: String,
@@ -52,6 +53,7 @@ struct DownloadArtifactSummary {
 
 #[derive(Debug, Serialize)]
 struct LibraryItemMatch {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -61,6 +63,7 @@ struct LibraryItemMatch {
 
 #[derive(Debug, Serialize)]
 struct LibraryItemDetailSummary {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -203,6 +206,10 @@ struct TranscriptSpeakerSummary {
 
 #[derive(Debug, Serialize)]
 struct TranscriptHighlightSummary {
+    entry_id: String,
+    citation_id: String,
+    channel_id: String,
+    session_id: String,
     username: String,
     started_ts_ms: i64,
     ended_ts_ms: i64,
@@ -231,6 +238,7 @@ struct ChannelTranscriptSummary {
 
 #[derive(Debug, Serialize)]
 struct LibraryRecentItemSummary {
+    library_id: String,
     id: String,
     title: String,
     kind: String,
@@ -714,6 +722,7 @@ async fn libraries_list_accessible(
         .iter()
         .take(12)
         .map(|lib| LibrarySummary {
+            library_id: lib.id.clone(),
             id: lib.id.clone(),
             name: lib.name.clone(),
             kind: lib.kind.clone(),
@@ -1067,6 +1076,7 @@ async fn library_search_titles(
     let matches: Vec<_> = items
         .into_iter()
         .map(|item| LibraryItemMatch {
+            library_id: item.library_id.clone(),
             id: item.id,
             title: item.title,
             kind: item.kind,
@@ -1129,6 +1139,7 @@ async fn library_get_item_summary(
         .map(|library| library.name);
 
     let summary = LibraryItemDetailSummary {
+        library_id: item.library_id.clone(),
         id: item.id,
         title: item.title,
         kind: item.kind,
@@ -2239,6 +2250,7 @@ async fn libraries_get_recently_added(
     let recent_items: Vec<_> = items
         .into_iter()
         .map(|item| LibraryRecentItemSummary {
+            library_id: item.library_id.clone(),
             id: item.id,
             title: item.title,
             kind: item.kind,
@@ -2624,6 +2636,10 @@ fn transcript_highlights(
     ranked
         .into_iter()
         .map(|(_, _, text, entry)| TranscriptHighlightSummary {
+            entry_id: entry.id.clone(),
+            citation_id: format!("transcript:{}:{}", entry.session_id, entry.id),
+            channel_id: entry.channel_id.clone(),
+            session_id: entry.session_id.clone(),
             username: entry.username.clone(),
             started_ts_ms: entry.started_ts_ms,
             ended_ts_ms: entry.ended_ts_ms,
@@ -3465,6 +3481,7 @@ fn follow_up_entities(
                                 event.get("event_date")?.as_str()?
                             ),
                             identifier: None,
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3492,6 +3509,7 @@ fn follow_up_entities(
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
+                    ..Default::default()
                 }]
             })
             .unwrap_or_default(),
@@ -3513,6 +3531,7 @@ fn follow_up_entities(
                                 event.get("event_date")?.as_str()?
                             ),
                             identifier: None,
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3538,6 +3557,7 @@ fn follow_up_entities(
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::CalendarCreateEvent | AssistantToolName::CalendarCreateBirthday => block
             .data
@@ -3560,6 +3580,7 @@ fn follow_up_entities(
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string),
+                    ..Default::default()
                 }]
             })
             .unwrap_or_default(),
@@ -3577,6 +3598,7 @@ fn follow_up_entities(
                 .get("channel_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::DownloadsListAvailableArtifacts => block
             .data
@@ -3595,6 +3617,7 @@ fn follow_up_entities(
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3617,6 +3640,7 @@ fn follow_up_entities(
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3639,6 +3663,7 @@ fn follow_up_entities(
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3657,6 +3682,7 @@ fn follow_up_entities(
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::RoomsListActive => block
             .data
@@ -3675,6 +3701,7 @@ fn follow_up_entities(
                                 .get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3697,6 +3724,7 @@ fn follow_up_entities(
                                 .get("room_id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3715,6 +3743,7 @@ fn follow_up_entities(
                 .get("room_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::ServersListMinecraftStatus => block
             .data
@@ -3733,6 +3762,7 @@ fn follow_up_entities(
                                 .get("id")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3751,6 +3781,7 @@ fn follow_up_entities(
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::WebSearchPublicWeb => block
             .data
@@ -3769,6 +3800,7 @@ fn follow_up_entities(
                                 .get("url")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_string),
+                            ..Default::default()
                         })
                     })
                     .collect()
@@ -3787,6 +3819,7 @@ fn follow_up_entities(
                 .get("final_url")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         }],
         AssistantToolName::WeatherGetCurrent
         | AssistantToolName::WeatherGetForecast
@@ -3869,7 +3902,7 @@ mod tests {
     use super::{
         birthday_matches_query, birthday_month_day_display, enforce_tool_policy,
         next_birthday_occurrence, probe_service_health_component, storage_used_bytes,
-        storage_used_percent, transcript_excerpt_indexes, transcript_terms,
+        storage_used_percent, transcript_excerpt_indexes, transcript_highlights, transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::types::{
@@ -3878,6 +3911,8 @@ mod tests {
     };
     use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
     use rustfin_db::repo::calendar::CalendarEventRow;
+    use rustfin_db::repo::channel_transcripts::TranscriptEntryRow;
+    use std::collections::HashMap;
 
     async fn spawn_health_test_server(status: StatusCode) -> (String, tokio::task::JoinHandle<()>) {
         async fn handler(status: StatusCode) -> impl IntoResponse {
@@ -4044,6 +4079,33 @@ mod tests {
         assert!(terms.contains(&"rachel".to_string()));
         assert!(!terms.contains(&"yeah".to_string()));
         assert!(!terms.contains(&"okay".to_string()));
+    }
+
+    #[test]
+    fn transcript_highlights_attach_citation_ids_and_windows() {
+        let entries = vec![TranscriptEntryRow {
+            id: "entry-1".to_string(),
+            session_id: "session-1".to_string(),
+            channel_id: "channel-1".to_string(),
+            user_id: "user-1".to_string(),
+            username: "Rachel".to_string(),
+            started_ts_ms: 10_000,
+            ended_ts_ms: 15_000,
+            text: "The server is back online and the download is ready.".to_string(),
+            created_ts: 20_000,
+        }];
+        let term_counts = HashMap::from([
+            ("server".to_string(), 1_usize),
+            ("download".to_string(), 1_usize),
+        ]);
+
+        let highlights = transcript_highlights(&entries, 5_000, &term_counts, 3);
+        assert_eq!(highlights.len(), 1);
+        assert_eq!(highlights[0].entry_id, "entry-1");
+        assert_eq!(highlights[0].citation_id, "transcript:session-1:entry-1");
+        assert_eq!(highlights[0].relative_start, "00:05");
+        assert_eq!(highlights[0].relative_end, "00:10");
+        assert!(highlights[0].text.contains("server"));
     }
 
     #[test]

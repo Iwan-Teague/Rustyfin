@@ -53,6 +53,8 @@ Rustyfin is a native-Debian-first local media platform with:
   - curated fixed-provider public data tools are the preferred way to expose external read-only information to normal users; do not widen generic public-web search/fetch just to satisfy narrow weather/news-style use cases
   - grounded `/ai` now emits server-driven `phase`, `tool`, and compatibility `status` events before token streaming; use those structured events for the visible `Thinking...` and tool activity UI, not hidden reasoning or chain-of-thought exposure
   - persisted assistant turns must retain `activity_trace_json`, `stats_json`, grounding sources, follow-up contexts, and pending confirmation payload state so reloaded chats can replay the same assistant activity stack and confirmation cards cleanly
+  - AI runtime optimization work should stay local-first by default: benchmark recommendations must come from evidence on the host, the warm-model pool must respect host memory limits, queueing and overload behavior must stay visible, and remote backends remain optional provider abstractions rather than hardwired orchestration assumptions
+  - grounded turns also persist compact grounding chunks, typed memory items, and entity-graph rows; keep that retrieval path ACL-safe, CPU-friendly, and compact instead of injecting raw tool payloads
   - short follow-up turns may use prior grounded tool names as planner hints only; never trust client-sent grounding payloads as authoritative data, always rerun server-side tools
   - short follow-up turns may also carry minimal hidden follow-up context for entity references like `the second one`; treat it as a hint, rerun the relevant server-side detail tool, and never trust the client payload as authoritative state
   - grounded host-runtime summaries should include accurate human-readable memory fields and per-turn stats should preserve planner/tool/generation/queue/load/end-to-end timing so `/ai` does not mislabel generation time as total turn time
@@ -140,6 +142,8 @@ Runtime behavior:
   - the Rust deploy path stops the running runtime, pulls the current branch, rebuilds artifacts, and starts services again
 - `rustyfin-native.service` is supervised through `scripts/run-native-supervisor.sh`
   - the supervisor keeps the native child-process set under `systemd` observation
+  - keep supervisor child matching exact-binary-aware so `rustfin-servers-agent` can never be mistaken for `rustfin-server`
+  - keep supervisor backend/edge health checks active so a dead API process cannot leave `/login` and `/ai` serving UI shells against a broken upstream
   - if a core child process dies, the service exits and `systemd` restarts the stack
 - `rustyfin-post-healthcheck.service` is installed alongside the native runtime
   - it verifies backend/UI/agent readiness after startup

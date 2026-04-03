@@ -23,6 +23,7 @@ pub struct AiConversationTurnRow {
     pub model_name: Option<String>,
     pub grounding_tools_json: String,
     pub follow_up_contexts_json: String,
+    pub grounding_chunks_json: String,
     pub grounding_sources_json: String,
     pub activity_trace_json: String,
     pub stats_json: Option<String>,
@@ -44,6 +45,7 @@ pub struct CreateAiConversationTurnParams<'a> {
     pub model_name: Option<&'a str>,
     pub grounding_tools_json: &'a str,
     pub follow_up_contexts_json: &'a str,
+    pub grounding_chunks_json: &'a str,
     pub grounding_sources_json: &'a str,
     pub activity_trace_json: &'a str,
     pub stats_json: Option<&'a str>,
@@ -99,6 +101,7 @@ fn map_turn_row(
         String,
         String,
         String,
+        String,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -115,6 +118,7 @@ fn map_turn_row(
         model_name,
         grounding_tools_json,
         follow_up_contexts_json,
+        grounding_chunks_json,
         grounding_sources_json,
         activity_trace_json,
         stats_json,
@@ -133,6 +137,7 @@ fn map_turn_row(
         model_name,
         grounding_tools_json,
         follow_up_contexts_json,
+        grounding_chunks_json,
         grounding_sources_json,
         activity_trace_json,
         stats_json,
@@ -333,14 +338,16 @@ pub async fn list_turns_for_conversation(
         String,
         String,
         String,
+        String,
         Option<String>,
         Option<String>,
         Option<String>,
         i64,
     )> = sqlx::query_as(
         "SELECT t.id, t.conversation_id, t.user_id, t.turn_index, t.role, t.content, t.model_name,
-                t.grounding_tools_json, t.follow_up_contexts_json, t.grounding_sources_json,
-                t.activity_trace_json, t.stats_json, t.pending_action_json, t.trace_id, t.created_ts
+                t.grounding_tools_json, t.follow_up_contexts_json, t.grounding_chunks_json,
+                t.grounding_sources_json, t.activity_trace_json, t.stats_json, t.pending_action_json,
+                t.trace_id, t.created_ts
          FROM ai_conversation_turn t
          INNER JOIN ai_conversation c ON c.id = t.conversation_id
          WHERE t.conversation_id = $1 AND c.user_id = $2
@@ -374,12 +381,12 @@ pub async fn create_turn(
     sqlx::query(
         "INSERT INTO ai_conversation_turn (
             id, conversation_id, user_id, turn_index, role, content, model_name,
-            grounding_tools_json, follow_up_contexts_json, grounding_sources_json,
+            grounding_tools_json, follow_up_contexts_json, grounding_chunks_json, grounding_sources_json,
             activity_trace_json, stats_json, pending_action_json, trace_id, created_ts
          ) VALUES (
             $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10,
-            $11, $12, $13, $14, $15
+            $8, $9, $10, $11,
+            $12, $13, $14, $15, $16
          )",
     )
     .bind(&id)
@@ -391,6 +398,7 @@ pub async fn create_turn(
     .bind(params.model_name)
     .bind(params.grounding_tools_json)
     .bind(params.follow_up_contexts_json)
+    .bind(params.grounding_chunks_json)
     .bind(params.grounding_sources_json)
     .bind(params.activity_trace_json)
     .bind(params.stats_json)
@@ -412,6 +420,7 @@ pub async fn create_turn(
         model_name: params.model_name.map(str::to_string),
         grounding_tools_json: params.grounding_tools_json.to_string(),
         follow_up_contexts_json: params.follow_up_contexts_json.to_string(),
+        grounding_chunks_json: params.grounding_chunks_json.to_string(),
         grounding_sources_json: params.grounding_sources_json.to_string(),
         activity_trace_json: params.activity_trace_json.to_string(),
         stats_json: params.stats_json.map(str::to_string),

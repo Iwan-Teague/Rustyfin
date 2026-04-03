@@ -19,6 +19,8 @@ pub struct AssistantHistoryMessage {
     pub grounding_tools: Vec<String>,
     #[serde(default)]
     pub follow_up_contexts: Vec<AssistantFollowUpContext>,
+    #[serde(default)]
+    pub grounding_chunks: Vec<AssistantGroundingChunk>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +167,53 @@ pub struct AssistantGroundingSource {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantGroundingVisibility {
+    User,
+    Shared,
+    Admin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantGroundingCitation {
+    pub citation_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sub_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_ts_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ts_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantGroundingChunk {
+    pub id: String,
+    pub source_kind: String,
+    pub title: String,
+    pub excerpt: String,
+    pub score: f64,
+    pub visibility: AssistantGroundingVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sub_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<AssistantGroundingCitation>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AssistantTurnStats {
     pub prompt_tokens: u32,
@@ -179,11 +228,17 @@ pub struct AssistantTurnStats {
     pub tokens_per_second: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AssistantFollowUpEntity {
     pub ordinal: usize,
     pub label: String,
     pub identifier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_chunk_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

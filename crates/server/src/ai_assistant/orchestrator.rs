@@ -2,19 +2,23 @@ use std::collections::HashSet;
 
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use futures::{StreamExt, future::join_all};
-use rustfin_ai_agent::{ChatChunk, ChatMessage, LlamaEngine, SamplingParams};
+use rustfin_ai_agent::{ChatChunk, ChatMessage, PromptCacheHint, SamplingParams};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use rustfin_ai_agent::backends::PromptBackend;
 
 use super::confirmation::{
     is_supported_calendar_create_intent, pending_action_request_for_message,
 };
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
+use super::memory::{augment_history_with_entity_graph, build_grounding_chunks_for_turn};
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
     AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-    AssistantHistoryMessage, AssistantPlannerMode, AssistantToolContextBlock, AssistantToolInput,
+    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerMode, AssistantToolInput,
     PlannedToolCall, PlannedToolSet, PreparedAssistantTurn,
 };
 use super::web::public_web_tools_enabled;
@@ -46,8 +50,8 @@ struct ModelPlannerTool {
     room_mode: Option<String>,
 }
 
-pub async fn plan_tool_calls_with_model_assist(
-    engine: &LlamaEngine,
+pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
+    backend: &B,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
@@ -63,7 +67,7 @@ pub async fn plan_tool_calls_with_model_assist(
     }
 
     let deterministic = plan_tool_calls_with_history(message, history);
-    let raw_response = run_model_planner(engine, user, message, history).await;
+    let raw_response = run_model_planner(backend, user, message, history).await;
     let model_calls = raw_response
         .as_deref()
         .and_then(parse_model_planner_response)
@@ -155,7 +159,24 @@ pub async fn prepare_assistant_turn(
         .collect();
     let grounding_sources: Vec<_> = tool_results.into_iter().map(|(_, source)| source).collect();
 
-    let messages = build_assistant_messages(request, &grounding_blocks);
+    let augmented_history =
+        augment_history_with_entity_graph(state, &context, &request.history, &request.message)
+            .await;
+    let grounding_chunks = build_grounding_chunks_for_turn(
+        state,
+        &context,
+        &request,
+        &planned_tools,
+        &grounding_blocks,
+        &grounding_sources,
+        &augmented_history,
+    )
+    .await;
+    let prompt_request = AssistantChatRequest {
+        history: augmented_history,
+        ..request
+    };
+    let messages = build_assistant_messages(prompt_request, &grounding_chunks);
 
     PreparedAssistantTurn {
         messages,
@@ -164,14 +185,20 @@ pub async fn prepare_assistant_turn(
     }
 }
 
-async fn run_model_planner(
-    engine: &LlamaEngine,
+async fn run_model_planner<B: PromptBackend>(
+    backend: &B,
     user: &AuthUser,
     message: &str,
     history: &[AssistantHistoryMessage],
 ) -> Option<String> {
     let planner_messages = build_model_planner_messages(user, message, history);
-    let planner_stream = engine.chat_stream(
+    let prompt_cache = planner_prompt_cache_hint(
+        backend.capabilities().supports_prompt_cache,
+        user,
+        message,
+        history,
+    );
+    let planner_stream = backend.chat_stream_boxed(
         planner_messages,
         SamplingParams {
             temperature: 0.1,
@@ -180,6 +207,7 @@ async fn run_model_planner(
             repeat_penalty: 1.05,
             max_tokens: 320,
         },
+        prompt_cache,
     );
     futures::pin_mut!(planner_stream);
 
@@ -193,6 +221,33 @@ async fn run_model_planner(
     }
 
     Some(response)
+}
+
+fn planner_prompt_cache_hint(
+    enabled: bool,
+    user: &AuthUser,
+    message: &str,
+    history: &[AssistantHistoryMessage],
+) -> Option<PromptCacheHint> {
+    if !enabled {
+        return None;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(user.user_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(user.role.as_bytes());
+    hasher.update(b"|");
+    hasher.update(message.trim().as_bytes());
+    hasher.update(b"|");
+    hasher.update(planner_history_summary(history).as_bytes());
+    let cache_key = format!("{:x}", hasher.finalize());
+
+    Some(PromptCacheHint {
+        cache_key: Some(cache_key),
+        cache_scope: Some("planner".to_string()),
+        enabled: true,
+    })
 }
 
 fn build_model_planner_messages(
@@ -1189,7 +1244,7 @@ pub fn plan_tool_calls_with_history(
 
 pub fn build_assistant_messages(
     request: AssistantChatRequest,
-    grounding_blocks: &[AssistantToolContextBlock],
+    grounding_chunks: &[AssistantGroundingChunk],
 ) -> Vec<ChatMessage> {
     let local_now = assistant_local_now();
     let mut messages = vec![ChatMessage {
@@ -1205,12 +1260,12 @@ pub fn build_assistant_messages(
         ),
     });
 
-    if !grounding_blocks.is_empty() {
+    if !grounding_chunks.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
                 "Authoritative Rustyfin grounding for this turn:\n{}",
-                serde_json::to_string(grounding_blocks).unwrap_or_else(|_| "[]".to_string())
+                super::replies::grounding_chunks_prompt(grounding_chunks)
             ),
         });
     }
@@ -3979,6 +4034,7 @@ mod tests {
             content: "Grounded answer".to_string(),
             grounding_tools: tool_names.iter().map(|tool| (*tool).to_string()).collect(),
             follow_up_contexts: Vec::new(),
+            grounding_chunks: Vec::new(),
         }]
     }
 
@@ -4002,9 +4058,11 @@ mod tests {
                         ordinal: index + 1,
                         label: (*label).to_string(),
                         identifier: None,
+                        ..Default::default()
                     })
                     .collect(),
             }],
+            grounding_chunks: Vec::new(),
         }]
     }
 

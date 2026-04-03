@@ -1,5 +1,94 @@
 import { apiFetch, apiJson } from './api';
-import type { AiModel } from './aiApi';
+import type { AiGroundingChunk, AiModel } from './aiApi';
+
+export interface AiRemoteBackendState {
+  enabled: boolean;
+  base_url: string | null;
+  model: string | null;
+  api_key_env: string | null;
+  timeout_secs: number;
+  supports_prompt_cache: boolean;
+  supports_structured_output: boolean;
+  max_parallel_requests: number;
+  overload_fallback: boolean;
+  route_roles: string[];
+}
+
+export interface AiSchedulerPriorityCount {
+  priority: string;
+  count: number;
+}
+
+export interface AiSchedulerWarmModel {
+  model_name: string;
+  estimated_bytes: number;
+  loaded_ts_ms: number;
+  last_used_ts_ms: number;
+  load_count: number;
+}
+
+export interface AiSchedulerState {
+  max_concurrent_turns: number;
+  queue_limit: number;
+  active_turns: number;
+  queued_turns: number;
+  overload_state: string;
+  warm_pool_bytes: number;
+  warm_pool_budget_bytes: number;
+  active_by_priority: AiSchedulerPriorityCount[];
+  queued_by_priority: AiSchedulerPriorityCount[];
+  warm_models: AiSchedulerWarmModel[];
+  rejected_turns_total: number;
+  degraded_turns_total: number;
+}
+
+export interface AiModelBenchmarkSummary {
+  id: string;
+  model_name: string;
+  model_checksum: string;
+  benchmark_label: string;
+  backend_kind: string;
+  n_threads: number;
+  n_gpu_layers: number;
+  split_mode: string;
+  main_gpu?: number | null;
+  load_duration_ms: number;
+  prefill_tokens: number;
+  prefill_duration_ms: number;
+  decode_tokens: number;
+  decode_duration_ms: number;
+  first_token_ms: number;
+  total_duration_ms: number;
+  tokens_per_second: number;
+  failure_message?: string | null;
+  created_ts: number;
+  updated_ts: number;
+}
+
+export interface AiModelProfileSummary {
+  id: string;
+  model_name: string;
+  model_checksum: string;
+  context_window: number;
+  preferred_completion_tokens: number;
+  planner_max_output: number;
+  summary_max_output: number;
+  safety_headroom: number;
+  warmup_cost_class: string;
+  supports_structured_output: boolean;
+  supports_prompt_cache: boolean;
+  recommended_n_threads: number;
+  recommended_n_gpu_layers: number;
+  recommended_split_mode: string;
+  recommended_main_gpu?: number | null;
+  estimated_model_bytes: number;
+  last_benchmark_label: string;
+  last_load_duration_ms: number;
+  last_tokens_per_second: number;
+  benchmark_count: number;
+  created_ts: number;
+  updated_ts: number;
+}
 
 export interface AiAdminState {
   available: boolean;
@@ -11,6 +100,10 @@ export interface AiAdminState {
   audit_retention_days: number;
   audit_prune_interval_seconds: number;
   models: AiModel[];
+  remote_backend?: AiRemoteBackendState | null;
+  scheduler?: AiSchedulerState;
+  model_benchmarks?: AiModelBenchmarkSummary[];
+  model_profiles?: AiModelProfileSummary[];
 }
 
 export interface AiAssistantAuditGroundingSource {
@@ -41,6 +134,7 @@ export interface AiAssistantAuditEvent {
   response_kind: string;
   planned_tools: string[];
   executed_tools: AiAssistantAuditToolExecution[];
+  grounding_chunks: AiGroundingChunk[];
   grounding_sources: AiAssistantAuditGroundingSource[];
   error_message: string | null;
   created_ts: number;
@@ -59,6 +153,34 @@ export async function updateAiModelDir(modelDir: string): Promise<AiAdminState> 
   return apiJson<AiAdminState>('/system/ai', {
     method: 'PUT',
     body: JSON.stringify({ model_dir: modelDir }),
+  });
+}
+
+export async function updateAiRemoteBackend(config: {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key_env?: string | null;
+  timeout_secs?: number;
+  supports_prompt_cache?: boolean;
+  supports_structured_output?: boolean;
+  max_parallel_requests?: number;
+  overload_fallback?: boolean;
+  route_roles?: string[];
+}): Promise<AiAdminState> {
+  return apiJson<AiAdminState>('/system/ai/backend', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function runAiModelBenchmark(config: {
+  model_name?: string | null;
+  benchmark_label?: string | null;
+}): Promise<AiAdminState> {
+  return apiJson<AiAdminState>('/system/ai/benchmarks/run', {
+    method: 'POST',
+    body: JSON.stringify(config),
   });
 }
 

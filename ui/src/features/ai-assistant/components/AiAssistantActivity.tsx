@@ -4,6 +4,14 @@ function phaseDetailLabel(phase: 'planning' | 'generating'): string {
   return phase === 'planning' ? 'Planning response' : 'Generating answer';
 }
 
+type ActivityRow = {
+  key: string;
+  primary: string;
+  meta?: string;
+  state: 'running' | 'complete' | 'error';
+  active: boolean;
+};
+
 export default function AiAssistantActivity({
   activityTrace,
   isStreaming,
@@ -11,51 +19,52 @@ export default function AiAssistantActivity({
   activityTrace: AiActivityTraceItem[];
   isStreaming: boolean;
 }) {
-  const phaseItems = activityTrace.filter((item) => item.kind === 'phase');
-  const toolItems = activityTrace.filter((item) => item.kind === 'tool');
-  const activePhase = [...phaseItems].reverse().find((item) => !item.finished_ts_ms) ?? null;
-  const latestPhase = phaseItems.at(-1) ?? null;
-  const showThinking = phaseItems.length > 0 || isStreaming;
+  const rows: ActivityRow[] = activityTrace.map((item) => {
+    if (item.kind === 'phase') {
+      return {
+        key: `phase-${item.phase}-${item.started_ts_ms}`,
+        primary: item.label?.trim() || phaseDetailLabel(item.phase),
+        state: item.finished_ts_ms ? 'complete' : 'running',
+        active: !item.finished_ts_ms,
+      };
+    }
 
-  if (!showThinking && toolItems.length === 0) {
+    return {
+      key: `tool-${item.id}`,
+      primary: item.label,
+      meta: item.tool,
+      state: item.state,
+      active: item.state === 'running',
+    };
+  });
+
+  if (rows.length === 0 && isStreaming) {
+    rows.push({
+      key: 'streaming-thinking',
+      primary: 'Thinking',
+      state: 'running',
+      active: true,
+    });
+  }
+
+  if (rows.length === 0) {
     return null;
   }
 
   return (
-    <div className="mb-3 space-y-2.5">
-      {showThinking && (
+    <div className="ai-activity-stream mb-3" role="status" aria-live="polite">
+      {rows.map((row) => (
         <div
-          className="ai-thinking-row"
-          data-active={activePhase ? 'true' : 'false'}
+          key={row.key}
+          className="ai-activity-row-inline"
+          data-active={row.active ? 'true' : 'false'}
+          data-state={row.state}
         >
-          <span className="ai-thinking-dot" aria-hidden="true" />
-          <div className="min-w-0">
-            <div className="text-[0.76rem] font-medium text-[var(--text-main)]">
-              Thinking...
-            </div>
-            {latestPhase && (
-              <div className="text-[0.65rem] muted">
-                {phaseDetailLabel(latestPhase.phase)}
-              </div>
-            )}
+          <div className="ai-activity-line">
+            <span className="ai-activity-primary">{row.primary}</span>
+            {row.meta ? <span className="ai-activity-meta">{row.meta}</span> : null}
           </div>
-          {activePhase && <span className="ai-thinking-sweep" aria-hidden="true" />}
-        </div>
-      )}
-
-      {toolItems.map((item) => (
-        <div
-          key={item.id}
-          className="ai-tool-call-row"
-          data-state={item.state}
-        >
-          <span className="ai-tool-call-indicator" aria-hidden="true" />
-          <div className="min-w-0">
-            <div className="text-[0.72rem] text-[var(--text-main)]">
-              {item.label}
-            </div>
-            <div className="text-[0.62rem] font-mono muted">{item.tool}</div>
-          </div>
+          {row.active ? <span className="ai-activity-shimmer" aria-hidden="true" /> : null}
         </div>
       ))}
     </div>
