@@ -14,6 +14,7 @@ import {
   type AiConversationDetail,
   type AiConversationSummary,
   type AiConversationTurn,
+  type AiGroundingChunk,
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
@@ -1066,6 +1067,67 @@ function preferredRecorderMimeType(): string | undefined {
   return undefined;
 }
 
+function formatCitationWindow(chunk: AiGroundingChunk): string | null {
+  const citation = chunk.citation;
+  if (!citation) return null;
+  const start = citation.started_ts_ms;
+  const end = citation.ended_ts_ms;
+  if (start == null && end == null) return null;
+  const formatMs = (value: number) => {
+    const totalSeconds = Math.max(0, Math.floor(value / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) {
+      return `${hours.toString().padStart(2, '0')}:${minutes
+        .toString()
+        .padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+    return `${minutes.toString().padStart(2, '0')}:${seconds
+      .toString()
+      .padStart(2, '0')}`;
+  };
+  if (start != null && end != null) {
+    return `${formatMs(start)}-${formatMs(end)}`;
+  }
+  return formatMs(start ?? end ?? 0);
+}
+
+function SourceList({ chunks }: { chunks: AiGroundingChunk[] }) {
+  if (chunks.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-2">
+      <p className="text-[0.68rem] uppercase tracking-[0.14em] muted">Sources</p>
+      <div className="space-y-2">
+        {chunks.map((chunk) => {
+          const citationWindow = formatCitationWindow(chunk);
+          return (
+            <div
+              key={chunk.id}
+              className="rounded-xl border border-[var(--border)] bg-[rgba(255,255,255,0.025)] px-3 py-2"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs font-semibold text-[var(--fg)]">{chunk.title}</p>
+                <p className="text-[0.7rem] muted">{chunk.source_kind}</p>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--fg-soft)] whitespace-pre-wrap">
+                {chunk.excerpt}
+              </p>
+              {chunk.citation ? (
+                <p className="mt-2 text-[0.72rem] muted">
+                  {chunk.citation.label ? `${chunk.citation.label} · ` : ''}
+                  {citationWindow ? `${citationWindow} · ` : ''}
+                  {chunk.citation.source_sub_id ?? chunk.citation.source_id}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   entry,
   showStats,
@@ -1127,6 +1189,9 @@ function MessageBubble({
             {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
           </div>
         ) : null}
+
+        {showStats && entry.stats ? <StatsBar stats={entry.stats} /> : null}
+        <SourceList chunks={entry.grounding_chunks} />
 
         {showStats && entry.stats ? <StatsBar stats={entry.stats} /> : null}
 
@@ -2339,6 +2404,7 @@ export default function AiPage() {
         model_name: null,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -2354,6 +2420,7 @@ export default function AiPage() {
         model_name: selectedModel,
         grounding_tools: [],
         follow_up_contexts: [],
+        grounding_chunks: [],
         grounding_sources: [],
         activity_trace: [],
         stats: null,
@@ -2463,6 +2530,7 @@ export default function AiPage() {
               ...turn,
               grounding_sources: event.sources,
               follow_up_contexts: event.followUpContexts,
+              grounding_chunks: event.chunks,
               grounding_tools: event.sources.map((source) => source.tool),
             }));
             return;

@@ -1,5 +1,5 @@
 import { apiFetch, apiJson } from './api';
-import type { AiModel } from './aiApi';
+import type { AiGroundingChunk, AiModel } from './aiApi';
 
 export interface AiAdminState {
   available: boolean;
@@ -41,6 +41,7 @@ export interface AiAssistantAuditEvent {
   response_kind: string;
   planned_tools: string[];
   executed_tools: AiAssistantAuditToolExecution[];
+  grounding_chunks: AiGroundingChunk[];
   grounding_sources: AiAssistantAuditGroundingSource[];
   error_message: string | null;
   created_ts: number;

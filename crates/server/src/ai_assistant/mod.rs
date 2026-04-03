@@ -3,6 +3,8 @@ pub mod context;
 pub mod dates;
 pub mod document_verify;
 pub mod memory;
+pub mod memory_selector;
+pub mod operational_index;
 pub mod orchestrator;
 pub mod profiles;
 pub mod registry;

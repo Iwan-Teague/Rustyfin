@@ -28,11 +28,15 @@ use crate::ai_assistant::profiles::{
 use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantArtifactVerificationDebug, AssistantConfirmationPayload,
-    AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantGroundingSource,
-    AssistantHistoryMessage, AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase,
-    AssistantPhaseEvent, AssistantPlannerDebug, AssistantResponseMode, AssistantRuntimePhase,
-    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
-    AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
+    AssistantConfirmationRequiredEvent, AssistantFollowUpContext, AssistantGroundingChunk,
+    AssistantGroundingSource, AssistantHistoryMessage, AssistantPendingAction,
+    AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent, AssistantPlannerDebug,
+    AssistantResponseMode, AssistantRuntimePhase, AssistantStatusEvent, AssistantStatusKind,
+    AssistantToolActivityEvent, AssistantToolActivityState, AssistantToolContextBlock,
+    AssistantToolInput, AssistantTurnStats,
+};
+use crate::ai_assistant::memory::{
+    augment_history_with_entity_graph, build_grounding_chunks_for_turn, persist_grounding_artifacts,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
@@ -203,6 +207,7 @@ async fn stream_conversation_message(
     ))
 }
 
+#[rustfmt::skip]
 fn stream_chat_response(
     state: AppState,
     user: AuthUser,
@@ -224,6 +229,7 @@ fn stream_chat_response(
             model_name: model_name.clone(),
             response_mode: req.response_mode.as_str().to_string(),
         };
+        let assistant_context = AssistantContext::new(&user, trace_id.clone());
         let turn_started = Instant::now();
         let chat_metrics = state.runtime_metrics.start_ai_chat_request();
         set_last_prompt_debug(&state, None).await;
@@ -233,6 +239,7 @@ fn stream_chat_response(
         let mut activity_trace = Vec::<AssistantActivityTraceItem>::new();
         let mut grounding_blocks = Vec::<AssistantToolContextBlock>::new();
         let mut grounding_sources = Vec::<AssistantGroundingSource>::new();
+        let mut grounding_chunks = Vec::<AssistantGroundingChunk>::new();
         let mut follow_up_contexts = Vec::<AssistantFollowUpContext>::new();
         let mut stats: Option<AssistantTurnStats> = None;
         let mut tool_duration_ms = 0_u64;
@@ -389,12 +396,13 @@ fn stream_chat_response(
                         AiAssistantAuditResponseKind::Clarification,
                         &[],
                         &[],
+                        &grounding_chunks,
                         &[],
                         None,
                     )
                     .await;
                     if let Some(persistence) = &persistence {
-                        let _ = crate::ai_conversations::persist_assistant_turn(
+                        let turn_result = crate::ai_conversations::persist_assistant_turn(
                             &state,
                             &user.user_id,
                             &persistence.conversation_id,
@@ -402,11 +410,21 @@ fn stream_chat_response(
                             &model_name,
                             &[],
                             &[],
+                            &grounding_chunks,
                             &[],
                             &activity_trace,
                             stats.as_ref(),
                             None,
                             Some(&trace_id),
+                        )
+                        .await;
+                        persist_turn_grounding_artifacts(
+                            &state,
+                            &assistant_context,
+                            &persistence.conversation_id,
+                            turn_result,
+                            &grounding_chunks,
+                            &follow_up_contexts,
                         )
                         .await;
                     }
@@ -513,6 +531,7 @@ fn stream_chat_response(
                     .data(json!({
                         "sources": &grounding_sources,
                         "follow_up_contexts": &follow_up_contexts,
+                        "chunks": &grounding_chunks,
                     }).to_string()),
             );
 
@@ -555,7 +574,7 @@ fn stream_chat_response(
                     .iter()
                     .map(|call| call.tool.as_str().to_string())
                     .collect::<Vec<_>>();
-                let _ = crate::ai_conversations::persist_assistant_turn(
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
                     &user.user_id,
                     &persistence.conversation_id,
@@ -563,11 +582,21 @@ fn stream_chat_response(
                     &model_name,
                     &grounding_tool_names,
                     &follow_up_contexts,
+                    &grounding_chunks,
                     &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     None,
                     Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
                 )
                 .await;
             }
@@ -597,6 +626,7 @@ fn stream_chat_response(
                 AiAssistantAuditResponseKind::Completed,
                 &planned_tools,
                 &grounding_blocks,
+                &grounding_chunks,
                 &grounding_sources,
                 None,
             )
@@ -698,12 +728,13 @@ fn stream_chat_response(
                 AiAssistantAuditResponseKind::Clarification,
                 &[],
                 &[],
+                &grounding_chunks,
                 &[],
                 None,
             )
             .await;
             if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
                     &user.user_id,
                     &persistence.conversation_id,
@@ -712,10 +743,20 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &[],
+                    &[],
                     &activity_trace,
                     stats.as_ref(),
                     pending_action.as_ref(),
                     Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
                 )
                 .await;
             }
@@ -794,12 +835,13 @@ fn stream_chat_response(
                 AiAssistantAuditResponseKind::UnsupportedWriteRefusal,
                 &[],
                 &[],
+                &grounding_chunks,
                 &[],
                 None,
             )
             .await;
             if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
                     &user.user_id,
                     &persistence.conversation_id,
@@ -808,10 +850,20 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &[],
+                    &[],
                     &activity_trace,
                     stats.as_ref(),
                     None,
                     Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
                 )
                 .await;
             }
@@ -890,12 +942,13 @@ fn stream_chat_response(
                 AiAssistantAuditResponseKind::Clarification,
                 &[],
                 &[],
+                &grounding_chunks,
                 &[],
                 None,
             )
             .await;
             if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
                     &user.user_id,
                     &persistence.conversation_id,
@@ -904,10 +957,20 @@ fn stream_chat_response(
                     &[],
                     &[],
                     &[],
+                    &[],
                     &activity_trace,
                     stats.as_ref(),
                     None,
                     Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
                 )
                 .await;
             }
@@ -939,6 +1002,14 @@ fn stream_chat_response(
             yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
             return;
         }
+
+        let augmented_history = augment_history_with_entity_graph(
+            &state,
+            &assistant_context,
+            &req.history,
+            &req.message,
+        )
+        .await;
 
         let model_dir = current_model_dir(&state).await;
         let gguf_path = match model_file_path(&model_dir, &model_name) {
@@ -989,6 +1060,7 @@ fn stream_chat_response(
                     AiAssistantAuditResponseKind::ModelPathError,
                     &[],
                     &[],
+                    &grounding_chunks,
                     &[],
                     Some(&error_message),
                 )
@@ -1004,8 +1076,13 @@ fn stream_chat_response(
             }
         };
 
-        let (engine, queue_duration_ms, model_load_duration_ms) =
-            match load_engine_for_chat(&state, &model_name, &gguf_path).await {
+        let (engine, queue_duration_ms, model_load_duration_ms) = match load_engine_for_chat(
+            &state,
+            &model_name,
+            &gguf_path,
+        )
+        .await
+        {
             Ok((engine, queue_ms, load_ms)) => (engine, queue_ms, load_ms),
             Err(error_message) => {
                 let mut error_stats = build_turn_stats(
@@ -1052,6 +1129,7 @@ fn stream_chat_response(
                     AiAssistantAuditResponseKind::ModelLoadError,
                     &[],
                     &[],
+                    &grounding_chunks,
                     &[],
                     Some(&error_message),
                 )
@@ -1076,7 +1154,8 @@ fn stream_chat_response(
 
         let planner_started = Instant::now();
         let planned_tool_set =
-            plan_tool_calls_with_model_assist(&engine, &user, &req.message, &req.history).await;
+            plan_tool_calls_with_model_assist(&engine, &user, &req.message, &augmented_history)
+                .await;
         let planner_duration_ms = planner_started.elapsed().as_millis() as u64;
         planner_debug = planned_tool_set.debug.clone();
         let planned_tools = planned_tool_set.calls;
@@ -1241,6 +1320,7 @@ fn stream_chat_response(
                         .data(json!({
                             "sources": &grounding_sources,
                             "follow_up_contexts": &follow_up_contexts,
+                            "chunks": &grounding_chunks,
                         }).to_string()),
                 );
             }
@@ -1267,6 +1347,34 @@ fn stream_chat_response(
             deterministic_grounded_reply(&req.message, &req.history, &grounding_blocks)
         {
             assistant_content = deterministic_reply;
+        }
+
+        grounding_chunks = build_grounding_chunks_for_turn(
+            &state,
+            &assistant_context,
+            &req,
+            &planned_tools,
+            &grounding_blocks,
+            &grounding_sources,
+            &augmented_history,
+        )
+        .await;
+
+        if !grounding_sources.is_empty() || !grounding_chunks.is_empty() {
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("grounding")
+                    .data(json!({
+                        "sources": &grounding_sources,
+                        "follow_up_contexts": &follow_up_contexts,
+                        "chunks": &grounding_chunks,
+                    }).to_string()),
+            );
+        }
+
+        if let Some(weather_reply) = deterministic_weather_reply(&req.message, &grounding_blocks) {
+            assistant_content = weather_reply;
+        }
             stats = Some(build_turn_stats(
                 0,
                 0,
@@ -1293,7 +1401,7 @@ fn stream_chat_response(
                 .map(|call| call.tool.as_str().to_string())
                 .collect::<Vec<_>>();
             if let Some(persistence) = &persistence {
-                let _ = crate::ai_conversations::persist_assistant_turn(
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
                     &state,
                     &user.user_id,
                     &persistence.conversation_id,
@@ -1301,11 +1409,21 @@ fn stream_chat_response(
                     &model_name,
                     &grounding_tools,
                     &follow_up_contexts,
+                    &grounding_chunks,
                     &grounding_sources,
                     &activity_trace,
                     stats.as_ref(),
                     None,
                     Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
                 )
                 .await;
             }
@@ -1333,6 +1451,7 @@ fn stream_chat_response(
                 AiAssistantAuditResponseKind::Completed,
                 &planned_tools,
                 &grounding_blocks,
+                &grounding_chunks,
                 &grounding_sources,
                 None,
             )
@@ -1375,7 +1494,7 @@ fn stream_chat_response(
             persistence.as_ref(),
             &engine,
             &req,
-            &grounding_blocks,
+            &grounding_chunks,
         )
         .await {
             Ok(prepared) => prepared,
@@ -1586,7 +1705,7 @@ fn stream_chat_response(
                             .iter()
                             .map(|call| call.tool.as_str().to_string())
                             .collect::<Vec<_>>();
-                        let _ = crate::ai_conversations::persist_assistant_turn(
+                        let turn_result = crate::ai_conversations::persist_assistant_turn(
                             &state,
                             &user.user_id,
                             &persistence.conversation_id,
@@ -1594,11 +1713,21 @@ fn stream_chat_response(
                             &model_name,
                             &grounding_tools,
                             &follow_up_contexts,
+                            &grounding_chunks,
                             &grounding_sources,
                             &activity_trace,
                             stats.as_ref(),
                             None,
                             Some(&trace_id),
+                        )
+                        .await;
+                        persist_turn_grounding_artifacts(
+                            &state,
+                            &assistant_context,
+                            &persistence.conversation_id,
+                            turn_result,
+                            &grounding_chunks,
+                            &follow_up_contexts,
                         )
                         .await;
                     }
@@ -1628,6 +1757,7 @@ fn stream_chat_response(
                         AiAssistantAuditResponseKind::Completed,
                         &planned_tools,
                         &grounding_blocks,
+                        &grounding_chunks,
                         &grounding_sources,
                         None,
                     )
@@ -1706,6 +1836,7 @@ fn stream_chat_response(
                             AiAssistantAuditResponseKind::StreamError,
                             &planned_tools,
                             &grounding_blocks,
+                            &grounding_chunks,
                             &grounding_sources,
                             Some(&error_message),
                         )
@@ -1727,9 +1858,9 @@ fn stream_chat_response(
                     set_last_turn_stats(&state, stats.clone()).await;
                     set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                 }
+                }
             }
-        }
-    };
+            };
 
     Sse::new(Box::pin(sse_stream))
         .keep_alive(KeepAlive::default())
@@ -1770,6 +1901,27 @@ pub(crate) async fn load_engine_for_chat(
 async fn set_engine_phase(state: &AppState, phase: AssistantRuntimePhase) {
     let mut guard = state.engine.lock().await;
     guard.active_phase = phase;
+}
+
+async fn persist_turn_grounding_artifacts(
+    state: &AppState,
+    context: &AssistantContext,
+    conversation_id: &str,
+    turn_result: Result<String, AppError>,
+    grounding_chunks: &[AssistantGroundingChunk],
+    follow_up_contexts: &[AssistantFollowUpContext],
+) {
+    if let Ok(turn_id) = turn_result {
+        persist_grounding_artifacts(
+            state,
+            context,
+            conversation_id,
+            &turn_id,
+            grounding_chunks,
+            follow_up_contexts,
+        )
+        .await;
+    }
 }
 
 fn engine_params_from_env() -> rustfin_ai_agent::LlamaEngineParams {
@@ -1941,7 +2093,7 @@ async fn prepare_generation_messages(
     persistence: Option<&ConversationPersistence>,
     engine: &rustfin_ai_agent::LlamaEngine,
     request: &AssistantChatRequest,
-    grounding_blocks: &[AssistantToolContextBlock],
+    grounding_chunks: &[AssistantGroundingChunk],
 ) -> Result<
     (
         Vec<rustfin_ai_agent::ChatMessage>,
@@ -1977,7 +2129,7 @@ async fn prepare_generation_messages(
         let mut assembly = build_generation_prompt_messages(
             &system_prompt,
             &local_now_text,
-            grounding_blocks,
+            grounding_chunks,
             &request.history,
             &request.message,
             &memory_state,
@@ -2031,7 +2183,7 @@ async fn prepare_generation_messages(
     let mut assembly = build_generation_prompt_messages(
         &system_prompt,
         &local_now_text,
-        grounding_blocks,
+        grounding_chunks,
         &request.history,
         &request.message,
         &memory_state,

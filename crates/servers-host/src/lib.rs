@@ -1145,7 +1145,7 @@ async fn resolve_forge_server_download(version: &str) -> Result<String, String> 
 async fn resolve_neoforge_server_download(version: &str) -> Result<String, String> {
     // NeoForge versions are formatted differently - they use the MC version as a prefix
     // e.g., for MC 1.20.4, NeoForge might be 20.4.x
-    
+
     // Fetch the versions list from NeoForge Maven
     let versions_page: String = OUTBOUND_HTTP
         .get("https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge")
@@ -1196,8 +1196,8 @@ async fn resolve_neoforge_server_download(version: &str) -> Result<String, Strin
         }
     }
 
-    let neoforge_version = best_version
-        .ok_or_else(|| format!("no NeoForge version found for Minecraft {version}"))?;
+    let neoforge_version =
+        best_version.ok_or_else(|| format!("no NeoForge version found for Minecraft {version}"))?;
 
     Ok(format!(
         "https://maven.neoforged.net/releases/net/neoforged/neoforge/{neoforge_version}/neoforge-{neoforge_version}-installer.jar"

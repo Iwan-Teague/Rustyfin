@@ -25,6 +25,7 @@ export interface ChatHistoryMessage {
   content: string;
   grounding_tools?: string[];
   follow_up_contexts?: AiFollowUpContext[];
+  grounding_chunks?: AiGroundingChunk[];
 }
 
 export interface AiGroundingSource {
@@ -39,10 +40,41 @@ export interface AiGroundingSource {
   download_size_bytes?: number | null;
 }
 
+export type AiGroundingVisibility = 'user' | 'shared' | 'admin';
+
+export interface AiGroundingCitation {
+  citation_id: string;
+  source_kind: string;
+  source_id: string;
+  source_sub_id?: string | null;
+  label?: string | null;
+  excerpt?: string | null;
+  started_ts_ms?: number | null;
+  ended_ts_ms?: number | null;
+  url?: string | null;
+}
+
+export interface AiGroundingChunk {
+  id: string;
+  source_kind: string;
+  title: string;
+  excerpt: string;
+  score: number;
+  visibility: AiGroundingVisibility;
+  topic_key?: string | null;
+  owner_user_id?: string | null;
+  source_id?: string | null;
+  source_sub_id?: string | null;
+  citation?: AiGroundingCitation | null;
+}
+
 export interface AiFollowUpEntity {
   ordinal: number;
   label: string;
   identifier?: string | null;
+  kind?: string | null;
+  topic_key?: string | null;
+  source_chunk_id?: string | null;
 }
 
 export interface AiFollowUpInputHint {
@@ -132,6 +164,7 @@ export interface AiConversationTurn {
   model_name?: string | null;
   grounding_tools: string[];
   follow_up_contexts: AiFollowUpContext[];
+  grounding_chunks: AiGroundingChunk[];
   grounding_sources: AiGroundingSource[];
   activity_trace: AiActivityTraceItem[];
   stats?: AiTurnStats | null;
@@ -277,7 +310,12 @@ export type AiSseEvent =
   | { type: 'confirmation_required'; confirmation: AiConfirmationRequiredEvent }
   | { type: 'token'; text: string }
   | { type: 'stats'; stats: AiTurnStats }
-  | { type: 'grounding'; sources: AiGroundingSource[]; followUpContexts: AiFollowUpContext[] }
+  | {
+      type: 'grounding';
+      sources: AiGroundingSource[];
+      followUpContexts: AiFollowUpContext[];
+      chunks: AiGroundingChunk[];
+    }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -451,6 +489,7 @@ function handleSsePayload(
       followUpContexts: Array.isArray(record.follow_up_contexts)
         ? (record.follow_up_contexts as AiFollowUpContext[])
         : [],
+      chunks: Array.isArray(record.chunks) ? (record.chunks as AiGroundingChunk[]) : [],
     });
     return;
   }
