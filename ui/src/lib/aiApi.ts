@@ -117,6 +117,8 @@ export type AiActivityTraceItem =
 export interface AiConversationSummary {
   id: string;
   title: string;
+  group_name?: string | null;
+  sort_order?: number;
   last_message_preview?: string | null;
   last_model_name?: string | null;
   updated_ts: number;
@@ -141,6 +143,8 @@ export interface AiConversationDetail {
   id: string;
   title: string;
   archived: boolean;
+  group_name?: string | null;
+  sort_order?: number;
   last_message_preview?: string | null;
   last_model_name?: string | null;
   created_ts: number;
@@ -603,7 +607,12 @@ export async function getConversation(
 
 export async function updateConversation(
   conversationId: string,
-  updates: { title?: string; archived?: boolean },
+  updates: {
+    title?: string;
+    archived?: boolean;
+    group_name?: string | null;
+    sort_order?: number;
+  },
 ): Promise<AiConversationDetail> {
   const body = await apiJson<ConversationResponse>(
     `/ai/conversations/${conversationId}`,
@@ -621,6 +630,16 @@ export async function updateConversation(
 export async function deleteConversation(conversationId: string): Promise<void> {
   await apiJson<void>(`/ai/conversations/${conversationId}`, {
     method: 'DELETE',
+  });
+}
+
+export async function moveConversation(
+  conversationId: string,
+  direction: 'up' | 'down',
+): Promise<void> {
+  await apiJson<void>(`/ai/conversations/${conversationId}/move`, {
+    method: 'POST',
+    body: JSON.stringify({ direction }),
   });
 }
 

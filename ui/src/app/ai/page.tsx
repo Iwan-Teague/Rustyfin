@@ -26,6 +26,7 @@ import {
   fetchAiRuntime,
   getConversation,
   listConversations,
+  moveConversation,
   streamConversationMessage,
   transcribeAiInput,
   updateConversation,
@@ -138,6 +139,14 @@ function sortConversationSummaries(
   conversations: AiConversationSummary[],
 ): AiConversationSummary[] {
   return [...conversations].sort((left, right) => {
+    if (left.archived !== right.archived) {
+      return Number(left.archived) - Number(right.archived);
+    }
+    const rightSort = right.sort_order ?? 0;
+    const leftSort = left.sort_order ?? 0;
+    if (rightSort !== leftSort) {
+      return rightSort - leftSort;
+    }
     if (right.updated_ts !== left.updated_ts) {
       return right.updated_ts - left.updated_ts;
     }
@@ -159,12 +168,21 @@ function chooseConversationId(
 function buildConversationSummary(
   detail: Pick<
     UiConversationDetail,
-    'id' | 'title' | 'archived' | 'last_message_preview' | 'last_model_name' | 'updated_ts'
+    | 'id'
+    | 'title'
+    | 'archived'
+    | 'group_name'
+    | 'sort_order'
+    | 'last_message_preview'
+    | 'last_model_name'
+    | 'updated_ts'
   >,
 ): AiConversationSummary {
   return {
     id: detail.id,
     title: detail.title,
+    group_name: detail.group_name ?? null,
+    sort_order: detail.sort_order ?? 0,
     last_message_preview: detail.last_message_preview ?? null,
     last_model_name: detail.last_model_name ?? null,
     updated_ts: detail.updated_ts,
@@ -1189,6 +1207,8 @@ export default function AiPage() {
 
   const [renameTarget, setRenameTarget] = useState<AiConversationSummary | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [groupTarget, setGroupTarget] = useState<AiConversationSummary | null>(null);
+  const [groupValue, setGroupValue] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AiConversationSummary | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
 
@@ -1734,6 +1754,14 @@ export default function AiPage() {
     setRenameValue(conversation.title);
   }, []);
 
+  const handleMoveConversationToGroup = useCallback(
+    (conversation: AiConversationSummary) => {
+      setGroupTarget(conversation);
+      setGroupValue((conversation.group_name ?? '').trim());
+    },
+    [],
+  );
+
   const confirmRenameConversation = useCallback(async () => {
     if (!renameTarget) return;
     const title = renameValue.trim();
@@ -1757,6 +1785,28 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [renameTarget, renameValue, storeConversationDetail]);
+
+  const confirmMoveConversationToGroup = useCallback(async () => {
+    if (!groupTarget) return;
+
+    setModalBusy(true);
+    try {
+      setConversationError('');
+      const normalizedGroup = groupValue.trim();
+      const detail = await updateConversation(groupTarget.id, {
+        group_name: normalizedGroup ? normalizedGroup : null,
+      });
+      storeConversationDetail(detail);
+      setGroupTarget(null);
+      setGroupValue('');
+    } catch (error) {
+      setConversationError(
+        clientErrorMessage(error, 'Failed to move this conversation.'),
+      );
+    } finally {
+      setModalBusy(false);
+    }
+  }, [groupTarget, groupValue, storeConversationDetail]);
 
   const handleDeleteConversation = useCallback((conversation: AiConversationSummary) => {
     if (isStreaming && streamingConversationId === conversation.id) {
@@ -1805,6 +1855,21 @@ export default function AiPage() {
       setModalBusy(false);
     }
   }, [activeConversationId, clearQueuedPrompt, conversations, deleteTarget, resetComposerHeight]);
+
+  const handleMoveConversation = useCallback(
+    async (conversation: AiConversationSummary, direction: 'up' | 'down') => {
+      try {
+        setConversationError('');
+        await moveConversation(conversation.id, direction);
+        await loadConversationList(activeConversationIdRef.current);
+      } catch (error) {
+        setConversationError(
+          clientErrorMessage(error, 'Failed to reorder this conversation.'),
+        );
+      }
+    },
+    [loadConversationList],
+  );
 
   const startVoiceInput = useCallback(async () => {
     if (voiceState === 'recording' || voiceState === 'stopping' || voiceState === 'transcribing') {
@@ -2400,6 +2465,13 @@ export default function AiPage() {
                 void handleNewChat();
               }}
               onRename={handleRenameConversation}
+              onMoveToGroup={handleMoveConversationToGroup}
+              onMoveUp={(conversation) => {
+                void handleMoveConversation(conversation, 'up');
+              }}
+              onMoveDown={(conversation) => {
+                void handleMoveConversation(conversation, 'down');
+              }}
               onArchiveToggle={(conversation) => {
                 void handleArchiveToggle(conversation);
               }}
@@ -2475,6 +2547,13 @@ export default function AiPage() {
                       void handleNewChat();
                     }}
                     onRename={handleRenameConversation}
+                    onMoveToGroup={handleMoveConversationToGroup}
+                    onMoveUp={(conversation) => {
+                      void handleMoveConversation(conversation, 'up');
+                    }}
+                    onMoveDown={(conversation) => {
+                      void handleMoveConversation(conversation, 'down');
+                    }}
                     onArchiveToggle={(conversation) => {
                       void handleArchiveToggle(conversation);
                     }}
@@ -2895,6 +2974,33 @@ export default function AiPage() {
           className="panel w-full rounded-xl px-3 py-2 text-sm"
           placeholder="Conversation title"
           maxLength={80}
+          autoFocus
+        />
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={Boolean(groupTarget)}
+        title="Move conversation"
+        description="Assign this chat to a group. Leave the field empty to remove it from a group."
+        confirmLabel="Save"
+        onConfirm={() => {
+          void confirmMoveConversationToGroup();
+        }}
+        onCancel={() => {
+          if (!modalBusy) {
+            setGroupTarget(null);
+            setGroupValue('');
+          }
+        }}
+        confirmDisabled={modalBusy}
+        cancelDisabled={modalBusy}
+      >
+        <input
+          value={groupValue}
+          onChange={(event) => setGroupValue(event.target.value)}
+          className="panel w-full rounded-xl px-3 py-2 text-sm"
+          placeholder="Group name"
+          maxLength={48}
           autoFocus
         />
       </ConfirmModal>
