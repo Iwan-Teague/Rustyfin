@@ -1122,7 +1122,7 @@ function ResponseModeDropdown({
   className?: string;
 }) {
   return (
-    <div className={`relative min-w-[9.75rem] ${className}`}>
+    <div className={`relative min-w-[7.5rem] ${className}`}>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
