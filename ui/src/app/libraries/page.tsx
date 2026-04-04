@@ -122,17 +122,17 @@ export default function LibrariesPage() {
 
   if (loading) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Loading libraries...</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-8 animate-rise">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-semibold sm:text-4xl">Libraries</h1>
-        <p className="text-sm muted sm:text-base">
+    <div className="animate-rise rf-flat-page">
+      <header className="rf-flat-header">
+        <h1 className="text-2xl font-semibold sm:text-3xl">Libraries</h1>
+        <p className="text-sm muted">
           Explore all configured media directories and jump into items instantly.
         </p>
       </header>
@@ -140,43 +140,42 @@ export default function LibrariesPage() {
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
 
       {libraries.length === 0 ? (
-        <div className="panel px-6 py-8">
+        <div className="rf-flat-empty">
           <p className="text-sm muted">No libraries found. Create one from the admin panel.</p>
           <Link href="/admin" className="btn-primary mt-4 px-5 py-2 text-sm">
             Open Admin
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="rf-flat-list">
           {libraries.map((lib) => (
             <Link
               key={lib.id}
               href={`/libraries/${lib.id}`}
-              className="tile tile-hover library-card-sheen block p-5"
+              className="rf-flat-row flex items-center justify-between gap-4"
             >
-              <div className="flex items-center justify-between gap-4">
-                <h2 className="text-lg font-semibold">{lib.name}</h2>
-                <span className="chip">
-                  {lib.kind === 'tv_shows' ? 'TV' : lib.kind === 'music' ? 'Music' : 'Movies'}
-                </span>
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold">{lib.name}</h2>
+                <p className="mt-1 text-sm muted">
+                  {lib.kind} · {lib.item_count} items
+                </p>
               </div>
-              <p className="mt-2 text-sm muted">
-                {lib.kind} · {lib.item_count} items
-              </p>
+              <span className="chip shrink-0">
+                {lib.kind === 'tv_shows' ? 'TV' : lib.kind === 'music' ? 'Music' : 'Movies'}
+              </span>
             </Link>
           ))}
         </div>
       )}
 
-      {/* Continue Watching */}
-      <section id="continue-watching" className="space-y-3 scroll-mt-24">
+      <section id="continue-watching" className="rf-flat-section scroll-mt-24">
         <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
         {continueWatching.length === 0 ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">
+          <div className="rf-flat-empty text-sm muted">
             Start a movie or episode from a library and Rustyfin will keep your place here.
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="rf-flat-list">
             {continueWatching.map((item) => {
               const totalMs = item.duration_ms && item.duration_ms > 0 ? item.duration_ms : null;
               const progressPct = totalMs
@@ -196,7 +195,7 @@ export default function LibrariesPage() {
                 >
                   <button
                     type="button"
-                    className="btn-ghost absolute right-3 top-3 z-20 h-7 w-7 rounded-full border border-white/20 bg-black/60 p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                    className="btn-ghost absolute right-0 top-4 z-20 h-7 w-7 rounded-full p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
                     onClick={() => void handleDismissContinueItem(item.id)}
                     disabled={dismissing}
                     aria-label={`Remove ${item.title} from Continue Watching`}
@@ -204,8 +203,8 @@ export default function LibrariesPage() {
                   >
                     {dismissing ? '…' : '×'}
                   </button>
-                  <Link href={`/player/${item.id}`} className="group tile tile-hover media-tile-hover block overflow-hidden">
-                    <div className="flex min-h-[9rem] gap-4 p-4">
+                  <Link href={`/player/${item.id}`} className="rf-flat-row block pr-10">
+                    <div className="flex min-h-[9rem] gap-4">
                       <div className="h-20 w-36 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65 sm:h-24 sm:w-40">
                         {thumbnailUrl ? (
                           <Image
@@ -253,16 +252,15 @@ export default function LibrariesPage() {
         )}
       </section>
 
-      {/* Recommended */}
-      <section className="space-y-3">
+      <section className="rf-flat-section">
         <h2 className="text-xl font-semibold sm:text-2xl">Recommended</h2>
         {recommendedItems.length === 0 ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">No recommendations yet.</div>
+          <div className="rf-flat-empty text-sm muted">No recommendations yet.</div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="rf-flat-cardless-grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {recommendedItems.map((item) => (
               <Link key={`rec-${item.id}`} href={`/items/${item.id}`} className="group block">
-                <div className="tile tile-hover media-tile-hover aspect-video overflow-hidden">
+                <div className="aspect-video overflow-hidden rounded-2xl border border-[var(--border)] bg-black/20">
                   {(item.thumb_url ?? item.poster_url) ? (
                     <Image
                       src={item.thumb_url ?? item.poster_url ?? ''}

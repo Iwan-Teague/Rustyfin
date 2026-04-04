@@ -577,7 +577,7 @@ export default function WatchPartyRoomPage() {
 
   if (authLoading || loadingRoom) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Loading room...</p>
       </div>
     );
@@ -601,8 +601,8 @@ export default function WatchPartyRoomPage() {
     }
 
     return (
-      <div className="space-y-4 animate-rise">
-        <section className="panel space-y-3 p-6 sm:p-7">
+      <div className="animate-rise rf-flat-page">
+        <section className="rf-flat-section space-y-3 border-t border-[var(--border-subtle)] pt-6">
           <span className="chip chip-accent">Watch Party Room</span>
           <h1 className="text-2xl font-semibold sm:text-3xl">Unable to open room</h1>
           <p className="text-sm muted">{error || 'Failed to load watch party room.'}</p>
@@ -672,7 +672,7 @@ export default function WatchPartyRoomPage() {
       {info && <div className="notice-ok rounded-xl px-4 py-2 text-sm">{info}</div>}
 
       {!joinedRole && (
-        <section className="panel space-y-4 p-5 sm:p-6">
+        <section className="rf-flat-section space-y-4 border-t border-[var(--border-subtle)] pt-5">
           <h2 className="text-xl font-semibold">Join Room</h2>
           <p className="text-sm muted">
             You must join this room before {isAudioRoom ? 'listening together' : isYoutubeRoom ? 'watching YouTube together' : isWebRoom ? 'browsing together' : isScreenRoom ? 'sharing a screen together' : isCreateRoom ? 'creating together' : isPlayRoom ? 'playing together' : 'opening synchronized playback'}.
@@ -724,7 +724,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isAudioRoom && !realtime.audioState && (
-        <section className="panel p-5 sm:p-6">
+        <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
           <p className="text-sm muted">
             Connecting to music party…
           </p>
@@ -732,7 +732,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isYoutubeRoom && (
-        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
+        <section className={`rf-flat-section relative ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -757,7 +757,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isWebRoom && (
-        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
+        <section className={`rf-flat-section relative ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -781,7 +781,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isScreenRoom && (
-        <section className={`panel relative p-5 sm:p-6 ${watchWindowShiftClass}`}>
+        <section className={`rf-flat-section relative ${watchWindowShiftClass}`}>
           {isWatchRoom && (
             <WatchSourceTabsBar
               className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${watchTabsCounterShiftClass}`}
@@ -808,7 +808,7 @@ export default function WatchPartyRoomPage() {
       )}
 
       {joinedRole && isCreateRoom && (
-        <section className={`panel relative p-5 pt-[60px] sm:p-6 sm:pt-[64px] ${createWindowShiftClass}`}>
+        <section className={`rf-flat-section relative pt-[60px] sm:pt-[64px] ${createWindowShiftClass}`}>
           <CreateToolTabsBar
             className={`absolute left-4 right-4 z-10 -translate-y-[62%] sm:left-6 sm:right-6 ${createTabsCounterShiftClass}`}
             activeTool={activeCreateTool}
@@ -849,7 +849,7 @@ export default function WatchPartyRoomPage() {
               role="dialog"
               aria-modal="true"
               aria-label="Reconfigure room"
-              className="panel w-full max-w-5xl max-h-[68vh] space-y-4 overflow-y-auto rounded-2xl border border-[var(--border)] p-5 sm:p-6"
+              className="w-full max-w-5xl max-h-[68vh] space-y-4 overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 p-5 sm:p-6"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -870,7 +870,7 @@ export default function WatchPartyRoomPage() {
 
               {joinedRole === 'host' ? (
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/10 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] p-3">
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -947,7 +947,7 @@ export default function WatchPartyRoomPage() {
                   {reconfigure.reconfigureMode === 'audio' ? (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Listen Together</p>
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      <div className="rf-flat-empty text-sm muted">
                         Listen together with one shared queue. Search online tracks, browse local
                         library tracks, and control playback together.
                       </div>
@@ -955,7 +955,7 @@ export default function WatchPartyRoomPage() {
                   ) : reconfigure.reconfigureMode === 'create' ? (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Create Together</p>
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      <div className="rf-flat-empty text-sm muted">
                         Collaborate in shared documents and a shared canvas in real time. Edit, draw,
                         and export your work directly from the room.
                       </div>
@@ -963,7 +963,7 @@ export default function WatchPartyRoomPage() {
                   ) : reconfigure.reconfigureMode === 'play' ? (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Play Together</p>
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      <div className="rf-flat-empty text-sm muted">
                         Play shared games in real time with room members. Start with Chess, assign players,
                         and take turns on the same board.
                       </div>
@@ -971,7 +971,7 @@ export default function WatchPartyRoomPage() {
                   ) : (
                     <div className="space-y-3">
                       <p className="text-xs uppercase tracking-wide muted">Watch Together</p>
-                      <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                      <div className="rf-flat-empty text-sm muted">
                         Watch together using Local Media, YouTube, Web, or Screen sources. Use shared
                         controls for playback, navigation, or live screen presentation depending on the source.
                       </div>
@@ -979,7 +979,7 @@ export default function WatchPartyRoomPage() {
                   )}
                 </div>
               ) : (
-                <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                <div className="rf-flat-empty text-sm muted">
                   Only room admins can reconfigure the room.
                 </div>
               )}
@@ -1011,7 +1011,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`panel relative space-y-4 p-5 sm:p-6 ${watchWindowShiftClass}`}
+            className={`rf-flat-section relative space-y-4 ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
@@ -1031,7 +1031,7 @@ export default function WatchPartyRoomPage() {
               joinedRole === 'host' ? (
                 <div className="space-y-3">
                   {reconfigure.reconfigureVideoLibraries.length === 0 ? (
-                    <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                    <div className="rf-flat-empty text-sm muted">
                       No shared local video libraries are available for current room participants.
                     </div>
                   ) : (
@@ -1045,7 +1045,7 @@ export default function WatchPartyRoomPage() {
                         selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
                         selectedItem={reconfigure.reconfigureVideoItem}
                         layout="stacked"
-                        surfaceClassName="panel-soft"
+                        surfaceClassName="rf-flat-section"
                         noShadow
                         applyActionLabel="Apply Local Media"
                         applyActionPendingLabel="Applying…"
@@ -1059,7 +1059,7 @@ export default function WatchPartyRoomPage() {
                   )}
                 </div>
               ) : (
-                <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+                <div className="rf-flat-empty text-sm muted">
                   Waiting for a room admin to load local media.
                 </div>
               )
@@ -1180,7 +1180,7 @@ export default function WatchPartyRoomPage() {
 
       {joinedRole && (
         <div className={`grid gap-5 md:grid-cols-2 ${createLowerPanelsShiftClass}`}>
-          <section className="panel flex h-[22rem] min-h-0 flex-col gap-3 p-5 sm:p-6">
+          <section className="rf-flat-section flex h-[22rem] min-h-0 flex-col gap-3 border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
               <span className="chip border-emerald-400/35 bg-emerald-500/10 text-emerald-200">
@@ -1191,7 +1191,7 @@ export default function WatchPartyRoomPage() {
               {activeMembers.map((member) => (
                 <li
                   key={member.user_id}
-                  className={`panel-soft rounded-xl px-3 py-2 transition ${
+                  className={`rf-flat-row transition ${
                     member.connected ? 'room-member-online' : 'room-member-offline'
                   }`}
                 >
@@ -1220,21 +1220,21 @@ export default function WatchPartyRoomPage() {
             </ul>
           </section>
 
-          <section className="panel flex h-[22rem] min-h-0 flex-col gap-4 p-5 sm:p-6">
+          <section className="rf-flat-section flex h-[22rem] min-h-0 flex-col gap-4 border-t border-[var(--border-subtle)] pt-5">
             <h2 className="text-xl font-semibold">Invite to Room</h2>
             {invitableUsers.length === 0 ? (
-              <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">
+              <div className="rf-flat-empty text-sm muted">
                 All eligible users are already in this room.
               </div>
             ) : (
               <>
                 <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                  <ul className="space-y-2">
+                  <ul className="rf-flat-list">
                     {invitableUsers.map((user) => {
                       const checked = user.id in inviteSelections;
                       const role = inviteSelections[user.id] ?? 'viewer';
                       return (
-                        <li key={user.id} className="panel-soft rounded-xl px-3 py-2">
+                        <li key={user.id} className="rf-flat-row">
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex min-w-0 items-center gap-3">
                               <input

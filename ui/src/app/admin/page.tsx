@@ -1885,7 +1885,7 @@ export default function AdminPage() {
 
   if (authLoading) {
     return (
-      <div className="panel-soft px-5 py-4">
+      <div className="rf-flat-empty px-5 py-4">
         <p className="text-sm muted">Checking access…</p>
       </div>
     );
@@ -1893,7 +1893,7 @@ export default function AdminPage() {
 
   if (!me || me.role !== 'admin') {
     return (
-      <div className="panel px-6 py-8">
+      <div className="rf-flat-empty px-6 py-8">
         <p className="text-sm muted">Admin access required.</p>
       </div>
     );
@@ -1905,8 +1905,8 @@ export default function AdminPage() {
     minecraftServers.find((server) => server.id === selectedMinecraftServerId) ?? null;
 
   return (
-    <div className="space-y-8 animate-rise">
-      <header className="space-y-2">
+    <div className="rf-flat-page rf-flat-scope animate-rise">
+      <header className="rf-flat-header">
         <h1 className="text-3xl font-semibold sm:text-4xl">Admin Dashboard</h1>
       </header>
 
@@ -1916,16 +1916,16 @@ export default function AdminPage() {
         </p>
       )}
 
-      <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-0">
+      <div className="flex flex-wrap gap-2 border-b border-[var(--border)]/70 pb-0">
         {ADMIN_TABS.map((tab) => (
           <button
             key={tab.key}
             type="button"
             onClick={() => setActiveTab(tab.key)}
-            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
+            className={`border-b-2 px-1 py-2.5 text-sm font-medium transition-colors ${
               activeTab === tab.key
-                ? 'bg-[var(--surface)] border border-b-0 border-[var(--border)]'
-                : 'opacity-60 hover:opacity-100 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:border hover:border-b-0 hover:border-[var(--border)] hover:border-opacity-50'
+                ? 'border-[var(--orange-soft)] text-white'
+                : 'border-transparent text-white/55 hover:border-white/14 hover:text-white/80'
             }`}
           >
             {tab.label}

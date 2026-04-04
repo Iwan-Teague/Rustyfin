@@ -271,7 +271,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'draft') {
     return {
       label: 'Offline',
-      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      dotClass: 'bg-rose-400',
       textClass: 'text-rose-200',
       animated: false,
     };
@@ -280,7 +280,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'unprovisioned') {
     return {
       label: 'Offline',
-      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      dotClass: 'bg-rose-400',
       textClass: 'text-rose-200',
       animated: false,
     };
@@ -289,7 +289,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'provisioning' || server.observed_state === 'importing') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
+      dotClass: 'bg-amber-400',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -298,7 +298,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'running' && server.health_state === 'pending') {
     return {
       label: 'Booting',
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
+      dotClass: 'bg-amber-400',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -307,7 +307,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'running' && server.health_state === 'healthy') {
     return {
       label: 'Online',
-      dotClass: 'bg-emerald-400 shadow-[0_0_14px_rgba(74,222,128,0.45)]',
+      dotClass: 'bg-emerald-400',
       textClass: 'text-emerald-200',
       animated: false,
     };
@@ -316,7 +316,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'starting' || server.observed_state === 'restarting') {
     return {
       label: titleCase(server.observed_state),
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
+      dotClass: 'bg-amber-400',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -325,7 +325,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.observed_state === 'stopping') {
     return {
       label: 'Stopping',
-      dotClass: 'bg-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.45)]',
+      dotClass: 'bg-amber-400',
       textClass: 'text-amber-200',
       animated: true,
     };
@@ -334,7 +334,7 @@ function getServerIndicator(server: MinecraftServer) {
   if (server.health_state === 'error' || server.observed_state === 'error') {
     return {
       label: 'Error',
-      dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+      dotClass: 'bg-rose-400',
       textClass: 'text-rose-200',
       animated: false,
     };
@@ -342,7 +342,7 @@ function getServerIndicator(server: MinecraftServer) {
 
   return {
     label: 'Offline',
-    dotClass: 'bg-rose-400 shadow-[0_0_14px_rgba(251,113,133,0.4)]',
+    dotClass: 'bg-rose-400',
     textClass: 'text-rose-200',
     animated: false,
   };
@@ -839,26 +839,26 @@ export default function ServersPage() {
   if (authLoading || !me) {
     return (
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <div className="panel-soft animate-rise px-5 py-4 text-sm muted">Loading servers…</div>
+        <div className="rf-flat-empty animate-rise px-5 py-4 text-sm muted">Loading servers…</div>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl animate-rise flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+    <main className="rf-flat-page rf-flat-scope mx-auto flex w-full max-w-7xl animate-rise flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
       {error ? (
-        <div className="panel-soft animate-rise border border-red-400/30 px-5 py-4 text-sm text-red-200">
+        <div className="rf-flat-empty animate-rise border border-red-400/30 px-5 py-4 text-sm text-red-200">
           {error}
         </div>
       ) : null}
 
       {runtimeCapabilities?.reason ? (
-        <div className="panel-soft animate-rise border border-amber-400/30 px-5 py-4 text-sm text-amber-100">
+        <div className="rf-flat-empty animate-rise border border-amber-400/30 px-5 py-4 text-sm text-amber-100">
           {runtimeCapabilities.reason}
         </div>
       ) : null}
 
-      <section className="panel relative mt-[17px] flex flex-col gap-4 p-5 pt-[20px] sm:p-6 sm:pt-[24px]">
+      <section className="rf-flat-section relative mt-[17px] border-t border-[var(--border)]/70 pt-[20px] sm:pt-[24px]">
         <div className="absolute left-4 right-4 top-[-16px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
           <div className="flex flex-wrap items-end gap-2">
             <button

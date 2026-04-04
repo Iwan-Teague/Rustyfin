@@ -287,7 +287,7 @@ export default function WatchPartyPage() {
 
   if (authLoading || loading) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Loading watch-party workspace...</p>
       </div>
     );
@@ -308,14 +308,14 @@ export default function WatchPartyPage() {
   const fixedTopPanelsStyle = { height: '15.5rem' };
   const fixedColumnHeightStyle = { height: '26rem' };
   return (
-    <div className="space-y-6 animate-rise">
+    <div className="animate-rise rf-flat-page">
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
       {message && <div className="notice-ok rounded-xl px-4 py-2 text-sm">{message}</div>}
 
       <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
         <section
-          className="panel flex h-full min-h-0 flex-col gap-4 p-5 sm:p-6"
+          className="rf-flat-section flex h-full min-h-0 flex-col gap-4"
           style={fixedTopPanelsStyle}
         >
           <div className="space-y-2">
@@ -324,14 +324,14 @@ export default function WatchPartyPage() {
           </div>
 
           {publicRooms.length === 0 ? (
-            <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No open rooms right now.</div>
+            <div className="rf-flat-empty text-sm muted">No open rooms right now.</div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rf-flat-list">
                 {publicRooms.map((room) => (
                   <div
                     key={room.room_id}
-                    className="rounded-2xl border border-[var(--border)] bg-black/25 p-4 flex items-center justify-between gap-3 shadow-none"
+                    className="rf-flat-row flex items-center justify-between gap-3"
                   >
                     <div className="min-w-0 space-y-0.5">
                       <p className="font-semibold truncate">{room.title}</p>
@@ -347,7 +347,7 @@ export default function WatchPartyPage() {
                     </div>
                     <Link
                       href={`/rooms/${room.room_id}`}
-                      className="btn-primary shrink-0 px-4 py-2 text-sm"
+                      className="btn-primary shrink-0 px-3 py-1.5 text-sm"
                     >
                       Join
                     </Link>
@@ -369,11 +369,11 @@ export default function WatchPartyPage() {
       </div>
 
       {/* Create room section */}
-      <section className="space-y-3">
+      <section className="rf-flat-section">
         <h2 className="text-xl font-semibold sm:text-2xl">Create a Room</h2>
       </section>
 
-      <section className="panel p-5 sm:p-6">
+      <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
         <div className="space-y-3">
           <label className="block text-sm">
             <span className="mb-1 block text-xs uppercase tracking-wide muted">Room Name</span>
@@ -381,7 +381,7 @@ export default function WatchPartyPage() {
               type="text"
               value={roomName}
               onChange={(e) => setRoomName(e.target.value)}
-              className="input px-3 py-2 text-sm"
+              className="rf-flat-input px-3 py-2 text-sm"
               placeholder="Optional room name"
               maxLength={120}
             />
@@ -446,7 +446,9 @@ export default function WatchPartyPage() {
           </section>
         </div>
 
-        <section className={`panel mt-[5px] p-5 sm:p-6 rf-room-mode-panel-later ${modeMotionClass}`}>
+        <section
+          className={`rf-flat-section mt-[5px] border-t border-[var(--border-subtle)] pt-5 rf-room-mode-panel-later ${modeMotionClass}`}
+        >
           <button
             type="button"
             className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"

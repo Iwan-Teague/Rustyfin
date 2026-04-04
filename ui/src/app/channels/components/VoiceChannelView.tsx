@@ -105,7 +105,7 @@ function ParticipantCard({
     Math.min(100, (volumePercent / safeMaxPercent) * 100),
   );
   return (
-    <div className="tile flex flex-col items-center gap-3 p-6 min-w-[140px]">
+    <div className="flex min-w-[140px] flex-col items-center gap-3 rounded-2xl border border-[var(--border-subtle)] px-5 py-6">
       <div>
         <div
           className="rounded-full p-[3px] transition-all duration-150"
@@ -114,7 +114,6 @@ function ParticipantCard({
               ? {
                   background:
                     'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
-                  boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
                 }
               : undefined
           }
@@ -585,7 +584,7 @@ export default function VoiceChannelView({
         </div>
 
         {/* Transcript history */}
-        <aside className="w-60 min-w-[200px] border-l border-[var(--border)] bg-[var(--surface)]/30 p-3 overflow-y-auto">
+        <aside className="w-60 min-w-[200px] overflow-y-auto border-l border-[var(--border)] px-3 py-4">
           <div className="mb-3 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold">Transcripts</h3>
             <span className="chip text-[11px]">{downloadableTranscriptSessions.length}</span>
@@ -599,12 +598,12 @@ export default function VoiceChannelView({
                 : 'No transcripts saved for this voice channel yet.'}
             </p>
           ) : (
-            <ul className="space-y-2">
+            <ul className="rf-flat-list">
               {downloadableTranscriptSessions.map((session) => (
                 <li
                   key={session.session_id}
                   data-transcript-session-id={session.session_id}
-                  className="tile rounded-xl p-2.5 space-y-2"
+                  className="rf-flat-row space-y-2"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">

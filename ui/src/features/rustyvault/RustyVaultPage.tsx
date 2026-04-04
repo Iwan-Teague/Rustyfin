@@ -733,7 +733,7 @@ export default function RustyVaultPage() {
 
   if (authLoading || loadingState) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Loading Vault…</p>
       </div>
     );
@@ -741,7 +741,7 @@ export default function RustyVaultPage() {
 
   if (!me) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Redirecting to login…</p>
       </div>
     );
@@ -749,17 +749,16 @@ export default function RustyVaultPage() {
 
   if (isRustyVaultUnavailableError(error)) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">{error}</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-7 animate-rise">
-      <header className="panel relative overflow-hidden p-6 sm:p-8">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,145,77,0.18),transparent_42%),radial-gradient(circle_at_85%_20%,rgba(255,117,136,0.18),transparent_35%),radial-gradient(circle_at_75%_80%,rgba(177,140,255,0.18),transparent_38%)]" />
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="rf-flat-page rf-flat-scope animate-rise">
+      <header className="rf-flat-header border-b border-[var(--border)]/70 pb-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
             <p className="max-w-3xl text-sm muted sm:text-base">
@@ -767,19 +766,19 @@ export default function RustyVaultPage() {
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <div className="tile px-4 py-3">
+            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.22em] text-white/45">Items</p>
               <p className="mt-1 text-xl font-semibold">{config?.item_count ?? 0}</p>
             </div>
-            <div className="tile px-4 py-3">
+            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.22em] text-white/45">KDF</p>
               <p className="mt-1 text-sm font-medium">Argon2id 64 MiB</p>
             </div>
-            <div className="tile px-4 py-3">
+            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
               <p className="mt-1 text-xl font-semibold">{prefs.auto_lock_minutes}m</p>
             </div>
-            <div className="tile px-4 py-3">
+            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
               <p className="text-xs uppercase tracking-[0.22em] text-white/45">Session</p>
               <p className="mt-1 text-sm font-medium">{rustyVaultSession ? formatTimestamp(rustyVaultSession.access_expires_ts) : 'Unavailable'}</p>
             </div>
@@ -797,8 +796,9 @@ export default function RustyVaultPage() {
         </div>
       )}
 
-      <section className="panel overflow-hidden p-5 sm:p-6">
+      <section className="rf-flat-section border-t border-[var(--border)]/70 pt-5 sm:pt-6">
         <SurfaceTabsBar
+          variant="flat"
           className="border-b border-[var(--border)] pb-0"
           activeKey={activeWorkspaceTab}
           onSelect={setActiveWorkspaceTab}

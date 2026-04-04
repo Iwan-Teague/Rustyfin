@@ -11,6 +11,7 @@ type Props<T extends string> = {
   badges?: string[];
   badgesClassName?: string;
   className?: string;
+  variant?: 'surface' | 'flat';
 };
 
 export default function SurfaceTabsBar<T extends string>({
@@ -21,6 +22,7 @@ export default function SurfaceTabsBar<T extends string>({
   badges = [],
   badgesClassName = '',
   className,
+  variant = 'surface',
 }: Props<T>) {
   return (
     <div className={className}>
@@ -32,11 +34,19 @@ export default function SurfaceTabsBar<T extends string>({
               type="button"
               onClick={() => onSelect(key)}
               disabled={disabled || activeKey === key}
-              className={`rounded-t-lg px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
-                activeKey === key
-                  ? 'border border-[var(--border)] border-b-0 bg-[var(--surface)]'
-                  : 'opacity-60 hover:border hover:border-[var(--border)] hover:border-b-0 hover:border-opacity-50 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:opacity-100'
-              }`}
+              className={
+                variant === 'flat'
+                  ? `rounded-none border-b-2 px-0 py-1.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                      activeKey === key
+                        ? 'border-[var(--orange-soft)] text-white'
+                        : 'border-transparent text-white/62 hover:border-white/16 hover:text-white'
+                    }`
+                  : `rounded-t-lg px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+                      activeKey === key
+                        ? 'border border-[var(--border)] border-b-0 bg-[var(--surface)]'
+                        : 'opacity-60 hover:border hover:border-[var(--border)] hover:border-b-0 hover:border-opacity-50 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:opacity-100'
+                    }`
+              }
             >
               {label}
             </button>
