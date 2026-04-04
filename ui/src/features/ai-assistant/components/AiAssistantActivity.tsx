@@ -82,6 +82,7 @@ export default function AiAssistantActivity({
             <span
               className="ai-activity-primary"
               data-active={row.active ? 'true' : 'false'}
+              data-text={row.primary}
             >
               {row.primary}
             </span>
