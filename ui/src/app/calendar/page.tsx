@@ -439,7 +439,9 @@ export default function CalendarPage() {
         <section className="rf-flat-section flex flex-col lg:h-full lg:min-h-0">
           <div className="flex flex-wrap items-center justify-between gap-3 lg:flex-nowrap">
             <div className="flex min-w-0 flex-wrap items-center gap-3 lg:flex-nowrap">
-              <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
+              <div className="min-w-[13rem] sm:min-w-[17rem] lg:min-w-[20rem]">
+                <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
+              </div>
               <span className="text-xs text-white/55">{events.length} events</span>
               <select
                 className="rf-inline-select w-full sm:w-auto text-sm"
@@ -775,7 +777,7 @@ export default function CalendarPage() {
                 </div>
               </>
             ) : (
-              <div className="space-y-2 h-full flex flex-col min-h-0">
+              <div className="h-full min-h-0 flex flex-col pb-2">
                 <div className="grid grid-cols-7 gap-0 border-y border-[var(--border-subtle)]">
                   {weekdayHeaders.map(({ label, isToday }) => (
                     <div
