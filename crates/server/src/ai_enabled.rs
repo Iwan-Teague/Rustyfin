@@ -34,10 +34,10 @@ use crate::ai_assistant::types::{
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
-    AssistantChatRequest, build_assistant_messages, deterministic_calendar_reply,
-    deterministic_current_datetime_reply, deterministic_library_reply, deterministic_network_reply,
-    deterministic_tool_inventory_reply, immediate_response_for_message,
-    plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    AssistantChatRequest, build_assistant_messages, deterministic_ai_runtime_reply,
+    deterministic_calendar_reply, deterministic_current_datetime_reply,
+    deterministic_library_reply, deterministic_network_reply, deterministic_tool_inventory_reply,
+    immediate_response_for_message, plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
 use crate::ai_audit::{
@@ -1372,6 +1372,75 @@ fn stream_chat_response(
             deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
         {
             assistant_content = datetime_reply;
+            stats = Some(build_turn_stats_with_planner(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+                Some(&planner_debug),
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event_with_planner(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &planned_tools,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                Some(&planner_debug),
+                None,
+            )
+            .await;
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(ai_runtime_reply) =
+            deterministic_ai_runtime_reply(&req.message, &grounding_blocks)
+        {
+            assistant_content = ai_runtime_reply;
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,

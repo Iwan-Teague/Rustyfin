@@ -682,6 +682,7 @@ pub(crate) async fn execute_system_provider_tool(
 ) -> AssistantToolContextBlock {
     let result = match call.tool {
         AssistantToolName::SystemGetCurrentDateTime => system_get_current_datetime().await,
+        AssistantToolName::SystemGetAiRuntimeSummary => system_get_ai_runtime_summary(state).await,
         AssistantToolName::SystemGetHostRuntimeSummary => {
             system_get_host_runtime_summary(state, context).await
         }
@@ -2148,6 +2149,16 @@ async fn system_get_host_runtime_summary(
 
     Ok((
         "Rustyfin host runtime summary".to_string(),
+        serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
+    ))
+}
+
+async fn system_get_ai_runtime_summary(
+    state: &AppState,
+) -> Result<(String, serde_json::Value), String> {
+    let summary = crate::ai_runtime::collect_ai_runtime_response(state).await;
+    Ok((
+        "Rustyfin AI runtime summary".to_string(),
         serde_json::to_value(summary).unwrap_or_else(|_| json!({})),
     ))
 }
@@ -4180,6 +4191,7 @@ fn follow_up_entities(
         | AssistantToolName::LibrariesListAccessible
         | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::SystemGetCurrentDateTime
+        | AssistantToolName::SystemGetAiRuntimeSummary
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth

@@ -181,7 +181,7 @@ impl TurnScheduler {
             .ok()
             .and_then(|raw| raw.trim().parse::<u64>().ok())
             .filter(|value| *value > 0)
-            .unwrap_or_else(|| (total_memory_bytes / 4).max(1024 * 1024 * 1024));
+            .unwrap_or_else(|| default_warm_pool_budget_bytes(total_memory_bytes));
 
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent_turns)),
@@ -487,10 +487,18 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+fn default_warm_pool_budget_bytes(total_memory_bytes: u64) -> u64 {
+    (total_memory_bytes / 4).max(1024 * 1024 * 1024)
+}
+
+fn normalize_sysinfo_memory_bytes(raw_bytes: u64) -> u64 {
+    raw_bytes
+}
+
 fn total_system_memory_bytes() -> Option<u64> {
     let mut system = sysinfo::System::new_all();
     system.refresh_memory();
-    Some(system.total_memory().saturating_mul(1024))
+    Some(normalize_sysinfo_memory_bytes(system.total_memory()))
 }
 
 fn parse_remote_backend_config() -> Option<AiRemoteBackendConfig> {
@@ -557,6 +565,21 @@ mod tests {
         assert_eq!(snapshot.warm_pool_bytes, 0);
         assert_eq!(snapshot.overload_state, OverloadState::Normal.as_str());
         assert!(snapshot.warm_models.is_empty());
+    }
+
+    #[test]
+    fn default_warm_pool_budget_uses_quarter_of_total_memory() {
+        let total_memory_bytes = 32 * 1024 * 1024 * 1024_u64;
+        assert_eq!(
+            default_warm_pool_budget_bytes(total_memory_bytes),
+            8 * 1024 * 1024 * 1024_u64
+        );
+    }
+
+    #[test]
+    fn normalize_sysinfo_memory_bytes_keeps_byte_values_unchanged() {
+        let raw_bytes = 31_300_000_000_u64;
+        assert_eq!(normalize_sysinfo_memory_bytes(raw_bytes), raw_bytes);
     }
 
     #[test]

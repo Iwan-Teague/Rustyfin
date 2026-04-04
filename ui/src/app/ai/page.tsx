@@ -946,6 +946,8 @@ function RuntimePanel({
   conversationStats,
   showDetails,
   onToggleDetails,
+  showSources,
+  onToggleSources,
   className = '',
   stacked = false,
 }: {
@@ -953,6 +955,8 @@ function RuntimePanel({
   conversationStats: ConversationStatsSummary | null;
   showDetails: boolean;
   onToggleDetails: () => void;
+  showSources: boolean;
+  onToggleSources: () => void;
   className?: string;
   stacked?: boolean;
 }) {
@@ -1084,13 +1088,22 @@ function RuntimePanel({
           )}
         </section>
 
-        <button
-          type="button"
-          onClick={onToggleDetails}
-          className="mt-4 text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
-        >
-          {showDetails ? 'Hide AI prompt details' : 'Show AI prompt details'}
-        </button>
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+          <button
+            type="button"
+            onClick={onToggleDetails}
+            className="text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+          >
+            {showDetails ? 'Hide AI prompt details' : 'Show AI prompt details'}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleSources}
+            className="text-[0.74rem] font-medium text-[var(--text-main)] underline underline-offset-4"
+          >
+            {showSources ? 'Hide sources' : 'Show sources'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1128,12 +1141,14 @@ function preferredRecorderMimeType(): string | undefined {
 function MessageBubble({
   entry,
   showStats,
+  showSources,
   onConfirmPendingAction,
   confirmingToken,
   interactionDisabled,
 }: {
   entry: UiConversationTurn;
   showStats: boolean;
+  showSources: boolean;
   onConfirmPendingAction: (pendingAction: AiPendingAction) => void;
   confirmingToken: string | null;
   interactionDisabled: boolean;
@@ -1186,7 +1201,7 @@ function MessageBubble({
           {entry.isStreaming && content ? <span className="ai-cursor" /> : null}
         </div>
 
-        {entry.grounding_chunks.length > 0 ? (
+        {showSources && entry.grounding_chunks.length > 0 ? (
           <div className="mt-3 space-y-2 text-xs">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] muted">
               Sources
@@ -1385,11 +1400,11 @@ function ModelSelector({
   className?: string;
 }) {
   return (
-    <div className={`relative min-w-[11rem] ${className}`}>
+    <div className={`group relative min-w-[10.5rem] ${className}`}>
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
+        className="ai-model-select h-10 w-full cursor-pointer py-1.5 pl-1 pr-7 text-[1.05rem] font-medium text-[var(--text-dim)] transition-colors"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -1399,7 +1414,7 @@ function ModelSelector({
         ))}
       </select>
       <svg
-        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
+        className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-dim)] transition-colors group-hover:text-[var(--text-main)] group-focus-within:text-[var(--text-main)]"
         viewBox="0 0 16 16"
         fill="currentColor"
       >
@@ -1419,11 +1434,11 @@ function ResponseModeSelector({
   className?: string;
 }) {
   return (
-    <div className={`relative min-w-[7.5rem] ${className}`}>
+    <div className={`group relative min-w-[8.25rem] ${className}`}>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
-        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
+        className="ai-model-select h-10 w-full cursor-pointer py-1.5 pl-1 pr-7 text-[1.05rem] font-medium text-[var(--text-dim)] transition-colors"
         aria-label="AI response mode"
       >
         <option value="instant">Instant</option>
@@ -1431,7 +1446,7 @@ function ResponseModeSelector({
         <option value="extended">Extended</option>
       </select>
       <svg
-        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
+        className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-dim)] transition-colors group-hover:text-[var(--text-main)] group-focus-within:text-[var(--text-main)]"
         viewBox="0 0 16 16"
         fill="currentColor"
       >
@@ -1480,6 +1495,7 @@ export default function AiPage() {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [showPromptDetails, setShowPromptDetails] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const [composerMenuOpen, setComposerMenuOpen] = useState(false);
   const [composerShellHeight, setComposerShellHeight] = useState(176);
   const [desktopViewport, setDesktopViewport] = useState(false);
@@ -2927,6 +2943,8 @@ export default function AiPage() {
               conversationStats={activeConversationStats}
               showDetails={showPromptDetails}
               onToggleDetails={() => setShowPromptDetails((current) => !current)}
+              showSources={showSources}
+              onToggleSources={() => setShowSources((current) => !current)}
               className="space-y-0"
               stacked
             />
@@ -3148,6 +3166,7 @@ export default function AiPage() {
                             key={message.id}
                             entry={message}
                             showStats={showPromptDetails}
+                            showSources={showSources}
                             onConfirmPendingAction={handleConfirmPendingAction}
                             confirmingToken={confirmingToken}
                             interactionDisabled={isStreaming}
@@ -3366,6 +3385,8 @@ export default function AiPage() {
                     conversationStats={activeConversationStats}
                     showDetails={showPromptDetails}
                     onToggleDetails={() => setShowPromptDetails((current) => !current)}
+                    showSources={showSources}
+                    onToggleSources={() => setShowSources((current) => !current)}
                     className="space-y-0"
                     stacked
                   />

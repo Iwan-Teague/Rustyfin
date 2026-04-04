@@ -29,6 +29,21 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
     format!("{prefix}:{}", hex::encode(&digest[..16]))
 }
 
+fn humanize_binary_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+    if unit_index == 0 {
+        format!("{bytes} {}", UNITS[unit_index])
+    } else {
+        format!("{value:.1} {}", UNITS[unit_index])
+    }
+}
+
 fn visibility_for_tool(tool: &str) -> AssistantGroundingVisibility {
     match tool {
         "system_get_host_runtime_summary"
@@ -92,6 +107,7 @@ fn topic_key_for_tool(call: &PlannedToolCall, block: &AssistantToolContextBlock)
             Some("servers:catalog".to_string())
         }
         "network_get_topology_summary" => Some("network:topology".to_string()),
+        "system_get_ai_runtime_summary" => Some("ai:runtime".to_string()),
         "system_get_host_runtime_summary" => Some("admin:runtime".to_string()),
         "system_get_backup_summary" => Some("admin:backups".to_string()),
         "system_get_service_health" => Some("admin:service_health".to_string()),
@@ -582,6 +598,98 @@ fn recent_error_chunks_for_block(
     out
 }
 
+fn ai_runtime_chunks_for_block(
+    call: &PlannedToolCall,
+    block: &AssistantToolContextBlock,
+    source_id: Option<String>,
+    source_sub_id: Option<String>,
+) -> Vec<AssistantGroundingChunk> {
+    let loaded = block
+        .data
+        .get("model")
+        .and_then(|model| model.get("loaded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let model_name = block
+        .data
+        .get("model")
+        .and_then(|model| model.get("name"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let backend = block
+        .data
+        .get("model")
+        .and_then(|model| model.get("backend"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let active_turns = block
+        .data
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("active_turns"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let queued_turns = block
+        .data
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("queued_turns"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let warm_pool_bytes = block
+        .data
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("warm_pool_bytes"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let warm_pool_budget_bytes = block
+        .data
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("warm_pool_budget_bytes"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let excerpt = match model_name {
+        Some(model_name) if loaded => format!(
+            "Loaded AI model `{model_name}` on the {backend} backend. Scheduler has {active_turns} active and {queued_turns} queued turns. Warm pool is {} of {}.",
+            humanize_binary_bytes(warm_pool_bytes),
+            humanize_binary_bytes(warm_pool_budget_bytes),
+        ),
+        Some(model_name) => format!(
+            "Rustyfin AI is configured for `{model_name}` on the {backend} backend, but no model is currently loaded. Scheduler has {active_turns} active and {queued_turns} queued turns. Warm pool is {} of {}.",
+            humanize_binary_bytes(warm_pool_bytes),
+            humanize_binary_bytes(warm_pool_budget_bytes),
+        ),
+        None => format!(
+            "No AI model is currently loaded. Scheduler has {active_turns} active and {queued_turns} queued turns. Warm pool is {} of {}.",
+            humanize_binary_bytes(warm_pool_bytes),
+            humanize_binary_bytes(warm_pool_budget_bytes),
+        ),
+    };
+    let citation = source_id.as_deref().map(|source_id| {
+        chunk_citation(
+            call.tool.as_str(),
+            source_id,
+            source_sub_id.as_deref(),
+            Some(&block.label),
+            Some(&excerpt),
+            None,
+            None,
+            None,
+        )
+    });
+
+    vec![chunk_from_parts(
+        call.tool.as_str(),
+        block.label.clone(),
+        excerpt,
+        if block.status == "ok" { 1.25 } else { 0.2 },
+        AssistantGroundingVisibility::Shared,
+        Some("ai:runtime".to_string()),
+        None,
+        source_id,
+        source_sub_id,
+        citation,
+    )]
+}
+
 fn build_chunks_from_block(
     context: &AssistantContext,
     call: &PlannedToolCall,
@@ -610,6 +718,19 @@ fn build_chunks_from_block(
     }
     if call.tool == super::registry::AssistantToolName::SystemGetRecentErrors {
         return recent_error_chunks_for_block(context, call, block);
+    }
+    if call.tool == super::registry::AssistantToolName::SystemGetAiRuntimeSummary {
+        let source_id = first_string_field(&block.data, &["name"])
+            .or_else(|| {
+                block
+                    .data
+                    .get("model")
+                    .and_then(|model| model.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| Some(stable_id("source", &[call.tool.as_str(), &block.label])));
+        return ai_runtime_chunks_for_block(call, block, source_id, None);
     }
 
     let source_id = first_string_field(
@@ -652,6 +773,16 @@ fn build_chunks_from_block(
 
 fn maybe_topic_from_message(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
+    if lower.contains("ai model")
+        || lower.contains("loaded model")
+        || lower.contains("inference")
+        || lower.contains("warm pool")
+        || lower.contains("queue depth")
+        || lower.contains("scheduler")
+        || (lower.contains("backend") && lower.contains("ai"))
+    {
+        return Some("ai:runtime".to_string());
+    }
     if lower.contains("transcript") || lower.contains("call") {
         return Some("transcript:conversation".to_string());
     }

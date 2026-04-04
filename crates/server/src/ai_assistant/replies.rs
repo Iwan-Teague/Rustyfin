@@ -163,6 +163,21 @@ pub fn compact_text(text: &str, max_chars: usize) -> String {
     out
 }
 
+fn format_binary_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+    if unit_index == 0 {
+        format!("{bytes} {}", UNITS[unit_index])
+    } else {
+        format!("{value:.1} {}", UNITS[unit_index])
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GroundedNextEventEnvelope {
     next_event: Option<GroundedNextEventSummary>,
@@ -246,6 +261,178 @@ struct GroundedLibrarySearchMatch {
     year: Option<i64>,
     #[serde(default)]
     library_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedAiRuntimeEnvelope {
+    model: GroundedAiRuntimeModel,
+    scheduler: GroundedAiRuntimeScheduler,
+    #[serde(default)]
+    role_routing: Vec<GroundedAiRuntimeRoleRoute>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedAiRuntimeModel {
+    name: Option<String>,
+    backend: String,
+    loaded: bool,
+    context_length: u32,
+    n_threads: u32,
+    split_mode: String,
+    #[serde(default)]
+    device_indices: Vec<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedAiRuntimeScheduler {
+    overload_state: String,
+    active_turns: u64,
+    queued_turns: u64,
+    warm_pool_bytes: u64,
+    warm_pool_budget_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroundedAiRuntimeRoleRoute {
+    role: String,
+    model_name: String,
+    backend_kind: String,
+}
+
+pub fn deterministic_ai_runtime_reply(
+    message: &str,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    if grounding_blocks.len() != 1 {
+        return None;
+    }
+    let block = grounding_blocks.first()?;
+    if block.tool != "system_get_ai_runtime_summary" {
+        return None;
+    }
+    if block.status != "ok" {
+        return Some("I couldn't load the current Rustyfin AI runtime details.".to_string());
+    }
+
+    let runtime = serde_json::from_value::<GroundedAiRuntimeEnvelope>(block.data.clone()).ok()?;
+    let answer_route = runtime
+        .role_routing
+        .iter()
+        .find(|route| route.role.eq_ignore_ascii_case("answer"));
+    let planner_route = runtime
+        .role_routing
+        .iter()
+        .find(|route| route.role.eq_ignore_ascii_case("planner"));
+    let effective_model = runtime
+        .model
+        .name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| answer_route.map(|route| route.model_name.as_str()));
+
+    let mut lines = Vec::new();
+    if runtime.model.loaded {
+        if let Some(model_name) = effective_model {
+            lines.push(format!(
+                "The currently loaded AI model is `{model_name}` on the {} backend.",
+                runtime.model.backend
+            ));
+        } else {
+            lines.push(format!(
+                "Rustyfin AI is currently loaded on the {} backend, but the model name was not available.",
+                runtime.model.backend
+            ));
+        }
+    } else if let Some(model_name) = effective_model {
+        lines.push(format!(
+            "Rustyfin AI is configured for `{model_name}` on the {} backend, but no model is currently loaded.",
+            runtime.model.backend
+        ));
+    } else {
+        lines.push("No AI model is currently loaded.".to_string());
+    }
+
+    let lower = message.to_ascii_lowercase();
+    let mentions_backend = [
+        "backend", "local", "remote", "gpu", "gpus", "device", "devices", "threads", "context",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if mentions_backend {
+        let device_summary = if runtime.model.device_indices.is_empty() {
+            "CPU only".to_string()
+        } else {
+            format!(
+                "devices {}",
+                runtime
+                    .model
+                    .device_indices
+                    .iter()
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        lines.push(format!(
+            "Runtime settings: context {} tokens, {} threads, {} split, {device_summary}.",
+            runtime.model.context_length, runtime.model.n_threads, runtime.model.split_mode
+        ));
+    }
+
+    let mentions_roles = [
+        "planner",
+        "summarizer",
+        "answer",
+        "verifier",
+        "worker",
+        "role",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if mentions_roles
+        || planner_route.is_some_and(|route| {
+            answer_route.is_some_and(|answer| {
+                route.model_name != answer.model_name || route.backend_kind != answer.backend_kind
+            })
+        })
+    {
+        let role_summary = runtime
+            .role_routing
+            .iter()
+            .map(|route| {
+                format!(
+                    "{} -> `{}` ({})",
+                    route.role, route.model_name, route.backend_kind
+                )
+            })
+            .collect::<Vec<_>>();
+        if !role_summary.is_empty() {
+            lines.push(format!("Role routing: {}.", role_summary.join(", ")));
+        }
+    }
+
+    let mentions_scheduler = [
+        "queue",
+        "queued",
+        "scheduler",
+        "warm pool",
+        "overload",
+        "hot model",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if mentions_scheduler {
+        lines.push(format!(
+            "Scheduler is {} with {} active and {} queued. Warm pool is {} of {}.",
+            runtime.scheduler.overload_state.to_ascii_lowercase(),
+            runtime.scheduler.active_turns,
+            runtime.scheduler.queued_turns,
+            format_binary_bytes(runtime.scheduler.warm_pool_bytes),
+            format_binary_bytes(runtime.scheduler.warm_pool_budget_bytes),
+        ));
+    }
+
+    Some(lines.join("\n"))
 }
 
 pub fn deterministic_calendar_reply(
@@ -677,8 +864,8 @@ fn extract_quoted_phrase(message: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_calendar_reply, deterministic_library_reply, deterministic_network_reply,
-        grounding_chunks_prompt, rank_and_compress_grounding_chunks,
+        deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_library_reply,
+        deterministic_network_reply, grounding_chunks_prompt, rank_and_compress_grounding_chunks,
     };
     use crate::ai_assistant::types::{
         AssistantGroundingChunk, AssistantGroundingCitation, AssistantGroundingVisibility,
@@ -916,5 +1103,83 @@ mod tests {
         assert!(reply.contains("https://192.168.0.36:3008"));
         assert!(reply.contains("192.168.0.36"));
         assert!(!reply.contains("192.168.112.1"));
+    }
+
+    #[test]
+    fn deterministic_ai_runtime_reply_reports_loaded_model() {
+        let reply = deterministic_ai_runtime_reply(
+            "What AI model is loaded right now?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_ai_runtime_summary",
+                label: "Rustyfin AI runtime summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "model": {
+                        "name": "Llama-3.2-3B-Instruct-Q4_K_M",
+                        "backend": "local",
+                        "loaded": true,
+                        "context_length": 4096,
+                        "n_threads": 8,
+                        "split_mode": "layer",
+                        "device_indices": [0, 1]
+                    },
+                    "scheduler": {
+                        "overload_state": "Normal",
+                        "active_turns": 0,
+                        "queued_turns": 0,
+                        "warm_pool_bytes": 3006477107_u64,
+                        "warm_pool_budget_bytes": 8589934592_u64
+                    },
+                    "role_routing": [
+                        {
+                            "role": "answer",
+                            "model_name": "Llama-3.2-3B-Instruct-Q4_K_M",
+                            "backend_kind": "local"
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic ai runtime reply");
+
+        assert!(reply.contains("Llama-3.2-3B-Instruct-Q4_K_M"));
+        assert!(reply.contains("local backend"));
+    }
+
+    #[test]
+    fn deterministic_ai_runtime_reply_reports_scheduler_when_requested() {
+        let reply = deterministic_ai_runtime_reply(
+            "What is the AI warm pool and queue depth right now?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_ai_runtime_summary",
+                label: "Rustyfin AI runtime summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "model": {
+                        "name": null,
+                        "backend": "local",
+                        "loaded": false,
+                        "context_length": 4096,
+                        "n_threads": 8,
+                        "split_mode": "layer",
+                        "device_indices": []
+                    },
+                    "scheduler": {
+                        "overload_state": "Normal",
+                        "active_turns": 1,
+                        "queued_turns": 2,
+                        "warm_pool_bytes": 2147483648_u64,
+                        "warm_pool_budget_bytes": 8589934592_u64
+                    },
+                    "role_routing": []
+                }),
+            }],
+        )
+        .expect("expected deterministic ai runtime reply");
+
+        assert!(reply.contains("No AI model is currently loaded."));
+        assert!(reply.contains("Scheduler is normal with 1 active and 2 queued."));
+        assert!(reply.contains("2.0 GiB"));
+        assert!(reply.contains("8.0 GiB"));
     }
 }
