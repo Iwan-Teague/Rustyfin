@@ -604,7 +604,7 @@ function buildConversationStatsSummary(
   let lastUserContent = 'Prompt';
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
-  let totalGenerationDurationMs = 0;
+  let totalAuthoringDurationMs = 0;
 
   for (const message of conversation.messages) {
     if (message.role === 'user') {
@@ -618,7 +618,13 @@ function buildConversationStatsSummary(
 
     totalInputTokens += message.stats.prompt_tokens;
     totalOutputTokens += message.stats.completion_tokens;
-    totalGenerationDurationMs += message.stats.generation_duration_ms;
+    const estimatedAuthoringDurationMs =
+      message.stats.generation_duration_ms > 0
+        ? message.stats.generation_duration_ms
+        : message.stats.tokens_per_second > 0 && message.stats.completion_tokens > 0
+          ? (message.stats.completion_tokens / message.stats.tokens_per_second) * 1000
+          : 0;
+    totalAuthoringDurationMs += estimatedAuthoringDurationMs;
 
     prompts.push({
       id: message.id,
@@ -636,11 +642,11 @@ function buildConversationStatsSummary(
   }
 
   const averageTokensPerSecond =
-    totalGenerationDurationMs > 0 && totalOutputTokens > 0
-      ? totalOutputTokens / (totalGenerationDurationMs / 1000)
+    totalAuthoringDurationMs > 0 && totalOutputTokens > 0
+      ? totalOutputTokens / (totalAuthoringDurationMs / 1000)
       : 0;
   const averageMsPerToken =
-    totalOutputTokens > 0 ? totalGenerationDurationMs / totalOutputTokens : 0;
+    totalOutputTokens > 0 ? totalAuthoringDurationMs / totalOutputTokens : 0;
 
   return {
     promptCount: userTurns.length,
