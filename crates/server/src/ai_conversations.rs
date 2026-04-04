@@ -15,6 +15,7 @@ use crate::state::AppState;
 
 const DEFAULT_CONVERSATION_TITLE: &str = "New chat";
 const MAX_CONVERSATION_TITLE_CHARS: usize = 80;
+const MAX_CONVERSATION_GROUP_CHARS: usize = 48;
 const MAX_LIST_CONVERSATIONS: i64 = 200;
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,21 @@ pub struct CreateConversationRequest {
 pub struct UpdateConversationRequest {
     pub title: Option<String>,
     pub archived: Option<bool>,
+    #[serde(default)]
+    pub group_name: Option<Option<String>>,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MoveConversationRequest {
+    pub direction: ConversationMoveDirection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +64,9 @@ pub struct ConversationMessageRequest {
 pub struct ConversationSummary {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+    pub sort_order: i64,
     pub last_message_preview: Option<String>,
     pub last_model_name: Option<String>,
     pub updated_ts: i64,
@@ -88,6 +107,9 @@ pub struct ConversationDetail {
     pub id: String,
     pub title: String,
     pub archived: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+    pub sort_order: i64,
     pub last_message_preview: Option<String>,
     pub last_model_name: Option<String>,
     pub created_ts: i64,
@@ -145,6 +167,8 @@ pub async fn create_conversation(
                 id: conversation.id,
                 title: conversation.title,
                 archived: conversation.archived,
+                group_name: conversation.group_name,
+                sort_order: conversation.sort_order,
                 last_message_preview: conversation.last_message_preview,
                 last_model_name: conversation.last_model_name,
                 created_ts: conversation.created_ts,
@@ -172,9 +196,13 @@ pub async fn update_conversation(
     Path(conversation_id): Path<String>,
     Json(req): Json<UpdateConversationRequest>,
 ) -> Result<Json<ConversationResponse>, AppError> {
-    if req.title.is_none() && req.archived.is_none() {
+    if req.title.is_none()
+        && req.archived.is_none()
+        && req.group_name.is_none()
+        && req.sort_order.is_none()
+    {
         return Err(ApiError::validation(serde_json::json!({
-            "title": ["provide a title or archived change"]
+            "title": ["provide a title, archived, group, or order change"]
         }))
         .into());
     }
@@ -183,6 +211,7 @@ pub async fn update_conversation(
         Some(raw) => Some(normalize_conversation_title(Some(raw))?),
         None => None,
     };
+    let group_name = normalize_group_name(req.group_name)?;
 
     let conversation = rustfin_db::repo::ai_conversations::update_conversation_for_user(
         &state.db,
@@ -190,8 +219,8 @@ pub async fn update_conversation(
         &user.user_id,
         title.as_deref(),
         req.archived,
-        None,
-        None,
+        group_name.as_ref().map(|value| value.as_deref()),
+        req.sort_order,
     )
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -204,6 +233,35 @@ pub async fn update_conversation(
     Ok(Json(ConversationResponse {
         conversation: detail,
     }))
+}
+
+pub async fn move_conversation(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<MoveConversationRequest>,
+) -> Result<StatusCode, AppError> {
+    let outcome = rustfin_db::repo::ai_conversations::move_conversation_for_user(
+        &state.db,
+        &conversation_id,
+        &user.user_id,
+        match req.direction {
+            ConversationMoveDirection::Up => {
+                rustfin_db::repo::ai_conversations::ConversationMoveDirection::Up
+            }
+            ConversationMoveDirection::Down => {
+                rustfin_db::repo::ai_conversations::ConversationMoveDirection::Down
+            }
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+
+    if outcome.is_none() {
+        return Err(ApiError::NotFound("conversation not found".into()).into());
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn delete_conversation(
@@ -402,6 +460,8 @@ fn conversation_summary_from_row(
     ConversationSummary {
         id: row.id,
         title: row.title,
+        group_name: row.group_name,
+        sort_order: row.sort_order,
         last_message_preview: row.last_message_preview,
         last_model_name: row.last_model_name,
         updated_ts: row.updated_ts,
@@ -430,6 +490,32 @@ fn normalize_conversation_title(raw: Option<&str>) -> Result<String, AppError> {
         title.push(ch);
     }
     Ok(title)
+}
+
+fn normalize_group_name(raw: Option<Option<String>>) -> Result<Option<Option<String>>, AppError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let Some(raw) = raw else {
+        return Ok(Some(None));
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Some(None));
+    }
+
+    let mut group_name = String::new();
+    for (index, ch) in trimmed.chars().enumerate() {
+        if index >= MAX_CONVERSATION_GROUP_CHARS {
+            group_name.push_str("...");
+            return Ok(Some(Some(group_name)));
+        }
+        group_name.push(ch);
+    }
+
+    Ok(Some(Some(group_name)))
 }
 
 fn suggested_conversation_title(message: &str) -> String {
@@ -513,6 +599,8 @@ async fn load_conversation_detail(
         id: conversation.id,
         title: conversation.title,
         archived: conversation.archived,
+        group_name: conversation.group_name,
+        sort_order: conversation.sort_order,
         last_message_preview: conversation.last_message_preview,
         last_model_name: conversation.last_model_name,
         created_ts: conversation.created_ts,

@@ -333,7 +333,7 @@ textarea:focus-visible {
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: ai-activity-shimmer 1.65s linear infinite;
+  animation: ai-activity-text-shimmer 1.65s linear infinite;
 }
 
 .ai-activity-meta {
@@ -1367,6 +1367,16 @@ input[type="checkbox"]:disabled {
 
   100% {
     transform: translate3d(130%, 0, 0);
+  }
+}
+
+@keyframes ai-activity-text-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+
+  100% {
+    background-position: -120% 0;
   }
 }
 
