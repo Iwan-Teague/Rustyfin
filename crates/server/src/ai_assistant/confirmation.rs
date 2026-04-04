@@ -55,6 +55,11 @@ pub async fn pending_action_request_for_message_with_state(
     if is_supported_document_create_intent(&lower) {
         return Some(parse_document_request(message, conversation_id, model_name));
     }
+    if is_supported_conversation_manage_intent(&lower) {
+        return Some(
+            parse_conversation_manage_request(state, user, message, conversation_id).await,
+        );
+    }
     if !is_supported_calendar_delete_intent(&lower) {
         return None;
     }
@@ -136,6 +141,38 @@ pub fn is_supported_document_create_intent(message_lower: &str) -> bool {
             "does rustyfin ai support ",
         ],
     )
+}
+
+pub fn is_supported_conversation_manage_intent(message_lower: &str) -> bool {
+    let archive_intent = message_lower.contains("archive")
+        || (message_lower.contains("move") && message_lower.contains("archive"));
+    let delete_intent = has_any(message_lower, &["delete ", "remove ", "clear "]);
+
+    (archive_intent || delete_intent)
+        && has_any(
+            message_lower,
+            &[
+                "conversation",
+                "conversations",
+                "chat",
+                "chats",
+                "chat history",
+                "ai history",
+                "ai conversation",
+                "ai conversations",
+            ],
+        )
+        && !has_any(
+            message_lower,
+            &[
+                "how do i ",
+                "how can i ",
+                "can i ",
+                "is it possible to ",
+                "do you support ",
+                "does rustyfin ai support ",
+            ],
+        )
 }
 
 fn parse_birthday_request(
@@ -357,6 +394,484 @@ async fn parse_delete_request(
             conversation_id: conversation_id.map(str::to_string),
         },
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversationActionOperation {
+    Archive,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversationSelectionOrder {
+    DisplayFirst,
+    MostRecent,
+    AllMatching,
+}
+
+#[derive(Debug, Clone)]
+struct ConversationSelectionCandidate {
+    id: String,
+    title: String,
+    group_name: Option<String>,
+    archived: bool,
+    sort_order: i64,
+    updated_ts: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedConversationSelection {
+    selection_label: String,
+    selected: Vec<ConversationSelectionCandidate>,
+    current_excluded: bool,
+}
+
+async fn parse_conversation_manage_request(
+    state: &AppState,
+    user: &AuthUser,
+    message: &str,
+    conversation_id: Option<&str>,
+) -> Result<ParsedPendingActionRequest, String> {
+    let operation = detect_conversation_action_operation(message).ok_or_else(|| {
+        "I can archive or delete AI conversations, but I couldn't determine which action you wanted."
+            .to_string()
+    })?;
+    let rows = rustfin_db::repo::ai_conversations::list_conversations_for_user(
+        &state.db,
+        &user.user_id,
+        true,
+        200,
+    )
+    .await
+    .map_err(|e| format!("failed to load AI conversations: {e}"))?;
+    let candidates = rows
+        .into_iter()
+        .map(|row| ConversationSelectionCandidate {
+            id: row.id,
+            title: row.title,
+            group_name: row.group_name,
+            archived: row.archived,
+            sort_order: row.sort_order,
+            updated_ts: row.updated_ts,
+        })
+        .collect::<Vec<_>>();
+
+    let selection =
+        resolve_conversation_selection(message, conversation_id, operation, &candidates)?;
+    let titles = selection
+        .selected
+        .iter()
+        .map(|candidate| candidate.title.clone())
+        .collect::<Vec<_>>();
+    let summary = conversation_action_summary(operation, &selection);
+
+    Ok(ParsedPendingActionRequest {
+        payload: AssistantConfirmationPayload {
+            action_kind: match operation {
+                ConversationActionOperation::Archive => {
+                    AssistantPendingActionKind::ConversationArchive
+                }
+                ConversationActionOperation::Delete => {
+                    AssistantPendingActionKind::ConversationDelete
+                }
+            },
+            call: PlannedToolCall {
+                tool: match operation {
+                    ConversationActionOperation::Archive => {
+                        AssistantToolName::ConversationsArchiveSelection
+                    }
+                    ConversationActionOperation::Delete => {
+                        AssistantToolName::ConversationsDeleteSelection
+                    }
+                },
+                input: match operation {
+                    ConversationActionOperation::Archive => {
+                        AssistantToolInput::ConversationArchive {
+                            conversation_ids: selection
+                                .selected
+                                .iter()
+                                .map(|candidate| candidate.id.clone())
+                                .collect(),
+                            titles,
+                            selection_label: selection.selection_label.clone(),
+                            archived: true,
+                        }
+                    }
+                    ConversationActionOperation::Delete => AssistantToolInput::ConversationDelete {
+                        conversation_ids: selection
+                            .selected
+                            .iter()
+                            .map(|candidate| candidate.id.clone())
+                            .collect(),
+                        titles,
+                        selection_label: selection.selection_label.clone(),
+                    },
+                },
+            },
+            summary,
+            conversation_id: conversation_id.map(str::to_string),
+        },
+    })
+}
+
+fn detect_conversation_action_operation(message: &str) -> Option<ConversationActionOperation> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("archive") || (lower.contains("move") && lower.contains("archive")) {
+        return Some(ConversationActionOperation::Archive);
+    }
+    if has_any(&lower, &["delete ", "remove ", "clear "]) {
+        return Some(ConversationActionOperation::Delete);
+    }
+    None
+}
+
+fn resolve_conversation_selection(
+    message: &str,
+    conversation_id: Option<&str>,
+    operation: ConversationActionOperation,
+    candidates: &[ConversationSelectionCandidate],
+) -> Result<ResolvedConversationSelection, String> {
+    let lower = message.to_ascii_lowercase();
+    let requested_group = detect_conversation_group_name(message, candidates)?;
+    let requested_count = extract_conversation_count_hint(message);
+    let selection_order =
+        determine_conversation_selection_order(&lower, requested_group.is_some(), requested_count);
+
+    let mut eligible = candidates
+        .iter()
+        .filter(|candidate| {
+            requested_group
+                .as_deref()
+                .map(|group_name| {
+                    candidate
+                        .group_name
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case(group_name))
+                })
+                .unwrap_or(true)
+        })
+        .filter(|candidate| match operation {
+            ConversationActionOperation::Archive => !candidate.archived,
+            ConversationActionOperation::Delete => {
+                if conversation_delete_targets_archived_only(&lower) {
+                    candidate.archived
+                } else {
+                    true
+                }
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if eligible.is_empty() {
+        return Err(conversation_selection_empty_message(
+            operation,
+            requested_group.as_deref(),
+        ));
+    }
+
+    let selected = match selection_order {
+        ConversationSelectionOrder::AllMatching => eligible.clone(),
+        ConversationSelectionOrder::DisplayFirst => {
+            if let Some(count) = requested_count {
+                eligible.into_iter().take(count).collect::<Vec<_>>()
+            } else {
+                eligible.clone()
+            }
+        }
+        ConversationSelectionOrder::MostRecent => {
+            eligible.sort_by(|left, right| {
+                right
+                    .updated_ts
+                    .cmp(&left.updated_ts)
+                    .then_with(|| right.sort_order.cmp(&left.sort_order))
+                    .then_with(|| left.title.cmp(&right.title))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            if let Some(count) = requested_count {
+                eligible.into_iter().take(count).collect::<Vec<_>>()
+            } else {
+                eligible
+            }
+        }
+    };
+
+    let mut selected = selected;
+    let mut current_excluded = false;
+    if operation == ConversationActionOperation::Delete
+        && let Some(current_id) = conversation_id
+        && selected.iter().any(|candidate| candidate.id == current_id)
+    {
+        current_excluded = true;
+        selected.retain(|candidate| candidate.id != current_id);
+
+        if let Some(count) = requested_count {
+            let mut ordered_candidates = candidates
+                .iter()
+                .filter(|candidate| {
+                    requested_group
+                        .as_deref()
+                        .map(|group_name| {
+                            candidate
+                                .group_name
+                                .as_deref()
+                                .is_some_and(|value| value.eq_ignore_ascii_case(group_name))
+                        })
+                        .unwrap_or(true)
+                })
+                .filter(|candidate| {
+                    !candidate.id.eq(current_id)
+                        && (!conversation_delete_targets_archived_only(&lower)
+                            || candidate.archived)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+
+            if matches!(selection_order, ConversationSelectionOrder::MostRecent) {
+                ordered_candidates.sort_by(|left, right| {
+                    right
+                        .updated_ts
+                        .cmp(&left.updated_ts)
+                        .then_with(|| right.sort_order.cmp(&left.sort_order))
+                        .then_with(|| left.title.cmp(&right.title))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+            }
+
+            for candidate in ordered_candidates {
+                if selected.len() >= count {
+                    break;
+                }
+                if selected.iter().any(|existing| existing.id == candidate.id) {
+                    continue;
+                }
+                selected.push(candidate);
+            }
+        }
+    }
+
+    if selected.is_empty() {
+        return Err(match operation {
+            ConversationActionOperation::Archive => {
+                "I couldn't find any AI conversations to archive with that description."
+                    .to_string()
+            }
+            ConversationActionOperation::Delete => {
+                "I can't delete the conversation we're currently using from inside itself. Open another conversation or choose a different target."
+                    .to_string()
+            }
+        });
+    }
+
+    let selection_label = conversation_selection_label(
+        operation,
+        selection_order,
+        requested_count,
+        selected.len(),
+        requested_group.as_deref(),
+    );
+
+    Ok(ResolvedConversationSelection {
+        selection_label,
+        selected,
+        current_excluded,
+    })
+}
+
+fn determine_conversation_selection_order(
+    lower: &str,
+    has_group: bool,
+    requested_count: Option<usize>,
+) -> ConversationSelectionOrder {
+    if has_any(lower, &["all ", "all of", "every ", "entire ", "whole "])
+        || lower.contains("history")
+    {
+        return ConversationSelectionOrder::AllMatching;
+    }
+    if has_any(lower, &["first ", "top "]) {
+        return ConversationSelectionOrder::DisplayFirst;
+    }
+    if has_any(lower, &["latest ", "most recent", "recent ", "last "]) {
+        return ConversationSelectionOrder::MostRecent;
+    }
+    if has_group && requested_count.is_none() {
+        return ConversationSelectionOrder::AllMatching;
+    }
+    if requested_count.is_some() {
+        return ConversationSelectionOrder::MostRecent;
+    }
+    ConversationSelectionOrder::AllMatching
+}
+
+fn conversation_delete_targets_archived_only(lower: &str) -> bool {
+    lower.contains("archived conversation")
+        || lower.contains("archived conversations")
+        || lower.contains("archive conversation")
+        || lower.contains("archive conversations")
+}
+
+fn conversation_selection_label(
+    operation: ConversationActionOperation,
+    order: ConversationSelectionOrder,
+    requested_count: Option<usize>,
+    selected_count: usize,
+    group_name: Option<&str>,
+) -> String {
+    let count = selected_count;
+    let noun = if count == 1 {
+        "AI conversation"
+    } else {
+        "AI conversations"
+    };
+    let verb = match operation {
+        ConversationActionOperation::Archive => "Archive",
+        ConversationActionOperation::Delete => "Delete",
+    };
+    match (order, requested_count, group_name) {
+        (ConversationSelectionOrder::AllMatching, _, Some(group)) => {
+            format!("{verb} all {noun} in group \"{group}\"")
+        }
+        (ConversationSelectionOrder::AllMatching, _, None) => {
+            format!("{verb} all {noun}")
+        }
+        (ConversationSelectionOrder::DisplayFirst, Some(requested), Some(group)) => format!(
+            "{verb} the first {} {noun} in group \"{group}\"",
+            requested.min(count)
+        ),
+        (ConversationSelectionOrder::DisplayFirst, Some(requested), None) => {
+            format!("{verb} the first {} {noun}", requested.min(count))
+        }
+        (ConversationSelectionOrder::MostRecent, Some(requested), Some(group)) => format!(
+            "{verb} the {} most recent {noun} in group \"{group}\"",
+            requested.min(count)
+        ),
+        (ConversationSelectionOrder::MostRecent, Some(requested), None) => {
+            format!("{verb} the {} most recent {noun}", requested.min(count))
+        }
+        (_, _, Some(group)) => format!("{verb} {count} {noun} in group \"{group}\""),
+        _ => format!("{verb} {count} {noun}"),
+    }
+}
+
+fn conversation_action_summary(
+    operation: ConversationActionOperation,
+    selection: &ResolvedConversationSelection,
+) -> String {
+    let mut lines = vec![format!("{}:", selection.selection_label)];
+    for title in selection
+        .selected
+        .iter()
+        .take(8)
+        .map(|candidate| &candidate.title)
+    {
+        lines.push(format!("- {title}"));
+    }
+    if selection.selected.len() > 8 {
+        lines.push(format!(
+            "- and {} more",
+            selection.selected.len().saturating_sub(8)
+        ));
+    }
+    if matches!(operation, ConversationActionOperation::Delete) {
+        lines.push("This will permanently remove them from your AI history.".to_string());
+    }
+    if selection.current_excluded {
+        lines.push(
+            "The current conversation is excluded because Rustyfin AI cannot delete the active conversation from inside itself."
+                .to_string(),
+        );
+    }
+    lines.join("\n")
+}
+
+fn conversation_selection_empty_message(
+    operation: ConversationActionOperation,
+    group_name: Option<&str>,
+) -> String {
+    match (operation, group_name) {
+        (ConversationActionOperation::Archive, Some(group_name)) => {
+            format!("I couldn't find any non-archived AI conversations in group \"{group_name}\".")
+        }
+        (ConversationActionOperation::Archive, None) => {
+            "I couldn't find any AI conversations to archive with that description.".to_string()
+        }
+        (ConversationActionOperation::Delete, Some(group_name)) => {
+            format!("I couldn't find any AI conversations to delete in group \"{group_name}\".")
+        }
+        (ConversationActionOperation::Delete, None) => {
+            "I couldn't find any AI conversations to delete with that description.".to_string()
+        }
+    }
+}
+
+fn detect_conversation_group_name(
+    message: &str,
+    candidates: &[ConversationSelectionCandidate],
+) -> Result<Option<String>, String> {
+    let lower = message.to_ascii_lowercase();
+    let mut groups = candidates
+        .iter()
+        .filter_map(|candidate| candidate.group_name.clone())
+        .filter(|group_name| !group_name.trim().is_empty())
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|group_name| std::cmp::Reverse(group_name.len()));
+    groups.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        if let Some(group_name) = groups
+            .iter()
+            .find(|group_name| group_name.eq_ignore_ascii_case(quoted.trim()))
+        {
+            return Ok(Some(group_name.clone()));
+        }
+    }
+
+    for group_name in &groups {
+        let normalized = group_name.to_ascii_lowercase();
+        if lower.contains(&format!("group {normalized}"))
+            || lower.contains(&format!("in {normalized}"))
+            || lower.contains(&format!("from {normalized}"))
+            || lower.contains(&format!("named {normalized}"))
+            || lower.contains(&format!("called {normalized}"))
+        {
+            return Ok(Some(group_name.clone()));
+        }
+    }
+
+    if lower.contains("group ") {
+        return Err("I couldn't match that AI conversation group. Use the exact group name shown in the left conversation rail.".to_string());
+    }
+
+    Ok(None)
+}
+
+fn extract_conversation_count_hint(message: &str) -> Option<usize> {
+    let lower = message.to_ascii_lowercase();
+    let regex = conversation_count_regex();
+    let captures = regex.captures(&lower)?;
+    let value = captures.get(1)?.as_str();
+    if let Ok(parsed) = value.parse::<usize>() {
+        return Some(parsed.clamp(1, 200));
+    }
+    small_count_word(value)
+}
+
+fn small_count_word(value: &str) -> Option<usize> {
+    match value {
+        "one" => Some(1),
+        "two" => Some(2),
+        "three" => Some(3),
+        "four" => Some(4),
+        "five" => Some(5),
+        "six" => Some(6),
+        "seven" => Some(7),
+        "eight" => Some(8),
+        "nine" => Some(9),
+        "ten" => Some(10),
+        "eleven" => Some(11),
+        "twelve" => Some(12),
+        _ => None,
+    }
 }
 
 fn resolve_scope(user: &AuthUser, message: &str) -> Result<String, String> {
@@ -1151,15 +1666,27 @@ fn year_hint_regex() -> &'static Regex {
     })
 }
 
+fn conversation_count_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:first|top|last|latest|recent|most\s+recent|delete|remove|clear|archive)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,3})\b",
+        )
+        .expect("conversation count regex should compile")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
 
     use super::{
-        AssistantPendingActionKind, AssistantToolInput, calendar_event_matches_query_for_delete,
-        extract_delete_event_query, is_supported_document_create_intent,
-        parse_birthday_request_for, parse_document_request, parse_event_request_for,
-        pending_action_request_for_message, select_delete_target,
+        AssistantPendingActionKind, AssistantToolInput, ConversationActionOperation,
+        ConversationSelectionCandidate, calendar_event_matches_query_for_delete,
+        extract_delete_event_query, is_supported_conversation_manage_intent,
+        is_supported_document_create_intent, parse_birthday_request_for, parse_document_request,
+        parse_event_request_for, pending_action_request_for_message,
+        resolve_conversation_selection, select_delete_target,
     };
     use crate::auth::AuthUser;
     use rustfin_db::repo::calendar::CalendarEventRow;
@@ -1365,6 +1892,139 @@ mod tests {
                 .expect_err("empty document request should be rejected");
 
         assert!(error.contains("need to know what it should contain"));
+    }
+
+    #[test]
+    fn detects_supported_conversation_manage_intent() {
+        assert!(is_supported_conversation_manage_intent(
+            "delete the last 5 ai conversations"
+        ));
+        assert!(is_supported_conversation_manage_intent(
+            "archive the first 3 conversations"
+        ));
+    }
+
+    #[test]
+    fn resolves_delete_last_five_conversations_by_recency() {
+        let candidates = vec![
+            conversation_candidate("a", "Alpha", None, false, 1024, 10),
+            conversation_candidate("b", "Bravo", None, false, 2048, 30),
+            conversation_candidate("c", "Charlie", None, false, 3072, 20),
+            conversation_candidate("d", "Delta", None, false, 4096, 40),
+            conversation_candidate("e", "Echo", None, false, 5120, 50),
+            conversation_candidate("f", "Foxtrot", None, false, 6144, 60),
+        ];
+
+        let selection = resolve_conversation_selection(
+            "Delete the last 5 AI conversations",
+            None,
+            ConversationActionOperation::Delete,
+            &candidates,
+        )
+        .expect("selection should resolve");
+
+        let selected_titles = selection
+            .selected
+            .iter()
+            .map(|candidate| candidate.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected_titles,
+            vec!["Foxtrot", "Echo", "Delta", "Bravo", "Charlie"]
+        );
+    }
+
+    #[test]
+    fn resolves_archive_first_three_conversations_by_display_order() {
+        let candidates = vec![
+            conversation_candidate("a", "Alpha", None, false, 4096, 10),
+            conversation_candidate("b", "Bravo", None, false, 3072, 20),
+            conversation_candidate("c", "Charlie", None, false, 2048, 30),
+            conversation_candidate("d", "Delta", None, false, 1024, 40),
+        ];
+
+        let selection = resolve_conversation_selection(
+            "Archive the first 3 conversations",
+            None,
+            ConversationActionOperation::Archive,
+            &candidates,
+        )
+        .expect("selection should resolve");
+
+        let selected_titles = selection
+            .selected
+            .iter()
+            .map(|candidate| candidate.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["Alpha", "Bravo", "Charlie"]);
+    }
+
+    #[test]
+    fn resolves_delete_all_conversations_in_group() {
+        let candidates = vec![
+            conversation_candidate("a", "Alpha", Some("Trips"), false, 4096, 10),
+            conversation_candidate("b", "Bravo", Some("Trips"), true, 3072, 20),
+            conversation_candidate("c", "Charlie", Some("Work"), false, 2048, 30),
+        ];
+
+        let selection = resolve_conversation_selection(
+            "Delete all conversations in group Trips",
+            None,
+            ConversationActionOperation::Delete,
+            &candidates,
+        )
+        .expect("selection should resolve");
+
+        let selected_titles = selection
+            .selected
+            .iter()
+            .map(|candidate| candidate.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["Alpha", "Bravo"]);
+    }
+
+    #[test]
+    fn delete_selection_excludes_active_conversation_and_refills() {
+        let candidates = vec![
+            conversation_candidate("a", "Alpha", None, false, 1024, 10),
+            conversation_candidate("b", "Bravo", None, false, 2048, 20),
+            conversation_candidate("c", "Charlie", None, false, 3072, 30),
+            conversation_candidate("d", "Delta", None, false, 4096, 40),
+        ];
+
+        let selection = resolve_conversation_selection(
+            "Delete the last 3 AI conversations",
+            Some("d"),
+            ConversationActionOperation::Delete,
+            &candidates,
+        )
+        .expect("selection should resolve");
+
+        let selected_titles = selection
+            .selected
+            .iter()
+            .map(|candidate| candidate.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["Charlie", "Bravo", "Alpha"]);
+        assert!(selection.current_excluded);
+    }
+
+    fn conversation_candidate(
+        id: &str,
+        title: &str,
+        group_name: Option<&str>,
+        archived: bool,
+        sort_order: i64,
+        updated_ts: i64,
+    ) -> ConversationSelectionCandidate {
+        ConversationSelectionCandidate {
+            id: id.to_string(),
+            title: title.to_string(),
+            group_name: group_name.map(str::to_string),
+            archived,
+            sort_order,
+            updated_ts,
+        }
     }
 
     fn sample_event(

@@ -97,6 +97,17 @@ pub enum AssistantToolInput {
         request_prompt: String,
         model_name: String,
     },
+    ConversationArchive {
+        conversation_ids: Vec<String>,
+        titles: Vec<String>,
+        selection_label: String,
+        archived: bool,
+    },
+    ConversationDelete {
+        conversation_ids: Vec<String>,
+        titles: Vec<String>,
+        selection_label: String,
+    },
     ChannelsFilter {
         query: Option<String>,
     },
@@ -264,6 +275,7 @@ pub enum AssistantDomainFamily {
     System,
     Account,
     Calendar,
+    Conversations,
     Channels,
     Transcript,
     Downloads,
@@ -282,6 +294,7 @@ impl AssistantDomainFamily {
         match self {
             Self::Account => "account",
             Self::Calendar => "calendar",
+            Self::Conversations => "conversations",
             Self::Channels => "channels",
             Self::Transcript => "transcript",
             Self::Downloads => "downloads",
@@ -868,6 +881,8 @@ pub enum AssistantPendingActionKind {
     CalendarCreateBirthday,
     CalendarDeleteEvent,
     DocumentCreateDownload,
+    ConversationArchive,
+    ConversationDelete,
 }
 
 impl AssistantPendingActionKind {
@@ -877,6 +892,8 @@ impl AssistantPendingActionKind {
             Self::CalendarCreateBirthday => "calendar_create_birthday",
             Self::CalendarDeleteEvent => "calendar_delete_event",
             Self::DocumentCreateDownload => "document_create_download",
+            Self::ConversationArchive => "conversation_archive",
+            Self::ConversationDelete => "conversation_delete",
         }
     }
 }

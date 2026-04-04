@@ -1,6 +1,7 @@
 mod account;
 mod calendar;
 mod channels;
+mod conversations;
 mod documents;
 mod downloads;
 mod libraries;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 pub use account::AccountToolProvider;
 pub use calendar::CalendarToolProvider;
 pub use channels::ChannelsToolProvider;
+pub use conversations::ConversationsToolProvider;
 pub use documents::DocumentsToolProvider;
 pub use downloads::DownloadsToolProvider;
 pub use libraries::LibrariesToolProvider;
@@ -33,6 +35,7 @@ pub fn default_tool_providers() -> Vec<Arc<dyn ToolProvider>> {
         Arc::new(AccountToolProvider),
         Arc::new(CalendarToolProvider),
         Arc::new(ChannelsToolProvider),
+        Arc::new(ConversationsToolProvider),
         Arc::new(DocumentsToolProvider),
         Arc::new(DownloadsToolProvider),
         Arc::new(LibrariesToolProvider),
