@@ -56,7 +56,14 @@ export default function SurfaceTabsBar<T extends string>({
           className={`min-w-0 flex flex-wrap items-center justify-end gap-2 self-start ${badgesClassName}`.trim()}
         >
           {badges.map((badge) => (
-            <span key={badge} className="chip">
+            <span
+              key={badge}
+              className={
+                variant === 'flat'
+                  ? 'text-xs text-white/58'
+                  : 'chip'
+              }
+            >
               {badge}
             </span>
           ))}

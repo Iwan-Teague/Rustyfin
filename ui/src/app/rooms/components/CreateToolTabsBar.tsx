@@ -24,6 +24,7 @@ export default function CreateToolTabsBar({
 }: Props) {
   return (
     <RoomModeTabsBar
+      variant="flat"
       className={className}
       activeKey={activeTool}
       onSelect={onSwitchTool}

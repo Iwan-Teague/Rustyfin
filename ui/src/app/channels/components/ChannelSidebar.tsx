@@ -154,7 +154,7 @@ function ChannelRow({
 
   const isActive = ch.id === activeChannelId;
   const rowClass = [
-    'group relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-2 py-1.5 text-sm',
+    'group relative flex cursor-pointer select-none items-center gap-2 rounded-2xl px-2 py-1.5 text-sm',
     isActive
       ? 'border-l-2 border-[var(--orange-soft)] bg-white/5 pl-1.5'
       : 'hover:bg-white/[0.04]',
@@ -183,11 +183,7 @@ function ChannelRow({
         <span className="muted shrink-0">{icon}</span>
         <span className="truncate flex-1">{ch.name}</span>
         {ch.kind === 'voice' && members.length > 0 && (
-          <span className="text-xs shrink-0 muted inline-flex items-center">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-black/20 text-[10px] font-semibold">
-              {members.length}
-            </span>
-          </span>
+          <span className="shrink-0 text-[11px] text-white/48">{members.length}</span>
         )}
         {isAdmin && (
           <div className="relative shrink-0">
@@ -196,7 +192,7 @@ function ChannelRow({
                 e.stopPropagation();
                 setMenuOpen(isMenuOpen ? null : { channelId: ch.id, channelName: ch.name });
               }}
-              className="btn-ghost px-1 py-0.5 text-xs opacity-60 md:opacity-0 md:group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+              className="rf-inline-icon-btn h-6 w-6 text-xs opacity-60 transition-opacity md:opacity-0 md:group-hover:opacity-60 hover:!opacity-100"
               title="Channel options"
             >
               ⋯
@@ -328,13 +324,13 @@ export default function ChannelSidebar({
   };
 
   return (
-    <aside className="flex h-full w-60 min-w-[200px] flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--surface)]/40">
+    <aside className="flex h-full min-h-0 w-60 min-w-[200px] flex-col overflow-hidden border-r border-[var(--border)] bg-transparent">
       {/* Server header */}
       <div className="h-14 px-4 border-b border-[var(--border)] font-semibold text-sm tracking-wide flex items-center">
         Rustyfin
       </div>
 
-      <div ref={channelListRef} className="flex-1 overflow-y-auto py-2 space-y-4">
+      <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto py-2 space-y-4">
         {/* TEXT CHANNELS */}
         <section>
           <div className="flex items-center justify-between px-3 py-1">
@@ -344,7 +340,7 @@ export default function ChannelSidebar({
             {isAdmin && (
               <button
                 onClick={onCreateText}
-                className="btn-ghost px-1 py-0.5 text-lg leading-none"
+                className="rf-inline-icon-btn h-6 w-6 text-lg leading-none"
                 title="Create text channel"
               >
                 +
@@ -390,7 +386,7 @@ export default function ChannelSidebar({
             {isAdmin && (
               <button
                 onClick={onCreateVoice}
-                className="btn-ghost px-1 py-0.5 text-lg leading-none"
+                className="rf-inline-icon-btn h-6 w-6 text-lg leading-none"
                 title="Create voice channel"
               >
                 +

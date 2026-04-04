@@ -155,6 +155,15 @@ export default function WatchPartyRoomPage() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [portalMounted, setPortalMounted] = useState(false);
 
+  useEffect(() => {
+    document.documentElement.dataset.rfPage = 'rooms';
+    document.body.dataset.rfPage = 'rooms';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
   const isAudioRoom = room?.room_mode === 'audio';
   const isWebRoom = room?.room_mode === 'web';
   const isScreenRoom = room?.room_mode === 'screen';
@@ -630,11 +639,11 @@ export default function WatchPartyRoomPage() {
 
   return (
     <div className="space-y-6 animate-rise">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <span className="chip text-xs">Duration: {formatElapsedSeconds(roomDurationSeconds)}</span>
+      <div className="rf-inline-meta justify-end">
+        <span>Duration: <strong>{formatElapsedSeconds(roomDurationSeconds)}</strong></span>
         <button
           type="button"
-          className="btn-secondary px-3 py-1.5 text-xs"
+          className="rf-text-action text-sm"
           onClick={() => reconfigure.setReconfigureModalOpen(true)}
           disabled={!joinedRole}
           title={!joinedRole ? 'Join the room to reconfigure' : undefined}
@@ -643,14 +652,14 @@ export default function WatchPartyRoomPage() {
         </button>
         <button
           type="button"
-          className="btn-secondary px-3 py-1.5 text-xs"
+          className="rf-text-action text-sm"
           onClick={() => void copyLink()}
         >
           Copy room link
         </button>
         <button
           type="button"
-          className="btn-secondary px-3 py-1.5 text-xs"
+          className="rf-text-action text-sm"
           onClick={() => void handleLeave()}
           disabled={leaving}
         >
@@ -659,7 +668,7 @@ export default function WatchPartyRoomPage() {
         {joinedRole === 'host' && (
           <button
             type="button"
-            className="btn-secondary px-3 py-1.5 text-xs"
+            className="rf-text-action text-sm"
             onClick={() => setPendingEndRoomConfirm(true)}
             disabled={ending}
           >
@@ -1047,6 +1056,7 @@ export default function WatchPartyRoomPage() {
                         layout="stacked"
                         surfaceClassName="rf-flat-section"
                         noShadow
+                        showHeading={false}
                         applyActionLabel="Apply Local Media"
                         applyActionPendingLabel="Applying…"
                         applyActionDisabled={!reconfigure.reconfigureVideoItem}
@@ -1172,6 +1182,27 @@ export default function WatchPartyRoomPage() {
                     },
                   }}
                 />
+                {joinedRole === 'host' && reconfigure.reconfigureVideoLibraries.length > 0 ? (
+                  <div className="border-t border-[var(--border-subtle)] pt-4">
+                    <MediaPicker
+                      libraries={reconfigure.allLibraries}
+                      eligibleLibraryIds={reconfigure.eligibleLibraryIds}
+                      selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
+                      selectedItem={reconfigure.reconfigureVideoItem}
+                      layout="stacked"
+                      surfaceClassName="space-y-4"
+                      noShadow
+                      showHeading={false}
+                      applyActionLabel="Apply Local Media"
+                      applyActionPendingLabel="Applying…"
+                      applyActionDisabled={!reconfigure.reconfigureVideoItem}
+                      applyActionLoading={reconfigure.reconfiguring}
+                      onApplyAction={() => void handleApplyLocalMedia()}
+                      onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
+                      onSelectItem={reconfigure.setReconfigureVideoItem}
+                    />
+                  </div>
+                ) : null}
               </>
             )}
           </section>
@@ -1183,9 +1214,7 @@ export default function WatchPartyRoomPage() {
           <section className="rf-flat-section flex h-[22rem] min-h-0 flex-col gap-3 border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl font-semibold">Who&apos;s in the room</h2>
-              <span className="chip border-emerald-400/35 bg-emerald-500/10 text-emerald-200">
-                {connectedMemberCount} live
-              </span>
+              <span className="text-xs text-emerald-200">{connectedMemberCount} live</span>
             </div>
             <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {activeMembers.map((member) => (
@@ -1201,17 +1230,10 @@ export default function WatchPartyRoomPage() {
                       <p className="text-xs muted">{roleLabel(member.role, effectiveRoomMode)}</p>
                     </div>
                     <span
-                      className={`chip inline-flex items-center gap-1.5 ${
-                        member.connected
-                          ? 'border-emerald-400/50 bg-emerald-500/10 text-emerald-200'
-                          : 'border-white/15 text-white/60'
-                      }`}
+                      className={
+                        member.connected ? 'text-xs text-emerald-200' : 'text-xs text-white/60'
+                      }
                     >
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          member.connected ? 'bg-emerald-400' : 'bg-white/35'
-                        }`}
-                      />
                       {member.connected ? 'Online' : 'Offline'}
                     </span>
                   </div>

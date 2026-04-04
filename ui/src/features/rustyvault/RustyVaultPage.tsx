@@ -765,22 +765,24 @@ export default function RustyVaultPage() {
               Client-side encrypted password storage, password generation, and browser-extension pairing in the existing Rustyfin security model.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.22em] text-white/45">Items</p>
-              <p className="mt-1 text-xl font-semibold">{config?.item_count ?? 0}</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-[var(--border)]/70 pt-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Items</p>
+              <p className="text-lg font-semibold">{config?.item_count ?? 0}</p>
             </div>
-            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.22em] text-white/45">KDF</p>
-              <p className="mt-1 text-sm font-medium">Argon2id 64 MiB</p>
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">KDF</p>
+              <p className="text-sm font-medium">Argon2id 64 MiB</p>
             </div>
-            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
-              <p className="mt-1 text-xl font-semibold">{prefs.auto_lock_minutes}m</p>
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
+              <p className="text-lg font-semibold">{prefs.auto_lock_minutes}m</p>
             </div>
-            <div className="rounded-xl border border-[var(--border)]/70 bg-white/[0.025] px-4 py-3">
-              <p className="text-xs uppercase tracking-[0.22em] text-white/45">Session</p>
-              <p className="mt-1 text-sm font-medium">{rustyVaultSession ? formatTimestamp(rustyVaultSession.access_expires_ts) : 'Unavailable'}</p>
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Session</p>
+              <p className="text-sm font-medium">
+                {rustyVaultSession ? formatTimestamp(rustyVaultSession.access_expires_ts) : 'Unavailable'}
+              </p>
             </div>
           </div>
         </div>
@@ -825,7 +827,7 @@ export default function RustyVaultPage() {
                     </div>
                     <button
                       type="button"
-                      className="btn-ghost px-4 py-2 text-sm"
+                      className="rf-text-action text-sm"
                       onClick={() => {
                         setUnlocked(null);
                         setRows([]);
@@ -862,10 +864,10 @@ export default function RustyVaultPage() {
                     )}
                   </div>
 
-                  <div className="flex flex-wrap gap-3">
+                  <div className="flex flex-wrap gap-x-5 gap-y-2">
                     <button
                       type="button"
-                      className="btn-primary px-5 py-3 text-sm"
+                      className="rf-text-action text-sm disabled:opacity-50"
                       disabled={saving || cryptoSupported !== true}
                       onClick={() =>
                         runAction(
@@ -878,7 +880,7 @@ export default function RustyVaultPage() {
                     </button>
                     <button
                       type="button"
-                      className="btn-secondary px-5 py-3 text-sm"
+                      className="rf-text-action rf-text-action-muted text-sm"
                       onClick={() => {
                         setMasterPassword('');
                         setConfirmMasterPassword('');
@@ -897,16 +899,16 @@ export default function RustyVaultPage() {
                         Search happens locally after unlock. The server stores only ciphertext summaries.
                       </p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-3">
                       <input
                         value={search}
                         onChange={(event) => setSearch(event.target.value)}
-                        className="rounded-full border border-[var(--border)] bg-black/20 px-4 py-2 text-sm outline-none focus:border-[var(--orange-soft)]"
+                        className="rf-flat-input min-w-[16rem] px-4 py-2 text-sm"
                         placeholder="Search title, site, or username"
                       />
                       <button
                         type="button"
-                        className="btn-primary px-4 py-2 text-sm"
+                        className="rf-text-action text-sm"
                         onClick={() => {
                           setSelectedItem(null);
                           setEditor({
@@ -1013,14 +1015,14 @@ export default function RustyVaultPage() {
                               />
                               <button
                                 type="button"
-                                className="btn-ghost px-4 py-3 text-sm"
+                                className="rf-text-action rf-text-action-muted px-0 text-sm"
                                 onClick={() => setShowPassword((current) => !current)}
                               >
                                 {showPassword ? 'Hide' : 'Reveal'}
                               </button>
                               <button
                                 type="button"
-                                className="btn-secondary px-4 py-3 text-sm"
+                                className="rf-text-action text-sm"
                                 onClick={() =>
                                   setEditor((current) => ({
                                     ...current,
@@ -1058,8 +1060,8 @@ export default function RustyVaultPage() {
                           </label>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-3">
-                          <label className="chip cursor-pointer">
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                          <label className="rf-text-action rf-text-action-muted cursor-pointer text-sm">
                             <input
                               type="checkbox"
                               checked={editor.favorite}
@@ -1071,7 +1073,7 @@ export default function RustyVaultPage() {
                           </label>
                           <button
                             type="button"
-                            className="btn-primary px-5 py-3 text-sm"
+                            className="rf-text-action text-sm disabled:opacity-50"
                             disabled={saving || !unlocked}
                             onClick={() => runAction('Vault item saved.', saveEditorItem)}
                           >
@@ -1079,7 +1081,7 @@ export default function RustyVaultPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn-secondary px-5 py-3 text-sm"
+                            className="rf-text-action text-sm disabled:opacity-50"
                             disabled={!selectedItem}
                             onClick={() => runAction('Password copied.', copySelectedPassword)}
                           >
@@ -1087,7 +1089,7 @@ export default function RustyVaultPage() {
                           </button>
                           <button
                             type="button"
-                            className="btn-danger px-5 py-3 text-sm"
+                            className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
                             disabled={!selectedItem}
                             onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
                           >
@@ -1099,7 +1101,7 @@ export default function RustyVaultPage() {
                           <div className="panel-soft space-y-2 px-4 py-4 text-sm">
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-medium">Selected password</span>
-                              <span className="chip">
+                              <span className="text-xs text-white/55">
                                 {selectedItem.favorite ? 'Favorite' : 'Saved'}
                               </span>
                             </div>
@@ -1232,7 +1234,7 @@ export default function RustyVaultPage() {
                     </div>
                     <button
                       type="button"
-                      className="btn-primary px-5 py-3 text-sm"
+                      className="rf-text-action text-sm"
                       onClick={() => runAction('Vault preferences saved.', savePreferences)}
                     >
                       Save preferences
@@ -1269,7 +1271,7 @@ export default function RustyVaultPage() {
                     </div>
                     <button
                       type="button"
-                      className="btn-primary px-5 py-3 text-sm"
+                      className="rf-text-action text-sm"
                       disabled={!unlocked}
                       onClick={() => runAction('Vault master password changed.', rekeyMasterPassword)}
                     >
@@ -1279,10 +1281,10 @@ export default function RustyVaultPage() {
 
                   <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-black/10 p-4">
                     <p className="font-medium">Import and export</p>
-                    <div className="flex flex-wrap gap-3">
+                    <div className="flex flex-wrap gap-x-5 gap-y-2">
                       <button
                         type="button"
-                        className="btn-secondary px-5 py-3 text-sm"
+                        className="rf-text-action text-sm disabled:opacity-50"
                         disabled={!unlocked}
                         onClick={() => runAction('Vault export downloaded.', exportCurrentVault)}
                       >
@@ -1305,7 +1307,7 @@ export default function RustyVaultPage() {
                     />
                     <button
                       type="button"
-                      className="btn-primary px-5 py-3 text-sm"
+                      className="rf-text-action text-sm disabled:opacity-50"
                       disabled={!unlocked || !importFile}
                       onClick={() => runAction('Bitwarden import completed.', importBitwardenJson)}
                     >
@@ -1320,7 +1322,7 @@ export default function RustyVaultPage() {
                     </p>
                     <button
                       type="button"
-                      className="btn-danger px-5 py-3 text-sm"
+                      className="rf-text-action rf-text-action-danger text-sm"
                       onClick={() => runAction('Vault destroyed.', destroyCurrentVault)}
                     >
                       Destroy vault
@@ -1411,7 +1413,7 @@ export default function RustyVaultPage() {
                   Exclude ambiguous characters
                 </label>
 
-                <div className="flex flex-col gap-3 sm:flex-row">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                   <input
                     readOnly
                     value={generatedPassword}
@@ -1420,7 +1422,7 @@ export default function RustyVaultPage() {
                   />
                   <button
                     type="button"
-                    className="btn-primary px-5 py-3 text-sm"
+                    className="rf-text-action text-sm"
                     onClick={() =>
                       runAction('Generated a new password.', async () =>
                         setGeneratedPassword(generatePassword(generatorOptions)),
@@ -1431,7 +1433,7 @@ export default function RustyVaultPage() {
                   </button>
                   <button
                     type="button"
-                    className="btn-secondary px-5 py-3 text-sm"
+                    className="rf-text-action text-sm disabled:opacity-50"
                     disabled={!generatedPassword}
                     onClick={() =>
                       runAction('Generated password copied.', async () =>
@@ -1446,7 +1448,7 @@ export default function RustyVaultPage() {
                   </button>
                   <button
                     type="button"
-                    className="btn-secondary px-5 py-3 text-sm"
+                    className="rf-text-action text-sm disabled:opacity-50"
                     disabled={!generatedPassword}
                     onClick={() => {
                       setSelectedItem(null);
@@ -1497,15 +1499,15 @@ export default function RustyVaultPage() {
                           Download the current RustyVault browser extension package from Downloads, then pair it from this page.
                         </p>
                       </div>
-                      <span className="chip">Host-managed download</span>
+                      <span className="text-xs text-white/55">Host-managed download</span>
                     </div>
-                    <div className="flex flex-wrap gap-3">
-                      <Link href="/downloads" className="btn-secondary px-5 py-3 text-sm">
+                    <div className="flex flex-wrap gap-x-5 gap-y-2">
+                      <Link href="/downloads" className="rf-text-action text-sm">
                         Open Downloads
                       </Link>
                       <button
                         type="button"
-                        className="btn-primary px-5 py-3 text-sm"
+                        className="rf-text-action text-sm disabled:opacity-50"
                         disabled={!rustyVaultSession}
                         onClick={() =>
                           runAction('Extension pairing code issued.', pairExtension)
@@ -1515,7 +1517,7 @@ export default function RustyVaultPage() {
                       </button>
                       <button
                         type="button"
-                        className="btn-secondary px-5 py-3 text-sm"
+                        className="rf-text-action text-sm"
                         onClick={() =>
                           runAction('Other vault sessions revoked.', revokeOtherSessions)
                         }
@@ -1544,16 +1546,16 @@ export default function RustyVaultPage() {
                     className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
                     placeholder="https://accounts.example.com/login"
                   />
-                  <div className="flex flex-wrap gap-3">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
                     <button
                       type="button"
-                      className="btn-primary px-5 py-3 text-sm"
+                      className="rf-text-action text-sm disabled:opacity-50"
                       disabled={!unlocked}
                       onClick={() => runAction('Lookup finished.', refreshLookup)}
                     >
                       Check matches
                     </button>
-                    <span className="chip">Match mode: {currentMatchMode}</span>
+                    <span className="text-xs text-white/55">Match mode: {currentMatchMode}</span>
                   </div>
                   {lookupResultIds.length > 0 ? (
                     <div className="space-y-2 text-sm">
@@ -1597,7 +1599,7 @@ export default function RustyVaultPage() {
                                 • {session.device_platform || 'Unknown platform'}
                               </p>
                             </div>
-                            <span className={`chip ${session.current ? 'chip-accent' : ''}`}>
+                            <span className="text-xs text-white/55">
                               {session.current ? 'Current' : session.revoked_ts ? 'Revoked' : 'Active'}
                             </span>
                           </div>
@@ -1608,7 +1610,7 @@ export default function RustyVaultPage() {
                           {!session.current && !session.revoked_ts && (
                             <button
                               type="button"
-                              className="btn-danger px-4 py-2 text-sm"
+                              className="rf-text-action rf-text-action-danger text-sm"
                               onClick={() =>
                                 runAction('Vault device revoked.', async () => {
                                   await withRustyVaultAccess((accessToken) =>

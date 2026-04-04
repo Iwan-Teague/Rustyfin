@@ -37,6 +37,7 @@ type Props = {
   applyActionPendingLabel?: string;
   applyActionDisabled?: boolean;
   applyActionLoading?: boolean;
+  showHeading?: boolean;
   onApplyAction?: () => void;
   onLibraryChange: (libraryId: string) => void;
   onSelectItem: (item: MediaItemNode | null) => void;
@@ -54,6 +55,7 @@ export default function MediaPicker({
   applyActionPendingLabel = 'Applying…',
   applyActionDisabled = false,
   applyActionLoading = false,
+  showHeading = true,
   onApplyAction,
   onLibraryChange,
   onSelectItem,
@@ -130,12 +132,14 @@ export default function MediaPicker({
       className={`${surfaceClassName} space-y-4`}
       style={noShadow ? { boxShadow: 'none' } : undefined}
     >
-      <div className="space-y-2">
-        <h2 className="text-xl font-semibold">Media Selection</h2>
-        <p className="text-sm muted">
-          Pick a movie or episode that is accessible to everyone invited.
-        </p>
-      </div>
+      {showHeading && (
+        <div className="space-y-2">
+          <h2 className="text-xl font-semibold">Media Selection</h2>
+          <p className="text-sm muted">
+            Pick a movie or episode that is accessible to everyone invited.
+          </p>
+        </div>
+      )}
 
       <div className={layout === 'stacked' ? 'space-y-3' : 'grid gap-3 md:grid-cols-[1fr_2fr]'}>
         <div className="space-y-2">
@@ -171,7 +175,7 @@ export default function MediaPicker({
                   setBreadcrumbs((prev) => prev.slice(0, -1));
                 }}
                 disabled={breadcrumbs.length === 0}
-                className="btn-secondary px-3 py-1.5 text-xs disabled:opacity-50"
+                className="rf-text-action text-xs disabled:opacity-50"
               >
                 Back
               </button>
@@ -184,7 +188,7 @@ export default function MediaPicker({
             {onApplyAction && (
               <button
                 type="button"
-                className="btn-primary px-4 py-2 text-sm disabled:opacity-50"
+                className="rf-text-action text-sm disabled:opacity-50"
                 onClick={onApplyAction}
                 disabled={applyActionLoading || applyActionDisabled}
               >
@@ -205,7 +209,7 @@ export default function MediaPicker({
               <button
                 type="button"
                 onClick={() => setSearch('')}
-                className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full border border-white/25 text-white/75 transition hover:border-white/50 hover:text-white"
+                className="rf-inline-icon-btn absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center"
                 aria-label="Clear search"
                 title="Clear search"
               >
@@ -251,7 +255,7 @@ export default function MediaPicker({
                           <button
                             type="button"
                             onClick={() => setBreadcrumbs((prev) => [...prev, { id: item.id, title: item.title }])}
-                            className="btn-secondary px-3 py-1.5 text-xs"
+                            className="rf-text-action text-xs"
                           >
                             Open
                           </button>
@@ -261,7 +265,7 @@ export default function MediaPicker({
                           <button
                             type="button"
                             onClick={() => onSelectItem(item)}
-                            className={`px-3 py-1.5 text-xs ${selected ? 'btn-primary' : 'btn-secondary'}`}
+                            className={`text-xs ${selected ? 'rf-text-action' : 'rf-text-action rf-text-action-muted'}`}
                           >
                             {selected ? 'Selected' : 'Select'}
                           </button>
