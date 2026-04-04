@@ -223,7 +223,7 @@ export default function ChannelUserSettings({
         </div>
         <button
           type="button"
-          className="btn-ghost px-3 py-2"
+          className="rf-inline-icon-btn h-9 w-9 text-base"
           aria-label="Open user settings"
           onClick={() => {
             void openSettings();

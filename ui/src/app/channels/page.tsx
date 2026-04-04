@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
@@ -35,6 +36,7 @@ export default function ChannelsPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const preselectedApplied = useRef(false);
 
   // Auto-select a channel when deep-linking via ?channel=<id>, last-used choice, or default channel
@@ -98,6 +100,11 @@ export default function ChannelsPage() {
     update();
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
   }, []);
 
   if (!authLoading && !me) {
@@ -263,7 +270,8 @@ export default function ChannelsPage() {
       </div>
 
       {/* Create channel modal */}
-      {createModal && (
+      {createModal && mounted
+        ? createPortal(
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           onClick={() => setCreateModal(null)}
@@ -313,7 +321,8 @@ export default function ChannelsPage() {
             </div>
           </div>
         </div>
-      )}
+        , document.body)
+        : null}
     </div>
   );
 }
