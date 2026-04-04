@@ -610,6 +610,9 @@ pub(crate) async fn execute_conversations_provider_tool(
         AssistantToolName::ConversationsDeleteSelection => {
             conversations_delete_selection(state, context, call).await
         }
+        AssistantToolName::ConversationsMoveToGroupSelection => {
+            conversations_move_to_group_selection(state, context, call).await
+        }
         _ => Err(format!(
             "{} is not handled by the conversations provider.",
             call.tool.as_str()
@@ -2016,6 +2019,95 @@ async fn conversations_delete_selection(
     ))
 }
 
+async fn conversations_move_to_group_selection(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::ConversationMoveToGroup {
+        conversation_ids,
+        titles,
+        selection_label,
+        group_name,
+    } = &call.input
+    else {
+        return Err("missing conversation move-to-group payload".to_string());
+    };
+
+    if conversation_ids.is_empty() {
+        return Err("no AI conversations were selected to move into a group".to_string());
+    }
+
+    let normalized_group = group_name.trim();
+    if normalized_group.is_empty() {
+        return Err("missing destination AI conversation group name".to_string());
+    }
+
+    let mut verified = Vec::with_capacity(conversation_ids.len());
+    for (index, conversation_id) in conversation_ids.iter().enumerate() {
+        let Some(row) = rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+        )
+        .await
+        .map_err(|e| format!("failed to load AI conversation {conversation_id}: {e}"))?
+        else {
+            return Err(
+                "one of those AI conversations is no longer available. Ask me to prepare the action again."
+                    .to_string(),
+            );
+        };
+
+        let updated = rustfin_db::repo::ai_conversations::update_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+            None,
+            None,
+            Some(Some(normalized_group)),
+            None,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "failed to move AI conversation \"{}\" into group \"{normalized_group}\": {e}",
+                row.title
+            )
+        })?
+        .ok_or_else(|| format!("AI conversation \"{}\" is no longer available.", row.title))?;
+
+        if updated.group_name.as_deref() != Some(normalized_group) {
+            return Err(format!(
+                "Rustyfin AI changed \"{}\", but could not verify the group update.",
+                updated.title
+            ));
+        }
+
+        verified.push(json!({
+            "id": updated.id,
+            "title": titles.get(index).cloned().unwrap_or(updated.title),
+            "group_name": updated.group_name,
+            "archived": updated.archived,
+        }));
+    }
+
+    Ok((
+        format!(
+            "Moved {} AI conversations into group \"{normalized_group}\"",
+            conversation_ids.len()
+        ),
+        json!({
+            "verified": true,
+            "operation": "move_to_group",
+            "selection_label": selection_label,
+            "group_name": normalized_group,
+            "conversation_count": conversation_ids.len(),
+            "conversations": verified,
+        }),
+    ))
+}
+
 fn validate_calendar_title(raw: &str) -> Result<String, String> {
     let title = raw.trim();
     if title.is_empty() {
@@ -2905,6 +2997,7 @@ fn calendar_window_for_call(
         | AssistantToolInput::DocumentCreateDownload { .. }
         | AssistantToolInput::ConversationArchive { .. }
         | AssistantToolInput::ConversationDelete { .. }
+        | AssistantToolInput::ConversationMoveToGroup { .. }
         | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::RoomsFilter { .. }
         | AssistantToolInput::ServerFilter { .. } => {
@@ -3999,7 +4092,10 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
             }
         }
         AssistantToolInput::ConversationArchive { .. }
-        | AssistantToolInput::ConversationDelete { .. } => AssistantFollowUpInputHint::default(),
+        | AssistantToolInput::ConversationDelete { .. }
+        | AssistantToolInput::ConversationMoveToGroup { .. } => {
+            AssistantFollowUpInputHint::default()
+        }
         AssistantToolInput::CurrentDateTime { location } => AssistantFollowUpInputHint {
             current_datetime_location: location.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -4026,7 +4122,8 @@ fn follow_up_entities(
 ) -> Vec<AssistantFollowUpEntity> {
     match tool {
         AssistantToolName::ConversationsArchiveSelection
-        | AssistantToolName::ConversationsDeleteSelection => block
+        | AssistantToolName::ConversationsDeleteSelection
+        | AssistantToolName::ConversationsMoveToGroupSelection => block
             .data
             .get("conversations")
             .and_then(serde_json::Value::as_array)

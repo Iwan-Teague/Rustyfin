@@ -147,8 +147,19 @@ pub fn is_supported_conversation_manage_intent(message_lower: &str) -> bool {
     let archive_intent = message_lower.contains("archive")
         || (message_lower.contains("move") && message_lower.contains("archive"));
     let delete_intent = has_any(message_lower, &["delete ", "remove ", "clear "]);
+    let group_move_intent = has_any(message_lower, &["move ", "put ", "place ", "group "])
+        && has_any(
+            message_lower,
+            &[
+                " group ",
+                "group called",
+                "group named",
+                "into group",
+                "to group",
+            ],
+        );
 
-    (archive_intent || delete_intent)
+    (archive_intent || delete_intent || group_move_intent)
         && has_any(
             message_lower,
             &[
@@ -400,6 +411,7 @@ async fn parse_delete_request(
 enum ConversationActionOperation {
     Archive,
     Delete,
+    MoveToGroup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,15 +467,31 @@ async fn parse_conversation_manage_request(
             updated_ts: row.updated_ts,
         })
         .collect::<Vec<_>>();
-
-    let selection =
-        resolve_conversation_selection(message, conversation_id, operation, &candidates)?;
+    let lower = message.to_ascii_lowercase();
+    let selection = if operation == ConversationActionOperation::MoveToGroup
+        && conversation_manage_targets_current(&lower)
+    {
+        resolve_current_conversation_selection(conversation_id, &candidates)?
+    } else {
+        resolve_conversation_selection(
+            message,
+            conversation_id,
+            operation,
+            &candidates,
+            operation != ConversationActionOperation::MoveToGroup,
+        )?
+    };
     let titles = selection
         .selected
         .iter()
         .map(|candidate| candidate.title.clone())
         .collect::<Vec<_>>();
-    let summary = conversation_action_summary(operation, &selection);
+    let destination_group = if operation == ConversationActionOperation::MoveToGroup {
+        Some(extract_destination_conversation_group_name(message)?)
+    } else {
+        None
+    };
+    let summary = conversation_action_summary(operation, &selection, destination_group.as_deref());
 
     Ok(ParsedPendingActionRequest {
         payload: AssistantConfirmationPayload {
@@ -474,6 +502,9 @@ async fn parse_conversation_manage_request(
                 ConversationActionOperation::Delete => {
                     AssistantPendingActionKind::ConversationDelete
                 }
+                ConversationActionOperation::MoveToGroup => {
+                    AssistantPendingActionKind::ConversationMoveToGroup
+                }
             },
             call: PlannedToolCall {
                 tool: match operation {
@@ -482,6 +513,9 @@ async fn parse_conversation_manage_request(
                     }
                     ConversationActionOperation::Delete => {
                         AssistantToolName::ConversationsDeleteSelection
+                    }
+                    ConversationActionOperation::MoveToGroup => {
+                        AssistantToolName::ConversationsMoveToGroupSelection
                     }
                 },
                 input: match operation {
@@ -506,6 +540,18 @@ async fn parse_conversation_manage_request(
                         titles,
                         selection_label: selection.selection_label.clone(),
                     },
+                    ConversationActionOperation::MoveToGroup => {
+                        AssistantToolInput::ConversationMoveToGroup {
+                            conversation_ids: selection
+                                .selected
+                                .iter()
+                                .map(|candidate| candidate.id.clone())
+                                .collect(),
+                            titles,
+                            selection_label: selection.selection_label.clone(),
+                            group_name: destination_group.unwrap_or_default(),
+                        }
+                    }
                 },
             },
             summary,
@@ -522,6 +568,20 @@ fn detect_conversation_action_operation(message: &str) -> Option<ConversationAct
     if has_any(&lower, &["delete ", "remove ", "clear "]) {
         return Some(ConversationActionOperation::Delete);
     }
+    if has_any(&lower, &["move ", "put ", "place ", "group "])
+        && has_any(
+            &lower,
+            &[
+                " group ",
+                "group called",
+                "group named",
+                "into group",
+                "to group",
+            ],
+        )
+    {
+        return Some(ConversationActionOperation::MoveToGroup);
+    }
     None
 }
 
@@ -530,9 +590,14 @@ fn resolve_conversation_selection(
     conversation_id: Option<&str>,
     operation: ConversationActionOperation,
     candidates: &[ConversationSelectionCandidate],
+    allow_group_filter: bool,
 ) -> Result<ResolvedConversationSelection, String> {
     let lower = message.to_ascii_lowercase();
-    let requested_group = detect_conversation_group_name(message, candidates)?;
+    let requested_group = if allow_group_filter {
+        detect_conversation_group_name(message, candidates)?
+    } else {
+        None
+    };
     let requested_count = extract_conversation_count_hint(message);
     let selection_order =
         determine_conversation_selection_order(&lower, requested_group.is_some(), requested_count);
@@ -559,9 +624,11 @@ fn resolve_conversation_selection(
                     true
                 }
             }
+            ConversationActionOperation::MoveToGroup => true,
         })
         .cloned()
         .collect::<Vec<_>>();
+    sort_conversation_candidates_for_display(&mut eligible);
 
     if eligible.is_empty() {
         return Err(conversation_selection_empty_message(
@@ -636,6 +703,8 @@ fn resolve_conversation_selection(
                         .then_with(|| left.title.cmp(&right.title))
                         .then_with(|| left.id.cmp(&right.id))
                 });
+            } else {
+                sort_conversation_candidates_for_display(&mut ordered_candidates);
             }
 
             for candidate in ordered_candidates {
@@ -658,6 +727,10 @@ fn resolve_conversation_selection(
             }
             ConversationActionOperation::Delete => {
                 "I can't delete the conversation we're currently using from inside itself. Open another conversation or choose a different target."
+                    .to_string()
+            }
+            ConversationActionOperation::MoveToGroup => {
+                "I couldn't find any AI conversations to move into that group."
                     .to_string()
             }
         });
@@ -710,6 +783,16 @@ fn conversation_delete_targets_archived_only(lower: &str) -> bool {
         || lower.contains("archive conversations")
 }
 
+fn sort_conversation_candidates_for_display(candidates: &mut [ConversationSelectionCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.archived
+            .cmp(&right.archived)
+            .then_with(|| right.sort_order.cmp(&left.sort_order))
+            .then_with(|| right.updated_ts.cmp(&left.updated_ts))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+}
+
 fn conversation_selection_label(
     operation: ConversationActionOperation,
     order: ConversationSelectionOrder,
@@ -726,6 +809,7 @@ fn conversation_selection_label(
     let verb = match operation {
         ConversationActionOperation::Archive => "Archive",
         ConversationActionOperation::Delete => "Delete",
+        ConversationActionOperation::MoveToGroup => "Move",
     };
     match (order, requested_count, group_name) {
         (ConversationSelectionOrder::AllMatching, _, Some(group)) => {
@@ -756,6 +840,7 @@ fn conversation_selection_label(
 fn conversation_action_summary(
     operation: ConversationActionOperation,
     selection: &ResolvedConversationSelection,
+    destination_group: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("{}:", selection.selection_label)];
     for title in selection
@@ -774,6 +859,11 @@ fn conversation_action_summary(
     }
     if matches!(operation, ConversationActionOperation::Delete) {
         lines.push("This will permanently remove them from your AI history.".to_string());
+    }
+    if let Some(group_name) = destination_group {
+        lines.push(format!(
+            "They will move into AI conversation group \"{group_name}\"."
+        ));
     }
     if selection.current_excluded {
         lines.push(
@@ -801,7 +891,75 @@ fn conversation_selection_empty_message(
         (ConversationActionOperation::Delete, None) => {
             "I couldn't find any AI conversations to delete with that description.".to_string()
         }
+        (ConversationActionOperation::MoveToGroup, Some(group_name)) => {
+            format!("I couldn't find any AI conversations to move into group \"{group_name}\".")
+        }
+        (ConversationActionOperation::MoveToGroup, None) => {
+            "I couldn't find any AI conversations to move with that description.".to_string()
+        }
     }
+}
+
+fn conversation_manage_targets_current(lower: &str) -> bool {
+    has_any(
+        lower,
+        &[
+            "this conversation",
+            "this ai conversation",
+            "current conversation",
+            "this chat",
+            "current chat",
+        ],
+    )
+}
+
+fn resolve_current_conversation_selection(
+    conversation_id: Option<&str>,
+    candidates: &[ConversationSelectionCandidate],
+) -> Result<ResolvedConversationSelection, String> {
+    let current_id = conversation_id.ok_or_else(|| {
+        "I can move the current AI conversation into a group, but I need an active conversation first."
+            .to_string()
+    })?;
+    let selected = candidates
+        .iter()
+        .find(|candidate| candidate.id == current_id)
+        .cloned()
+        .ok_or_else(|| "I couldn't find the current AI conversation to update.".to_string())?;
+    Ok(ResolvedConversationSelection {
+        selection_label: "Move this AI conversation".to_string(),
+        selected: vec![selected],
+        current_excluded: false,
+    })
+}
+
+fn extract_destination_conversation_group_name(message: &str) -> Result<String, String> {
+    if let Some(quoted) = extract_quoted_phrase(message) {
+        let normalized = quoted.trim();
+        if !normalized.is_empty() {
+            return Ok(normalized.to_string());
+        }
+    }
+
+    let lower = message.to_ascii_lowercase();
+    for marker in [
+        "group called ",
+        "group named ",
+        "into group ",
+        "to group ",
+        "in group ",
+    ] {
+        if let Some(index) = lower.find(marker) {
+            let raw = message[index + marker.len()..]
+                .trim()
+                .trim_matches(|ch: char| ch.is_ascii_punctuation() || ch.is_whitespace());
+            if !raw.is_empty() {
+                return Ok(raw.to_string());
+            }
+        }
+    }
+
+    Err("I can move AI conversations into a group, but I need the destination group name. Try \"move this AI conversation into a group called test\".".to_string())
 }
 
 fn detect_conversation_group_name(
@@ -1683,10 +1841,11 @@ mod tests {
     use super::{
         AssistantPendingActionKind, AssistantToolInput, ConversationActionOperation,
         ConversationSelectionCandidate, calendar_event_matches_query_for_delete,
-        extract_delete_event_query, is_supported_conversation_manage_intent,
-        is_supported_document_create_intent, parse_birthday_request_for, parse_document_request,
-        parse_event_request_for, pending_action_request_for_message,
-        resolve_conversation_selection, select_delete_target,
+        extract_delete_event_query, extract_destination_conversation_group_name,
+        is_supported_conversation_manage_intent, is_supported_document_create_intent,
+        parse_birthday_request_for, parse_document_request, parse_event_request_for,
+        pending_action_request_for_message, resolve_conversation_selection,
+        resolve_current_conversation_selection, select_delete_target,
     };
     use crate::auth::AuthUser;
     use rustfin_db::repo::calendar::CalendarEventRow;
@@ -1902,6 +2061,9 @@ mod tests {
         assert!(is_supported_conversation_manage_intent(
             "archive the first 3 conversations"
         ));
+        assert!(is_supported_conversation_manage_intent(
+            "move this ai conversation into a group called test"
+        ));
     }
 
     #[test]
@@ -1920,6 +2082,7 @@ mod tests {
             None,
             ConversationActionOperation::Delete,
             &candidates,
+            true,
         )
         .expect("selection should resolve");
 
@@ -1948,6 +2111,7 @@ mod tests {
             None,
             ConversationActionOperation::Archive,
             &candidates,
+            true,
         )
         .expect("selection should resolve");
 
@@ -1972,6 +2136,7 @@ mod tests {
             None,
             ConversationActionOperation::Delete,
             &candidates,
+            true,
         )
         .expect("selection should resolve");
 
@@ -1997,6 +2162,7 @@ mod tests {
             Some("d"),
             ConversationActionOperation::Delete,
             &candidates,
+            true,
         )
         .expect("selection should resolve");
 
@@ -2007,6 +2173,57 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(selected_titles, vec!["Charlie", "Bravo", "Alpha"]);
         assert!(selection.current_excluded);
+    }
+
+    #[test]
+    fn resolves_archive_first_three_by_visible_order_even_if_input_is_unsorted() {
+        let candidates = vec![
+            conversation_candidate("d", "Delta", None, false, 1024, 40),
+            conversation_candidate("b", "Bravo", None, false, 3072, 20),
+            conversation_candidate("a", "Alpha", None, false, 4096, 10),
+            conversation_candidate("c", "Charlie", None, false, 2048, 30),
+        ];
+
+        let selection = resolve_conversation_selection(
+            "Archive the first 3 conversations",
+            None,
+            ConversationActionOperation::Archive,
+            &candidates,
+            true,
+        )
+        .expect("selection should resolve");
+
+        let selected_titles = selection
+            .selected
+            .iter()
+            .map(|candidate| candidate.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_titles, vec!["Alpha", "Bravo", "Charlie"]);
+    }
+
+    #[test]
+    fn extracts_destination_group_name_for_conversation_move() {
+        let group_name = extract_destination_conversation_group_name(
+            "move this AI conversation into a group called test",
+        )
+        .expect("group name should parse");
+
+        assert_eq!(group_name, "test");
+    }
+
+    #[test]
+    fn resolves_current_conversation_for_group_move() {
+        let candidates = vec![
+            conversation_candidate("a", "Alpha", None, false, 4096, 10),
+            conversation_candidate("b", "Bravo", None, false, 3072, 20),
+        ];
+
+        let selection = resolve_current_conversation_selection(Some("b"), &candidates)
+            .expect("current conversation should resolve");
+
+        assert_eq!(selection.selection_label, "Move this AI conversation");
+        assert_eq!(selection.selected.len(), 1);
+        assert_eq!(selection.selected[0].title, "Bravo");
     }
 
     fn conversation_candidate(

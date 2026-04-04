@@ -16,6 +16,7 @@ impl ToolProvider for ConversationsToolProvider {
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::ConversationsArchiveSelection);
         registry.register_tool(self, AssistantToolName::ConversationsDeleteSelection);
+        registry.register_tool(self, AssistantToolName::ConversationsMoveToGroupSelection);
     }
 
     fn execute<'a>(

@@ -234,9 +234,6 @@ export default function HomePage() {
     <div className="animate-rise rf-flat-page">
       <header className="rf-flat-header">
         <h1 className="text-2xl font-semibold sm:text-3xl">Welcome back, {me.username}</h1>
-        <p className="max-w-2xl text-sm muted">
-          Resume what you were watching and keep tabs on active rooms.
-        </p>
       </header>
 
       {error && (
@@ -393,9 +390,8 @@ export default function HomePage() {
 
       <section className="rf-flat-section">
         <div className="flex items-end justify-between gap-3">
-          <div className="space-y-1">
+          <div>
             <h2 className="text-xl font-semibold sm:text-2xl">Calendar: Next 7 Days</h2>
-            <p className="text-xs muted sm:text-sm">Read-only preview of upcoming events.</p>
           </div>
           <Link href="/calendar" className="rf-text-action text-sm">
             Full calendar

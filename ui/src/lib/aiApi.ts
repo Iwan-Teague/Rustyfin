@@ -197,7 +197,8 @@ export type AiPendingActionKind =
   | 'calendar_delete_event'
   | 'document_create_download'
   | 'conversation_archive'
-  | 'conversation_delete';
+  | 'conversation_delete'
+  | 'conversation_move_to_group';
 
 export type AiPendingActionStatus = 'pending' | 'confirmed' | 'expired';
 

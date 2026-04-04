@@ -680,7 +680,7 @@ export default function CalendarPage() {
                   </div>
                 </div>
                 <div className="hidden h-full flex-col min-h-0 sm:flex">
-                  <div className="grid grid-cols-7 gap-0 border-y border-[var(--border-subtle)]">
+                  <div className="grid grid-cols-7 gap-0">
                     {weekdayHeaders.map(({ label, isToday }) => (
                       <div
                         key={label}
@@ -776,7 +776,7 @@ export default function CalendarPage() {
               </>
             ) : (
               <div className="h-full min-h-0 flex flex-col pb-2">
-                <div className="grid grid-cols-7 gap-0 border-y border-[var(--border-subtle)]">
+                <div className="grid grid-cols-7 gap-0">
                   {weekdayHeaders.map(({ label, isToday }) => (
                     <div
                       key={label}

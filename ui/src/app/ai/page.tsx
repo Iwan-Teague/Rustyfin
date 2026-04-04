@@ -919,6 +919,7 @@ function PendingActionCard({
     switch (pendingAction.action_kind) {
       case 'conversation_archive':
       case 'conversation_delete':
+      case 'conversation_move_to_group':
         return 'AI conversation action requires an explicit confirmation.';
       case 'document_create_download':
         return 'Document creation requires an explicit confirmation.';
@@ -2699,6 +2700,7 @@ export default function AiPage() {
           }
 
           if (completed) {
+            void loadConversationList(activeConversationIdRef.current);
             void loadConversationDetail(conversationId!);
             const queuedText = queuedPromptsRef.current[conversationId!]?.trim();
             if (queuedText && !requiresConfirmation && !streamFailed) {
