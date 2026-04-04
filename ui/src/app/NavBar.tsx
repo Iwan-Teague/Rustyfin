@@ -218,15 +218,30 @@ export default function NavBar() {
             const showChildren = Boolean(item.items.length && openGroupHref === item.href);
             return (
               <div key={item.href} className="flex flex-col gap-1">
-                <Link
-                  href={item.href}
-                  className={railLinkClass(item.href)}
-                  aria-current={isActivePath(item.href) ? 'page' : undefined}
-                  onClick={() => setExpandedGroupHref(item.items.length ? item.href : null)}
-                >
-                  <span className="shrink-0">{item.icon}</span>
-                  {railExpanded ? <span className="truncate">{item.label}</span> : null}
-                </Link>
+                {item.items.length ? (
+                  <button
+                    type="button"
+                    className={railLinkClass(item.href)}
+                    aria-current={isActivePath(item.href) ? 'page' : undefined}
+                    aria-expanded={showChildren}
+                    onClick={() =>
+                      setExpandedGroupHref((prev) => (prev === item.href ? null : item.href))
+                    }
+                  >
+                    <span className="shrink-0">{item.icon}</span>
+                    {railExpanded ? <span className="truncate">{item.label}</span> : null}
+                  </button>
+                ) : (
+                  <Link
+                    href={item.href}
+                    className={railLinkClass(item.href)}
+                    aria-current={isActivePath(item.href) ? 'page' : undefined}
+                    onClick={() => setExpandedGroupHref(null)}
+                  >
+                    <span className="shrink-0">{item.icon}</span>
+                    {railExpanded ? <span className="truncate">{item.label}</span> : null}
+                  </Link>
+                )}
                 {showChildren ? (
                   <div className="ml-2 flex flex-col gap-1 border-l border-[var(--border-subtle)] pl-3">
                     {item.items.map((subItem) => (
