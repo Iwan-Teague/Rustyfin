@@ -18,8 +18,9 @@ use super::memory::{augment_history_with_entity_graph, build_grounding_chunks_fo
 use super::registry::AssistantToolName;
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
-    AssistantChatRequest, AssistantFollowUpContext, AssistantFollowUpEntity,
-    AssistantGroundingChunk, AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode,
+    AssistantChatRequest, AssistantExecutionCandidateStep, AssistantExecutionPlanCandidate,
+    AssistantFollowUpContext, AssistantFollowUpEntity, AssistantGroundingChunk,
+    AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode,
     AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
     PlannerFallbackReason, PlannerIssue, PlannerRepairRecord, PreparedAssistantTurn,
 };
@@ -193,6 +194,44 @@ pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
         calls: deterministic,
         debug,
     }
+}
+
+pub fn plan_execution_candidates(
+    response_mode: AssistantResponseMode,
+    planned: &PlannedToolSet,
+) -> Vec<AssistantExecutionPlanCandidate> {
+    if planned.calls.is_empty() {
+        return Vec::new();
+    }
+
+    let steps = planned
+        .calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| AssistantExecutionCandidateStep {
+            call: call.clone(),
+            domain_family: call.tool.domain_family(),
+            preferred: index == 0,
+        })
+        .collect::<Vec<_>>();
+    let primary_domain_family = planned
+        .calls
+        .first()
+        .map(|call| call.tool.domain_family())
+        .unwrap_or(super::types::AssistantDomainFamily::System);
+
+    vec![AssistantExecutionPlanCandidate {
+        primary_domain_family,
+        requested_response_mode: response_mode,
+        candidate_steps: steps,
+        expected_answer_shape: primary_domain_family.as_str().to_string(),
+        clarification_preferred: planned
+            .calls
+            .first()
+            .map(|call| call.tool.ambiguity_prone())
+            .unwrap_or(false),
+        requires_entity_resolution: false,
+    }]
 }
 
 async fn resolve_model_plan_with_repair<B: PromptBackend>(

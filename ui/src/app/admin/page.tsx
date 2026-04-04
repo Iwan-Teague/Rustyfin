@@ -3590,6 +3590,29 @@ export default function AdminPage() {
                                       {event.planner.validation_errors.join(' · ')}
                                     </p>
                                   ) : null}
+                                  {event.planner.execution_trace ? (
+                                    <div className="mt-2 space-y-1 text-[11px] muted">
+                                      <p>
+                                        stop {titleCase((event.planner.execution_trace.stop_reason ?? 'unknown').replaceAll('_', ' '))} ·{' '}
+                                        {event.planner.execution_trace.attempts?.length ?? 0} attempts ·{' '}
+                                        {event.planner.execution_trace.tool_step_count ?? 0} steps
+                                      </p>
+                                      <p>
+                                        path {titleCase((event.planner.execution_trace.final_answer_path ?? 'none').replaceAll('_', ' '))} ·{' '}
+                                        {event.planner.execution_trace.alternate_tool_count ?? 0} alternates ·{' '}
+                                        {event.planner.execution_trace.recovery_step_count ?? 0} recovery
+                                      </p>
+                                      {event.planner.execution_trace.outcome_counts &&
+                                      Object.keys(event.planner.execution_trace.outcome_counts).length > 0 ? (
+                                        <p>
+                                          outcomes{' '}
+                                          {Object.entries(event.planner.execution_trace.outcome_counts)
+                                            .map(([kind, count]) => `${kind}:${count}`)
+                                            .join(' · ')}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
                                 </div>
                               ) : (
                                 <p className="text-xs muted">No planner diagnostics recorded.</p>

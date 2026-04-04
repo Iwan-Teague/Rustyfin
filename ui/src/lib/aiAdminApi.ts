@@ -154,6 +154,26 @@ export interface AiAssistantPlannerAuditExecution {
   fallback_reason?: string | null;
 }
 
+export interface AiAssistantPlannerAuditExecutionTrace {
+  stop_reason?: string;
+  final_answer_path?: string;
+  tool_step_count?: number;
+  alternate_tool_count?: number;
+  recovery_step_count?: number;
+  clarification_count?: number;
+  conflict_count?: number;
+  deterministic_answer_used?: boolean;
+  synthesis_used?: boolean;
+  outcome_counts?: Record<string, number>;
+  used_role_backends?: string[];
+  attempts?: Array<{
+    tool?: string;
+    outcome_kind?: string;
+    latency_ms?: number;
+    fallback_edge?: string | null;
+  }>;
+}
+
 export interface AiAssistantPlannerAudit {
   raw_response_hash?: string | null;
   planner_mode?: string | null;
@@ -162,6 +182,7 @@ export interface AiAssistantPlannerAudit {
   final_selected_tools?: string[];
   validation_errors?: string[];
   execution?: AiAssistantPlannerAuditExecution;
+  execution_trace?: AiAssistantPlannerAuditExecutionTrace;
 }
 
 export interface AiAssistantAuditEvent {

@@ -6,7 +6,9 @@ use std::sync::{Arc, OnceLock};
 use super::context::AssistantContext;
 use super::providers::default_tool_providers;
 use super::registry::AssistantToolName;
-use super::types::{AssistantToolContextBlock, AssistantToolSpec, ToolAccessMode};
+use super::types::{
+    AssistantDomainFamily, AssistantToolContextBlock, AssistantToolSpec, ToolAccessMode,
+};
 use crate::state::AppState;
 
 pub type ToolExecutionFuture<'a> =
@@ -84,6 +86,11 @@ pub struct ToolRegistryEntry {
     pub tool: AssistantToolName,
     pub spec: AssistantToolSpec,
     pub provider_id: &'static str,
+    pub domain_family: AssistantDomainFamily,
+    pub recovery_eligible: bool,
+    pub can_parallelize: bool,
+    pub ambiguity_prone: bool,
+    pub freshness_sensitive: bool,
 }
 
 #[derive(Default)]
@@ -100,6 +107,11 @@ impl ToolRegistryBuilder {
             tool,
             spec: tool.spec(),
             provider_id: provider.provider_id(),
+            domain_family: tool.domain_family(),
+            recovery_eligible: tool.recovery_eligible(),
+            can_parallelize: tool.can_parallelize(),
+            ambiguity_prone: tool.ambiguity_prone(),
+            freshness_sensitive: tool.freshness_sensitive(),
         };
         if self.entries.insert(tool, entry).is_some() {
             panic!("tool {} was registered more than once", tool.as_str());
@@ -217,6 +229,30 @@ mod tests {
                 .entry(AssistantToolName::WeatherGetCurrent)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn registry_entries_include_execution_metadata() {
+        let registry = default_tool_registry();
+        let weather = registry
+            .entry(AssistantToolName::WeatherGetForecast)
+            .expect("weather entry");
+        assert_eq!(
+            weather.domain_family,
+            crate::ai_assistant::types::AssistantDomainFamily::Weather
+        );
+        assert!(weather.recovery_eligible);
+        assert!(weather.ambiguity_prone);
+        assert!(weather.freshness_sensitive);
+    }
+
+    #[test]
+    fn write_tools_are_excluded_from_recovery_graph_metadata() {
+        let registry = default_tool_registry();
+        let create_event = registry
+            .entry(AssistantToolName::CalendarCreateEvent)
+            .expect("create event entry");
+        assert!(!create_event.recovery_eligible);
     }
 
     #[test]

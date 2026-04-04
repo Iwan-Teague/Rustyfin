@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rustfin_ai_agent::ChatMessage;
 use serde::{Deserialize, Serialize};
 
@@ -188,6 +190,8 @@ pub struct AssistantPlannerDebug {
     pub repair_records: Vec<PlannerRepairRecord>,
     #[serde(default)]
     pub final_selected_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_trace: Option<AssistantExecutionTrace>,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +255,353 @@ pub struct AssistantToolSpec {
     pub confirmation: ToolConfirmationPolicy,
     pub timeout_ms: u64,
     pub max_result_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantDomainFamily {
+    #[default]
+    System,
+    Account,
+    Calendar,
+    Channels,
+    Transcript,
+    Downloads,
+    Library,
+    Network,
+    Weather,
+    Web,
+    Rooms,
+    AiRuntime,
+    Servers,
+    Documents,
+}
+
+impl AssistantDomainFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Calendar => "calendar",
+            Self::Channels => "channels",
+            Self::Transcript => "transcript",
+            Self::Downloads => "downloads",
+            Self::Library => "library",
+            Self::Network => "network",
+            Self::Weather => "weather",
+            Self::Web => "web",
+            Self::Rooms => "rooms",
+            Self::System => "system",
+            Self::AiRuntime => "ai_runtime",
+            Self::Servers => "servers",
+            Self::Documents => "documents",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolOutcomeKind {
+    #[default]
+    Answer,
+    Partial,
+    Empty,
+    Ambiguous,
+    ClarificationNeeded,
+    NotFound,
+    WeakMatch,
+    ValidationFailed,
+    Stale,
+    Conflicting,
+    Denied,
+    TransientError,
+    FatalError,
+}
+
+impl AssistantToolOutcomeKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Answer => "answer",
+            Self::Partial => "partial",
+            Self::Empty => "empty",
+            Self::Ambiguous => "ambiguous",
+            Self::ClarificationNeeded => "clarification_needed",
+            Self::NotFound => "not_found",
+            Self::WeakMatch => "weak_match",
+            Self::ValidationFailed => "validation_failed",
+            Self::Stale => "stale",
+            Self::Conflicting => "conflicting",
+            Self::Denied => "denied",
+            Self::TransientError => "transient_error",
+            Self::FatalError => "fatal_error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantSynthesisMode {
+    None,
+    DeterministicReply,
+    DeterministicSynthesis,
+    ModelAnswer,
+    Clarification,
+    BoundedFailure,
+}
+
+impl AssistantSynthesisMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::DeterministicReply => "deterministic_reply",
+            Self::DeterministicSynthesis => "deterministic_synthesis",
+            Self::ModelAnswer => "model_answer",
+            Self::Clarification => "clarification",
+            Self::BoundedFailure => "bounded_failure",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantExecutionStopReason {
+    DeterministicReply,
+    SufficientAnswer,
+    ClarificationRequired,
+    BudgetExhausted,
+    NoPermittedFallback,
+    DuplicateSignature,
+    WeakEvidenceOnly,
+    ConflictUnresolved,
+    AclDenied,
+    ConfirmationRequired,
+    FatalError,
+    ModelAnswerCompleted,
+}
+
+impl AssistantExecutionStopReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DeterministicReply => "deterministic_reply",
+            Self::SufficientAnswer => "sufficient_answer",
+            Self::ClarificationRequired => "clarification_required",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::NoPermittedFallback => "no_permitted_fallback",
+            Self::DuplicateSignature => "duplicate_signature",
+            Self::WeakEvidenceOnly => "weak_evidence_only",
+            Self::ConflictUnresolved => "conflict_unresolved",
+            Self::AclDenied => "acl_denied",
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::FatalError => "fatal_error",
+            Self::ModelAnswerCompleted => "model_answer_completed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantExecutionBudget {
+    pub max_planner_passes: u8,
+    pub max_tool_steps: u8,
+    pub max_alternate_steps: u8,
+    pub max_parallel_tools: u8,
+    pub max_evidence_items: u8,
+    pub max_grounding_chars: usize,
+    pub max_recovery_depth: u8,
+    pub max_same_signature_repeats: u8,
+    pub allow_verifier: bool,
+    pub allow_parallel_read_fanout: bool,
+}
+
+impl AssistantExecutionBudget {
+    pub fn for_mode(mode: AssistantResponseMode) -> Self {
+        match mode {
+            AssistantResponseMode::Instant => Self {
+                max_planner_passes: 1,
+                max_tool_steps: 1,
+                max_alternate_steps: 0,
+                max_parallel_tools: 1,
+                max_evidence_items: 4,
+                max_grounding_chars: 2_400,
+                max_recovery_depth: 0,
+                max_same_signature_repeats: 1,
+                allow_verifier: false,
+                allow_parallel_read_fanout: false,
+            },
+            AssistantResponseMode::Thinking => Self {
+                max_planner_passes: 2,
+                max_tool_steps: 3,
+                max_alternate_steps: 2,
+                max_parallel_tools: 2,
+                max_evidence_items: 6,
+                max_grounding_chars: 3_600,
+                max_recovery_depth: 2,
+                max_same_signature_repeats: 1,
+                allow_verifier: false,
+                allow_parallel_read_fanout: true,
+            },
+            AssistantResponseMode::Extended => Self {
+                max_planner_passes: 3,
+                max_tool_steps: 5,
+                max_alternate_steps: 4,
+                max_parallel_tools: 2,
+                max_evidence_items: 8,
+                max_grounding_chars: 4_800,
+                max_recovery_depth: 4,
+                max_same_signature_repeats: 1,
+                allow_verifier: true,
+                allow_parallel_read_fanout: true,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantClarificationRequest {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_field: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantEvidenceItem {
+    pub id: String,
+    pub tool: String,
+    pub domain_family: AssistantDomainFamily,
+    pub title: String,
+    pub excerpt: String,
+    #[serde(default)]
+    pub score: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_chunk_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AssistantToolOutcome {
+    pub tool: String,
+    pub label: String,
+    pub domain_family: AssistantDomainFamily,
+    pub kind: AssistantToolOutcomeKind,
+    #[serde(default)]
+    pub confidence: f32,
+    pub block: AssistantToolContextBlock,
+    #[serde(default)]
+    pub evidence_items: Vec<AssistantEvidenceItem>,
+    #[serde(default)]
+    pub ambiguity_keys: Vec<String>,
+    #[serde(default)]
+    pub recovery_hints: Vec<String>,
+    pub args_hash: String,
+    pub result_signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AssistantRecoveryDecision {
+    Stop {
+        reason: AssistantExecutionStopReason,
+    },
+    AskClarification {
+        request: AssistantClarificationRequest,
+    },
+    RunNext {
+        call: PlannedToolCall,
+        edge_label: String,
+        recovery_depth: u8,
+        is_alternate: bool,
+    },
+    SynthesizeNow,
+    DeterministicReplyNow,
+    VerifierPass,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssistantExecutionAttempt {
+    pub step_index: u32,
+    pub tool: String,
+    pub label: String,
+    pub domain_family: AssistantDomainFamily,
+    pub status: String,
+    pub outcome_kind: AssistantToolOutcomeKind,
+    pub latency_ms: u64,
+    pub args_hash: String,
+    pub result_signature: String,
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
+    #[serde(default)]
+    pub ambiguity_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_edge: Option<String>,
+    #[serde(default)]
+    pub used_alternate: bool,
+    #[serde(default)]
+    pub recovery_depth: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantExecutionTrace {
+    pub response_mode: AssistantResponseMode,
+    pub budget: AssistantExecutionBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_mode: Option<String>,
+    #[serde(default)]
+    pub attempts: Vec<AssistantExecutionAttempt>,
+    #[serde(default)]
+    pub retained_evidence: Vec<AssistantEvidenceItem>,
+    pub stop_reason: AssistantExecutionStopReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_outcome_kind: Option<AssistantToolOutcomeKind>,
+    pub final_answer_path: AssistantSynthesisMode,
+    #[serde(default)]
+    pub planner_pass_count: u8,
+    #[serde(default)]
+    pub tool_step_count: u32,
+    #[serde(default)]
+    pub alternate_tool_count: u32,
+    #[serde(default)]
+    pub recovery_step_count: u32,
+    #[serde(default)]
+    pub clarification_count: u32,
+    #[serde(default)]
+    pub conflict_count: u32,
+    #[serde(default)]
+    pub deterministic_answer_used: bool,
+    #[serde(default)]
+    pub synthesis_used: bool,
+    #[serde(default)]
+    pub used_role_backends: Vec<String>,
+    #[serde(default)]
+    pub outcome_counts: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantExecutionCandidateStep {
+    pub call: PlannedToolCall,
+    pub domain_family: AssistantDomainFamily,
+    #[serde(default)]
+    pub preferred: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantExecutionPlanCandidate {
+    pub primary_domain_family: AssistantDomainFamily,
+    pub requested_response_mode: AssistantResponseMode,
+    pub candidate_steps: Vec<AssistantExecutionCandidateStep>,
+    pub expected_answer_shape: String,
+    #[serde(default)]
+    pub clarification_preferred: bool,
+    #[serde(default)]
+    pub requires_entity_resolution: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,6 +788,30 @@ pub struct AssistantTurnStats {
     pub artifact_verification_attempts: u32,
     #[serde(default)]
     pub artifact_revision_count: u32,
+    #[serde(default)]
+    pub tool_step_count: u32,
+    #[serde(default)]
+    pub alternate_tool_count: u32,
+    #[serde(default)]
+    pub recovery_step_count: u32,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default)]
+    pub clarification_count: u32,
+    #[serde(default)]
+    pub conflict_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_outcome_kind: Option<String>,
+    #[serde(default)]
+    pub deterministic_answer_used: bool,
+    #[serde(default)]
+    pub synthesis_used: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub role_backend_usage: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_trace: Option<AssistantExecutionTrace>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -569,6 +944,11 @@ pub struct AssistantStatusEvent {
 #[serde(rename_all = "snake_case")]
 pub enum AssistantPhase {
     Planning,
+    Grounding,
+    Recovering,
+    Synthesizing,
+    Clarifying,
+    Verifying,
     Generating,
 }
 

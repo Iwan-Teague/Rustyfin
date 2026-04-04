@@ -34,6 +34,30 @@ pub struct AiRuntimeTurnSummary {
     pub phase: AssistantRuntimePhase,
     pub queue_depth: u64,
     pub active_request_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_execution: Option<AiRuntimeExecutionSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeExecutionSummary {
+    pub stop_reason: String,
+    pub final_answer_path: String,
+    pub tool_step_count: u32,
+    pub alternate_tool_count: u32,
+    pub recovery_step_count: u32,
+    pub clarification_count: u32,
+    pub conflict_count: u32,
+    pub attempt_count: u32,
+    pub deterministic_answer_used: bool,
+    pub synthesis_used: bool,
+    pub outcome_counts: Vec<AiRuntimeExecutionOutcomeCount>,
+    pub role_backend_usage: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AiRuntimeExecutionOutcomeCount {
+    pub outcome_kind: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,6 +147,7 @@ pub async fn collect_ai_runtime_response(state: &AppState) -> AiRuntimeResponse 
         backend,
         role_routing,
         scheduler_snapshot,
+        last_execution_trace,
     ) = {
         let guard = state.engine.lock().await;
         let loaded_model = guard.loaded_model.clone();
@@ -148,6 +173,7 @@ pub async fn collect_ai_runtime_response(state: &AppState) -> AiRuntimeResponse 
                 .unwrap_or_else(|| inferred_backend(&gpus)),
             guard.role_routing.clone(),
             guard.scheduler.snapshot(),
+            guard.last_execution_trace.clone(),
         )
     };
 
@@ -174,6 +200,27 @@ pub async fn collect_ai_runtime_response(state: &AppState) -> AiRuntimeResponse 
             phase,
             queue_depth,
             active_request_count,
+            last_execution: last_execution_trace.map(|trace| AiRuntimeExecutionSummary {
+                stop_reason: trace.stop_reason.as_str().to_string(),
+                final_answer_path: trace.final_answer_path.as_str().to_string(),
+                tool_step_count: trace.tool_step_count,
+                alternate_tool_count: trace.alternate_tool_count,
+                recovery_step_count: trace.recovery_step_count,
+                clarification_count: trace.clarification_count,
+                conflict_count: trace.conflict_count,
+                attempt_count: trace.attempts.len() as u32,
+                deterministic_answer_used: trace.deterministic_answer_used,
+                synthesis_used: trace.synthesis_used,
+                outcome_counts: trace
+                    .outcome_counts
+                    .into_iter()
+                    .map(|(outcome_kind, count)| AiRuntimeExecutionOutcomeCount {
+                        outcome_kind,
+                        count,
+                    })
+                    .collect(),
+                role_backend_usage: trace.used_role_backends,
+            }),
         },
         scheduler: AiRuntimeSchedulerSummary {
             max_concurrent_turns: scheduler_snapshot.max_concurrent_turns,
@@ -338,6 +385,10 @@ fn human_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_assistant::types::{
+        AssistantExecutionStopReason, AssistantExecutionTrace, AssistantResponseMode,
+        AssistantSynthesisMode,
+    };
     use axum::{Router, routing::get};
     use axum_test::TestServer;
     use sqlx::postgres::PgPoolOptions;
@@ -449,6 +500,108 @@ mod tests {
             assert!(body["resources"].get("host_ram_total_human").is_some());
         }
         assert!(body["gpus"].is_array());
+    }
+
+    #[tokio::test]
+    async fn runtime_route_reports_last_execution_summary() {
+        let state = test_state();
+        {
+            let mut engine = state.engine.lock().await;
+            engine.last_execution_trace = Some(AssistantExecutionTrace {
+                response_mode: AssistantResponseMode::Thinking,
+                budget: crate::ai_assistant::types::AssistantExecutionBudget::for_mode(
+                    AssistantResponseMode::Thinking,
+                ),
+                planner_mode: Some("deterministic_fallback".to_string()),
+                attempts: vec![
+                    crate::ai_assistant::types::AssistantExecutionAttempt {
+                        step_index: 1,
+                        tool: "system_get_host_runtime_summary".to_string(),
+                        label: "Host runtime".to_string(),
+                        domain_family: crate::ai_assistant::types::AssistantDomainFamily::System,
+                        status: "ok".to_string(),
+                        outcome_kind: crate::ai_assistant::types::AssistantToolOutcomeKind::Partial,
+                        latency_ms: 12,
+                        args_hash: "abc".to_string(),
+                        result_signature: "sig1".to_string(),
+                        evidence_ids: vec!["ev:1".to_string()],
+                        ambiguity_keys: Vec::new(),
+                        fallback_edge: None,
+                        used_alternate: false,
+                        recovery_depth: 0,
+                        message: None,
+                    },
+                    crate::ai_assistant::types::AssistantExecutionAttempt {
+                        step_index: 2,
+                        tool: "system_get_ai_runtime_summary".to_string(),
+                        label: "AI runtime".to_string(),
+                        domain_family: crate::ai_assistant::types::AssistantDomainFamily::AiRuntime,
+                        status: "ok".to_string(),
+                        outcome_kind: crate::ai_assistant::types::AssistantToolOutcomeKind::Answer,
+                        latency_ms: 18,
+                        args_hash: "def".to_string(),
+                        result_signature: "sig2".to_string(),
+                        evidence_ids: vec!["ev:2".to_string()],
+                        ambiguity_keys: Vec::new(),
+                        fallback_edge: Some("system.intent_to_ai_runtime".to_string()),
+                        used_alternate: true,
+                        recovery_depth: 1,
+                        message: None,
+                    },
+                ],
+                retained_evidence: Vec::new(),
+                stop_reason: AssistantExecutionStopReason::SufficientAnswer,
+                final_outcome_kind: Some(
+                    crate::ai_assistant::types::AssistantToolOutcomeKind::Answer,
+                ),
+                final_answer_path: AssistantSynthesisMode::DeterministicReply,
+                planner_pass_count: 1,
+                tool_step_count: 2,
+                alternate_tool_count: 1,
+                recovery_step_count: 1,
+                clarification_count: 0,
+                conflict_count: 0,
+                deterministic_answer_used: true,
+                synthesis_used: false,
+                used_role_backends: vec!["planner:local".to_string(), "answer:local".to_string()],
+                outcome_counts: std::collections::BTreeMap::from([
+                    ("partial".to_string(), 1_u32),
+                    ("answer".to_string(), 1_u32),
+                ]),
+            });
+        }
+
+        let app = Router::new()
+            .route("/runtime", get(get_ai_runtime))
+            .with_state(state.clone());
+        let server = TestServer::new(app).unwrap();
+
+        let response = server
+            .get("/runtime")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                auth_header_value(&state.jwt_secret),
+            )
+            .await;
+        response.assert_status_ok();
+        let body: serde_json::Value = response.json();
+
+        assert_eq!(
+            body["turn"]["last_execution"]["stop_reason"].as_str(),
+            Some("sufficient_answer")
+        );
+        assert_eq!(
+            body["turn"]["last_execution"]["attempt_count"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            body["turn"]["last_execution"]["alternate_tool_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            body["turn"]["last_execution"]["recovery_step_count"].as_u64(),
+            Some(1)
+        );
     }
 
     #[test]

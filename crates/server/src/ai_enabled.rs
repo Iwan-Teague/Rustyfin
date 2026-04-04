@@ -9,7 +9,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures::{StreamExt, future::join_all};
+use futures::StreamExt;
 use serde::Serialize;
 use serde_json::json;
 use tracing::{info, warn};
@@ -18,26 +18,30 @@ use crate::ai_assistant::confirmation::{
     CONFIRMATION_TOKEN_TTL_SECS, pending_action_request_for_message_with_state,
 };
 use crate::ai_assistant::context::AssistantContext;
+use crate::ai_assistant::executor::{AssistantGroundedExecutor, ExecutorPostStep};
 use crate::ai_assistant::memory::{
     augment_history_with_entity_graph, build_grounding_chunks_for_turn, persist_grounding_artifacts,
 };
 use crate::ai_assistant::scheduler::{TurnPriority, TurnScheduler};
-use crate::ai_assistant::tools::{build_follow_up_context, execute_tool, source_from_block};
+use crate::ai_assistant::tools::{
+    build_follow_up_context, execute_tool, source_from_block, tool_result_to_outcome,
+};
 use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
-    AssistantFollowUpContext, AssistantGroundingChunk, AssistantGroundingSource,
-    AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode, AssistantRuntimePhase,
+    AssistantExecutionTrace, AssistantFollowUpContext, AssistantGroundingChunk,
+    AssistantGroundingSource, AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase,
+    AssistantPhaseEvent, AssistantPlannerDebug, AssistantPlannerMode, AssistantRuntimePhase,
     AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
     AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
-    ConversationPromptDebug, PlannedToolCall, PlannedToolSet,
+    ConversationPromptDebug, PlannedToolSet,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
     AssistantChatRequest, build_assistant_messages, deterministic_ai_runtime_reply,
     deterministic_calendar_reply, deterministic_current_datetime_reply,
-    deterministic_library_reply, deterministic_network_reply, deterministic_tool_inventory_reply,
-    immediate_response_for_message, plan_tool_calls_with_model_assist, status_label_for_tool_call,
+    deterministic_library_reply, deterministic_multi_step_reply, deterministic_network_reply,
+    deterministic_tool_inventory_reply, immediate_response_for_message, plan_execution_candidates,
+    plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
 };
 use crate::ai_audit::{
@@ -52,12 +56,16 @@ use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::state::AppState;
 
+#[cfg(test)]
+use crate::ai_assistant::types::{AssistantResponseMode, PlannedToolCall};
+
 pub struct EngineState {
     pub loaded_model: Option<String>,
     pub engine: Option<rustfin_ai_agent::LlamaEngine>,
     pub role_models: HashMap<rustfin_ai_agent::ModelRole, LoadedRoleModel>,
     pub role_routing: Vec<RoleRoutingDecision>,
     pub last_prompt_debug: Option<ConversationPromptDebug>,
+    pub last_execution_trace: Option<AssistantExecutionTrace>,
     pub active_phase: AssistantRuntimePhase,
     pub scheduler: std::sync::Arc<TurnScheduler>,
 }
@@ -78,6 +86,7 @@ impl Default for EngineState {
             role_models: HashMap::new(),
             role_routing: Vec::new(),
             last_prompt_debug: None,
+            last_execution_trace: None,
             active_phase: AssistantRuntimePhase::Idle,
             scheduler: std::sync::Arc::new(TurnScheduler::new()),
         }
@@ -87,6 +96,30 @@ impl Default for EngineState {
 #[derive(Clone)]
 struct ConversationPersistence {
     conversation_id: String,
+}
+
+#[derive(Serialize)]
+struct AssistantToolAttemptEvent {
+    step_index: u32,
+    tool: String,
+    outcome_kind: String,
+    recovery_depth: u8,
+    is_alternate: bool,
+    latency_ms: u64,
+}
+
+#[derive(Serialize)]
+struct AssistantClarificationSseEvent {
+    message: String,
+}
+
+#[derive(Serialize)]
+struct AssistantStopReasonSseEvent {
+    reason: String,
+    final_answer_path: String,
+    tool_step_count: u32,
+    alternate_tool_count: u32,
+    recovery_step_count: u32,
 }
 
 pub fn ai_router() -> Router<AppState> {
@@ -1204,14 +1237,18 @@ fn stream_chat_response(
             }
         };
         let planner_duration_ms = planner_started.elapsed().as_millis() as u64;
-        let planner_debug = planned_tool_set.debug.clone();
-        let mut planned_tools = planned_tool_set.calls;
+        let mut planner_debug = planned_tool_set.debug.clone();
+        let execution_candidates = plan_execution_candidates(req.response_mode, &planned_tool_set);
+        let initial_planned_tools = planned_tool_set.calls;
+        let mut planned_tools = initial_planned_tools.clone();
+        let mut attempted_tool_calls = initial_planned_tools.clone();
+        let mut grounded_executor: Option<AssistantGroundedExecutor> = None;
         info!(
             trace_id = %trace_id,
             user_id = %user.user_id,
             planner_mode = planned_tool_set.mode.as_str(),
-            planned_tool_count = planned_tools.len(),
-            planned_tools = %planned_tools
+            planned_tool_count = initial_planned_tools.len(),
+            planned_tools = %initial_planned_tools
                 .iter()
                 .map(|call| call.tool.as_str())
                 .collect::<Vec<_>>()
@@ -1236,27 +1273,44 @@ fn stream_chat_response(
         ));
 
         let context = AssistantContext::new(&user, trace_id.clone());
-        if !planned_tools.is_empty() {
+        if let Some(candidate) = execution_candidates.first() {
             set_engine_phase(&state, AssistantRuntimePhase::Grounding).await;
-            let scheduled_tools = planned_tools
+            let initial_calls = candidate
+                .candidate_steps
                 .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, call)| {
-                    let label = status_label_for_tool_call(&call);
-                    let tool_id = format!("tool-{}", index + 1);
-                    let started_ts_ms = now_ts_ms();
-                    (call, tool_id, label, started_ts_ms)
+                .map(|step| step.call.clone())
+                .collect::<Vec<_>>();
+            let used_role_backends = role_routing
+                .iter()
+                .map(|route| {
+                    format!(
+                        "{:?}:{}:{}",
+                        route.decision.role,
+                        route.decision.model_name,
+                        route.decision.backend_kind.as_str()
+                    )
                 })
                 .collect::<Vec<_>>();
+            let mut executor = AssistantGroundedExecutor::new(
+                &req.message,
+                req.response_mode,
+                Some(planned_tool_set.mode),
+                &initial_calls,
+                used_role_backends,
+                crate::ai_assistant::provider::ToolExecutionProfile::full_access(),
+            );
 
-            for (call, tool_id, label, started_ts_ms) in &scheduled_tools {
+            while let Some(step) = executor.next_step() {
+                let call = step.call.clone();
+                let tool_id = format!("tool-{}", step.step_index);
+                let label = status_label_for_tool_call(&call);
+                let started_ts_ms = now_ts_ms();
                 let tool_event = AssistantToolActivityEvent {
                     id: tool_id.clone(),
                     tool: call.tool.as_str().to_string(),
                     label: label.clone(),
                     state: AssistantToolActivityState::Running,
-                    started_ts_ms: *started_ts_ms,
+                    started_ts_ms,
                     finished_ts_ms: None,
                 };
                 start_tool(&mut activity_trace, &tool_event);
@@ -1269,42 +1323,47 @@ fn stream_chat_response(
                         kind: AssistantStatusKind::Checking,
                     },
                 ));
-            }
-
-            let tool_phase_started = Instant::now();
-            let tool_results = join_all(scheduled_tools.into_iter().map(|(call, tool_id, label, started_ts_ms)| {
-                let context = context.clone();
-                let state = state.clone();
-                async move {
-                    let tool_metrics = state.runtime_metrics.start_ai_tool_call();
-                    let block = execute_tool(&state, &context, &call).await;
-                    if block.status == "ok" {
-                        tool_metrics.mark_success();
-                        info!(
-                            trace_id = %context.trace_id,
-                            user_id = %context.user_id,
-                            tool = call.tool.as_str(),
-                            input = %tool_input_summary(&call.input),
-                            result = %tool_result_summary(&block),
-                            "ai grounded tool completed"
-                        );
-                    } else {
-                        warn!(
-                            trace_id = %context.trace_id,
-                            user_id = %context.user_id,
-                            tool = call.tool.as_str(),
-                            input = %tool_input_summary(&call.input),
-                            result = %tool_result_summary(&block),
-                            "ai grounded tool failed"
-                        );
-                    }
-                    let source = source_from_block(call.tool, &block);
-                    (call, block, source, tool_id, label, started_ts_ms)
+                if step.recovery_depth > 0 {
+                    yield Ok::<Event, Infallible>(
+                        Event::default().event("assistant_recovery_attempt").data(
+                            json!({
+                                "step_index": step.step_index,
+                                "tool": call.tool.as_str(),
+                                "edge": step.edge_label,
+                                "recovery_depth": step.recovery_depth,
+                            })
+                            .to_string(),
+                        ),
+                    );
                 }
-            })).await;
-            tool_duration_ms = tool_phase_started.elapsed().as_millis() as u64;
 
-            for (call, block, source, tool_id, _label, started_ts_ms) in tool_results {
+                let tool_started = Instant::now();
+                let tool_metrics = state.runtime_metrics.start_ai_tool_call();
+                let block = execute_tool(&state, &context, &call).await;
+                let latency_ms = tool_started.elapsed().as_millis() as u64;
+                tool_duration_ms = tool_duration_ms.saturating_add(latency_ms);
+                if block.status == "ok" {
+                    tool_metrics.mark_success();
+                    info!(
+                        trace_id = %context.trace_id,
+                        user_id = %context.user_id,
+                        tool = call.tool.as_str(),
+                        input = %tool_input_summary(&call.input),
+                        result = %tool_result_summary(&block),
+                        "ai grounded tool completed"
+                    );
+                } else {
+                    warn!(
+                        trace_id = %context.trace_id,
+                        user_id = %context.user_id,
+                        tool = call.tool.as_str(),
+                        input = %tool_input_summary(&call.input),
+                        result = %tool_result_summary(&block),
+                        "ai grounded tool failed"
+                    );
+                }
+                let source = source_from_block(call.tool, &block);
+                let outcome = tool_result_to_outcome(&req.message, &call, block.clone());
                 let state_name = if block.status == "error" {
                     AssistantToolActivityState::Error
                 } else {
@@ -1333,102 +1392,58 @@ fn stream_chat_response(
                         },
                     },
                 ));
-                follow_up_contexts.push(build_follow_up_context(&call, &block));
-                grounding_blocks.push(block);
-                grounding_sources.push(source);
-            }
-
-            if let Some(recovery) = grounding_recovery_plan(
-                &req.message,
-                req.response_mode,
-                &planned_tools,
-                &grounding_blocks,
-            ) {
-                let recovery_label = status_label_for_tool_call(&recovery.call);
-                let tool_id = format!("tool-{}", planned_tools.len() + 1);
-                let started_ts_ms = now_ts_ms();
-                let tool_event = AssistantToolActivityEvent {
-                    id: tool_id.clone(),
-                    tool: recovery.call.tool.as_str().to_string(),
-                    label: recovery_label.clone(),
-                    state: AssistantToolActivityState::Running,
-                    started_ts_ms,
-                    finished_ts_ms: None,
-                };
-                start_tool(&mut activity_trace, &tool_event);
-                yield Ok::<Event, Infallible>(sse_json_event("tool", &tool_event));
                 yield Ok::<Event, Infallible>(sse_json_event(
-                    "status",
-                    &AssistantStatusEvent {
-                        tool: recovery.call.tool.as_str(),
-                        label: recovery_label.clone(),
-                        kind: AssistantStatusKind::Checking,
+                    "assistant_tool_attempt",
+                    &AssistantToolAttemptEvent {
+                        step_index: step.step_index,
+                        tool: call.tool.as_str().to_string(),
+                        outcome_kind: outcome.kind.as_str().to_string(),
+                        recovery_depth: step.recovery_depth,
+                        is_alternate: step.is_alternate,
+                        latency_ms,
                     },
                 ));
 
-                let recovery_phase_started = Instant::now();
-                let tool_metrics = state.runtime_metrics.start_ai_tool_call();
-                let recovery_call = recovery.call.clone();
-                let block = execute_tool(&state, &context, &recovery_call).await;
-                let recovery_source = source_from_block(recovery_call.tool, &block);
-                let recovery_follow_up = build_follow_up_context(&recovery_call, &block);
-                tool_duration_ms += recovery_phase_started.elapsed().as_millis() as u64;
-
-                if block.status == "ok" {
-                    tool_metrics.mark_success();
-                    info!(
-                        trace_id = %context.trace_id,
-                        user_id = %context.user_id,
-                        tool = recovery_call.tool.as_str(),
-                        input = %tool_input_summary(&recovery_call.input),
-                        result = %tool_result_summary(&block),
-                        "ai grounded recovery tool completed"
-                    );
-                } else {
-                    warn!(
-                        trace_id = %context.trace_id,
-                        user_id = %context.user_id,
-                        tool = recovery_call.tool.as_str(),
-                        input = %tool_input_summary(&recovery_call.input),
-                        result = %tool_result_summary(&block),
-                        "ai grounded recovery tool failed"
-                    );
+                match executor.record_step(step, outcome, source, latency_ms) {
+                    ExecutorPostStep::Continue => {}
+                    ExecutorPostStep::Stop => break,
+                    ExecutorPostStep::AskClarification => {
+                        if let Some(request) = executor.clarification() {
+                            yield Ok::<Event, Infallible>(sse_json_event(
+                                "assistant_clarification_required",
+                                &AssistantClarificationSseEvent {
+                                    message: request.message.clone(),
+                                },
+                            ));
+                        }
+                        break;
+                    }
                 }
-
-                let state_name = if block.status == "error" {
-                    AssistantToolActivityState::Error
-                } else {
-                    AssistantToolActivityState::Complete
-                };
-                let finished_ts_ms = now_ts_ms();
-                let tool_event = AssistantToolActivityEvent {
-                    id: tool_id,
-                    tool: recovery_call.tool.as_str().to_string(),
-                    label: block.label.clone(),
-                    state: state_name,
-                    started_ts_ms,
-                    finished_ts_ms: Some(finished_ts_ms),
-                };
-                finish_tool(&mut activity_trace, &tool_event);
-                yield Ok::<Event, Infallible>(sse_json_event("tool", &tool_event));
-                yield Ok::<Event, Infallible>(sse_json_event(
-                    "status",
-                    &AssistantStatusEvent {
-                        tool: recovery_call.tool.as_str(),
-                        label: block.label.clone(),
-                        kind: match state_name {
-                            AssistantToolActivityState::Running => AssistantStatusKind::Checking,
-                            AssistantToolActivityState::Complete => AssistantStatusKind::Complete,
-                            AssistantToolActivityState::Error => AssistantStatusKind::Error,
-                        },
-                    },
-                ));
-
-                planned_tools[recovery.replace_index] = recovery_call;
-                grounding_blocks[recovery.replace_index] = block;
-                grounding_sources[recovery.replace_index] = recovery_source;
-                follow_up_contexts[recovery.replace_index] = recovery_follow_up;
             }
+
+            attempted_tool_calls = executor
+                .all_records()
+                .iter()
+                .map(|record| record.step.call.clone())
+                .collect();
+            let retained_records = executor.retained_records();
+            planned_tools = retained_records
+                .iter()
+                .map(|record| record.step.call.clone())
+                .collect();
+            follow_up_contexts = retained_records
+                .iter()
+                .map(|record| build_follow_up_context(&record.step.call, &record.outcome.block))
+                .collect();
+            grounding_blocks = retained_records
+                .iter()
+                .map(|record| record.outcome.block.clone())
+                .collect();
+            grounding_sources = retained_records
+                .iter()
+                .map(|record| record.source.clone())
+                .collect();
+            grounded_executor = Some(executor);
         }
 
         grounding_chunks = build_grounding_chunks_for_turn(
@@ -1458,11 +1473,16 @@ fn stream_chat_response(
             .iter()
             .map(|call| call.tool.as_str().to_string())
             .collect::<Vec<_>>();
+        let mut execution_trace = grounded_executor.as_ref().map(|executor| executor.trace().clone());
+        planner_debug.execution_trace = execution_trace.clone();
 
-        if let Some(datetime_reply) =
-            deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
+        if let Some(executor) = grounded_executor.as_mut()
+            && let Some(request) = executor.clarification().cloned()
         {
-            assistant_content = datetime_reply;
+            assistant_content = request.message;
+            executor.finalize_bounded_failure();
+            execution_trace = Some(executor.trace().clone());
+            planner_debug.execution_trace = execution_trace.clone();
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1474,6 +1494,111 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event_with_planner(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Clarification,
+                &attempted_tool_calls,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                Some(&planner_debug),
+                None,
+            )
+            .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "clarification_required".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "clarification".to_string()),
+                    tool_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.tool_step_count)
+                        .unwrap_or(0),
+                    alternate_tool_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.alternate_tool_count)
+                        .unwrap_or(0),
+                    recovery_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.recovery_step_count)
+                        .unwrap_or(0),
+                },
+            ));
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(datetime_reply) =
+            deterministic_current_datetime_reply(&req.message, &req.history, &grounding_blocks)
+        {
+            assistant_content = datetime_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
+            stats = Some(build_turn_stats_with_planner(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+                Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1508,7 +1633,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1516,6 +1641,35 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.tool_step_count)
+                        .unwrap_or(0),
+                    alternate_tool_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.alternate_tool_count)
+                        .unwrap_or(0),
+                    recovery_step_count: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.recovery_step_count)
+                        .unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1532,6 +1686,11 @@ fn stream_chat_response(
             deterministic_ai_runtime_reply(&req.message, &grounding_blocks)
         {
             assistant_content = ai_runtime_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1543,6 +1702,7 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1577,7 +1737,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1585,6 +1745,26 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1601,6 +1781,11 @@ fn stream_chat_response(
             deterministic_calendar_reply(&req.message, &grounding_blocks)
         {
             assistant_content = calendar_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1612,6 +1797,7 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1646,7 +1832,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1654,6 +1840,26 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1670,6 +1876,11 @@ fn stream_chat_response(
             deterministic_network_reply(&req.message, &grounding_blocks)
         {
             assistant_content = network_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1681,6 +1892,7 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1715,7 +1927,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1723,6 +1935,26 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1739,6 +1971,11 @@ fn stream_chat_response(
             deterministic_library_reply(&req.message, &grounding_blocks)
         {
             assistant_content = library_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1750,6 +1987,7 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1784,7 +2022,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1792,6 +2030,26 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1806,6 +2064,11 @@ fn stream_chat_response(
 
         if let Some(weather_reply) = deterministic_weather_reply(&req.message, &grounding_blocks) {
             assistant_content = weather_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_deterministic_reply();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
             stats = Some(build_turn_stats_with_planner(
                 0,
                 0,
@@ -1817,6 +2080,7 @@ fn stream_chat_response(
                 model_load_duration_ms,
                 0.0,
                 Some(&planner_debug),
+                execution_trace.as_ref(),
             ));
             if let Some(persistence) = &persistence {
                 let turn_result = crate::ai_conversations::persist_assistant_turn(
@@ -1851,7 +2115,7 @@ fn stream_chat_response(
                 &req,
                 &trace_id,
                 AiAssistantAuditResponseKind::Completed,
-                &planned_tools,
+                &attempted_tool_calls,
                 &grounding_blocks,
                 &grounding_chunks,
                 &grounding_sources,
@@ -1859,6 +2123,121 @@ fn stream_chat_response(
                 None,
             )
             .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "deterministic_reply".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(multi_step_reply) =
+            deterministic_multi_step_reply(&req.message, execution_trace.as_ref(), &grounding_blocks)
+        {
+            assistant_content = multi_step_reply;
+            if let Some(executor) = grounded_executor.as_mut() {
+                executor.finalize_bounded_failure();
+                execution_trace = Some(executor.trace().clone());
+                planner_debug.execution_trace = execution_trace.clone();
+            }
+            stats = Some(build_turn_stats_with_planner(
+                0,
+                0,
+                0,
+                planner_duration_ms,
+                tool_duration_ms,
+                turn_started.elapsed().as_millis() as u64,
+                queue_duration_ms,
+                model_load_duration_ms,
+                0.0,
+                Some(&planner_debug),
+                execution_trace.as_ref(),
+            ));
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &grounding_tools,
+                    &follow_up_contexts,
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            persist_chat_audit_event_with_planner(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::Completed,
+                &attempted_tool_calls,
+                &grounding_blocks,
+                &grounding_chunks,
+                &grounding_sources,
+                Some(&planner_debug),
+                None,
+            )
+            .await;
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_execution_trace = execution_trace.clone();
+            }
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "assistant_stop_reason",
+                &AssistantStopReasonSseEvent {
+                    reason: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.stop_reason.as_str().to_string())
+                        .unwrap_or_else(|| "bounded_failure".to_string()),
+                    final_answer_path: execution_trace
+                        .as_ref()
+                        .map(|trace| trace.final_answer_path.as_str().to_string())
+                        .unwrap_or_else(|| "bounded_failure".to_string()),
+                    tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                    alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                    recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                },
+            ));
             chat_metrics.mark_success();
             set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
             yield Ok::<Event, Infallible>(
@@ -1873,6 +2252,11 @@ fn stream_chat_response(
 
         let generation_phase_started_ms = now_ts_ms();
         let generation_started = Instant::now();
+        if let Some(executor) = grounded_executor.as_mut() {
+            executor.finalize_model_answer();
+            execution_trace = Some(executor.trace().clone());
+            planner_debug.execution_trace = execution_trace.clone();
+        }
         set_engine_phase(&state, AssistantRuntimePhase::Generating).await;
         start_phase(
             &mut activity_trace,
@@ -1953,6 +2337,7 @@ fn stream_chat_response(
                         model_load_duration_ms,
                         tokens_per_second,
                         Some(&planner_debug),
+                        execution_trace.as_ref(),
                     ));
                     yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                 }
@@ -1986,6 +2371,7 @@ fn stream_chat_response(
                             model_load_duration_ms,
                             0.0,
                             Some(&planner_debug),
+                            execution_trace.as_ref(),
                         ));
                         yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                     }
@@ -2028,7 +2414,7 @@ fn stream_chat_response(
                         &req,
                         &trace_id,
                         AiAssistantAuditResponseKind::Completed,
-                        &planned_tools,
+                        &attempted_tool_calls,
                         &grounding_blocks,
                         &grounding_chunks,
                         &grounding_sources,
@@ -2036,6 +2422,26 @@ fn stream_chat_response(
                         None,
                     )
                     .await;
+                    {
+                        let mut guard = state.engine.lock().await;
+                        guard.last_execution_trace = execution_trace.clone();
+                    }
+                    yield Ok::<Event, Infallible>(sse_json_event(
+                        "assistant_stop_reason",
+                        &AssistantStopReasonSseEvent {
+                            reason: execution_trace
+                                .as_ref()
+                                .map(|trace| trace.stop_reason.as_str().to_string())
+                                .unwrap_or_else(|| "model_answer_completed".to_string()),
+                            final_answer_path: execution_trace
+                                .as_ref()
+                                .map(|trace| trace.final_answer_path.as_str().to_string())
+                                .unwrap_or_else(|| "model_answer".to_string()),
+                            tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                            alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                            recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                        },
+                    ));
                     chat_metrics.mark_success();
                     set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
                     info!(
@@ -2415,8 +2821,19 @@ mod tests {
             ..AssistantPlannerDebug::default()
         };
 
-        let stats =
-            build_turn_stats_with_planner(10, 5, 20, 7, 3, 40, 2, 1, 12.0, Some(&planner_debug));
+        let stats = build_turn_stats_with_planner(
+            10,
+            5,
+            20,
+            7,
+            3,
+            40,
+            2,
+            1,
+            12.0,
+            Some(&planner_debug),
+            None,
+        );
 
         assert_eq!(stats.planner_validation_error_count, 2);
         assert_eq!(stats.planner_repair_count, 1);
@@ -2788,6 +3205,7 @@ fn build_turn_stats(
         model_load_duration_ms,
         tokens_per_second,
         None,
+        None,
     )
 }
 
@@ -2803,6 +3221,7 @@ fn build_turn_stats_with_planner(
     model_load_duration_ms: u64,
     tokens_per_second: f64,
     planner_debug: Option<&AssistantPlannerDebug>,
+    execution_trace: Option<&AssistantExecutionTrace>,
 ) -> AssistantTurnStats {
     let mut stats = AssistantTurnStats {
         prompt_tokens: clamp_token_count(prompt_tokens),
@@ -2829,6 +3248,23 @@ fn build_turn_stats_with_planner(
             .execution
             .fallback_reason
             .map(|reason| reason.as_str().to_string());
+    }
+
+    if let Some(trace) = execution_trace {
+        stats.tool_step_count = trace.tool_step_count;
+        stats.alternate_tool_count = trace.alternate_tool_count;
+        stats.recovery_step_count = trace.recovery_step_count;
+        stats.attempt_count = trace.attempts.len() as u32;
+        stats.clarification_count = trace.clarification_count;
+        stats.conflict_count = trace.conflict_count;
+        stats.stop_reason = Some(trace.stop_reason.as_str().to_string());
+        stats.final_outcome_kind = trace
+            .final_outcome_kind
+            .map(|kind| kind.as_str().to_string());
+        stats.deterministic_answer_used = trace.deterministic_answer_used;
+        stats.synthesis_used = trace.synthesis_used;
+        stats.role_backend_usage = trace.used_role_backends.clone();
+        stats.execution_trace = Some(trace.clone());
     }
 
     stats
@@ -2971,11 +3407,13 @@ fn tool_result_summary(block: &AssistantToolContextBlock) -> String {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 struct GroundingRecoveryPlan {
     replace_index: usize,
     call: PlannedToolCall,
 }
 
+#[cfg(test)]
 fn grounding_recovery_plan(
     message: &str,
     response_mode: AssistantResponseMode,
@@ -3017,6 +3455,7 @@ fn grounding_recovery_plan(
         })
 }
 
+#[cfg(test)]
 fn birthday_block_is_empty(block: &AssistantToolContextBlock) -> bool {
     block.tool == "calendar_upcoming_birthdays"
         && block

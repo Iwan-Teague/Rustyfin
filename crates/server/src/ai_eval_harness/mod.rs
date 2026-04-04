@@ -1,4 +1,5 @@
 pub mod corpus;
+pub mod execution_eval;
 pub mod memory_eval;
 pub mod planner_eval;
 pub mod report;
@@ -30,6 +31,7 @@ async fn run_mode_internal(
         "planner" => suites.push(planner_eval::run(fixtures_dir).await?),
         "retrieval" => suites.push(retrieval_eval::run(fixtures_dir)?),
         "memory" => suites.push(memory_eval::run(fixtures_dir)?),
+        "execution" => suites.push(execution_eval::run(fixtures_dir)?),
         "tasks" => suites.push(
             tasks_eval::run_with_options(fixtures_dir, include_self_referential_task_eval).await?,
         ),
@@ -37,6 +39,7 @@ async fn run_mode_internal(
             suites.push(planner_eval::run(fixtures_dir).await?);
             suites.push(retrieval_eval::run(fixtures_dir)?);
             suites.push(memory_eval::run(fixtures_dir)?);
+            suites.push(execution_eval::run(fixtures_dir)?);
             suites.push(
                 tasks_eval::run_with_options(fixtures_dir, include_self_referential_task_eval)
                     .await?,

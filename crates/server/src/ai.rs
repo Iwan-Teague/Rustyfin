@@ -29,6 +29,7 @@ pub async fn clear_loaded_model_state(state: &AppState) {
     guard.role_models.clear();
     guard.role_routing.clear();
     guard.last_prompt_debug = None;
+    guard.last_execution_trace = None;
 }
 
 #[cfg(not(feature = "ai"))]
@@ -43,6 +44,7 @@ pub async fn clear_loaded_model_if_matching(state: &AppState, model_name: &str) 
         guard.role_models.clear();
         guard.role_routing.clear();
         guard.last_prompt_debug = None;
+        guard.last_execution_trace = None;
     }
 }
 
