@@ -2934,8 +2934,8 @@ export default function AiPage() {
         </div>
       </div>
 
-      <div className="animate-rise relative left-1/2 right-1/2 flex h-full min-h-0 w-screen -translate-x-1/2">
-        <div className="flex min-h-0 flex-1 px-[var(--page-pad-inline)]">
+      <div className="animate-rise relative flex h-full min-h-0 min-w-0 w-full">
+        <div className="flex min-h-0 min-w-0 flex-1 px-[var(--page-pad-inline)]">
           <div className="flex min-h-0 flex-1 md:overflow-hidden">
             <aside
               className="ai-side-panel-shell ai-side-panel-shell-left hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
