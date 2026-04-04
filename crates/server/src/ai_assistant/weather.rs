@@ -500,8 +500,9 @@ fn normalize_location_query(raw_query: &str) -> Result<String, String> {
 }
 
 fn geocoding_query_variants(query: &str) -> Vec<String> {
+    let query = strip_location_leading_preposition(query.trim());
     let mut variants = Vec::new();
-    push_unique_variant(&mut variants, query.trim());
+    push_unique_variant(&mut variants, query);
     push_unique_variant(
         &mut variants,
         &replace_case_insensitive(query, " in county ", ", County "),
@@ -535,6 +536,17 @@ fn geocoding_query_variants(query: &str) -> Vec<String> {
     }
     push_progressive_prefix_variants(&mut variants, query);
     variants
+}
+
+fn strip_location_leading_preposition(query: &str) -> &str {
+    query
+        .strip_prefix("for ")
+        .or_else(|| query.strip_prefix("For "))
+        .or_else(|| query.strip_prefix("in "))
+        .or_else(|| query.strip_prefix("In "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(query)
 }
 
 fn push_missing_comma_variants(variants: &mut Vec<String>, query: &str) {
@@ -920,6 +932,22 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
     } else {
         &forecast.forecast_days[0]
     };
+    let focus_day_label = format_weather_display_date(&focus_day.date);
+
+    if should_render_day_by_day_forecast(&lower, forecast.forecast_days.len()) {
+        let lines = forecast
+            .forecast_days
+            .iter()
+            .map(format_forecast_day_line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return format!(
+            "Forecast for {} over the next {} days:\n{}",
+            forecast.resolved_location,
+            forecast.forecast_days.len(),
+            lines
+        );
+    }
 
     if lower.contains("rain") || lower.contains("raining") || lower.contains("precip") {
         let probability = focus_day
@@ -929,7 +957,7 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
             "{} in {} on {}. Condition: {}. High {}, low {}. Precipitation probability up to {}.",
             rain_probability_sentence(probability),
             forecast.resolved_location,
-            focus_day.date,
+            focus_day_label,
             focus_day.condition,
             optional_temperature(focus_day.temperature_max_c),
             optional_temperature(focus_day.temperature_min_c),
@@ -941,7 +969,7 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         return format!(
             "Forecast for {} on {}: {}. High {}, low {}. Precipitation probability up to {}.",
             forecast.resolved_location,
-            focus_day.date,
+            focus_day_label,
             focus_day.condition,
             optional_temperature(focus_day.temperature_max_c),
             optional_temperature(focus_day.temperature_min_c),
@@ -976,24 +1004,24 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         format!(
             "There is a {} chance of rain on {}.",
             format_percent(day.precipitation_probability_max_percent.unwrap_or(0.0)),
-            day.date
+            format_weather_display_date(&day.date)
         )
     });
     let focus_condition = focus_day.condition.to_ascii_lowercase();
     let focus_summary = if lower.contains("tomorrow") && forecast.forecast_days.len() >= 2 {
         format!(
             "Tomorrow looks like {} on {}.",
-            focus_condition, focus_day.date
+            focus_condition, focus_day_label
         )
     } else if lower.contains("today") {
         format!(
             "Today looks like {} on {}.",
-            focus_condition, focus_day.date
+            focus_condition, focus_day_label
         )
     } else {
         format!(
             "The forecast starts with {} on {}.",
-            focus_condition, focus_day.date
+            focus_condition, focus_day_label
         )
     };
 
@@ -1005,6 +1033,25 @@ fn format_forecast_reply(message: &str, forecast: PublicWeatherForecastSummary) 
         optional_temperature(coldest),
         wettest_summary.unwrap_or_else(|| "No precipitation signal was returned.".to_string()),
         focus_summary
+    )
+}
+
+fn should_render_day_by_day_forecast(message_lower: &str, forecast_day_count: usize) -> bool {
+    forecast_day_count >= 7
+        || message_lower.contains("this week")
+        || message_lower.contains("next week")
+        || message_lower.contains("day by day")
+        || message_lower.contains("each day")
+}
+
+fn format_forecast_day_line(day: &PublicWeatherForecastDay) -> String {
+    format!(
+        "- {}: {}. High {}, low {}. There is a {} chance of rain.",
+        format_weather_display_date(&day.date),
+        day.condition,
+        optional_temperature(day.temperature_max_c),
+        optional_temperature(day.temperature_min_c),
+        format_percent(day.precipitation_probability_max_percent.unwrap_or(0.0))
     )
 }
 
@@ -1078,6 +1125,12 @@ fn optional_temperature(value: Option<f64>) -> String {
 
 fn format_temperature(value: f64) -> String {
     format!("{}C", format_decimal(value))
+}
+
+fn format_weather_display_date(value: &str) -> String {
+    NaiveDate::parse_from_str(value, "%F")
+        .map(|date| date.format("%A, %d-%m-%y").to_string())
+        .unwrap_or_else(|_| value.to_string())
 }
 
 fn format_percent(value: f64) -> String {
@@ -1493,8 +1546,131 @@ mod tests {
             }],
         )
         .expect("expected deterministic reply");
-        assert!(reply.contains("There is a 99% chance of rain on 2026-04-04."));
-        assert!(reply.contains("Tomorrow looks like drizzle on 2026-04-04."));
+        assert!(reply.contains("There is a 99% chance of rain on Saturday, 04-04-26."));
+        assert!(reply.contains("Tomorrow looks like drizzle on Saturday, 04-04-26."));
+    }
+
+    #[test]
+    fn deterministic_weather_reply_lists_weekly_forecast_day_by_day() {
+        let reply = deterministic_weather_reply(
+            "What is the forecast for Bristol, UK next week?",
+            &[super::AssistantToolContextBlock {
+                tool: "weather_get_forecast",
+                label: "7-day weather forecast for Bristol, England, United Kingdom".to_string(),
+                status: "ok",
+                data: serde_json::to_value(PublicWeatherForecastSummary {
+                    source: "open_meteo".to_string(),
+                    location_query: "Bristol, UK".to_string(),
+                    resolved_location: "Bristol, England, United Kingdom".to_string(),
+                    timezone: "Europe/London".to_string(),
+                    current: PublicWeatherCurrentSummary {
+                        source: "open_meteo".to_string(),
+                        location_query: "Bristol, UK".to_string(),
+                        resolved_location: "Bristol, England, United Kingdom".to_string(),
+                        timezone: "Europe/London".to_string(),
+                        observed_at: "2026-04-04T10:00".to_string(),
+                        condition: "Overcast".to_string(),
+                        temperature_c: 10.0,
+                        apparent_temperature_c: Some(9.0),
+                        humidity_percent: Some(80.0),
+                        wind_speed_kmh: Some(15.0),
+                    },
+                    forecast_days: vec![
+                        PublicWeatherForecastDay {
+                            date: "2026-04-04".to_string(),
+                            condition: "Overcast".to_string(),
+                            temperature_min_c: Some(4.0),
+                            temperature_max_c: Some(12.0),
+                            precipitation_probability_max_percent: Some(39.0),
+                            precipitation_sum_mm: Some(0.3),
+                            precipitation_hours: Some(1.0),
+                            rain_sum_mm: Some(0.3),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-05".to_string(),
+                            condition: "Light rain".to_string(),
+                            temperature_min_c: Some(6.0),
+                            temperature_max_c: Some(13.0),
+                            precipitation_probability_max_percent: Some(61.0),
+                            precipitation_sum_mm: Some(1.4),
+                            precipitation_hours: Some(3.0),
+                            rain_sum_mm: Some(1.4),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-06".to_string(),
+                            condition: "Cloudy".to_string(),
+                            temperature_min_c: Some(5.0),
+                            temperature_max_c: Some(15.0),
+                            precipitation_probability_max_percent: Some(20.0),
+                            precipitation_sum_mm: Some(0.0),
+                            precipitation_hours: Some(0.0),
+                            rain_sum_mm: Some(0.0),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-07".to_string(),
+                            condition: "Sunny".to_string(),
+                            temperature_min_c: Some(7.0),
+                            temperature_max_c: Some(19.0),
+                            precipitation_probability_max_percent: Some(5.0),
+                            precipitation_sum_mm: Some(0.0),
+                            precipitation_hours: Some(0.0),
+                            rain_sum_mm: Some(0.0),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-08".to_string(),
+                            condition: "Partly cloudy".to_string(),
+                            temperature_min_c: Some(8.0),
+                            temperature_max_c: Some(18.0),
+                            precipitation_probability_max_percent: Some(10.0),
+                            precipitation_sum_mm: Some(0.0),
+                            precipitation_hours: Some(0.0),
+                            rain_sum_mm: Some(0.0),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-09".to_string(),
+                            condition: "Cloudy".to_string(),
+                            temperature_min_c: Some(7.0),
+                            temperature_max_c: Some(16.0),
+                            precipitation_probability_max_percent: Some(15.0),
+                            precipitation_sum_mm: Some(0.0),
+                            precipitation_hours: Some(0.0),
+                            rain_sum_mm: Some(0.0),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                        PublicWeatherForecastDay {
+                            date: "2026-04-10".to_string(),
+                            condition: "Rain showers".to_string(),
+                            temperature_min_c: Some(9.0),
+                            temperature_max_c: Some(17.0),
+                            precipitation_probability_max_percent: Some(48.0),
+                            precipitation_sum_mm: Some(0.9),
+                            precipitation_hours: Some(2.0),
+                            rain_sum_mm: Some(0.9),
+                            showers_sum_mm: Some(0.0),
+                            snowfall_sum_cm: Some(0.0),
+                        },
+                    ],
+                })
+                .unwrap(),
+            }],
+        )
+        .expect("expected deterministic reply");
+        assert!(
+            reply.contains("Forecast for Bristol, England, United Kingdom over the next 7 days:")
+        );
+        assert!(reply.contains("- Saturday, 04-04-26: Overcast."));
+        assert!(reply.contains("- Friday, 10-04-26: Rain showers."));
     }
 
     #[test]
