@@ -19,6 +19,7 @@ pub enum AssistantToolName {
     DocumentCreateDownload,
     ConversationsArchiveSelection,
     ConversationsDeleteSelection,
+    ConversationsMoveToGroupSelection,
     ChannelsListUnreadActivity,
     ChannelsGetTranscriptSummary,
     DownloadsListAvailableArtifacts,
@@ -61,6 +62,7 @@ impl AssistantToolName {
             Self::DocumentCreateDownload,
             Self::ConversationsArchiveSelection,
             Self::ConversationsDeleteSelection,
+            Self::ConversationsMoveToGroupSelection,
             Self::ChannelsListUnreadActivity,
             Self::ChannelsGetTranscriptSummary,
             Self::DownloadsListAvailableArtifacts,
@@ -103,6 +105,9 @@ impl AssistantToolName {
             "document_create_download" => Some(Self::DocumentCreateDownload),
             "conversations_archive_selection" => Some(Self::ConversationsArchiveSelection),
             "conversations_delete_selection" => Some(Self::ConversationsDeleteSelection),
+            "conversations_move_to_group_selection" => {
+                Some(Self::ConversationsMoveToGroupSelection)
+            }
             "channels_list_unread_activity" => Some(Self::ChannelsListUnreadActivity),
             "channels_get_transcript_summary" => Some(Self::ChannelsGetTranscriptSummary),
             "downloads_list_available_artifacts" => Some(Self::DownloadsListAvailableArtifacts),
@@ -146,6 +151,7 @@ impl AssistantToolName {
             Self::DocumentCreateDownload => "document_create_download",
             Self::ConversationsArchiveSelection => "conversations_archive_selection",
             Self::ConversationsDeleteSelection => "conversations_delete_selection",
+            Self::ConversationsMoveToGroupSelection => "conversations_move_to_group_selection",
             Self::ChannelsListUnreadActivity => "channels_list_unread_activity",
             Self::ChannelsGetTranscriptSummary => "channels_get_transcript_summary",
             Self::DownloadsListAvailableArtifacts => "downloads_list_available_artifacts",
@@ -282,6 +288,16 @@ impl AssistantToolName {
                 summary: "Permanently delete selected AI conversations for the signed-in user after explicit confirmation.",
                 access_mode: ToolAccessMode::Write,
                 risk_tier: ToolRiskTier::Critical,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::ExplicitUserConfirm,
+                timeout_ms: 5_000,
+                max_result_bytes: 16 * 1024,
+            },
+            Self::ConversationsMoveToGroupSelection => AssistantToolSpec {
+                name: "conversations_move_to_group_selection",
+                summary: "Move selected AI conversations into a named group for the signed-in user after explicit confirmation.",
+                access_mode: ToolAccessMode::Write,
+                risk_tier: ToolRiskTier::Moderate,
                 required_role: ToolRoleRequirement::AnyAuthenticatedUser,
                 confirmation: ToolConfirmationPolicy::ExplicitUserConfirm,
                 timeout_ms: 5_000,
@@ -561,9 +577,9 @@ impl AssistantToolName {
             | Self::CalendarCreateBirthday
             | Self::CalendarDeleteEvent => AssistantDomainFamily::Calendar,
             Self::DocumentCreateDownload => AssistantDomainFamily::Documents,
-            Self::ConversationsArchiveSelection | Self::ConversationsDeleteSelection => {
-                AssistantDomainFamily::Conversations
-            }
+            Self::ConversationsArchiveSelection
+            | Self::ConversationsDeleteSelection
+            | Self::ConversationsMoveToGroupSelection => AssistantDomainFamily::Conversations,
             Self::ChannelsListUnreadActivity => AssistantDomainFamily::Channels,
             Self::ChannelsGetTranscriptSummary => AssistantDomainFamily::Transcript,
             Self::DownloadsListAvailableArtifacts => AssistantDomainFamily::Downloads,

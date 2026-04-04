@@ -7,6 +7,7 @@ import { useChannels } from '@/lib/channelsContext';
 import { usePathname } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import NotificationsPopover from '@/app/components/NotificationsPopover';
+import { PRIMARY_NAV_GROUPS, navigationGroupForPath } from '@/app/navigationGroups';
 
 export default function NavBar() {
   const { me, loading } = useAuth();
@@ -48,36 +49,15 @@ export default function NavBar() {
 
   const navLinks = useMemo(
     () => [
-      { href: '/libraries', label: 'Libraries' },
-      { href: '/rooms', label: 'Rooms' },
-      { href: '/channels', label: 'Channels' },
-      { href: '/vault', label: 'Vault' },
-      { href: '/servers', label: 'Servers' },
-      { href: '/calendar', label: 'Calendar' },
-      { href: '/network', label: 'Network' },
-      { href: '/downloads', label: 'Downloads' },
+      ...PRIMARY_NAV_GROUPS.map(({ href, label }) => ({ href, label })),
       { href: '/ai', label: 'AI' },
-      { href: '/backups', label: 'Backups' },
       ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
     ],
     [loading, me?.role],
   );
   const desktopLeftNavLinks = useMemo(
     () =>
-      navLinks.filter((link) =>
-        [
-          '/libraries',
-          '/rooms',
-          '/channels',
-          '/vault',
-          '/servers',
-          '/calendar',
-          '/network',
-          '/downloads',
-          '/ai',
-          '/backups',
-        ].includes(link.href),
-      ),
+      navLinks.filter((link) => ['/personal', '/social', '/server', '/ai'].includes(link.href)),
     [navLinks],
   );
   const desktopRightNavLinks = useMemo(
@@ -91,7 +71,16 @@ export default function NavBar() {
   const deafened = hasLocalVoiceSession ? (voiceSession?.deafened ?? false) : false;
   const baseVoiceActionClass =
     'inline-flex items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
-  const isActivePath = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
+  const activeGroup = navigationGroupForPath(pathname);
+  const isActivePath = (href: string) => {
+    if (pathname === href || pathname.startsWith(`${href}/`)) {
+      return true;
+    }
+    if (activeGroup && href === activeGroup.href) {
+      return true;
+    }
+    return false;
+  };
   const navLinkClass = (href: string, base: string) =>
     `rf-nav-link ${base} ${
       isActivePath(href)

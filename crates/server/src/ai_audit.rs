@@ -438,6 +438,15 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             "conversations_delete:count={}:selection={selection_label}",
             conversation_ids.len()
         ),
+        AssistantToolInput::ConversationMoveToGroup {
+            conversation_ids,
+            selection_label,
+            group_name,
+            ..
+        } => format!(
+            "conversations_move_to_group:count={}:group={group_name}:selection={selection_label}",
+            conversation_ids.len()
+        ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))
         }

@@ -765,6 +765,9 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::ConversationsDeleteSelection => {
             " Args: required resolved conversation ids/titles; explicit user confirmation is required before the backend will execute it."
         }
+        AssistantToolName::ConversationsMoveToGroupSelection => {
+            " Args: required resolved conversation ids/titles/group name; explicit user confirmation is required before the backend will execute it."
+        }
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
         }
@@ -1136,7 +1139,8 @@ fn normalize_planner_tool_input(
         | AssistantToolName::CalendarDeleteEvent
         | AssistantToolName::DocumentCreateDownload
         | AssistantToolName::ConversationsArchiveSelection
-        | AssistantToolName::ConversationsDeleteSelection => Err(planner_issue(
+        | AssistantToolName::ConversationsDeleteSelection
+        | AssistantToolName::ConversationsMoveToGroupSelection => Err(planner_issue(
             "tool_not_allowed",
             "write tools are not allowed in model planning",
             None,
@@ -1503,7 +1507,7 @@ pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     }
     if has_any(&lower, &["conversation", "conversations", "chat", "chats"]) {
         return Some(
-            "I can archive or delete your AI conversations after explicit confirmation, but I can't rename or regroup them through Rustyfin AI yet.".to_string(),
+            "I can archive, delete, or move your AI conversations into groups after explicit confirmation, but I can't rename them through Rustyfin AI yet.".to_string(),
         );
     }
 
@@ -2301,7 +2305,8 @@ fn apply_follow_up_tool_hints(
             | AssistantToolName::CalendarDeleteEvent
             | AssistantToolName::DocumentCreateDownload
             | AssistantToolName::ConversationsArchiveSelection
-            | AssistantToolName::ConversationsDeleteSelection => {}
+            | AssistantToolName::ConversationsDeleteSelection
+            | AssistantToolName::ConversationsMoveToGroupSelection => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(

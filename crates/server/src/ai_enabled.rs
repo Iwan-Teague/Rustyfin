@@ -2695,9 +2695,9 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        LoadedRoleModel, build_server_authored_turn_stats, build_turn_stats_with_planner,
-        find_loaded_backend_for_route, grounding_recovery_plan, parse_device_indices_override,
-        parse_gpu_split_mode_override, parse_i32_override,
+        LoadedRoleModel, assistant_text_for_confirmed_action, build_server_authored_turn_stats,
+        build_turn_stats_with_planner, find_loaded_backend_for_route, grounding_recovery_plan,
+        parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
     };
     use crate::ai_assistant::registry::AssistantToolName;
     use crate::ai_assistant::types::{
@@ -2890,6 +2890,27 @@ mod tests {
         assert!(stats.completion_tokens > 0);
         assert_eq!(stats.generation_duration_ms, 0);
         assert!(stats.tokens_per_second > 0.0);
+    }
+
+    #[test]
+    fn confirmed_group_move_action_uses_verified_titles() {
+        let response = assistant_text_for_confirmed_action(&AssistantToolContextBlock {
+            tool: "conversations_move_to_group_selection",
+            label: "Move AI conversations".to_string(),
+            status: "ok",
+            data: json!({
+                "conversation_count": 1,
+                "group_name": "test",
+                "conversations": [
+                    {
+                        "id": "conversation-1",
+                        "title": "Alpha"
+                    }
+                ]
+            }),
+        });
+
+        assert_eq!(response, "I moved \"Alpha\" into group \"test\".");
     }
 
     #[test]
@@ -3188,6 +3209,56 @@ fn assistant_text_for_confirmed_action(block: &AssistantToolContextBlock) -> Str
             )
         } else {
             format!("I permanently deleted {count} AI conversations")
+        };
+        if count > 1 && !titles.is_empty() {
+            response.push_str(": ");
+            response.push_str(
+                &titles
+                    .into_iter()
+                    .map(|title| format!("\"{title}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            if count > 3 {
+                response.push_str(&format!(", and {} more", count.saturating_sub(3)));
+            }
+            response.push('.');
+        } else if !response.ends_with('.') {
+            response.push('.');
+        }
+        return response;
+    }
+
+    if block.tool == "conversations_move_to_group_selection" {
+        let count = block
+            .data
+            .get("conversation_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let group_name = block
+            .data
+            .get("group_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("that group");
+        let titles = block
+            .data
+            .get("conversations")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .filter_map(|item| item.get("title").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut response = if count == 1 {
+            format!(
+                "I moved \"{}\" into group \"{group_name}\".",
+                titles.first().copied().unwrap_or("that conversation")
+            )
+        } else {
+            format!("I moved {count} AI conversations into group \"{group_name}\"")
         };
         if count > 1 && !titles.is_empty() {
             response.push_str(": ");
@@ -3574,6 +3645,15 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             ..
         } => format!(
             "conversations_delete:count={}:selection={selection_label}",
+            conversation_ids.len()
+        ),
+        AssistantToolInput::ConversationMoveToGroup {
+            conversation_ids,
+            selection_label,
+            group_name,
+            ..
+        } => format!(
+            "conversations_move_to_group:count={}:group={group_name}:selection={selection_label}",
             conversation_ids.len()
         ),
         AssistantToolInput::ChannelsFilter { query } => {

@@ -325,7 +325,7 @@ export default function ChannelSidebar({
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
-      <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-4">
+      <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-4 pt-3 md:pt-14">
         {/* TEXT CHANNELS */}
         <section className="space-y-2">
           <div className="flex items-center justify-between gap-2 rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">

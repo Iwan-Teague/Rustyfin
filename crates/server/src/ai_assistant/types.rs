@@ -108,6 +108,12 @@ pub enum AssistantToolInput {
         titles: Vec<String>,
         selection_label: String,
     },
+    ConversationMoveToGroup {
+        conversation_ids: Vec<String>,
+        titles: Vec<String>,
+        selection_label: String,
+        group_name: String,
+    },
     ChannelsFilter {
         query: Option<String>,
     },
@@ -883,6 +889,7 @@ pub enum AssistantPendingActionKind {
     DocumentCreateDownload,
     ConversationArchive,
     ConversationDelete,
+    ConversationMoveToGroup,
 }
 
 impl AssistantPendingActionKind {
@@ -894,6 +901,7 @@ impl AssistantPendingActionKind {
             Self::DocumentCreateDownload => "document_create_download",
             Self::ConversationArchive => "conversation_archive",
             Self::ConversationDelete => "conversation_delete",
+            Self::ConversationMoveToGroup => "conversation_move_to_group",
         }
     }
 }
