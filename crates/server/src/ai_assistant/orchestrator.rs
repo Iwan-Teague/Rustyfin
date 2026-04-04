@@ -17,13 +17,15 @@ use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
 use super::memory::{augment_history_with_entity_graph, build_grounding_chunks_for_turn};
 use super::registry::AssistantToolName;
+use super::replies::{compact_text, rank_and_compress_grounding_chunks};
 use super::tools::{execute_tool, source_from_block};
 use super::types::{
     AssistantChatRequest, AssistantExecutionCandidateStep, AssistantExecutionPlanCandidate,
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantGroundingChunk,
     AssistantHistoryMessage, AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode,
-    AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannedToolSet,
-    PlannerFallbackReason, PlannerIssue, PlannerRepairRecord, PreparedAssistantTurn,
+    AssistantToolContextBlock, AssistantToolInput, ConversationPromptDebug, PlannedToolCall,
+    PlannedToolSet, PlannerFallbackReason, PlannerIssue, PlannerRepairRecord,
+    PreparedAssistantTurn,
 };
 use super::web::{normalize_public_url, public_web_tools_enabled};
 use crate::auth::AuthUser;
@@ -31,6 +33,16 @@ use crate::state::AppState;
 
 const MAX_TOOL_CALLS_PER_TURN: usize = 3;
 const PLANNER_HISTORY_MESSAGE_LIMIT: usize = 6;
+const DEFAULT_ASSISTANT_CONTEXT_LENGTH_TOKENS: u32 = 4096;
+const NORMAL_HISTORY_RAW_MESSAGE_LIMIT: usize = 6;
+const EXTENDED_HISTORY_RAW_MESSAGE_LIMIT: usize = 8;
+const INSTANT_HISTORY_RAW_MESSAGE_LIMIT: usize = 4;
+const EMERGENCY_HISTORY_RAW_MESSAGE_LIMIT: usize = 2;
+const NORMAL_HISTORY_COMPACT_CHARS: usize = 220;
+const EMERGENCY_HISTORY_COMPACT_CHARS: usize = 120;
+const NORMAL_GROUNDING_PROMPT_CHARS: usize = super::replies::MAX_GROUNDING_PROMPT_CHARS;
+const EMERGENCY_GROUNDING_PROMPT_CHARS: usize = 1_200;
+const EMERGENCY_GROUNDING_CHUNK_LIMIT: usize = 4;
 
 const MAX_PLANNER_REPAIR_ATTEMPTS: u8 = 2;
 
@@ -1997,7 +2009,28 @@ pub fn build_assistant_messages(
     request: AssistantChatRequest,
     grounding_chunks: &[AssistantGroundingChunk],
 ) -> Vec<ChatMessage> {
+    build_assistant_messages_with_budget(
+        request,
+        grounding_chunks,
+        DEFAULT_ASSISTANT_CONTEXT_LENGTH_TOKENS,
+        false,
+    )
+    .0
+}
+
+pub fn build_assistant_messages_with_budget(
+    request: AssistantChatRequest,
+    grounding_chunks: &[AssistantGroundingChunk],
+    context_length_tokens: u32,
+    emergency_compaction: bool,
+) -> (Vec<ChatMessage>, ConversationPromptDebug) {
     let local_now = assistant_local_now();
+    let context_length_tokens = context_length_tokens.max(1);
+    let reserved_completion_tokens =
+        response_mode_completion_reserve_tokens(request.response_mode, context_length_tokens);
+    let prompt_budget_tokens =
+        prompt_budget_tokens(request.response_mode, context_length_tokens) as u64;
+
     let mut messages = vec![ChatMessage {
         role: "system".to_string(),
         content: build_system_prompt(),
@@ -2011,29 +2044,207 @@ pub fn build_assistant_messages(
         ),
     });
 
-    if !grounding_chunks.is_empty() {
+    let prompt_grounding_chunks = select_grounding_chunks_for_prompt(
+        grounding_chunks,
+        prompt_budget_tokens,
+        emergency_compaction,
+    );
+    if !prompt_grounding_chunks.is_empty() {
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
                 "Authoritative Rustyfin grounding for this turn:\n{}",
-                super::replies::grounding_chunks_prompt(grounding_chunks)
+                super::replies::grounding_chunks_prompt(&prompt_grounding_chunks)
             ),
         });
     }
 
-    for history in request.history {
-        messages.push(ChatMessage {
-            role: history.role,
-            content: history.content,
-        });
-    }
+    let system_message_count = messages.len() as u32;
+    let mut prompt_debug = ConversationPromptDebug {
+        system_message_count,
+        grounding_chunk_count: prompt_grounding_chunks.len() as u32,
+        response_mode: request.response_mode.as_str().to_string(),
+        context_length_tokens,
+        prompt_budget_tokens: prompt_budget_tokens as u32,
+        reserved_completion_tokens,
+        completion_budget_tokens: reserved_completion_tokens,
+        emergency_compaction,
+        ..ConversationPromptDebug::default()
+    };
 
-    messages.push(ChatMessage {
+    let current_user_message = ChatMessage {
         role: "user".to_string(),
         content: request.message,
-    });
+    };
+    let base_prompt_tokens = estimate_chat_message_tokens(&messages).saturating_add(
+        estimate_chat_message_tokens(std::slice::from_ref(&current_user_message)),
+    );
+    let raw_history_limit = match (request.response_mode, emergency_compaction) {
+        (_, true) => EMERGENCY_HISTORY_RAW_MESSAGE_LIMIT,
+        (AssistantResponseMode::Instant, false) => INSTANT_HISTORY_RAW_MESSAGE_LIMIT,
+        (AssistantResponseMode::Extended, false) => EXTENDED_HISTORY_RAW_MESSAGE_LIMIT,
+        _ => NORMAL_HISTORY_RAW_MESSAGE_LIMIT,
+    };
+    let compact_chars = if emergency_compaction {
+        EMERGENCY_HISTORY_COMPACT_CHARS
+    } else {
+        NORMAL_HISTORY_COMPACT_CHARS
+    };
 
+    let mut selected_history = Vec::new();
+    let mut selected_history_tokens = 0_u64;
+    let mut retained_raw_turns = 0_u32;
+    let mut summarized_turns = 0_u32;
+    let mut compact_boundary_count = 0_u32;
+
+    for history in request.history.iter().rev() {
+        let raw_message = ChatMessage {
+            role: history.role.clone(),
+            content: history.content.trim().to_string(),
+        };
+        let raw_tokens = estimate_chat_message_tokens(std::slice::from_ref(&raw_message));
+        let can_keep_raw = retained_raw_turns < raw_history_limit as u32
+            && base_prompt_tokens
+                .saturating_add(selected_history_tokens)
+                .saturating_add(raw_tokens)
+                <= prompt_budget_tokens;
+
+        if can_keep_raw {
+            selected_history.push(raw_message);
+            selected_history_tokens = selected_history_tokens.saturating_add(raw_tokens);
+            retained_raw_turns += 1;
+            continue;
+        }
+
+        let compact_message = ChatMessage {
+            role: history.role.clone(),
+            content: compact_history_message(history, compact_chars),
+        };
+        let compact_tokens = estimate_chat_message_tokens(std::slice::from_ref(&compact_message));
+        let can_keep_compact = !compact_message.content.is_empty()
+            && base_prompt_tokens
+                .saturating_add(selected_history_tokens)
+                .saturating_add(compact_tokens)
+                <= prompt_budget_tokens;
+
+        if can_keep_compact {
+            selected_history.push(compact_message);
+            selected_history_tokens = selected_history_tokens.saturating_add(compact_tokens);
+            summarized_turns += 1;
+            compact_boundary_count = compact_boundary_count.saturating_add(1);
+        } else {
+            compact_boundary_count = compact_boundary_count.saturating_add(1);
+        }
+    }
+
+    selected_history.reverse();
+    prompt_debug.history_message_count = selected_history.len() as u32;
+    prompt_debug.loaded_history_turns = selected_history.len() as u32;
+    prompt_debug.retained_raw_turns = retained_raw_turns;
+    prompt_debug.summarized_turns = summarized_turns;
+    prompt_debug.compact_boundary_count = compact_boundary_count;
+
+    messages.extend(selected_history);
+
+    messages.push(current_user_message);
+
+    (messages, prompt_debug)
+}
+
+fn select_grounding_chunks_for_prompt(
+    grounding_chunks: &[AssistantGroundingChunk],
+    prompt_budget_tokens: u64,
+    emergency_compaction: bool,
+) -> Vec<AssistantGroundingChunk> {
+    if grounding_chunks.is_empty() {
+        return Vec::new();
+    }
+
+    let max_chars = if emergency_compaction {
+        EMERGENCY_GROUNDING_PROMPT_CHARS
+    } else {
+        NORMAL_GROUNDING_PROMPT_CHARS.min((prompt_budget_tokens as usize).saturating_mul(4) / 3)
+    };
+    let max_chunks = if emergency_compaction {
+        EMERGENCY_GROUNDING_CHUNK_LIMIT
+    } else {
+        super::replies::MAX_GROUNDING_CHUNKS
+    };
+
+    rank_and_compress_grounding_chunks(grounding_chunks, max_chunks, max_chars.max(400))
+}
+
+fn compact_history_message(message: &AssistantHistoryMessage, max_chars: usize) -> String {
+    let normalized = message
+        .content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return String::new();
+    }
+
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let head_chars = max_chars.saturating_mul(2) / 3;
+    let tail_chars = max_chars
+        .saturating_sub(head_chars)
+        .saturating_sub(5)
+        .max(24);
+    let head = compact_text(&normalized, head_chars);
+    let tail = normalized
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+
+    match message.role.as_str() {
+        "assistant" => format!("Earlier assistant reply (truncated): {head} ... {tail}"),
+        "user" => format!("Earlier user message (truncated): {head} ... {tail}"),
+        _ => format!("{head} ... {tail}"),
+    }
+}
+
+fn estimate_chat_message_tokens(messages: &[ChatMessage]) -> u64 {
     messages
+        .iter()
+        .fold(0_u64, |total, message| {
+            let role_cost = (message.role.len() / 4).saturating_add(4) as u64;
+            let content_cost = (message.content.len() / 4).saturating_add(1) as u64;
+            total.saturating_add(role_cost).saturating_add(content_cost)
+        })
+        .max(1)
+}
+
+fn response_mode_completion_reserve_tokens(
+    response_mode: AssistantResponseMode,
+    context_window_tokens: u32,
+) -> u32 {
+    let dynamic = match response_mode {
+        AssistantResponseMode::Instant => context_window_tokens / 6,
+        AssistantResponseMode::Thinking => context_window_tokens / 4,
+        AssistantResponseMode::Extended => context_window_tokens / 3,
+    };
+
+    match response_mode {
+        AssistantResponseMode::Instant => dynamic.clamp(384, 640),
+        AssistantResponseMode::Thinking => dynamic.clamp(768, 1536),
+        AssistantResponseMode::Extended => dynamic.clamp(1024, 4096),
+    }
+}
+
+fn prompt_budget_tokens(response_mode: AssistantResponseMode, context_window_tokens: u32) -> u32 {
+    const CONTEXT_SAFETY_MARGIN_TOKENS: u32 = 192;
+
+    context_window_tokens.saturating_sub(
+        response_mode_completion_reserve_tokens(response_mode, context_window_tokens)
+            + CONTEXT_SAFETY_MARGIN_TOKENS,
+    )
 }
 
 pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {

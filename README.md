@@ -79,6 +79,7 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - `/api/v1/ai/transcribe` now provides authenticated speech-to-text fallback for `/ai`, with browser-native recognition preferred in supported browsers and server transcription handling size/duration-limited uploads when the browser path is unavailable
   - `/api/v1/ai/runtime` now exposes a curated authenticated AI runtime summary with active model/backend, current turn phase, queue depth, process/host memory, accurate host RAM totals/usage, host CPU, selected multi-GPU split metadata, and graceful per-GPU telemetry when the host can provide it
   - `/ai` now includes a microphone workflow with transcript preview/editing before send plus a live runtime panel that surfaces the curated AI runtime summary during and between turns
+  - `/ai` now compacts older conversation history before planner/answer prompt assembly and retries once with emergency compaction if a long-running chat would otherwise exceed the active model context window
   - Native host builds now select a host-safe AI backend automatically instead of assuming CUDA is present
   - On unsupported hosts, `auto` can fall back to AI being disabled so the rest of Rustyfin still runs
   - Use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control the server-side AI inference backend chosen at build time

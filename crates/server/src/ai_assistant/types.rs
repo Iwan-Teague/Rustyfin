@@ -749,6 +749,24 @@ pub struct ConversationPromptDebug {
     pub grounding_chunk_count: u32,
     #[serde(default)]
     pub response_mode: String,
+    #[serde(default)]
+    pub context_length_tokens: u32,
+    #[serde(default)]
+    pub prompt_budget_tokens: u32,
+    #[serde(default)]
+    pub reserved_completion_tokens: u32,
+    #[serde(default)]
+    pub completion_budget_tokens: u32,
+    #[serde(default)]
+    pub loaded_history_turns: u32,
+    #[serde(default)]
+    pub retained_raw_turns: u32,
+    #[serde(default)]
+    pub summarized_turns: u32,
+    #[serde(default)]
+    pub compact_boundary_count: u32,
+    #[serde(default)]
+    pub emergency_compaction: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
