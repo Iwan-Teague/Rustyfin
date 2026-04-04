@@ -1,8 +1,5 @@
-'use client';
-
-import NavGroupHubPage from '@/app/components/NavGroupHubPage';
-import { SERVER_GROUP } from '@/app/navigationGroups';
+import { redirect } from 'next/navigation';
 
 export default function ServerPage() {
-  return <NavGroupHubPage group={SERVER_GROUP} />;
+  redirect('/servers');
 }
