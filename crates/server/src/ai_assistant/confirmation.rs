@@ -908,7 +908,9 @@ fn conversation_manage_targets_current(lower: &str) -> bool {
             "this ai conversation",
             "current conversation",
             "this chat",
+            "this ai chat",
             "current chat",
+            "current ai chat",
         ],
     )
 }
@@ -1841,11 +1843,12 @@ mod tests {
     use super::{
         AssistantPendingActionKind, AssistantToolInput, ConversationActionOperation,
         ConversationSelectionCandidate, calendar_event_matches_query_for_delete,
-        extract_delete_event_query, extract_destination_conversation_group_name,
-        is_supported_conversation_manage_intent, is_supported_document_create_intent,
-        parse_birthday_request_for, parse_document_request, parse_event_request_for,
-        pending_action_request_for_message, resolve_conversation_selection,
-        resolve_current_conversation_selection, select_delete_target,
+        conversation_manage_targets_current, extract_delete_event_query,
+        extract_destination_conversation_group_name, is_supported_conversation_manage_intent,
+        is_supported_document_create_intent, parse_birthday_request_for, parse_document_request,
+        parse_event_request_for, pending_action_request_for_message,
+        resolve_conversation_selection, resolve_current_conversation_selection,
+        select_delete_target,
     };
     use crate::auth::AuthUser;
     use rustfin_db::repo::calendar::CalendarEventRow;
@@ -2224,6 +2227,13 @@ mod tests {
         assert_eq!(selection.selection_label, "Move this AI conversation");
         assert_eq!(selection.selected.len(), 1);
         assert_eq!(selection.selected[0].title, "Bravo");
+    }
+
+    #[test]
+    fn treats_this_ai_chat_as_current_conversation_target() {
+        assert!(conversation_manage_targets_current(
+            "move this ai chat into a group called test"
+        ));
     }
 
     fn conversation_candidate(

@@ -1,13 +1,108 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import Link from 'next/link';
-import { useAuth } from '@/lib/auth';
-import { useChannels } from '@/lib/channelsContext';
 import { usePathname } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import NotificationsPopover from '@/app/components/NotificationsPopover';
-import { PRIMARY_NAV_GROUPS, navigationGroupForPath } from '@/app/navigationGroups';
+import {
+  PRIMARY_NAV_GROUPS,
+  navigationGroupForPath,
+  type NavigationGroupItem,
+} from '@/app/navigationGroups';
+import { useAuth } from '@/lib/auth';
+import { useChannels } from '@/lib/channelsContext';
+
+type RootNavItem = {
+  href: string;
+  label: string;
+  items: NavigationGroupItem[];
+  icon: ReactNode;
+};
+
+const ROOT_NAV_ITEMS: RootNavItem[] = [
+  {
+    href: '/personal',
+    label: 'Personal',
+    items: PRIMARY_NAV_GROUPS[0]?.items ?? [],
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+        <path d="M12 4.5a3.25 3.25 0 1 1 0 6.5 3.25 3.25 0 0 1 0-6.5Z" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M6.5 19a5.5 5.5 0 0 1 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    href: '/social',
+    label: 'Social',
+    items: PRIMARY_NAV_GROUPS[1]?.items ?? [],
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+        <path d="M5 7.5h14v8H9l-4 3v-11Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    href: '/server',
+    label: 'Server',
+    items: PRIMARY_NAV_GROUPS[2]?.items ?? [],
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+        <rect x="4" y="5" width="16" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+        <rect x="4" y="14" width="16" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M8 7.5h.01M8 16.5h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    href: '/ai',
+    label: 'AI',
+    items: [],
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+        <path d="M8 6.5 12 4l4 2.5v5L12 14l-4-2.5v-5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M8.5 15.5 12 18l3.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+];
+
+function BarsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+      <path d="M12 5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5.5 19a6.5 6.5 0 0 1 13 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function AdminIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+      <path d="m12 4 6 3v5c0 4-2.5 6.5-6 8-3.5-1.5-6-4-6-8V7l6-3Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M9.5 12.5 11 14l3.5-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function VoiceIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+      <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+      <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
 
 export default function NavBar() {
   const { me, loading } = useAuth();
@@ -21,14 +116,12 @@ export default function NavBar() {
     leaveVoice,
   } = useChannels();
   const pathname = usePathname();
+  const activeGroup = navigationGroupForPath(pathname);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
-  const [showCompactDesktopNav, setShowCompactDesktopNav] = useState(false);
-  const desktopShellRef = useRef<HTMLDivElement | null>(null);
-  const desktopLeftMeasureRef = useRef<HTMLDivElement | null>(null);
-  const desktopRightMeasureRef = useRef<HTMLDivElement | null>(null);
-  const desktopLogoMeasureRef = useRef<HTMLAnchorElement | null>(null);
+  const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
+  const [railHovered, setRailHovered] = useState(false);
+  const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(null);
 
   useEffect(() => {
     setPortalMounted(true);
@@ -42,36 +135,36 @@ export default function NavBar() {
   }, [voiceSession, confirmLeaveVoiceOpen]);
 
   useEffect(() => {
-    if (showCompactDesktopNav && menuOpen) {
-      setMenuOpen(false);
-    }
-  }, [menuOpen, showCompactDesktopNav]);
+    setMenuOpen(false);
+  }, [pathname]);
 
-  const navLinks = useMemo(
-    () => [
-      ...PRIMARY_NAV_GROUPS.map(({ href, label }) => ({ href, label })),
-      { href: '/ai', label: 'AI' },
-      ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
-    ],
-    [loading, me?.role],
-  );
-  const desktopLeftNavLinks = useMemo(
-    () =>
-      navLinks.filter((link) => ['/personal', '/social', '/server', '/ai'].includes(link.href)),
-    [navLinks],
-  );
-  const desktopRightNavLinks = useMemo(
-    () => navLinks.filter((link) => ['/admin'].includes(link.href)),
-    [navLinks],
-  );
+  useEffect(() => {
+    if (activeGroup?.href) {
+      setExpandedGroupHref((prev) => prev ?? activeGroup.href);
+    }
+  }, [activeGroup?.href]);
+
+  if (pathname.startsWith('/setup')) {
+    return null;
+  }
+
   const activeVoiceChannelName = voiceSession?.channelName ?? connectedVoiceChannelName ?? 'Voice';
   const showVoiceWidget = Boolean(connectedVoiceChannelId && activeVoiceChannelName);
   const hasLocalStream = hasLocalVoiceSession && voiceSession?.localStream !== null;
   const muted = hasLocalVoiceSession ? (voiceSession?.muted ?? false) : false;
   const deafened = hasLocalVoiceSession ? (voiceSession?.deafened ?? false) : false;
   const baseVoiceActionClass =
-    'inline-flex items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
-  const activeGroup = navigationGroupForPath(pathname);
+    'inline-flex h-9 w-9 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
+  const railExpanded = railHovered;
+
+  const navLinks = useMemo(
+    () => [
+      ...ROOT_NAV_ITEMS.map(({ href, label }) => ({ href, label })),
+      ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
+    ],
+    [loading, me?.role],
+  );
+
   const isActivePath = (href: string) => {
     if (pathname === href || pathname.startsWith(`${href}/`)) {
       return true;
@@ -81,425 +174,267 @@ export default function NavBar() {
     }
     return false;
   };
-  const navLinkClass = (href: string, base: string) =>
-    `rf-nav-link ${base} ${
-      isActivePath(href)
-        ? 'text-[var(--text-main)]'
-        : ''
+
+  const railLinkClass = (href: string) =>
+    `rf-nav-link btn-ghost h-11 rounded-2xl text-sm transition ${
+      isActivePath(href) ? 'text-[var(--text-main)]' : ''
+    } ${
+      railExpanded ? 'w-full justify-start gap-3 px-3' : 'w-11 justify-center px-0'
     }`;
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
+  const railUtilityClass = (href: string) =>
+    `rf-nav-link btn-ghost h-11 rounded-2xl text-sm transition ${
+      isActivePath(href) ? 'text-[var(--text-main)]' : ''
+    } ${
+      railExpanded ? 'w-full justify-start gap-3 px-3' : 'w-11 justify-center px-0'
+    }`;
 
-    const compactMediaQuery = window.matchMedia('(min-width: 768px)');
-    const updateLayoutMode = () => {
-      if (!compactMediaQuery.matches) {
-        setShowCompactDesktopNav(false);
-        return;
-      }
+  const openGroupHref = railExpanded ? expandedGroupHref ?? activeGroup?.href ?? null : null;
 
-      const shellWidth = desktopShellRef.current?.getBoundingClientRect().width ?? 0;
-      const logoWidth = desktopLogoMeasureRef.current?.getBoundingClientRect().width ?? 0;
-      const leftWidth = desktopLeftMeasureRef.current?.getBoundingClientRect().width ?? 0;
-      const rightWidth = desktopRightMeasureRef.current?.getBoundingClientRect().width ?? 0;
-      const compactFits =
-        compactMediaQuery.matches && shellWidth >= leftWidth + logoWidth + rightWidth + 88;
+  const desktopRail = (
+    <aside
+      className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
+        railExpanded ? 'w-[17rem]' : 'w-[5.5rem]'
+      }`}
+      data-expanded={railExpanded ? 'true' : 'false'}
+      onMouseEnter={() => setRailHovered(true)}
+      onMouseLeave={() => setRailHovered(false)}
+    >
+      <div className="flex items-center justify-center">
+        <Link
+          href="/"
+          className={`accent-logo flex h-11 items-center rounded-2xl px-2 text-center font-semibold transition hover:opacity-90 ${
+            railExpanded ? 'w-full justify-start text-2xl' : 'w-11 justify-center text-xl'
+          }`}
+          aria-label="Go to Rustyfin home"
+        >
+          <span className="shrink-0">{railExpanded ? 'Rustyfin' : 'R'}</span>
+        </Link>
+      </div>
 
-      setShowCompactDesktopNav(compactFits);
-    };
+      <div className="mt-5 flex min-h-0 flex-1 flex-col gap-2">
+        <div className="flex flex-col gap-1.5">
+          {ROOT_NAV_ITEMS.map((item) => {
+            const showChildren = Boolean(item.items.length && openGroupHref === item.href);
+            return (
+              <div key={item.href} className="flex flex-col gap-1">
+                <Link
+                  href={item.href}
+                  className={railLinkClass(item.href)}
+                  aria-current={isActivePath(item.href) ? 'page' : undefined}
+                  onClick={() => setExpandedGroupHref(item.items.length ? item.href : null)}
+                >
+                  <span className="shrink-0">{item.icon}</span>
+                  {railExpanded ? <span className="truncate">{item.label}</span> : null}
+                </Link>
+                {showChildren ? (
+                  <div className="ml-2 flex flex-col gap-1 border-l border-[var(--border-subtle)] pl-3">
+                    {item.items.map((subItem) => (
+                      <Link
+                        key={subItem.href}
+                        href={subItem.href}
+                        className={`rf-nav-link btn-ghost min-h-9 rounded-xl px-3 py-2 text-left text-sm ${
+                          isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
+                        }`}
+                        aria-current={isActivePath(subItem.href) ? 'page' : undefined}
+                      >
+                        {subItem.label}
+                      </Link>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
 
-    updateLayoutMode();
+        {showVoiceWidget ? (
+          <div className="mt-3 rounded-2xl border border-green-500/35 bg-black/30 p-2">
+            <Link
+              href="/channels"
+              className={`flex items-center text-green-300 ${railExpanded ? 'gap-3' : 'justify-center'}`}
+              title={`Open channel: ${activeVoiceChannelName}`}
+            >
+              <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green-500/12">
+                <span className="h-2.5 w-2.5 rounded-full bg-green-400" />
+              </span>
+              {railExpanded ? (
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{activeVoiceChannelName}</span>
+                  <span className="block text-xs text-green-200/80">
+                    {hasLocalVoiceSession ? 'Connected' : 'In another tab'}
+                  </span>
+                </span>
+              ) : null}
+            </Link>
 
-    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateLayoutMode) : null;
-    if (observer) {
-      if (desktopShellRef.current) observer.observe(desktopShellRef.current);
-      if (desktopLogoMeasureRef.current) observer.observe(desktopLogoMeasureRef.current);
-      if (desktopLeftMeasureRef.current) observer.observe(desktopLeftMeasureRef.current);
-      if (desktopRightMeasureRef.current) observer.observe(desktopRightMeasureRef.current);
-    }
+            {railExpanded && hasLocalVoiceSession ? (
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleMute}
+                  disabled={!hasLocalStream}
+                  className={`${baseVoiceActionClass} ${
+                    muted
+                      ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                      : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
+                  }`}
+                  aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+                >
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    <rect x="9" y="3.5" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.8" />
+                    <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    {muted ? (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    ) : null}
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleDeafen}
+                  className={`${baseVoiceActionClass} ${
+                    deafened
+                      ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
+                      : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
+                  }`}
+                  aria-label={deafened ? 'Undeafen' : 'Deafen'}
+                >
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                    <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                    <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    {deafened ? (
+                      <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                    ) : null}
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmLeaveVoiceOpen(true)}
+                  className={`${baseVoiceActionClass} border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
+                  aria-label="Disconnect from voice"
+                >
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
 
-    const handleMediaChange = () => updateLayoutMode();
-    if (typeof compactMediaQuery.addEventListener === 'function') {
-      compactMediaQuery.addEventListener('change', handleMediaChange);
-    } else {
-      compactMediaQuery.addListener(handleMediaChange);
-    }
+            {!railExpanded ? (
+              <div className="mt-2 flex justify-center text-green-300/90">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-green-500/10">
+                  <VoiceIcon />
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
-    window.addEventListener('resize', updateLayoutMode);
+        <div className="mt-auto flex flex-col gap-1.5">
+          {!loading && me?.role === 'admin' ? (
+            <Link
+              href="/admin"
+              className={railUtilityClass('/admin')}
+              aria-current={isActivePath('/admin') ? 'page' : undefined}
+            >
+              <span className="shrink-0">
+                <AdminIcon />
+              </span>
+              {railExpanded ? <span className="truncate">Admin</span> : null}
+            </Link>
+          ) : null}
 
-    return () => {
-      observer?.disconnect();
-      if (typeof compactMediaQuery.removeEventListener === 'function') {
-        compactMediaQuery.removeEventListener('change', handleMediaChange);
-      } else {
-        compactMediaQuery.removeListener(handleMediaChange);
-      }
-      window.removeEventListener('resize', updateLayoutMode);
-    };
-  }, [
-    loading,
-    me?.role,
-    me?.username,
-    showVoiceWidget,
-    activeVoiceChannelName,
-    hasLocalVoiceSession,
-    hasLocalStream,
-    muted,
-    deafened,
-  ]);
+          {!loading && me ? (
+            <Link
+              href="/account"
+              className={railUtilityClass('/account')}
+              aria-current={isActivePath('/account') ? 'page' : undefined}
+            >
+              <span className="shrink-0">
+                <UserIcon />
+              </span>
+              {railExpanded ? <span className="truncate">{me.username}</span> : null}
+            </Link>
+          ) : null}
 
-  if (pathname.startsWith('/setup')) {
-    return null;
-  }
+          {!loading && me ? (
+            <NotificationsPopover
+              isAdmin={me.role === 'admin'}
+              className={railExpanded ? 'w-full' : ''}
+            />
+          ) : null}
 
-  if (!loading && !me) {
-    return (
-      <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
-        <div className="relative flex min-h-10 items-center justify-center">
+          {!loading && !me ? (
+            <Link href="/login" className={railUtilityClass('/login')}>
+              <span className="shrink-0">
+                <UserIcon />
+              </span>
+              {railExpanded ? <span className="truncate">Login</span> : null}
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </aside>
+  );
+
+  const mobileTopBar = (
+    <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:hidden">
+      <div className="relative flex items-center justify-between">
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
           <Link
             href="/"
-            className="rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
+            className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
             aria-label="Go to Rustyfin home"
           >
             Rustyfin
           </Link>
         </div>
-      </nav>
-    );
-  }
 
-  return (
-    <nav className="app-nav animate-rise rounded-2xl px-4 py-3 md:px-6">
-      <div className="relative hidden md:block" aria-hidden="true">
-        <div ref={desktopShellRef} className="pointer-events-none absolute inset-x-0 top-0 -z-10 opacity-0">
-          <div className="flex items-center justify-between gap-4">
-            <div ref={desktopLeftMeasureRef} className="flex items-center justify-start gap-2">
-              {desktopLeftNavLinks.map((link) => (
-                <span key={link.href} className="btn-ghost h-11 shrink-0 px-3 text-sm">
-                  {link.label}
-                </span>
-              ))}
-            </div>
-            <Link
-              ref={desktopLogoMeasureRef}
-              href="/"
-              className="rounded-full px-3 text-center text-2xl font-semibold accent-logo"
-              aria-label="Go to Rustyfin home"
-            >
-              Rustyfin
-            </Link>
-            <div ref={desktopRightMeasureRef} className="flex items-center justify-end gap-2">
-              {showVoiceWidget && (
-                <div className="chip h-10 shrink-0 gap-2 border-green-500/50 px-2 py-1.5 text-green-300">
-                  <span className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300">
-                    <span className="h-2 w-2 shrink-0 rounded-full bg-green-400" />
-                    <span className="max-w-[12rem] truncate text-xs font-medium">
-                      {activeVoiceChannelName}
-                    </span>
-                  </span>
-                </div>
-              )}
-              {loading ? (
-                <span className="text-sm muted">&hellip;</span>
-              ) : me ? (
-                <>
-                  <span className="btn-ghost h-11 w-11 shrink-0 p-0" />
-                  <Link
-                    href="/account"
-                    className={navLinkClass('/account', 'btn-ghost h-11 shrink-0 px-4 text-sm')}
-                  >
-                    {me.username}
-                  </Link>
-                  {desktopRightNavLinks.map((link) => (
-                    <span key={link.href} className="btn-ghost h-11 shrink-0 px-3 text-sm">
-                      {link.label}
-                    </span>
-                  ))}
-                </>
-              ) : (
-                <span className="btn-secondary h-11 shrink-0 px-4 text-sm">Login</span>
-              )}
-            </div>
-          </div>
+        <button
+          type="button"
+          className="btn-ghost h-11 w-11 p-0"
+          onClick={() => setMenuOpen((prev) => !prev)}
+          aria-label="Toggle menu"
+          aria-expanded={menuOpen}
+          aria-controls="mobile-nav-menu"
+        >
+          <BarsIcon />
+        </button>
+
+        <div className="flex min-w-0 items-center justify-end gap-1.5">
+          {!loading && me ? (
+            <>
+              {me.role === 'admin' ? (
+                <Link
+                  href="/admin"
+                  className={`rf-nav-link btn-ghost h-11 shrink-0 px-3 text-sm ${
+                    isActivePath('/admin') ? 'text-[var(--text-main)]' : ''
+                  }`}
+                  aria-current={isActivePath('/admin') ? 'page' : undefined}
+                >
+                  Admin
+                </Link>
+              ) : null}
+              <Link
+                href="/account"
+                className={`rf-nav-link btn-ghost h-11 max-w-[9.5rem] shrink-0 px-3 text-sm ${
+                  isActivePath('/account') ? 'text-[var(--text-main)]' : ''
+                }`}
+                aria-current={isActivePath('/account') ? 'page' : undefined}
+              >
+                <span className="truncate">{me.username}</span>
+              </Link>
+              <NotificationsPopover isAdmin={me.role === 'admin'} />
+            </>
+          ) : null}
         </div>
       </div>
 
-      {showCompactDesktopNav ? (
-        <div className="hidden md:block">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <Link
-                href="/"
-                className="shrink-0 rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
-                aria-label="Go to Rustyfin home"
-              >
-                Rustyfin
-              </Link>
-              <div className="flex min-w-0 items-center gap-2">
-                {desktopLeftNavLinks.map((link) => (
-                  <Link
-                    key={`compact-${link.href}`}
-                    href={link.href}
-                    className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
-                    aria-current={isActivePath(link.href) ? 'page' : undefined}
-                  >
-                    {link.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex min-w-0 items-center justify-end gap-2">
-              {showVoiceWidget && (
-                <div className="chip h-10 shrink-0 border-green-500/50 text-green-300 gap-2 px-2 py-1.5">
-                  <Link
-                    href="/channels"
-                    className="inline-flex min-w-0 items-center gap-2 rounded-full px-1 text-green-300 hover:text-green-200"
-                    title={`Open channel: ${activeVoiceChannelName}`}
-                  >
-                    <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse shrink-0" />
-                    <span className="max-w-[12rem] truncate text-xs font-medium">
-                      {activeVoiceChannelName}
-                    </span>
-                  </Link>
-                  {hasLocalVoiceSession ? (
-                    <>
-                      <div className="h-4 w-px bg-green-400/35" />
-                      <button
-                        type="button"
-                        onClick={toggleMute}
-                        disabled={!hasLocalStream}
-                        className={`${baseVoiceActionClass} h-9 w-9 ${
-                          muted
-                            ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                            : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
-                        }`}
-                        aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-                        title={
-                          hasLocalStream
-                            ? muted
-                              ? 'Unmute microphone'
-                              : 'Mute microphone'
-                            : 'No microphone — listening only'
-                        }
-                      >
-                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                          <rect
-                            x="9"
-                            y="3.5"
-                            width="6"
-                            height="10"
-                            rx="3"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                          />
-                          <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          {muted && (
-                            <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          )}
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={toggleDeafen}
-                        className={`${baseVoiceActionClass} h-9 w-9 ${
-                          deafened
-                            ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                            : 'border-[var(--border)] bg-black/45 text-white/85 hover:text-white'
-                        }`}
-                        aria-label={deafened ? 'Undeafen' : 'Deafen'}
-                        title={deafened ? 'Undeafen' : 'Deafen'}
-                      >
-                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                          <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                          <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                          <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          {deafened && (
-                            <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          )}
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmLeaveVoiceOpen(true)}
-                        className={`${baseVoiceActionClass} h-9 w-9 border-[var(--border)] bg-black/55 text-white/90 hover:text-white`}
-                        aria-label="Disconnect from voice"
-                        title="Disconnect from voice"
-                      >
-                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                          <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                        </svg>
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <div className="h-4 w-px bg-green-400/35" />
-                      <span className="px-1 text-[11px] text-green-200/85">In another tab</span>
-                    </>
-                  )}
-                </div>
-              )}
-              {loading ? (
-                <span className="text-sm muted">&hellip;</span>
-              ) : me ? (
-                <>
-                  <NotificationsPopover isAdmin={me.role === 'admin'} />
-                  <Link
-                    href="/account"
-                    className={navLinkClass('/account', 'btn-ghost h-11 shrink-0 px-4 text-sm')}
-                    aria-current={isActivePath('/account') ? 'page' : undefined}
-                  >
-                    {me.username}
-                  </Link>
-                  {desktopRightNavLinks.map((link) => (
-                    <Link
-                      key={`compact-right-${link.href}`}
-                      href={link.href}
-                      className={navLinkClass(link.href, 'btn-ghost h-11 shrink-0 px-3 text-sm')}
-                      aria-current={isActivePath(link.href) ? 'page' : undefined}
-                    >
-                      {link.label}
-                    </Link>
-                  ))}
-                </>
-              ) : (
-                <Link href="/login" className="btn-secondary h-11 shrink-0 px-4 text-sm">
-                  Login
-                </Link>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {!showCompactDesktopNav ? (
-        <div className="relative flex items-center justify-between">
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
-            <Link
-              href="/"
-              className="pointer-events-auto rounded-full px-3 text-center text-2xl font-semibold accent-logo transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--orange-soft)]/70"
-              aria-label="Go to Rustyfin home"
-            >
-              Rustyfin
-            </Link>
-          </div>
-
-          <button
-            type="button"
-            className="btn-ghost h-11 w-11 p-0"
-            onClick={() => setMenuOpen((prev) => !prev)}
-            aria-label="Toggle menu"
-            aria-expanded={menuOpen}
-            aria-controls="mobile-nav-menu"
-          >
-            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-            </svg>
-          </button>
-
-          <div className="flex min-w-0 items-center justify-end gap-1.5">
-            {!loading && me ? (
-              <>
-                <NotificationsPopover isAdmin={me.role === 'admin'} />
-                <Link
-                  href="/account"
-                  className={navLinkClass('/account', 'btn-ghost h-11 max-w-[9.5rem] shrink-0 px-3 text-sm')}
-                  aria-current={isActivePath('/account') ? 'page' : undefined}
-                >
-                  <span className="truncate">{me.username}</span>
-                </Link>
-              </>
-            ) : null}
-
-            {showVoiceWidget ? (
-              <div className="flex max-w-[calc(100vw-11rem)] items-center gap-1 rounded-full border border-green-500/50 bg-black/35 px-1.5 py-1">
-                <Link
-                  href="/channels"
-                  className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 text-[11px] text-green-300"
-                  title={`Open channel: ${activeVoiceChannelName}`}
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
-                  <span className="max-w-[3.75rem] truncate">{activeVoiceChannelName}</span>
-                </Link>
-                {hasLocalVoiceSession ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={toggleMute}
-                      disabled={!hasLocalStream}
-                      className={`${baseVoiceActionClass} h-8 w-8 ${
-                        muted
-                          ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                          : 'border-[var(--border)] bg-black/45 text-white/85'
-                      }`}
-                      aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
-                      title={
-                        hasLocalStream
-                          ? muted
-                            ? 'Unmute microphone'
-                            : 'Mute microphone'
-                          : 'No microphone — listening only'
-                      }
-                    >
-                      <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                        <rect x="9" y="3.5" width="6" height="10" rx="3" stroke="currentColor" strokeWidth="1.8" />
-                        <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        <path d="M12 17v3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        <path d="M8.5 20.5h7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        {muted && (
-                          <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        )}
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={toggleDeafen}
-                      className={`${baseVoiceActionClass} h-8 w-8 ${
-                        deafened
-                          ? 'border-[var(--orange-soft)] bg-black/65 text-[var(--orange-soft)]'
-                          : 'border-[var(--border)] bg-black/45 text-white/85'
-                      }`}
-                      aria-label={deafened ? 'Undeafen' : 'Deafen'}
-                      title={deafened ? 'Undeafen' : 'Deafen'}
-                    >
-                      <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                        <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                        <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-                        <path d="M17.5 18.5a4.5 4.5 0 0 1-4.5 4.5h-1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        {deafened && (
-                          <path d="M4.5 4.5l15 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                        )}
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmLeaveVoiceOpen(true)}
-                      className={`${baseVoiceActionClass} h-8 w-8 border-[var(--border)] bg-black/55 text-white/90`}
-                      aria-label="Disconnect from voice"
-                      title="Disconnect from voice"
-                    >
-                      <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" aria-hidden="true">
-                        <path d="M7 7l10 10M17 7 7 17" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-                      </svg>
-                    </button>
-                  </>
-                ) : (
-                  <span className="px-1 text-[11px] text-green-200/85">In another tab</span>
-                )}
-              </div>
-            ) : loading || !me ? (
-              <span className="w-10 shrink-0" aria-hidden="true" />
-            ) : null}
-
-          </div>
-        </div>
-      ) : null}
-
-      {!showCompactDesktopNav && menuOpen ? (
+      {menuOpen ? (
         <div
           id="mobile-nav-menu"
           className="rf-mobile-nav-menu-enter mt-2 flex flex-col gap-0.5 border-t border-[var(--border)] pt-2"
@@ -508,7 +443,9 @@ export default function NavBar() {
             <Link
               key={link.href}
               href={link.href}
-              className={navLinkClass(link.href, 'btn-ghost rounded-xl px-3 py-3 text-base')}
+              className={`rf-nav-link btn-ghost rounded-xl px-3 py-3 text-base ${
+                isActivePath(link.href) ? 'text-[var(--text-main)]' : ''
+              }`}
               aria-current={isActivePath(link.href) ? 'page' : undefined}
               onClick={() => setMenuOpen(false)}
             >
@@ -528,6 +465,13 @@ export default function NavBar() {
           ) : null}
         </div>
       ) : null}
+    </nav>
+  );
+
+  return (
+    <>
+      {desktopRail}
+      {mobileTopBar}
 
       {voiceSession &&
         confirmLeaveVoiceOpen &&
@@ -547,21 +491,21 @@ export default function NavBar() {
                 >
                   Cancel
                 </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirmLeaveVoiceOpen(false);
-                      leaveVoice();
-                    }}
-                    className="btn-danger px-4 py-2 text-sm"
-                  >
-                    Leave
-                  </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmLeaveVoiceOpen(false);
+                    leaveVoice();
+                  }}
+                  className="btn-danger px-4 py-2 text-sm"
+                >
+                  Leave
+                </button>
               </div>
             </div>
           </div>,
           document.body,
         )}
-    </nav>
+    </>
   );
 }

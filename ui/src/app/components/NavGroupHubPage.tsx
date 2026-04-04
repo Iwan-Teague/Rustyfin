@@ -20,13 +20,12 @@ export default function NavGroupHubPage({ group }: { group: NavigationGroup }) {
             <Link
               key={item.href}
               href={item.href}
-              className="rf-flat-row flex items-center justify-between gap-4"
+              className="rf-flat-row block"
             >
               <div className="min-w-0 space-y-1">
                 <p className="text-base font-semibold">{item.label}</p>
                 <p className="text-sm muted">{item.description}</p>
               </div>
-              <span className="rf-text-action shrink-0 text-sm">Open</span>
             </Link>
           ))}
         </div>
