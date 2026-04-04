@@ -15,6 +15,7 @@ impl ToolProvider for SystemToolProvider {
 
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::SystemGetCurrentDateTime);
+        registry.register_tool(self, AssistantToolName::SystemGetAiRuntimeSummary);
         registry.register_tool(self, AssistantToolName::SystemGetHostRuntimeSummary);
         registry.register_tool(self, AssistantToolName::SystemGetBackupSummary);
         registry.register_tool(self, AssistantToolName::SystemGetServiceHealth);

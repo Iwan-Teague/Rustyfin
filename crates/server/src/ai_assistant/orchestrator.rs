@@ -358,6 +358,7 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::SystemGetCurrentDateTime
+                    | AssistantToolName::SystemGetAiRuntimeSummary
                     | AssistantToolName::NetworkGetTopologySummary
                     | AssistantToolName::CalendarGetNextEvent
                     | AssistantToolName::CalendarUpcomingBirthdays
@@ -643,6 +644,7 @@ Rules:\n\
 - Use weather_get_history for recent past-weather questions such as yesterday, last night, or a specific earlier date.\n\
 - Use rooms_list_joinable for invites or rooms the user can join now.\n\
 - Use system_get_current_datetime for current date/time questions or when the user asks what calendar date a relative day like next Tuesday lands on.\n\
+- Use system_get_ai_runtime_summary for current AI model, backend, role-routing, queue, or warm-pool questions.\n\
 - Use system_get_host_runtime_summary only for host/runtime resource questions.\n\
 - Use system_get_backup_summary for backup or restore capability questions.\n\
 - Use system_get_service_health for internal service or agent health questions.\n\
@@ -753,6 +755,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::RoomsListJoinable => " Args: optional room_mode, optional query.",
         AssistantToolName::RoomsGetRoomSummary => " Args: required query, optional room_mode.",
         AssistantToolName::SystemGetCurrentDateTime => " Args: none.",
+        AssistantToolName::SystemGetAiRuntimeSummary => " Args: none.",
         AssistantToolName::ServersListMinecraftStatus => {
             " Args: optional query, optional availability."
         }
@@ -1095,6 +1098,7 @@ fn normalize_planner_tool_input(
         | AssistantToolName::NetworkGetTopologySummary
         | AssistantToolName::CalendarGetNextEvent
         | AssistantToolName::SystemGetCurrentDateTime
+        | AssistantToolName::SystemGetAiRuntimeSummary
         | AssistantToolName::SystemGetHostRuntimeSummary
         | AssistantToolName::SystemGetBackupSummary
         | AssistantToolName::SystemGetServiceHealth
@@ -1780,7 +1784,16 @@ pub fn plan_tool_calls_with_history(
         );
     }
 
-    if is_host_runtime_query(&lower) {
+    if is_ai_runtime_query(&lower) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::SystemGetAiRuntimeSummary,
+            AssistantToolInput::None,
+        );
+    }
+
+    if is_host_runtime_query(&lower) && !is_ai_runtime_query(&lower) {
         push_tool(
             &mut planned,
             &mut seen,
@@ -2065,6 +2078,9 @@ pub fn status_label_for_tool_call(call: &PlannedToolCall) -> String {
         }
         (AssistantToolName::SystemGetCurrentDateTime, _) => {
             "Checking the Rustyfin host date and time".to_string()
+        }
+        (AssistantToolName::SystemGetAiRuntimeSummary, _) => {
+            "Checking the Rustyfin AI runtime and loaded model".to_string()
         }
         (AssistantToolName::SystemGetHostRuntimeSummary, _) => {
             "Checking Rustyfin host runtime stats".to_string()
@@ -2431,6 +2447,18 @@ fn apply_follow_up_tool_hints(
                 }
             }
             AssistantToolName::AccountGetProfileSummary => {}
+            AssistantToolName::SystemGetAiRuntimeSummary => {
+                if is_ai_runtime_query(&message.to_ascii_lowercase())
+                    || message_has_ai_runtime_follow_up_hint(message)
+                {
+                    push_tool(
+                        planned,
+                        seen,
+                        AssistantToolName::SystemGetAiRuntimeSummary,
+                        AssistantToolInput::None,
+                    );
+                }
+            }
             AssistantToolName::SystemGetHostRuntimeSummary => {
                 if message_has_host_runtime_follow_up_hint(message) {
                     push_tool(
@@ -2755,6 +2783,9 @@ fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message
             is_current_datetime_query(&lower)
                 || message_has_current_datetime_tool_follow_up_hint(message)
         }
+        "system_get_ai_runtime_summary" => {
+            is_ai_runtime_query(&lower) || message_has_ai_runtime_follow_up_hint(message)
+        }
         "system_get_host_runtime_summary" => is_host_runtime_query(&lower),
         "system_get_backup_summary" => is_backup_query(&lower),
         "system_get_service_health" => is_service_health_query(&lower),
@@ -2901,6 +2932,32 @@ fn message_has_room_follow_up_hint(message: &str) -> bool {
 
 fn message_has_server_follow_up_hint(message: &str) -> bool {
     extract_server_query(message).is_some() || extract_server_availability(message).is_some()
+}
+
+fn message_has_ai_runtime_follow_up_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "ai model",
+            "loaded model",
+            "model loaded",
+            "inference model",
+            "backend",
+            "warm pool",
+            "scheduler",
+            "queue depth",
+            "queued",
+            "overload",
+            "planner",
+            "summarizer",
+            "answer model",
+            "verifier",
+            "worker",
+            "role routing",
+            "runtime",
+        ],
+    )
 }
 
 fn message_has_host_runtime_follow_up_hint(message: &str) -> bool {
@@ -4044,7 +4101,62 @@ fn extract_server_filter(message: &str) -> AssistantToolInput {
     }
 }
 
+fn is_ai_runtime_query(message_lower: &str) -> bool {
+    let explicit = has_any(
+        message_lower,
+        &[
+            "what ai model",
+            "which ai model",
+            "what model are you",
+            "which model are you",
+            "what model is loaded",
+            "which model is loaded",
+            "loaded ai model",
+            "currently loaded model",
+            "ai runtime",
+            "inference backend",
+            "what backend is ai using",
+            "which backend is ai using",
+            "what backend are you using",
+            "which backend are you using",
+            "warm pool",
+            "queue depth",
+            "hot model",
+            "hot models",
+            "role routing",
+        ],
+    );
+    if explicit {
+        return true;
+    }
+
+    let mentions_model = message_lower.contains("model");
+    let ai_scope = has_any(
+        message_lower,
+        &[
+            "ai",
+            "assistant",
+            "inference",
+            "loaded",
+            "backend",
+            "planner",
+            "summarizer",
+            "answer",
+            "verifier",
+            "worker",
+            "warm pool",
+            "scheduler",
+            "queue",
+        ],
+    );
+
+    mentions_model && ai_scope
+}
+
 fn is_host_runtime_query(message_lower: &str) -> bool {
+    if is_ai_runtime_query(message_lower) {
+        return false;
+    }
     if message_lower.contains("minecraft") {
         return false;
     }
@@ -5218,6 +5330,22 @@ mod tests {
     }
 
     #[test]
+    fn planner_routes_ai_runtime_model_queries() {
+        let tools = plan_tool_calls("What AI model is loaded right now?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_ai_runtime_identity_queries() {
+        let tools = plan_tool_calls("What AI model are you?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
     fn planner_extracts_downloads_filter() {
         let tools = plan_tool_calls("What downloads are available right now?");
         assert_eq!(tools.len(), 1);
@@ -5868,6 +5996,15 @@ mod tests {
             tools[0].tool,
             AssistantToolName::SystemGetHostRuntimeSummary
         );
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_uses_ai_runtime_follow_up_history() {
+        let history = grounded_history(&["system_get_ai_runtime_summary"]);
+        let tools = plan_tool_calls_with_history("What about the backend?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
     }
 

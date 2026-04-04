@@ -106,10 +106,7 @@ pub struct AiRuntimeGpuSummary {
     pub temperature_celsius: Option<f64>,
 }
 
-pub async fn get_ai_runtime(
-    _user: AuthUser,
-    State(state): State<AppState>,
-) -> Result<Json<AiRuntimeResponse>, AppError> {
+pub async fn collect_ai_runtime_response(state: &AppState) -> AiRuntimeResponse {
     let host = crate::runtime_diagnostics::collect_host_runtime_snapshot().await;
     let runtime = state.runtime_metrics.snapshot();
     let gpus = collect_gpu_metrics().await;
@@ -162,7 +159,7 @@ pub async fn get_ai_runtime(
         active_request_count.saturating_sub(1)
     };
 
-    Ok(Json(AiRuntimeResponse {
+    AiRuntimeResponse {
         model: AiRuntimeModelSummary {
             name: loaded_model,
             backend,
@@ -228,7 +225,14 @@ pub async fn get_ai_runtime(
         },
         gpus,
         role_routing,
-    }))
+    }
+}
+
+pub async fn get_ai_runtime(
+    _user: AuthUser,
+    State(state): State<AppState>,
+) -> Result<Json<AiRuntimeResponse>, AppError> {
+    Ok(Json(collect_ai_runtime_response(&state).await))
 }
 
 fn inferred_backend(gpus: &[AiRuntimeGpuSummary]) -> String {

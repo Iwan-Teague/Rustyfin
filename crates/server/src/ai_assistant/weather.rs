@@ -522,6 +522,7 @@ fn geocoding_query_variants(query: &str) -> Vec<String> {
             "",
         ),
     );
+    push_missing_comma_variants(&mut variants, query);
     if let Some(core_name) = query
         .split(',')
         .next()
@@ -534,6 +535,42 @@ fn geocoding_query_variants(query: &str) -> Vec<String> {
     }
     push_progressive_prefix_variants(&mut variants, query);
     variants
+}
+
+fn push_missing_comma_variants(variants: &mut Vec<String>, query: &str) {
+    if query.contains(',') {
+        return;
+    }
+
+    let tokens = query
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.len() < 2 {
+        return;
+    }
+
+    push_unique_variant(
+        variants,
+        &format!("{}, {}", tokens[0], tokens[1..].join(" ")),
+    );
+
+    if tokens.len() >= 3 {
+        push_unique_variant(
+            variants,
+            &format!(
+                "{}, {}, {}",
+                tokens[0],
+                tokens[1..tokens.len() - 1].join(" "),
+                tokens[tokens.len() - 1]
+            ),
+        );
+    } else if tokens[0].chars().count() >= 4 {
+        // Short two-part follow-ups like "Cork Muster" should still fall back to the
+        // place name if the region token is missing punctuation or misspelled.
+        push_unique_variant(variants, tokens[0]);
+    }
 }
 
 fn push_unique_variant(variants: &mut Vec<String>, candidate: &str) {
@@ -550,7 +587,7 @@ fn push_progressive_prefix_variants(variants: &mut Vec<String>, query: &str) {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    if tokens.len() <= 2 {
+    if tokens.len() <= 1 {
         return;
     }
 
@@ -1195,7 +1232,17 @@ mod tests {
     fn geocoding_query_variants_reduce_multi_part_follow_up_to_core_name() {
         let variants = geocoding_query_variants("Cork Muster Ireland");
         assert!(variants.contains(&"Cork Muster Ireland".to_string()));
+        assert!(variants.contains(&"Cork, Muster Ireland".to_string()));
+        assert!(variants.contains(&"Cork, Muster, Ireland".to_string()));
         assert!(variants.contains(&"Cork Muster".to_string()));
+        assert!(variants.contains(&"Cork".to_string()));
+    }
+
+    #[test]
+    fn geocoding_query_variants_add_missing_comma_and_core_fallback_for_two_part_follow_up() {
+        let variants = geocoding_query_variants("Cork Muster");
+        assert!(variants.contains(&"Cork Muster".to_string()));
+        assert!(variants.contains(&"Cork, Muster".to_string()));
         assert!(variants.contains(&"Cork".to_string()));
     }
 

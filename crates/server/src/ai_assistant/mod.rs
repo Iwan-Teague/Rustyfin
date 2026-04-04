@@ -20,7 +20,8 @@ pub use orchestrator::{
     status_label_for_tool_call, unsupported_write_response_for_message,
 };
 pub use replies::{
-    deterministic_calendar_reply, deterministic_library_reply, deterministic_network_reply,
+    deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_library_reply,
+    deterministic_network_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantConfirmationPayload,
