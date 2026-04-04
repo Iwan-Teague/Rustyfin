@@ -18,6 +18,7 @@ import {
   type AiModel,
   type AiPendingAction,
   type AiPhaseEvent,
+  type AiResponseMode,
   type AiRuntimeResponse,
   type AiStatusUpdate,
   type AiToolActivityEvent,
@@ -69,7 +70,7 @@ type ConversationStatsSummary = {
 type QueuedPromptMap = Record<string, string>;
 
 type VoiceState = 'idle' | 'recording' | 'stopping' | 'transcribing' | 'error';
-type ComposerResponseMode = 'instant' | 'thinking';
+type ComposerResponseMode = AiResponseMode;
 type ComposerAttachmentKind = 'document' | 'image';
 
 type BrowserSpeechRecognitionResult = {
@@ -1416,30 +1417,31 @@ function ModelSelector({
 function ResponseModeSelector({
   value,
   onChange,
+  className = '',
 }: {
   value: ComposerResponseMode;
   onChange: (value: ComposerResponseMode) => void;
+  className?: string;
 }) {
   return (
-    <div className="inline-flex h-10 items-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] p-1">
-      {(['instant', 'thinking'] as const).map((mode) => {
-        const active = value === mode;
-        return (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => onChange(mode)}
-            className={`rounded-full px-3 py-1.5 text-sm font-medium transition-all ${
-              active
-                ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-main)]'
-                : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'
-            }`}
-            aria-pressed={active}
-          >
-            {mode === 'instant' ? 'Instant' : 'Thinking'}
-          </button>
-        );
-      })}
+    <div className={`relative min-w-[7.5rem] ${className}`}>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
+        className="ai-model-select h-10 w-full appearance-none cursor-pointer rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.04)] py-1.5 pl-3 pr-8 text-sm text-[var(--text-main)] transition-colors"
+        aria-label="AI response mode"
+      >
+        <option value="instant">Instant</option>
+        <option value="thinking">Thinking</option>
+        <option value="extended">Extended</option>
+      </select>
+      <svg
+        className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 muted"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+      >
+        <path d="M8 11L2 5h12z" />
+      </svg>
     </div>
   );
 }
@@ -2752,11 +2754,6 @@ export default function AiPage() {
     voiceState === 'stopping';
   const queueActionLabel = hasQueuedPrompt ? 'Update queued' : 'Queue';
   const queueActionDisabled = composerDisabled || !input.trim();
-  const queuedNotice = hasQueuedPrompt
-    ? isStreaming
-      ? 'Queued follow-up will send automatically when this answer finishes.'
-      : 'Queued follow-up is saved here. Send it when ready, or cancel it.'
-    : null;
 
   const placeholder = activeConversation?.archived
     ? 'Restore this conversation to keep chatting.'
@@ -2965,7 +2962,19 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 self-start md:self-auto">
+                      {inferenceAvailable === true && models.length > 0 ? (
+                        <ModelSelector
+                          models={models}
+                          selected={selectedModel}
+                          onChange={setSelectedModel}
+                          className="w-full min-w-[12rem] sm:w-auto"
+                        />
+                      ) : null}
+                      <ResponseModeSelector
+                        value={responseMode}
+                        onChange={setResponseMode}
+                      />
                       {showRuntimePanel ? (
                         <button
                           type="button"
@@ -3110,89 +3119,104 @@ export default function AiPage() {
 
                 <div
                   ref={composerShellRef}
-                  className="ai-composer-shell sticky bottom-0 z-10 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
+                  className="ai-composer-shell sticky bottom-0 z-20 shrink-0 border-t border-[rgba(215,223,255,0.08)]"
                 >
-                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-3 sm:px-5">
-                    <div className="flex flex-col gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div ref={composerMenuRef} className="relative">
+                  <div className="relative z-[1] w-full px-3 pb-[max(env(safe-area-inset-bottom),0px)] pt-2.5 sm:px-5">
+                    {hasQueuedPrompt ? (
+                      <div className="mb-2.5 rounded-2xl border border-[rgba(215,223,255,0.12)] bg-[rgba(255,255,255,0.03)] px-3.5 py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-faint)]">
+                              Queued prompt
+                            </p>
+                            <p className="mt-1 text-xs muted">
+                              {isStreaming
+                                ? 'This follow-up will send automatically when the current answer finishes.'
+                                : 'This queued follow-up is saved here until you send or cancel it.'}
+                            </p>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[var(--text-main)]">
+                              {queuedPrompt}
+                            </p>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => setComposerMenuOpen((current) => !current)}
-                            className="btn-secondary h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
-                            disabled={composerDisabled}
-                            aria-label="Add media or prompt controls"
+                            onClick={() => {
+                              if (activeConversationId) {
+                                clearQueuedPrompt(activeConversationId);
+                              }
+                            }}
+                            className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
                           >
-                            +
+                            Cancel queued
                           </button>
-                          {composerMenuOpen ? (
-                            <div className="absolute bottom-[calc(100%+0.55rem)] left-0 z-30 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                              <button
-                                type="button"
-                                onClick={() => documentInputRef.current?.click()}
-                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                              >
-                                Add document
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => imageInputRef.current?.click()}
-                                className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
-                              >
-                                Add image
-                              </button>
-                            </div>
-                          ) : null}
-                          <input
-                            ref={documentInputRef}
-                            type="file"
-                            accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
-                            multiple
-                            className="sr-only"
-                            onChange={(event) => {
-                              void handleDocumentFilesSelected(event);
-                            }}
-                          />
-                          <input
-                            ref={imageInputRef}
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            className="sr-only"
-                            onChange={(event) => {
-                              void handleImageFilesSelected(event);
-                            }}
-                          />
                         </div>
+                      </div>
+                    ) : null}
 
-                        {inferenceAvailable === true && models.length > 0 ? (
-                          <ModelSelector
-                            models={models}
-                            selected={selectedModel}
-                            onChange={setSelectedModel}
-                            className="min-w-[13rem] max-w-full flex-1 sm:flex-none"
-                          />
+                    <div className="flex flex-wrap items-start gap-2.5">
+                      <div ref={composerMenuRef} className="relative z-20 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setComposerMenuOpen((current) => !current)}
+                          className="btn-secondary ai-composer-icon-btn h-10 w-10 rounded-full p-0 text-[1.4rem] leading-none disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={composerDisabled}
+                          aria-label="Add media or prompt controls"
+                        >
+                          +
+                        </button>
+                        {composerMenuOpen ? (
+                          <div className="absolute bottom-full left-0 z-40 mb-2.5 min-w-[14rem] overflow-hidden rounded-2xl border border-[var(--border)] bg-[rgba(35,41,59,0.96)] shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                            <button
+                              type="button"
+                              onClick={() => documentInputRef.current?.click()}
+                              className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                            >
+                              Add document
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => imageInputRef.current?.click()}
+                              className="block w-full px-3.5 py-2.5 text-left text-sm text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.05)]"
+                            >
+                              Add image
+                            </button>
+                          </div>
                         ) : null}
-
-                        <ResponseModeSelector
-                          value={responseMode}
-                          onChange={setResponseMode}
+                        <input
+                          ref={documentInputRef}
+                          type="file"
+                          accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.rs,.toml,.ini,.conf,.sql,.pdf,.doc,.docx"
+                          multiple
+                          className="sr-only"
+                          onChange={(event) => {
+                            void handleDocumentFilesSelected(event);
+                          }}
+                        />
+                        <input
+                          ref={imageInputRef}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="sr-only"
+                          onChange={(event) => {
+                            void handleImageFilesSelected(event);
+                          }}
                         />
                       </div>
 
-                      <div className="flex min-h-[3.25rem] items-start gap-3">
+                      <div className="flex min-h-[3.25rem] min-w-0 flex-1 basis-[15rem] items-start gap-3">
                         <textarea
                           ref={textareaRef}
                           value={input}
                           onChange={handleInputChange}
                           onKeyDown={handleKeyDown}
                           placeholder={placeholder}
-                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-2 text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
+                          className="ai-composer-textarea min-h-[3rem] flex-1 resize-none bg-transparent py-[0.55rem] text-sm leading-relaxed text-[var(--text-main)] placeholder:text-[var(--text-muted)] disabled:opacity-50"
                           disabled={composerDisabled}
                           rows={1}
                         />
 
-                        <div className="flex shrink-0 items-center gap-2 pt-1">
+                        <div className="flex shrink-0 items-start gap-2">
                           {isStreaming ? (
                             <>
                               {canQueueActiveConversation ? (
@@ -3269,29 +3293,10 @@ export default function AiPage() {
                       </div>
                     </div>
 
-                    {voiceError || queuedNotice ? (
+                    {voiceError ? (
                       <div className="mt-2 space-y-1.5 px-1 text-xs">
                         {voiceError ? (
                           <div className="text-[var(--danger)]">{voiceError}</div>
-                        ) : null}
-
-                        {queuedNotice ? (
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <span className="muted">{queuedNotice}</span>
-                            {hasQueuedPrompt ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (activeConversationId) {
-                                    clearQueuedPrompt(activeConversationId);
-                                  }
-                                }}
-                                className="text-[0.72rem] font-medium text-[var(--text-main)] underline underline-offset-4"
-                              >
-                                Cancel queued
-                              </button>
-                            ) : null}
-                          </div>
                         ) : null}
                       </div>
                     ) : null}
