@@ -600,7 +600,126 @@ fn normalize_person_name(raw: &str) -> Option<String> {
     } else if let Some(stripped) = value.strip_suffix("s'") {
         value = stripped.trim().to_string();
     }
+    value = extract_named_person_fragment(&value).unwrap_or(value);
+    if relationship_only_subject(&value) {
+        return None;
+    }
     (!value.is_empty()).then_some(value)
+}
+
+fn extract_named_person_fragment(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    for prefix in [
+        "my brother named ",
+        "my brother called ",
+        "my brother ",
+        "my sister named ",
+        "my sister called ",
+        "my sister ",
+        "my son named ",
+        "my son called ",
+        "my son ",
+        "my daughter named ",
+        "my daughter called ",
+        "my daughter ",
+        "my dad named ",
+        "my dad called ",
+        "my dad ",
+        "my father named ",
+        "my father called ",
+        "my father ",
+        "my mum named ",
+        "my mum called ",
+        "my mum ",
+        "my mom named ",
+        "my mom called ",
+        "my mom ",
+        "my mother named ",
+        "my mother called ",
+        "my mother ",
+        "my wife named ",
+        "my wife called ",
+        "my wife ",
+        "my husband named ",
+        "my husband called ",
+        "my husband ",
+        "my partner named ",
+        "my partner called ",
+        "my partner ",
+        "my friend named ",
+        "my friend called ",
+        "my friend ",
+        "my cousin named ",
+        "my cousin called ",
+        "my cousin ",
+    ] {
+        if lower.starts_with(prefix) {
+            let candidate = trimmed[prefix.len()..]
+                .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == ',' || ch.is_whitespace())
+                .trim();
+            if !candidate.is_empty() && !relationship_only_subject(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn relationship_only_subject(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "my brother"
+            | "brother"
+            | "my sister"
+            | "sister"
+            | "my son"
+            | "son"
+            | "my daughter"
+            | "daughter"
+            | "my dad"
+            | "dad"
+            | "my father"
+            | "father"
+            | "my mum"
+            | "mum"
+            | "my mom"
+            | "mom"
+            | "my mother"
+            | "mother"
+            | "my wife"
+            | "wife"
+            | "my husband"
+            | "husband"
+            | "my partner"
+            | "partner"
+            | "my friend"
+            | "friend"
+            | "my cousin"
+            | "cousin"
+            | "my uncle"
+            | "uncle"
+            | "my aunt"
+            | "aunt"
+            | "my nephew"
+            | "nephew"
+            | "my niece"
+            | "niece"
+            | "my grandfather"
+            | "grandfather"
+            | "my grandmother"
+            | "grandmother"
+            | "my grandad"
+            | "grandad"
+            | "my granny"
+            | "granny"
+            | "my grandpa"
+            | "grandpa"
+            | "my grandma"
+            | "grandma"
+    )
 }
 
 fn extract_year_hint(message: &str) -> Option<i32> {
@@ -1149,6 +1268,41 @@ mod tests {
             parsed.payload.summary,
             "Create recurring birthday for Rachel on April 7, 2003 in your personal calendar"
         );
+    }
+
+    #[test]
+    fn birthday_request_prefers_named_person_over_relationship_label() {
+        let parsed = parse_birthday_request_for(
+            &test_user("user"),
+            "Add my brother Deri's birthday on June 9, 2003 to my calendar",
+            None,
+            NaiveDate::from_ymd_opt(2026, 4, 4).unwrap(),
+        )
+        .expect("birthday intent should parse");
+
+        assert_eq!(
+            parsed.payload.summary,
+            "Create recurring birthday for Deri on June 9, 2003 in your personal calendar"
+        );
+        match parsed.payload.call.input {
+            AssistantToolInput::CalendarCreateBirthday { title, .. } => {
+                assert_eq!(title, "Deri birthday");
+            }
+            other => panic!("expected birthday input, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn birthday_request_rejects_relationship_only_subjects() {
+        let error = parse_birthday_request_for(
+            &test_user("user"),
+            "Add my brother's birthday on June 9, 2003 to my calendar",
+            None,
+            NaiveDate::from_ymd_opt(2026, 4, 4).unwrap(),
+        )
+        .expect_err("relationship-only birthday subject should be rejected");
+
+        assert!(error.contains("couldn't determine whose birthday this is"));
     }
 
     #[test]
