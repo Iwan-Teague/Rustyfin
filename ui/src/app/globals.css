@@ -321,19 +321,20 @@ textarea:focus-visible {
 .ai-activity-primary[data-active="true"] {
   background: linear-gradient(
     110deg,
-    rgba(239, 244, 255, 0.76) 0%,
-    rgba(239, 244, 255, 0.76) 34%,
-    rgba(255, 255, 255, 0.98) 50%,
-    rgba(239, 244, 255, 0.76) 66%,
-    rgba(239, 244, 255, 0.76) 100%
+    rgba(239, 244, 255, 0.74) 0%,
+    rgba(239, 244, 255, 0.74) 45%,
+    rgba(255, 255, 255, 1) 49%,
+    rgba(255, 255, 255, 1) 51%,
+    rgba(239, 244, 255, 0.74) 55%,
+    rgba(239, 244, 255, 0.74) 100%
   );
-  background-size: 220% 100%;
-  background-position: 120% 0;
+  background-size: 260% 100%;
+  background-position: 135% 0;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: ai-activity-text-shimmer 1.65s linear infinite;
+  animation: ai-activity-text-shimmer 2.3s ease-in-out infinite;
 }
 
 .ai-activity-meta {
@@ -753,6 +754,30 @@ textarea:focus-visible {
 .btn-secondary:active {
   transform: scale(0.98);
   transition-duration: 110ms;
+}
+
+.ai-composer-icon-btn {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.ai-composer-icon-btn:hover:not(:disabled) {
+  transform: none;
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: none;
+  color: var(--text-main);
+}
+
+.ai-composer-icon-btn[data-active="true"] {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+}
+
+.ai-composer-icon-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .btn-ghost {
@@ -1371,12 +1396,17 @@ input[type="checkbox"]:disabled {
 }
 
 @keyframes ai-activity-text-shimmer {
-  0% {
-    background-position: 120% 0;
+  0%,
+  18% {
+    background-position: 135% 0;
+  }
+
+  62% {
+    background-position: -135% 0;
   }
 
   100% {
-    background-position: -120% 0;
+    background-position: -135% 0;
   }
 }
 
