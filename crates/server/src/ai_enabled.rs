@@ -27,10 +27,10 @@ use crate::ai_assistant::types::{
     AssistantActivityTraceItem, AssistantConfirmationPayload, AssistantConfirmationRequiredEvent,
     AssistantFollowUpContext, AssistantGroundingChunk, AssistantGroundingSource,
     AssistantPendingAction, AssistantPendingActionStatus, AssistantPhase, AssistantPhaseEvent,
-    AssistantPlannerDebug, AssistantPlannerMode, AssistantRuntimePhase, AssistantStatusEvent,
-    AssistantStatusKind, AssistantToolActivityEvent, AssistantToolActivityState,
-    AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats, ConversationPromptDebug,
-    PlannedToolSet,
+    AssistantPlannerDebug, AssistantPlannerMode, AssistantResponseMode, AssistantRuntimePhase,
+    AssistantStatusEvent, AssistantStatusKind, AssistantToolActivityEvent,
+    AssistantToolActivityState, AssistantToolContextBlock, AssistantToolInput, AssistantTurnStats,
+    ConversationPromptDebug, PlannedToolCall, PlannedToolSet,
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
@@ -1205,7 +1205,7 @@ fn stream_chat_response(
         };
         let planner_duration_ms = planner_started.elapsed().as_millis() as u64;
         let planner_debug = planned_tool_set.debug.clone();
-        let planned_tools = planned_tool_set.calls;
+        let mut planned_tools = planned_tool_set.calls;
         info!(
             trace_id = %trace_id,
             user_id = %user.user_id,
@@ -1338,6 +1338,97 @@ fn stream_chat_response(
                 grounding_sources.push(source);
             }
 
+            if let Some(recovery) = grounding_recovery_plan(
+                &req.message,
+                req.response_mode,
+                &planned_tools,
+                &grounding_blocks,
+            ) {
+                let recovery_label = status_label_for_tool_call(&recovery.call);
+                let tool_id = format!("tool-{}", planned_tools.len() + 1);
+                let started_ts_ms = now_ts_ms();
+                let tool_event = AssistantToolActivityEvent {
+                    id: tool_id.clone(),
+                    tool: recovery.call.tool.as_str().to_string(),
+                    label: recovery_label.clone(),
+                    state: AssistantToolActivityState::Running,
+                    started_ts_ms,
+                    finished_ts_ms: None,
+                };
+                start_tool(&mut activity_trace, &tool_event);
+                yield Ok::<Event, Infallible>(sse_json_event("tool", &tool_event));
+                yield Ok::<Event, Infallible>(sse_json_event(
+                    "status",
+                    &AssistantStatusEvent {
+                        tool: recovery.call.tool.as_str(),
+                        label: recovery_label.clone(),
+                        kind: AssistantStatusKind::Checking,
+                    },
+                ));
+
+                let recovery_phase_started = Instant::now();
+                let tool_metrics = state.runtime_metrics.start_ai_tool_call();
+                let recovery_call = recovery.call.clone();
+                let block = execute_tool(&state, &context, &recovery_call).await;
+                let recovery_source = source_from_block(recovery_call.tool, &block);
+                let recovery_follow_up = build_follow_up_context(&recovery_call, &block);
+                tool_duration_ms += recovery_phase_started.elapsed().as_millis() as u64;
+
+                if block.status == "ok" {
+                    tool_metrics.mark_success();
+                    info!(
+                        trace_id = %context.trace_id,
+                        user_id = %context.user_id,
+                        tool = recovery_call.tool.as_str(),
+                        input = %tool_input_summary(&recovery_call.input),
+                        result = %tool_result_summary(&block),
+                        "ai grounded recovery tool completed"
+                    );
+                } else {
+                    warn!(
+                        trace_id = %context.trace_id,
+                        user_id = %context.user_id,
+                        tool = recovery_call.tool.as_str(),
+                        input = %tool_input_summary(&recovery_call.input),
+                        result = %tool_result_summary(&block),
+                        "ai grounded recovery tool failed"
+                    );
+                }
+
+                let state_name = if block.status == "error" {
+                    AssistantToolActivityState::Error
+                } else {
+                    AssistantToolActivityState::Complete
+                };
+                let finished_ts_ms = now_ts_ms();
+                let tool_event = AssistantToolActivityEvent {
+                    id: tool_id,
+                    tool: recovery_call.tool.as_str().to_string(),
+                    label: block.label.clone(),
+                    state: state_name,
+                    started_ts_ms,
+                    finished_ts_ms: Some(finished_ts_ms),
+                };
+                finish_tool(&mut activity_trace, &tool_event);
+                yield Ok::<Event, Infallible>(sse_json_event("tool", &tool_event));
+                yield Ok::<Event, Infallible>(sse_json_event(
+                    "status",
+                    &AssistantStatusEvent {
+                        tool: recovery_call.tool.as_str(),
+                        label: block.label.clone(),
+                        kind: match state_name {
+                            AssistantToolActivityState::Running => AssistantStatusKind::Checking,
+                            AssistantToolActivityState::Complete => AssistantStatusKind::Complete,
+                            AssistantToolActivityState::Error => AssistantStatusKind::Error,
+                        },
+                    },
+                ));
+
+                planned_tools[recovery.replace_index] = recovery_call;
+                grounding_blocks[recovery.replace_index] = block;
+                grounding_sources[recovery.replace_index] = recovery_source;
+                follow_up_contexts[recovery.replace_index] = recovery_follow_up;
+            }
         }
 
         grounding_chunks = build_grounding_chunks_for_turn(
@@ -2201,10 +2292,13 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
 mod tests {
     use super::{
         LoadedRoleModel, build_turn_stats_with_planner, find_loaded_backend_for_route,
-        parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
+        grounding_recovery_plan, parse_device_indices_override, parse_gpu_split_mode_override,
+        parse_i32_override,
     };
+    use crate::ai_assistant::registry::AssistantToolName;
     use crate::ai_assistant::types::{
-        AssistantPlannerDebug, PlannerExecutionStats, PlannerFallbackReason,
+        AssistantPlannerDebug, AssistantResponseMode, AssistantToolContextBlock,
+        AssistantToolInput, PlannedToolCall, PlannerExecutionStats, PlannerFallbackReason,
     };
     use futures::stream::BoxStream;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
@@ -2212,6 +2306,7 @@ mod tests {
         BackendCapabilities, BackendKind, ChatChunk, ChatMessage, InferenceBackend, ModelRole,
         PromptCacheHint, SamplingParams,
     };
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -2372,6 +2467,79 @@ mod tests {
         let reused = find_loaded_backend_for_route(&loaded, &route)
             .expect("planner route should reuse the loaded answer backend");
         assert!(Arc::ptr_eq(&reused.backend, &shared_backend));
+    }
+
+    #[test]
+    fn grounding_recovery_plan_expands_empty_birthday_lookup_for_thinking_mode() {
+        let planned_tools = vec![PlannedToolCall {
+            tool: AssistantToolName::CalendarUpcomingBirthdays,
+            input: AssistantToolInput::CalendarWindow {
+                from_date: "2026-04-04".to_string(),
+                to_date: "2026-05-04".to_string(),
+                label: "the next 30 days".to_string(),
+                query: Some("next".to_string()),
+            },
+        }];
+        let grounding_blocks = vec![AssistantToolContextBlock {
+            tool: "calendar_upcoming_birthdays",
+            label: "Birthdays matching \"next\" for the next 30 days".to_string(),
+            status: "ok",
+            data: json!({
+                "window": { "label": "the next 30 days" },
+                "query": "next",
+                "birthdays": [],
+            }),
+        }];
+
+        let recovery = grounding_recovery_plan(
+            "What's the next birthday in my calendar?",
+            AssistantResponseMode::Thinking,
+            &planned_tools,
+            &grounding_blocks,
+        )
+        .expect("expected a recovery plan");
+
+        assert_eq!(recovery.replace_index, 0);
+        match recovery.call.input {
+            AssistantToolInput::CalendarWindow { label, query, .. } => {
+                assert_eq!(label, "the next 366 days");
+                assert_eq!(query, None);
+            }
+            _ => panic!("expected calendar window"),
+        }
+    }
+
+    #[test]
+    fn grounding_recovery_plan_skips_instant_mode() {
+        let planned_tools = vec![PlannedToolCall {
+            tool: AssistantToolName::CalendarUpcomingBirthdays,
+            input: AssistantToolInput::CalendarWindow {
+                from_date: "2026-04-04".to_string(),
+                to_date: "2026-05-04".to_string(),
+                label: "the next 30 days".to_string(),
+                query: Some("next".to_string()),
+            },
+        }];
+        let grounding_blocks = vec![AssistantToolContextBlock {
+            tool: "calendar_upcoming_birthdays",
+            label: "Birthdays matching \"next\" for the next 30 days".to_string(),
+            status: "ok",
+            data: json!({
+                "window": { "label": "the next 30 days" },
+                "query": "next",
+                "birthdays": [],
+            }),
+        }];
+
+        assert!(
+            grounding_recovery_plan(
+                "What's the next birthday in my calendar?",
+                AssistantResponseMode::Instant,
+                &planned_tools,
+                &grounding_blocks,
+            )
+            .is_none()
+        );
     }
 }
 
@@ -2800,4 +2968,60 @@ fn tool_result_summary(block: &AssistantToolContextBlock) -> String {
         ),
         None => format!("status={}, label={}", block.status, block.label),
     }
+}
+
+#[derive(Debug, Clone)]
+struct GroundingRecoveryPlan {
+    replace_index: usize,
+    call: PlannedToolCall,
+}
+
+fn grounding_recovery_plan(
+    message: &str,
+    response_mode: AssistantResponseMode,
+    planned_tools: &[PlannedToolCall],
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<GroundingRecoveryPlan> {
+    if matches!(response_mode, AssistantResponseMode::Instant) {
+        return None;
+    }
+
+    planned_tools
+        .iter()
+        .zip(grounding_blocks.iter())
+        .enumerate()
+        .find_map(|(index, (call, block))| {
+            if call.tool
+                != crate::ai_assistant::registry::AssistantToolName::CalendarUpcomingBirthdays
+                || block.status != "ok"
+                || !birthday_block_is_empty(block)
+            {
+                return None;
+            }
+
+            let recovered_input = crate::ai_assistant::orchestrator::birthday_calendar_window_input(
+                message,
+                crate::ai_assistant::orchestrator::extract_birthday_query(message),
+            );
+            if recovered_input == call.input {
+                return None;
+            }
+
+            Some(GroundingRecoveryPlan {
+                replace_index: index,
+                call: PlannedToolCall {
+                    tool: call.tool,
+                    input: recovered_input,
+                },
+            })
+        })
+}
+
+fn birthday_block_is_empty(block: &AssistantToolContextBlock) -> bool {
+    block.tool == "calendar_upcoming_birthdays"
+        && block
+            .data
+            .get("birthdays")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
 }
