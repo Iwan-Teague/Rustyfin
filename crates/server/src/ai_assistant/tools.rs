@@ -2457,7 +2457,7 @@ async fn calendar_upcoming_birthdays(
     call: &PlannedToolCall,
 ) -> Result<(String, serde_json::Value), String> {
     let (from, to, label) = calendar_window_for_call(call, 30);
-    let birthday_query = calendar_query_for_call(call);
+    let birthday_query = resolve_birthday_query_for_context(context, calendar_query_for_call(call));
     let events = rustfin_db::repo::calendar::list_visible_events(
         &state.db,
         &context.user_id,
@@ -2701,6 +2701,21 @@ fn calendar_query_for_call(call: &PlannedToolCall) -> Option<String> {
     match &call.input {
         AssistantToolInput::CalendarWindow { query, .. } => query.clone(),
         _ => None,
+    }
+}
+
+fn resolve_birthday_query_for_context(
+    context: &AssistantContext,
+    query: Option<String>,
+) -> Option<String> {
+    let query = query
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let lower = query.to_ascii_lowercase();
+    if matches!(lower.as_str(), "my" | "me" | "mine") {
+        Some(context.username.clone())
+    } else {
+        Some(query)
     }
 }
 
@@ -4266,8 +4281,8 @@ mod tests {
     use super::{
         birthday_matches_query, birthday_month_day_display, build_follow_up_context,
         enforce_tool_policy, execute_tool_with_profile, next_birthday_occurrence,
-        probe_service_health_component, storage_used_bytes, storage_used_percent,
-        transcript_excerpt_indexes, transcript_highlights, transcript_terms,
+        probe_service_health_component, resolve_birthday_query_for_context, storage_used_bytes,
+        storage_used_percent, transcript_excerpt_indexes, transcript_highlights, transcript_terms,
     };
     use crate::ai_assistant::context::AssistantContext;
     use crate::ai_assistant::provider::ToolExecutionProfile;
@@ -4540,6 +4555,19 @@ mod tests {
 
         let miss = birthday_event("Sam", Some("sam"));
         assert!(!birthday_matches_query(&miss, "rachel"));
+    }
+
+    #[test]
+    fn birthday_query_maps_my_to_signed_in_username() {
+        let context = assistant_context("user");
+        assert_eq!(
+            resolve_birthday_query_for_context(&context, Some("my".to_string())).as_deref(),
+            Some("tester")
+        );
+        assert_eq!(
+            resolve_birthday_query_for_context(&context, Some("Rachel".to_string())).as_deref(),
+            Some("Rachel")
+        );
     }
 
     #[test]

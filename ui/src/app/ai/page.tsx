@@ -1400,11 +1400,11 @@ function ModelSelector({
   className?: string;
 }) {
   return (
-    <div className={`group relative min-w-[10.5rem] ${className}`}>
+    <div className={`min-w-[10.5rem] ${className}`}>
       <select
         value={selected}
         onChange={(event) => onChange(event.target.value)}
-        className="ai-model-select h-10 w-full cursor-pointer py-1.5 pl-1 pr-7 text-[1.05rem] font-medium text-[var(--text-dim)] transition-colors"
+        className="ai-model-select h-9 w-full cursor-pointer py-1 pl-1 pr-1 text-sm font-medium text-[var(--text-main)] transition-colors"
       >
         {models.map((model) => (
           <option key={model.name} value={model.name}>
@@ -1413,13 +1413,6 @@ function ModelSelector({
           </option>
         ))}
       </select>
-      <svg
-        className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-dim)] transition-colors group-hover:text-[var(--text-main)] group-focus-within:text-[var(--text-main)]"
-        viewBox="0 0 16 16"
-        fill="currentColor"
-      >
-        <path d="M8 11L2 5h12z" />
-      </svg>
     </div>
   );
 }
@@ -1434,24 +1427,17 @@ function ResponseModeSelector({
   className?: string;
 }) {
   return (
-    <div className={`group relative min-w-[8.25rem] ${className}`}>
+    <div className={`min-w-[8.25rem] ${className}`}>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value as ComposerResponseMode)}
-        className="ai-model-select h-10 w-full cursor-pointer py-1.5 pl-1 pr-7 text-[1.05rem] font-medium text-[var(--text-dim)] transition-colors"
+        className="ai-model-select h-9 w-full cursor-pointer py-1 pl-1 pr-1 text-sm font-medium text-[var(--text-main)] transition-colors"
         aria-label="AI response mode"
       >
         <option value="instant">Instant</option>
         <option value="thinking">Thinking</option>
         <option value="extended">Extended</option>
       </select>
-      <svg
-        className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-dim)] transition-colors group-hover:text-[var(--text-main)] group-focus-within:text-[var(--text-main)]"
-        viewBox="0 0 16 16"
-        fill="currentColor"
-      >
-        <path d="M8 11L2 5h12z" />
-      </svg>
     </div>
   );
 }
@@ -1480,7 +1466,7 @@ export default function AiPage() {
   const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
 
   const [input, setInput] = useState('');
-  const [responseMode, setResponseMode] = useState<ComposerResponseMode>('instant');
+  const [responseMode, setResponseMode] = useState<ComposerResponseMode>('thinking');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [confirmingToken, setConfirmingToken] = useState<string | null>(null);

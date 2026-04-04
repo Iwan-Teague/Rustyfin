@@ -436,7 +436,7 @@ pub fn deterministic_ai_runtime_reply(
 }
 
 pub fn deterministic_calendar_reply(
-    _message: &str,
+    message: &str,
     grounding_blocks: &[AssistantToolContextBlock],
 ) -> Option<String> {
     if grounding_blocks.len() != 1 {
@@ -454,6 +454,7 @@ pub fn deterministic_calendar_reply(
         }),
         "calendar_upcoming_birthdays" => Some(if block.status == "ok" {
             format_birthdays_reply(
+                message,
                 serde_json::from_value::<GroundedBirthdayEnvelope>(block.data.clone()).ok()?,
             )
         } else {
@@ -539,7 +540,7 @@ fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {
     )
 }
 
-fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
+fn format_birthdays_reply(message: &str, envelope: GroundedBirthdayEnvelope) -> String {
     if envelope.birthdays.is_empty() {
         return match envelope.query.as_deref() {
             Some(query) => format!(
@@ -553,17 +554,10 @@ fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
         };
     }
 
-    if envelope.birthdays.len() == 1 {
-        let birthday = &envelope.birthdays[0];
-        let name = birthday_display_name(&birthday.title);
-        let date = parse_ymd(&birthday.next_occurs_on)
-            .map(format_with_weekday)
-            .unwrap_or_else(|| birthday.next_occurs_on.clone());
-        let age = birthday_turning_age(birthday);
-        return match age {
-            Some(age) => format!("{name}'s next birthday is on {date}. They turn {age}."),
-            None => format!("{name}'s next birthday is on {date}."),
-        };
+    if envelope.birthdays.len() == 1
+        || crate::ai_assistant::orchestrator::is_next_birthday_request(message)
+    {
+        return format_single_birthday_reply(&envelope.birthdays[0]);
     }
 
     let mut lines = vec![format!("Upcoming birthdays in {}:", envelope.window.label)];
@@ -578,6 +572,18 @@ fn format_birthdays_reply(envelope: GroundedBirthdayEnvelope) -> String {
         lines.push(format!("- {name}: {date}{age}"));
     }
     lines.join("\n")
+}
+
+fn format_single_birthday_reply(birthday: &GroundedBirthdaySummary) -> String {
+    let name = birthday_display_name(&birthday.title);
+    let date = parse_ymd(&birthday.next_occurs_on)
+        .map(format_with_weekday)
+        .unwrap_or_else(|| birthday.next_occurs_on.clone());
+    let age = birthday_turning_age(birthday);
+    match age {
+        Some(age) => format!("{name}'s next birthday is on {date}. They turn {age}."),
+        None => format!("{name}'s next birthday is on {date}."),
+    }
 }
 
 fn format_network_reply(message: &str, envelope: GroundedNetworkEnvelope) -> String {
@@ -979,6 +985,39 @@ mod tests {
         assert!(reply.contains("Tuesday, April 7, 2026"));
         assert!(reply.contains("turns 23"));
         assert!(reply.contains("Sam"));
+    }
+
+    #[test]
+    fn deterministic_calendar_reply_uses_first_birthday_for_next_birthday_questions() {
+        let reply = deterministic_calendar_reply(
+            "What's the next birthday in my calendar?",
+            &[AssistantToolContextBlock {
+                tool: "calendar_upcoming_birthdays",
+                label: "Upcoming birthdays for the next 366 days".to_string(),
+                status: "ok",
+                data: json!({
+                    "window": { "label": "the next 366 days" },
+                    "query": null,
+                    "birthdays": [
+                        {
+                            "title": "Rachel birthday",
+                            "next_occurs_on": "2026-04-07",
+                            "birthday_year": 2003
+                        },
+                        {
+                            "title": "Sam birthday",
+                            "next_occurs_on": "2026-04-12",
+                            "birthday_year": 2000
+                        }
+                    ]
+                }),
+            }],
+        )
+        .expect("expected deterministic next birthday reply");
+
+        assert!(reply.contains("Rachel"));
+        assert!(reply.contains("Tuesday, April 7, 2026"));
+        assert!(!reply.contains("Sam"));
     }
 
     #[test]

@@ -57,7 +57,7 @@ pub struct AssistantHistoryMessage {
     pub grounding_chunks: Vec<AssistantGroundingChunk>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssistantToolInput {
     None,
@@ -137,7 +137,7 @@ pub enum AssistantToolInput {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlannedToolCall {
     pub tool: super::registry::AssistantToolName,
     pub input: AssistantToolInput,

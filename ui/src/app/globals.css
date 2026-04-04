@@ -117,6 +117,7 @@ textarea:focus-visible {
   box-shadow: none !important;
   border-color: transparent !important;
   background: transparent !important;
+  background-image: none !important;
   -webkit-appearance: none;
   appearance: none;
 }
@@ -124,13 +125,17 @@ textarea:focus-visible {
 .ai-model-select {
   border: 0 !important;
   border-radius: 999px;
-  color: var(--text-dim);
+  color: var(--text-main);
 }
 
 .ai-model-select:hover,
 .ai-model-select:focus,
 .ai-model-select:focus-visible {
   color: var(--text-main);
+}
+
+.ai-model-select::-ms-expand {
+  display: none;
 }
 
 .app-nav {

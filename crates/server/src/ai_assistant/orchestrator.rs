@@ -1106,10 +1106,11 @@ fn normalize_planner_tool_input(
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => Ok(AssistantToolInput::None),
         AssistantToolName::CalendarListEvents => Ok(extract_calendar_window(message, 7, None)),
-        AssistantToolName::CalendarUpcomingBirthdays => Ok(extract_calendar_window(
+        AssistantToolName::CalendarUpcomingBirthdays => Ok(birthday_calendar_window_input(
             message,
-            30,
-            normalize_optional_query(args.query.clone())
+            args.query
+                .clone()
+                .and_then(|query| normalize_birthday_query_candidate(&query))
                 .or_else(|| extract_birthday_query(message)),
         )),
         AssistantToolName::CalendarGetEventDetails => {
@@ -1627,7 +1628,8 @@ pub fn plan_tool_calls_with_history(
             "upcoming birthday",
         ],
     ) {
-        let calendar_input = extract_calendar_window(message, 30, extract_birthday_query(message));
+        let calendar_input =
+            birthday_calendar_window_input(message, extract_birthday_query(message));
         push_tool(
             &mut planned,
             &mut seen,
@@ -2292,7 +2294,7 @@ fn apply_follow_up_tool_hints(
                         planned,
                         seen,
                         AssistantToolName::CalendarUpcomingBirthdays,
-                        extract_calendar_window(message, 30, birthday_query),
+                        birthday_calendar_window_input(message, birthday_query),
                     );
                 }
             }
@@ -4764,7 +4766,7 @@ fn extract_quoted_phrase(message: &str) -> Option<String> {
     None
 }
 
-fn extract_birthday_query(message: &str) -> Option<String> {
+pub(crate) fn extract_birthday_query(message: &str) -> Option<String> {
     let lower = message.to_ascii_lowercase();
     let has_birthday_context = has_any(
         &lower,
@@ -4896,18 +4898,33 @@ fn normalize_birthday_query_candidate(candidate: &str) -> Option<String> {
         }
     }
 
-    for suffix in [
-        "'s birthday",
-        "’s birthday",
-        " birthday",
-        " birthdays",
-        "'s",
-        "’s",
-    ] {
-        if normalized.to_ascii_lowercase().ends_with(suffix) {
-            let keep_len = normalized.len().saturating_sub(suffix.len());
-            normalized.truncate(keep_len);
-            normalized = normalized.trim().to_string();
+    loop {
+        let lower = normalized.to_ascii_lowercase();
+        let mut stripped = false;
+        for suffix in [
+            "'s birthday event",
+            "’s birthday event",
+            " birthday event",
+            " birthday date",
+            " birthday day",
+            "'s birthday",
+            "’s birthday",
+            " birthday",
+            " birthdays",
+            "'s",
+            "’s",
+            " event",
+            " events",
+        ] {
+            if lower.ends_with(suffix) {
+                let keep_len = normalized.len().saturating_sub(suffix.len());
+                normalized.truncate(keep_len);
+                normalized = normalized.trim().to_string();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
             break;
         }
     }
@@ -4917,16 +4934,83 @@ fn normalize_birthday_query_candidate(candidate: &str) -> Option<String> {
     }
 
     let lower = normalized.to_ascii_lowercase();
+    let words = lower.split_whitespace().collect::<Vec<_>>();
+    let is_generic_qualifier = |word: &str| {
+        matches!(
+            word,
+            "next" | "upcoming" | "nearest" | "coming" | "soon" | "one" | "ones"
+        )
+    };
+    let is_generic_birthday_word = |word: &str| {
+        is_generic_qualifier(word)
+            || matches!(
+                word,
+                "birthday"
+                    | "birthdays"
+                    | "event"
+                    | "events"
+                    | "calendar"
+                    | "in"
+                    | "my"
+                    | "the"
+                    | "a"
+                    | "an"
+            )
+    };
+    if matches!(lower.as_str(), "my" | "me" | "mine")
+        || (words.first() == Some(&"my")
+            && words.iter().skip(1).all(|word| is_generic_qualifier(word)))
+    {
+        return Some("my".to_string());
+    }
     if looks_like_calendar_window_phrase(&lower)
+        || words.iter().all(|word| is_generic_birthday_word(word))
+        || words.iter().all(|word| is_generic_qualifier(word))
         || matches!(
             lower.as_str(),
-            "it" | "them" | "those" | "these" | "ones" | "one"
+            "it" | "them" | "those" | "these" | "ones" | "one" | "the next"
         )
     {
         return None;
     }
 
     Some(normalized)
+}
+
+pub(crate) fn is_next_birthday_request(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if !lower.contains("birthday") {
+        return false;
+    }
+
+    let singular_birthday = lower.contains("birthday") && !lower.contains("birthdays");
+    (singular_birthday
+        && (lower.contains("next birthday")
+            || lower.contains("nearest birthday")
+            || lower.contains("upcoming birthday")
+            || lower.contains("next birthday event")
+            || (lower.contains("next") && lower.contains("calendar"))))
+        || lower.contains("my birthday")
+        || lower.contains("my next")
+}
+
+fn birthday_fallback_days(message: &str, query: Option<&str>) -> i64 {
+    if query.is_some() || is_next_birthday_request(message) {
+        366
+    } else {
+        30
+    }
+}
+
+pub(crate) fn birthday_calendar_window_input(
+    message: &str,
+    query: Option<String>,
+) -> AssistantToolInput {
+    extract_calendar_window(
+        message,
+        birthday_fallback_days(message, query.as_deref()),
+        query,
+    )
 }
 
 fn looks_like_calendar_window_phrase(candidate: &str) -> bool {
@@ -5116,7 +5200,7 @@ mod tests {
     use super::{
         AssistantToolName, PlannerAst, clarification_for_message,
         deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
-        parse_planner_ast, plan_tool_calls, plan_tool_calls_with_history,
+        extract_birthday_query, parse_planner_ast, plan_tool_calls, plan_tool_calls_with_history,
         plan_tool_calls_with_model_assist, status_label_for_tool_call,
         unsupported_write_response_for_message, validate_planner_ast,
     };
@@ -5757,6 +5841,40 @@ mod tests {
             AssistantToolInput::CalendarWindow { label, .. } => assert_eq!(label, "next week"),
             _ => panic!("expected calendar window"),
         }
+    }
+
+    #[test]
+    fn planner_uses_year_window_for_named_birthday_lookup() {
+        let tools = plan_tool_calls("When is Rachel's birthday?");
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarUpcomingBirthdays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { label, query, .. } => {
+                assert_eq!(label, "the next 366 days");
+                assert_eq!(query.as_deref(), Some("Rachel"));
+            }
+            _ => panic!("expected birthday calendar window"),
+        }
+    }
+
+    #[test]
+    fn planner_drops_generic_next_birthday_query_filters() {
+        let tools = plan_tool_calls("What's the next birthday in my calendar?");
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarUpcomingBirthdays);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { label, query, .. } => {
+                assert_eq!(label, "the next 366 days");
+                assert_eq!(query, &None);
+            }
+            _ => panic!("expected birthday calendar window"),
+        }
+    }
+
+    #[test]
+    fn birthday_query_normalizes_my_next_birthday_event_to_self() {
+        assert_eq!(
+            extract_birthday_query("When is my next birthday event?").as_deref(),
+            Some("my")
+        );
     }
 
     #[test]
