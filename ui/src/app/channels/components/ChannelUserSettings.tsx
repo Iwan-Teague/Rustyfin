@@ -200,7 +200,7 @@ export default function ChannelUserSettings({
 
   return (
     <>
-      <div className="h-16 border-t border-[var(--border)] px-4 flex items-center justify-between shrink-0 bg-[var(--surface)]">
+      <div className="h-16 px-4 flex items-center justify-between shrink-0 bg-transparent">
         <div className="flex items-center gap-3 min-w-0">
           {me.avatar_url ? (
             <Image

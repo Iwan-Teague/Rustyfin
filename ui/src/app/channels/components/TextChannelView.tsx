@@ -23,6 +23,8 @@ interface Props {
   isAdmin: boolean;
   wsEvents: ChannelEvent | null;
   onSendMessage: (content: string) => Promise<ChannelMessage | null>;
+  onToggleSidebar: () => void;
+  sidebarVisible: boolean;
 }
 
 function relativeTime(ts: number): string {
@@ -164,7 +166,16 @@ function Avatar({
   );
 }
 
-export default function TextChannelView({ channel, newMessages, currentUserId, isAdmin, wsEvents, onSendMessage }: Props) {
+export default function TextChannelView({
+  channel,
+  newMessages,
+  currentUserId,
+  isAdmin,
+  wsEvents,
+  onSendMessage,
+  onToggleSidebar,
+  sidebarVisible,
+}: Props) {
   const [messages, setMessages] = useState<ChannelMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -360,6 +371,14 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+        <button
+          type="button"
+          className="rf-inline-icon-btn h-9 w-9 text-lg leading-none"
+          onClick={onToggleSidebar}
+          aria-label={sidebarVisible ? 'Hide channels' : 'Show channels'}
+        >
+          ☰
+        </button>
         <span className="muted">#</span>
         <span className="font-semibold">{channel.name}</span>
       </div>
@@ -450,7 +469,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       </div>
 
       {/* Input */}
-      <div className="shrink-0 border-t border-[var(--border)] bg-transparent px-4 py-3">
+      <div className="shrink-0 bg-transparent px-4 py-3">
         <div className="flex items-end gap-2 rounded-[18px] border border-[var(--border-subtle)] bg-black/10 px-2 py-2">
           <input
             ref={fileInputRef}

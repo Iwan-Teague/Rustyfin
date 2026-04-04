@@ -30,6 +30,8 @@ interface Props {
   currentUserId: string;
   currentUsername: string;
   wsEvents: ChannelEvent | null;
+  onToggleSidebar: () => void;
+  sidebarVisible: boolean;
 }
 
 function hashColor(userId: string): string {
@@ -226,6 +228,8 @@ export default function VoiceChannelView({
   currentUserId,
   currentUsername,
   wsEvents,
+  onToggleSidebar,
+  sidebarVisible,
 }: Props) {
   const {
     voiceSession,
@@ -249,6 +253,8 @@ export default function VoiceChannelView({
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [transcriptSessions, setTranscriptSessions] = useState<VoiceTranscriptionSessionSummary[]>([]);
   const [loadingTranscriptSessions, setLoadingTranscriptSessions] = useState(false);
+  const [desktopTranscriptOpen, setDesktopTranscriptOpen] = useState(true);
+  const [mobileTranscriptOpen, setMobileTranscriptOpen] = useState(false);
 
   const members = voicePresence[channel.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
@@ -455,6 +461,14 @@ export default function VoiceChannelView({
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* Header — channel name, member count, and controls all inline */}
       <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0 overflow-x-auto whitespace-nowrap">
+        <button
+          type="button"
+          className="rf-inline-icon-btn h-9 w-9 text-lg leading-none"
+          onClick={onToggleSidebar}
+          aria-label={sidebarVisible ? 'Hide channels' : 'Show channels'}
+        >
+          ☰
+        </button>
         <span className="font-semibold truncate">{channel.name}</span>
         <span className="chip text-xs shrink-0">
           <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-black/20 text-[10px] font-semibold mr-1">
@@ -510,6 +524,19 @@ export default function VoiceChannelView({
           {isConnectedElsewhere && (
             <span className="text-xs muted px-2">Connected in another tab</span>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+                setDesktopTranscriptOpen((current) => !current);
+              } else {
+                setMobileTranscriptOpen((current) => !current);
+              }
+            }}
+            className="rf-text-action text-sm"
+          >
+            Transcripts
+          </button>
           <button
             onClick={isConnectedHere ? handleDisconnect : () => void handleConnect()}
             disabled={isConnectedElsewhere}
@@ -584,28 +611,108 @@ export default function VoiceChannelView({
         </div>
 
         {/* Transcript history */}
-        <aside className="w-60 min-w-[200px] overflow-y-auto border-l border-[var(--border)] px-3 py-4">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold">Transcripts</h3>
-            <span className="chip text-[11px]">{downloadableTranscriptSessions.length}</span>
+        <aside
+          className="ai-side-panel-shell ai-side-panel-shell-right hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+          data-open={desktopTranscriptOpen ? 'true' : 'false'}
+          data-side="right"
+          style={{ width: desktopTranscriptOpen ? '16rem' : '0px' }}
+        >
+          <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-l border-[var(--border)] px-3 py-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Transcripts</h3>
+              <span className="text-[11px] text-white/55">{downloadableTranscriptSessions.length}</span>
+            </div>
+            {loadingTranscriptSessions ? (
+              <p className="text-xs muted">Loading transcripts…</p>
+            ) : downloadableTranscriptSessions.length === 0 ? (
+              <p className="text-xs muted">
+                {transcriptionState?.status === 'running' || transcriptionState?.status === 'finalizing'
+                  ? 'Transcript is still running. It will appear here after Stop & Save.'
+                  : 'No transcripts saved for this voice channel yet.'}
+              </p>
+            ) : (
+              <ul className="rf-flat-list overflow-y-auto">
+                {downloadableTranscriptSessions.map((session) => (
+                  <li
+                    key={session.session_id}
+                    data-transcript-session-id={session.session_id}
+                    className="rf-flat-row space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium">
+                          {new Date(session.started_ts * 1000).toLocaleString()}
+                        </p>
+                        <p className="truncate text-[11px] muted">
+                          by {session.started_by_username}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-[11px] muted">
+                      {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      <button
+                        type="button"
+                        className="rf-text-action text-xs"
+                        onClick={() => void handleDownloadTranscription(session)}
+                        disabled={transcriptionBusy}
+                      >
+                        Download
+                      </button>
+                      <button
+                        type="button"
+                        className="rf-text-action rf-text-action-danger text-xs"
+                        onClick={() => void handleDeleteTranscription(session.session_id)}
+                        disabled={transcriptionBusy}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          {loadingTranscriptSessions ? (
-            <p className="text-xs muted">Loading transcripts…</p>
-          ) : downloadableTranscriptSessions.length === 0 ? (
-            <p className="text-xs muted">
-              {transcriptionState?.status === 'running' || transcriptionState?.status === 'finalizing'
-                ? 'Transcript is still running. It will appear here after Stop & Save.'
-                : 'No transcripts saved for this voice channel yet.'}
-            </p>
-          ) : (
-            <ul className="rf-flat-list">
-              {downloadableTranscriptSessions.map((session) => (
-                <li
-                  key={session.session_id}
-                  data-transcript-session-id={session.session_id}
-                  className="rf-flat-row space-y-2"
-                >
-                  <div className="flex items-start justify-between gap-2">
+        </aside>
+      </div>
+
+      {mobileTranscriptOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/55 md:hidden"
+          onClick={() => setMobileTranscriptOpen(false)}
+        >
+          <aside
+            className="flex h-full w-[18rem] max-w-[86vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] px-3 py-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">Transcripts</h3>
+              <button
+                type="button"
+                className="rf-inline-icon-btn h-8 w-8 text-lg"
+                onClick={() => setMobileTranscriptOpen(false)}
+                aria-label="Close transcripts"
+              >
+                ×
+              </button>
+            </div>
+            {loadingTranscriptSessions ? (
+              <p className="text-xs muted">Loading transcripts…</p>
+            ) : downloadableTranscriptSessions.length === 0 ? (
+              <p className="text-xs muted">
+                {transcriptionState?.status === 'running' || transcriptionState?.status === 'finalizing'
+                  ? 'Transcript is still running. It will appear here after Stop & Save.'
+                  : 'No transcripts saved for this voice channel yet.'}
+              </p>
+            ) : (
+              <ul className="rf-flat-list overflow-y-auto">
+                {downloadableTranscriptSessions.map((session) => (
+                  <li
+                    key={session.session_id}
+                    data-transcript-session-id={session.session_id}
+                    className="rf-flat-row space-y-2"
+                  >
                     <div className="min-w-0">
                       <p className="truncate text-xs font-medium">
                         {new Date(session.started_ts * 1000).toLocaleString()}
@@ -614,34 +721,34 @@ export default function VoiceChannelView({
                         by {session.started_by_username}
                       </p>
                     </div>
-                  </div>
-                  <p className="text-[11px] muted">
-                    {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      className="btn-secondary w-full px-2 py-1 text-xs"
-                      onClick={() => void handleDownloadTranscription(session)}
-                      disabled={transcriptionBusy}
-                    >
-                      Download
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary w-full px-2 py-1 text-xs text-red-300"
-                      onClick={() => void handleDeleteTranscription(session.session_id)}
-                      disabled={transcriptionBusy}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
-      </div>
+                    <p className="text-[11px] muted">
+                      {session.entry_count} line{session.entry_count === 1 ? '' : 's'}
+                    </p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      <button
+                        type="button"
+                        className="rf-text-action text-xs"
+                        onClick={() => void handleDownloadTranscription(session)}
+                        disabled={transcriptionBusy}
+                      >
+                        Download
+                      </button>
+                      <button
+                        type="button"
+                        className="rf-text-action rf-text-action-danger text-xs"
+                        onClick={() => void handleDeleteTranscription(session.session_id)}
+                        disabled={transcriptionBusy}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </aside>
+        </div>
+      ) : null}
     </div>
   );
 }
