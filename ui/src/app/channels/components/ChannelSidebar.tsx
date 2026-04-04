@@ -324,103 +324,101 @@ export default function ChannelSidebar({
   };
 
   return (
-    <aside className="flex h-full min-h-0 w-60 min-w-[200px] flex-col overflow-hidden border-r border-[var(--border)] bg-transparent">
-      {/* Server header */}
-      <div className="h-14 px-4 border-b border-[var(--border)] font-semibold text-sm tracking-wide flex items-center">
-        Rustyfin
-      </div>
+    <aside className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
+      {isAdmin ? (
+        <div className="shrink-0 px-3 pb-4 pt-3 space-y-1">
+          <button
+            type="button"
+            onClick={onCreateText}
+            className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)]"
+          >
+            New text channel
+          </button>
+          <button
+            type="button"
+            onClick={onCreateVoice}
+            className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)]"
+          >
+            New voice channel
+          </button>
+        </div>
+      ) : null}
 
-      <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto py-2 space-y-4">
+      <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-4">
         {/* TEXT CHANNELS */}
-        <section>
-          <div className="flex items-center justify-between px-3 py-1">
-            <span className="text-xs font-semibold muted uppercase tracking-wider">
+        <section className="space-y-2">
+          <div className="rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
+            <span className="uppercase tracking-wider">
               Text Channels
             </span>
-            {isAdmin && (
-              <button
-                onClick={onCreateText}
-                className="rf-inline-icon-btn h-6 w-6 text-lg leading-none"
-                title="Create text channel"
-              >
-                +
-              </button>
+          </div>
+          <div className="space-y-1">
+            {textChannels.map((ch) => (
+              <ChannelRow
+                key={ch.id}
+                ch={ch}
+                icon="#"
+                voicePresence={voicePresence}
+                voiceActiveSince={voiceActiveSince}
+                voiceSpeaking={voiceSpeaking}
+                nowMs={nowMs}
+                isAdmin={isAdmin}
+                activeChannelId={activeChannelId}
+                connectedVoiceChannelId={connectedVoiceChannelId}
+                menuOpen={menuOpen}
+                setMenuOpen={setMenuOpen}
+                onSelect={onSelect}
+                onQuickJoinVoice={onQuickJoinVoice}
+                onRequestRenameChannel={setPendingRenameChannel}
+                onRequestDeleteChannel={setPendingDeleteChannel}
+                onCannotDeleteChannel={(channel, membersInChannel) =>
+                  setCannotDeleteChannel({ name: channel.name, membersInChannel })
+                }
+              />
+            ))}
+
+            {textChannels.length === 0 && (
+              <p className="px-3 py-1 text-[0.82rem] muted">No text channels yet</p>
             )}
           </div>
-
-          {textChannels.map((ch) => (
-            <ChannelRow
-              key={ch.id}
-              ch={ch}
-              icon="#"
-              voicePresence={voicePresence}
-              voiceActiveSince={voiceActiveSince}
-              voiceSpeaking={voiceSpeaking}
-              nowMs={nowMs}
-              isAdmin={isAdmin}
-              activeChannelId={activeChannelId}
-              connectedVoiceChannelId={connectedVoiceChannelId}
-              menuOpen={menuOpen}
-              setMenuOpen={setMenuOpen}
-              onSelect={onSelect}
-              onQuickJoinVoice={onQuickJoinVoice}
-              onRequestRenameChannel={setPendingRenameChannel}
-              onRequestDeleteChannel={setPendingDeleteChannel}
-              onCannotDeleteChannel={(channel, membersInChannel) =>
-                setCannotDeleteChannel({ name: channel.name, membersInChannel })
-              }
-            />
-          ))}
-
-          {textChannels.length === 0 && (
-            <p className="px-3 py-1 text-xs muted italic">No text channels yet</p>
-          )}
         </section>
 
         {/* VOICE CHANNELS */}
-        <section>
-          <div className="flex items-center justify-between px-3 py-1">
-            <span className="text-xs font-semibold muted uppercase tracking-wider">
+        <section className="mt-5 space-y-2">
+          <div className="rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
+            <span className="uppercase tracking-wider">
               Voice Channels
             </span>
-            {isAdmin && (
-              <button
-                onClick={onCreateVoice}
-                className="rf-inline-icon-btn h-6 w-6 text-lg leading-none"
-                title="Create voice channel"
-              >
-                +
-              </button>
+          </div>
+          <div className="space-y-1">
+            {voiceChannels.map((ch) => (
+              <ChannelRow
+                key={ch.id}
+                ch={ch}
+                icon=""
+                voicePresence={voicePresence}
+                voiceActiveSince={voiceActiveSince}
+                voiceSpeaking={voiceSpeaking}
+                nowMs={nowMs}
+                isAdmin={isAdmin}
+                activeChannelId={activeChannelId}
+                connectedVoiceChannelId={connectedVoiceChannelId}
+                menuOpen={menuOpen}
+                setMenuOpen={setMenuOpen}
+                onSelect={onSelect}
+                onQuickJoinVoice={onQuickJoinVoice}
+                onRequestRenameChannel={setPendingRenameChannel}
+                onRequestDeleteChannel={setPendingDeleteChannel}
+                onCannotDeleteChannel={(channel, membersInChannel) =>
+                  setCannotDeleteChannel({ name: channel.name, membersInChannel })
+                }
+              />
+            ))}
+
+            {voiceChannels.length === 0 && (
+              <p className="px-3 py-1 text-[0.82rem] muted">No voice channels yet</p>
             )}
           </div>
-
-          {voiceChannels.map((ch) => (
-            <ChannelRow
-              key={ch.id}
-              ch={ch}
-              icon=""
-              voicePresence={voicePresence}
-              voiceActiveSince={voiceActiveSince}
-              voiceSpeaking={voiceSpeaking}
-              nowMs={nowMs}
-              isAdmin={isAdmin}
-              activeChannelId={activeChannelId}
-              connectedVoiceChannelId={connectedVoiceChannelId}
-              menuOpen={menuOpen}
-              setMenuOpen={setMenuOpen}
-              onSelect={onSelect}
-              onQuickJoinVoice={onQuickJoinVoice}
-              onRequestRenameChannel={setPendingRenameChannel}
-              onRequestDeleteChannel={setPendingDeleteChannel}
-              onCannotDeleteChannel={(channel, membersInChannel) =>
-                setCannotDeleteChannel({ name: channel.name, membersInChannel })
-              }
-            />
-          ))}
-
-          {voiceChannels.length === 0 && (
-            <p className="px-3 py-1 text-xs muted italic">No voice channels yet</p>
-          )}
         </section>
       </div>
 

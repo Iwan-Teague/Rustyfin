@@ -503,21 +503,7 @@ export default function VoiceChannelView({
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={handleStartTranscription}
-                  disabled={transcriptionBusy}
-                  className="btn-secondary px-3 py-1.5 text-sm"
-                  aria-busy={transcriptionStarting}
-                >
-                  {transcriptionStarting ? (
-                    <span className="inline-flex items-center gap-2">
-                      <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-[var(--orange-soft)] animate-spin" />
-                      Starting…
-                    </span>
-                  ) : (
-                    'Start Transcript'
-                  )}
-                </button>
+                <span className="text-xs muted px-2">Transcript ready</span>
               )}
             </>
           )}
@@ -540,12 +526,12 @@ export default function VoiceChannelView({
           <button
             onClick={isConnectedHere ? handleDisconnect : () => void handleConnect()}
             disabled={isConnectedElsewhere}
-            className={`px-4 py-1.5 text-sm min-w-[9.5rem] justify-center ${
+            className={`text-sm ${
               isConnectedHere
-                ? 'btn-secondary text-red-400'
+                ? 'rf-text-action rf-text-action-danger'
                 : isConnectedElsewhere
-                  ? 'btn-secondary muted disabled:opacity-60'
-                  : 'btn-primary'
+                  ? 'rf-text-action rf-text-action-muted disabled:opacity-60'
+                  : 'rf-text-action'
             }`}
           >
             {isConnectedHere
@@ -618,9 +604,43 @@ export default function VoiceChannelView({
           style={{ width: desktopTranscriptOpen ? '16rem' : '0px' }}
         >
           <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-l border-[var(--border)] px-3 py-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">Transcripts</h3>
-              <span className="text-[11px] text-white/55">{downloadableTranscriptSessions.length}</span>
+            <div className="mb-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Transcripts</h3>
+                <span className="text-[11px] text-white/55">{downloadableTranscriptSessions.length}</span>
+              </div>
+              {isConnectedHere ? (
+                transcriptionState?.status === 'running' ? (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    <button
+                      type="button"
+                      onClick={handleStopTranscription}
+                      disabled={transcriptionBusy}
+                      className="rf-text-action text-sm"
+                    >
+                      Stop & Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelTranscription}
+                      disabled={transcriptionBusy}
+                      className="rf-text-action rf-text-action-danger text-sm"
+                    >
+                      Discard Transcript
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartTranscription}
+                    disabled={transcriptionBusy}
+                    className="rf-text-action text-sm"
+                    aria-busy={transcriptionStarting}
+                  >
+                    {transcriptionStarting ? 'Starting…' : 'Start Transcript'}
+                  </button>
+                )
+              ) : null}
             </div>
             {loadingTranscriptSessions ? (
               <p className="text-xs muted">Loading transcripts…</p>
@@ -686,16 +706,50 @@ export default function VoiceChannelView({
             className="flex h-full w-[18rem] max-w-[86vw] flex-col border-l border-[var(--border)] bg-[var(--surface)] px-3 py-4"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">Transcripts</h3>
-              <button
-                type="button"
-                className="rf-inline-icon-btn h-8 w-8 text-lg"
-                onClick={() => setMobileTranscriptOpen(false)}
-                aria-label="Close transcripts"
-              >
-                ×
-              </button>
+            <div className="mb-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Transcripts</h3>
+                <button
+                  type="button"
+                  className="rf-inline-icon-btn h-8 w-8 text-lg"
+                  onClick={() => setMobileTranscriptOpen(false)}
+                  aria-label="Close transcripts"
+                >
+                  ×
+                </button>
+              </div>
+              {isConnectedHere ? (
+                transcriptionState?.status === 'running' ? (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    <button
+                      type="button"
+                      onClick={handleStopTranscription}
+                      disabled={transcriptionBusy}
+                      className="rf-text-action text-sm"
+                    >
+                      Stop & Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelTranscription}
+                      disabled={transcriptionBusy}
+                      className="rf-text-action rf-text-action-danger text-sm"
+                    >
+                      Discard Transcript
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartTranscription}
+                    disabled={transcriptionBusy}
+                    className="rf-text-action text-sm"
+                    aria-busy={transcriptionStarting}
+                  >
+                    {transcriptionStarting ? 'Starting…' : 'Start Transcript'}
+                  </button>
+                )
+              ) : null}
             </div>
             {loadingTranscriptSessions ? (
               <p className="text-xs muted">Loading transcripts…</p>

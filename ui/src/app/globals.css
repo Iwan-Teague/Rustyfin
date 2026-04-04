@@ -94,10 +94,7 @@ a {
 }
 
 a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
+button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -295,8 +292,9 @@ textarea:focus-visible {
 
 .rf-flat-input:focus,
 .rf-flat-input:focus-visible {
-  border-color: rgba(255, 194, 122, 0.42);
-  box-shadow: 0 0 0 3px rgba(255, 194, 122, 0.1);
+  border-color: rgba(215, 223, 255, 0.22);
+  box-shadow: none;
+  outline: none;
 }
 
 .rf-flat-toolbar {
@@ -443,8 +441,9 @@ body:not([data-rf-page="ai"]) .rf-flat-scope .input:focus,
 body:not([data-rf-page="ai"]) .rf-flat-scope .input:focus-visible,
 body:not([data-rf-page="ai"]) .rf-flat-scope .select:focus,
 body:not([data-rf-page="ai"]) .rf-flat-scope .select:focus-visible {
-  border-color: rgba(255, 194, 122, 0.42);
-  box-shadow: 0 0 0 3px rgba(255, 194, 122, 0.1);
+  border-color: rgba(215, 223, 255, 0.22);
+  box-shadow: none;
+  outline: none;
 }
 
 html[data-rf-page="channels"],
