@@ -240,10 +240,6 @@ button:focus-visible {
   }
 
   .app-main {
-    margin-left: calc(18.25rem + 1.25rem);
-    margin-right: 0;
-    width: auto;
-    max-width: none;
     min-height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
     padding-top: 0;
   }
