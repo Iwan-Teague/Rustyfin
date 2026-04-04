@@ -679,22 +679,22 @@ export default function CalendarPage() {
                     })}
                   </div>
                 </div>
-                <div className="hidden space-y-2 h-full flex-col min-h-0 sm:flex">
-                  <div className="grid grid-cols-7 gap-2">
+                <div className="hidden h-full flex-col min-h-0 sm:flex">
+                  <div className="grid grid-cols-7 gap-0 border-y border-[var(--border-subtle)]">
                     {weekdayHeaders.map(({ label, isToday }) => (
                       <div
                         key={label}
-                        className={`rounded-lg border px-2 py-1 text-center text-xs font-semibold ${
+                        className={`px-2 py-1 text-center text-xs font-semibold ${
                           isToday
-                            ? 'border-white/30 bg-gradient-to-r from-[var(--orange)] via-[var(--danger)] to-[var(--purple-strong)] text-white'
-                            : 'border-[var(--border)] bg-white/5 muted'
+                            ? 'text-white'
+                            : 'muted'
                         }`}
                       >
                         {label}
                       </div>
                     ))}
                   </div>
-                  <div className="grid grid-cols-7 gap-2 flex-1 min-h-0 grid-rows-1">
+                  <div className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)]">
                     {days.map((day) => {
                       const key = formatYmd(day);
                       const dayEvents = eventsByDate.get(key) ?? [];
@@ -702,11 +702,9 @@ export default function CalendarPage() {
                       return (
                         <div
                           key={key}
-                          className={`rounded-xl border px-2 py-2 overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
-                            isToday
-                              ? 'calendar-today-outline border-transparent bg-white/[0.08]'
-                              : 'border-[var(--border)] bg-white/5'
-                          } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                          className={`border-b border-r border-[var(--border-subtle)] px-2 py-2 overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
+                            isToday ? 'bg-white/[0.03]' : ''
+                          } cursor-pointer transition hover:bg-white/[0.04]`}
                           onClick={(event) => {
                             if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
                               return;
