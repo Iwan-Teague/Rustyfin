@@ -281,3 +281,8 @@
 ### Open issues
 - No known build-breaking issues remain.
 - Visual verification is based on route-scoped code review plus a successful production build; no screenshot capture was taken during this run.
+
+### Branch completion
+- Final implementation commit: `ac4fc3e` (`Flatten non-AI UI surfaces`)
+- Branch: `codex/ui-flat-surface-redesign`
+- Working tree is clean aside from the pre-existing unrelated untracked audit report under `docs/reports/`.
