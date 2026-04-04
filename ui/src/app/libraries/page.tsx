@@ -130,42 +130,44 @@ export default function LibrariesPage() {
 
   return (
     <div className="animate-rise rf-flat-page">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold sm:text-3xl">Libraries</h1>
-      </header>
+      <section className="space-y-3">
+        <header className="space-y-0">
+          <h1 className="text-2xl font-semibold sm:text-3xl">Libraries</h1>
+        </header>
 
-      {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
+        {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
 
-      {libraries.length === 0 ? (
-        <div className="rf-flat-empty">
-          <p className="text-sm muted">No libraries found. Create one from the admin panel.</p>
-          <Link href="/admin" className="btn-primary mt-4 px-5 py-2 text-sm">
-            Open Admin
-          </Link>
-        </div>
-      ) : (
-        <div className="rf-flat-list">
-          {libraries.map((lib) => (
-            <Link
-              key={lib.id}
-              href={`/libraries/${lib.id}`}
-              className="rf-flat-row flex items-center justify-between gap-4"
-            >
-              <div className="min-w-0">
-                <h2 className="text-base font-semibold">{lib.name}</h2>
-                <p className="mt-1 text-sm muted">
-                  {lib.kind} · {lib.item_count} items
-                </p>
-              </div>
-              <span className="chip shrink-0">
-                {lib.kind === 'tv_shows' ? 'TV' : lib.kind === 'music' ? 'Music' : 'Movies'}
-              </span>
+        {libraries.length === 0 ? (
+          <div className="rf-flat-empty">
+            <p className="text-sm muted">No libraries found. Create one from the admin panel.</p>
+            <Link href="/admin" className="btn-primary mt-4 px-5 py-2 text-sm">
+              Open Admin
             </Link>
-          ))}
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="rf-flat-list">
+            {libraries.map((lib) => (
+              <Link
+                key={lib.id}
+                href={`/libraries/${lib.id}`}
+                className="rf-flat-row flex items-center justify-between gap-4"
+              >
+                <div className="min-w-0">
+                  <h2 className="text-base font-semibold">{lib.name}</h2>
+                  <p className="mt-1 text-sm muted">
+                    {lib.kind} · {lib.item_count} items
+                  </p>
+                </div>
+                <span className="chip shrink-0">
+                  {lib.kind === 'tv_shows' ? 'TV' : lib.kind === 'music' ? 'Music' : 'Movies'}
+                </span>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
 
-      <section id="continue-watching" className="rf-flat-section scroll-mt-24">
+      <section id="continue-watching" className="rf-flat-section scroll-mt-24 mt-[-0.5rem]">
         <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
         {continueWatching.length === 0 ? (
           <div className="rf-flat-empty text-sm muted">

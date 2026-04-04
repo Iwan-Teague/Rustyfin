@@ -255,11 +255,13 @@ export default function VoiceChannelView({
   const [loadingTranscriptSessions, setLoadingTranscriptSessions] = useState(false);
   const [desktopTranscriptOpen, setDesktopTranscriptOpen] = useState(true);
   const [mobileTranscriptOpen, setMobileTranscriptOpen] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
 
   const members = voicePresence[channel.id] ?? [];
   const speakingIds = new Set(voiceSpeaking[channel.id] ?? []);
   const isConnectedHere = voiceSession?.channelId === channel.id;
-  const isConnectedElsewhere = connectedVoiceChannelId === channel.id && !isConnectedHere;
+  const isConnectedElsewhere =
+    !disconnecting && connectedVoiceChannelId === channel.id && !isConnectedHere;
   const isConnected = isConnectedHere || isConnectedElsewhere;
   const transcriptionState = voiceTranscriptions[channel.id] ?? null;
   const muted = isConnectedHere ? (voiceSession?.muted ?? false) : false;
@@ -283,8 +285,19 @@ export default function VoiceChannelView({
   }
 
   function handleDisconnect() {
+    setDisconnecting(true);
     leaveVoice();
   }
+
+  useEffect(() => {
+    if (isConnectedHere) {
+      setDisconnecting(false);
+      return;
+    }
+    if (!connectedVoiceChannelId) {
+      setDisconnecting(false);
+    }
+  }, [connectedVoiceChannelId, isConnectedHere]);
 
   function mapStatusToState(status: VoiceTranscriptionStatus): VoiceTranscriptionState {
     return {

@@ -402,7 +402,7 @@ export default function WatchPartyPage() {
               }}
             >
               <div
-                className="panel rf-preserve-surface w-full max-w-5xl space-y-5 rounded-2xl border border-[var(--border)] p-6"
+                className="rf-preserve-surface w-full max-w-5xl space-y-5 rounded-2xl border border-[var(--border)] bg-[rgb(19,24,36)] p-6 shadow-[0_30px_60px_rgba(0,0,0,0.42)]"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Create room"
@@ -498,18 +498,10 @@ export default function WatchPartyPage() {
                   </section>
                 </div>
 
-                <div className="flex justify-end gap-2 border-t border-[var(--border-subtle)] pt-5">
+                <div className="space-y-2 border-t border-[var(--border-subtle)] pt-5">
                   <button
                     type="button"
-                    className="btn-ghost px-4 py-2 text-sm"
-                    onClick={() => setCreateModalOpen(false)}
-                    disabled={creating}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-primary px-5 py-3 text-sm disabled:opacity-50"
+                    className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
                     onClick={handleCreateRoom}
                     disabled={creating || !canCreate}
                   >
@@ -521,6 +513,14 @@ export default function WatchPartyPage() {
                     ) : (
                       'Create Room'
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost w-full px-4 py-2 text-sm"
+                    onClick={() => setCreateModalOpen(false)}
+                    disabled={creating}
+                  >
+                    Cancel
                   </button>
                 </div>
               </div>
