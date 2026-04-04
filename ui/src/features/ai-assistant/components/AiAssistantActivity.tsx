@@ -40,7 +40,7 @@ export default function AiAssistantActivity({
       const isComplete = Boolean(item.finished_ts_ms);
       return {
         key: `phase-${item.phase}-${item.started_ts_ms}`,
-        primary: isComplete ? 'Thoughts' : item.label?.trim() || phaseDetailLabel(item.phase),
+        primary: isComplete ? 'Thought' : item.label?.trim() || phaseDetailLabel(item.phase),
         meta: isComplete ? durationLabel : undefined,
         state: isComplete ? 'complete' : 'running',
         active: !isComplete,

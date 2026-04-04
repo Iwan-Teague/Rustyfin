@@ -1507,6 +1507,9 @@ export default function AiPage() {
   const documentInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const browserSpeechShouldContinueRef = useRef(false);
+  const browserSpeechTranscriptRef = useRef('');
+  const browserSpeechBaseInputRef = useRef('');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
@@ -1845,6 +1848,9 @@ export default function AiPage() {
   useEffect(() => {
     return () => {
       stopRef.current?.();
+      browserSpeechShouldContinueRef.current = false;
+      browserSpeechTranscriptRef.current = '';
+      browserSpeechBaseInputRef.current = '';
       recognitionRef.current?.abort();
       if (mediaRecorderRef.current?.state && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
@@ -1908,6 +1914,31 @@ export default function AiPage() {
     [focusComposer],
   );
 
+  const updateBrowserSpeechPreview = useCallback((transcript: string) => {
+    const nextInput = transcript.trim()
+      ? appendPromptText(browserSpeechBaseInputRef.current, transcript)
+      : browserSpeechBaseInputRef.current;
+    setInput(nextInput);
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+      }
+    });
+  }, []);
+
+  const finishBrowserSpeechInput = useCallback(() => {
+    const transcript = browserSpeechTranscriptRef.current.trim();
+    updateBrowserSpeechPreview(transcript);
+    browserSpeechTranscriptRef.current = '';
+    browserSpeechBaseInputRef.current = '';
+    setVoiceState('idle');
+    setVoiceError(null);
+    requestAnimationFrame(() => {
+      focusComposer();
+    });
+  }, [focusComposer, updateBrowserSpeechPreview]);
+
   const insertAttachmentIntoPrompt = useCallback(
     async (files: FileList | null, kind: ComposerAttachmentKind) => {
       if (!files || files.length === 0) {
@@ -1940,6 +1971,58 @@ export default function AiPage() {
     mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     mediaStreamRef.current = null;
   }, []);
+
+  const startBrowserSpeechRecognition = useCallback(
+    (SpeechRecognitionCtor: BrowserSpeechRecognitionConstructor) => {
+      const recognition = new SpeechRecognitionCtor();
+      recognitionRef.current = recognition;
+      recognition.lang = 'en-US';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event) => {
+        const latestTranscript = collectBrowserTranscript(event);
+        browserSpeechTranscriptRef.current = latestTranscript;
+        updateBrowserSpeechPreview(latestTranscript);
+      };
+      recognition.onerror = (event) => {
+        if (event.error === 'no-speech' && browserSpeechShouldContinueRef.current) {
+          return;
+        }
+        if (!browserSpeechShouldContinueRef.current && event.error === 'aborted') {
+          return;
+        }
+        browserSpeechShouldContinueRef.current = false;
+        recognitionRef.current = null;
+        browserSpeechTranscriptRef.current = '';
+        browserSpeechBaseInputRef.current = '';
+        setVoiceState('error');
+        setVoiceError(
+          event.error === 'not-allowed'
+            ? 'Microphone permission was denied.'
+            : 'Browser voice recognition failed.',
+        );
+      };
+      recognition.onend = () => {
+        recognitionRef.current = null;
+        if (browserSpeechShouldContinueRef.current) {
+          const transcript = browserSpeechTranscriptRef.current.trim();
+          if (transcript) {
+            browserSpeechBaseInputRef.current = appendPromptText(
+              browserSpeechBaseInputRef.current,
+              transcript,
+            );
+            browserSpeechTranscriptRef.current = '';
+          }
+          startBrowserSpeechRecognition(SpeechRecognitionCtor);
+          return;
+        }
+        finishBrowserSpeechInput();
+      };
+      recognition.start();
+    },
+    [finishBrowserSpeechInput, updateBrowserSpeechPreview],
+  );
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const nextValue = event.target.value;
@@ -2240,44 +2323,11 @@ export default function AiPage() {
         : undefined;
 
     if (SpeechRecognitionCtor) {
-      let latestTranscript = '';
-      const recognition = new SpeechRecognitionCtor();
-      recognitionRef.current = recognition;
-      recognition.lang = 'en-US';
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.onresult = (event) => {
-        latestTranscript = collectBrowserTranscript(event);
-        if (latestTranscript) {
-          setInput(latestTranscript);
-          requestAnimationFrame(() => {
-            if (textareaRef.current) {
-              textareaRef.current.style.height = 'auto';
-              textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
-            }
-          });
-        }
-      };
-      recognition.onerror = (event) => {
-        recognitionRef.current = null;
-        setVoiceState('error');
-        setVoiceError(
-          event.error === 'not-allowed'
-            ? 'Microphone permission was denied.'
-            : 'Browser voice recognition failed.',
-        );
-      };
-      recognition.onend = () => {
-        recognitionRef.current = null;
-        if (latestTranscript.trim()) {
-          applyVoiceTranscript(latestTranscript);
-          return;
-        }
-        setVoiceState('idle');
-      };
+      browserSpeechShouldContinueRef.current = true;
+      browserSpeechTranscriptRef.current = '';
+      browserSpeechBaseInputRef.current = input;
       setVoiceState('recording');
-      recognition.start();
+      startBrowserSpeechRecognition(SpeechRecognitionCtor);
       return;
     }
 
@@ -2332,12 +2382,13 @@ export default function AiPage() {
       setVoiceState('error');
       setVoiceError(clientErrorMessage(error, 'Failed to access the microphone.'));
     }
-  }, [applyVoiceTranscript, releaseVoiceCapture, voiceState]);
+  }, [input, releaseVoiceCapture, startBrowserSpeechRecognition, voiceState]);
 
   const stopVoiceInput = useCallback(() => {
     if (voiceState !== 'recording') return;
     setVoiceState('stopping');
     if (recognitionRef.current) {
+      browserSpeechShouldContinueRef.current = false;
       recognitionRef.current.stop();
       return;
     }
@@ -2345,6 +2396,7 @@ export default function AiPage() {
       mediaRecorderRef.current.stop();
       return;
     }
+    browserSpeechShouldContinueRef.current = false;
     setVoiceState('idle');
   }, [voiceState]);
 
@@ -3251,9 +3303,10 @@ export default function AiPage() {
                                     void startVoiceInput();
                                   }
                                 }}
-                                className="btn-secondary flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
+                                className="btn-secondary ai-composer-icon-btn flex h-10 w-10 items-center justify-center rounded-full p-0 disabled:cursor-not-allowed disabled:opacity-40"
                                 disabled={voiceControlDisabled}
                                 aria-label={voiceState === 'recording' ? 'Stop voice input' : 'Start voice input'}
+                                data-active={voiceState === 'recording' ? 'true' : 'false'}
                               >
                                 <svg
                                   className="h-4 w-4"
