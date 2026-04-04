@@ -162,8 +162,9 @@ button:focus-visible {
     top: var(--page-pad-top);
     align-self: flex-start;
     min-height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
-    padding: 0.9rem;
+    padding: 1rem;
     overflow: hidden;
+    border-radius: 2rem;
     transition:
       width 240ms var(--ease-out-quart),
       border-color var(--motion-base) var(--ease-out-quart),
@@ -1562,6 +1563,26 @@ input[type="checkbox"]:disabled {
 .app-nav .rf-nav-link[aria-current="page"]::after {
   opacity: 0.95;
   transform: scaleX(1);
+}
+
+.app-nav-rail .rf-nav-link::after {
+  display: none;
+}
+
+.app-nav-rail .rf-nav-link {
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: rgba(232, 236, 250, 0.84);
+}
+
+.app-nav-rail .rf-nav-link:hover,
+.app-nav-rail .rf-nav-link:focus-visible,
+.app-nav-rail .rf-nav-link[aria-current="page"],
+.app-nav-rail .rf-nav-link[aria-expanded="true"] {
+  border-color: rgba(215, 223, 255, 0.08) !important;
+  background: rgba(255, 255, 255, 0.045) !important;
+  box-shadow: none !important;
+  color: var(--text-main);
 }
 
 .rf-room-mode-btn {
