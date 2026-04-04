@@ -3485,6 +3485,7 @@ fn extract_weather_follow_up_call(
 
     let location = explicit_location
         .or(standalone_location)
+        .map(|location| merge_weather_follow_up_location(&location, &hint.location))
         .unwrap_or_else(|| hint.location.clone());
     if is_weather_query(&lower)
         || lower.contains("today")
@@ -3524,6 +3525,41 @@ fn extract_weather_follow_up_call(
         )),
         _ => None,
     }
+}
+
+fn merge_weather_follow_up_location(location: &str, hint_location: &str) -> String {
+    let candidate = location.trim();
+    if candidate.is_empty() {
+        return hint_location.to_string();
+    }
+    if candidate.contains(',')
+        || candidate.to_ascii_lowercase().contains(" in ")
+        || candidate.eq_ignore_ascii_case(hint_location)
+    {
+        return candidate.to_string();
+    }
+
+    let hint_primary = hint_location
+        .split(',')
+        .next()
+        .map(str::trim)
+        .unwrap_or(hint_location);
+    if candidate.eq_ignore_ascii_case(hint_primary) {
+        return hint_location.to_string();
+    }
+
+    if candidate.split_whitespace().count() <= 3
+        && let Some(country) = hint_location
+            .split(',')
+            .next_back()
+            .map(str::trim)
+            .filter(|segment| !segment.is_empty())
+            .filter(|segment| !segment.eq_ignore_ascii_case(candidate))
+    {
+        return format!("{candidate}, {country}");
+    }
+
+    candidate.to_string()
 }
 
 fn message_has_weather_follow_up_hint(message_lower: &str) -> bool {
@@ -3770,6 +3806,11 @@ fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
         return None;
     }
 
+    let trimmed = strip_weather_temporal_preamble(trimmed).trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
     let lower = trimmed.to_ascii_lowercase();
     let stop_markers = [
         " right now",
@@ -3803,6 +3844,50 @@ fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
         return None;
     }
     Some(candidate.to_string())
+}
+
+fn strip_weather_temporal_preamble(candidate: &str) -> &str {
+    let lower = candidate.to_ascii_lowercase();
+    if !starts_with_weather_temporal_preamble(&lower) {
+        return candidate;
+    }
+
+    let for_index = lower.find(" for ");
+    let in_index = lower.find(" in ");
+    let split_index = match (for_index, in_index) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(index), None) | (None, Some(index)) => Some(index),
+        (None, None) => None,
+    };
+    split_index
+        .and_then(|index| candidate.get(index + 4..))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(candidate)
+}
+
+fn starts_with_weather_temporal_preamble(lower: &str) -> bool {
+    [
+        "the next ",
+        "next ",
+        "this week",
+        "next week",
+        "this weekend",
+        "weekend",
+        "today",
+        "tomorrow",
+        "yesterday",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+        || starts_with_numbered_weather_window(lower)
+}
+
+fn starts_with_numbered_weather_window(lower: &str) -> bool {
+    let mut parts = lower.split_whitespace();
+    let first = parts.next().unwrap_or_default();
+    let second = parts.next().unwrap_or_default();
+    first.parse::<u8>().is_ok() && matches!(second, "day" | "days" | "week" | "weeks")
 }
 
 fn extract_standalone_weather_location(message: &str) -> Option<String> {
@@ -5640,6 +5725,24 @@ mod tests {
     }
 
     #[test]
+    fn planner_extracts_weather_location_after_numbered_window_phrase() {
+        let tools =
+            plan_tool_calls("what is the weather for the next 7 days for Campile in Ireland?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Campile in Ireland");
+                assert_eq!(*forecast_days, Some(7));
+            }
+            _ => panic!("expected weather forecast input"),
+        }
+    }
+
+    #[test]
     fn clarification_triggers_for_weather_without_location() {
         let clarification = clarification_for_message("What's the weather like?");
         assert!(clarification.is_some());
@@ -6239,6 +6342,32 @@ mod tests {
                 assert_eq!(*forecast_days, None);
             }
             _ => panic!("expected weather current input"),
+        }
+    }
+
+    #[test]
+    fn planner_merges_short_weather_follow_up_with_hint_location() {
+        let history = history_with_follow_up_context(
+            "weather_get_forecast",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Campile, County Wexford, Leinster, Ireland".to_string()),
+                weather_days: Some(7),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("for Campile", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetForecast);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Campile, County Wexford, Leinster, Ireland");
+                assert_eq!(*forecast_days, Some(7));
+            }
+            _ => panic!("expected weather forecast input"),
         }
     }
 
