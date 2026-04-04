@@ -78,7 +78,7 @@ function ChannelContextMenu({
   return (
     <div
       ref={menuRef}
-      className="absolute right-0 top-full mt-1 z-50 panel rounded-xl shadow-xl border border-[var(--border)] w-44 py-1 text-sm"
+      className="absolute right-0 top-full z-50 mt-1 w-44 rounded-xl border border-[var(--border)] bg-[var(--surface)]/95 py-1 text-sm backdrop-blur-sm"
       onClick={(e) => e.stopPropagation()}
     >
       <button
@@ -154,10 +154,10 @@ function ChannelRow({
 
   const isActive = ch.id === activeChannelId;
   const rowClass = [
-    'flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm group relative select-none',
+    'group relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-2 py-1.5 text-sm',
     isActive
       ? 'border-l-2 border-[var(--orange-soft)] bg-white/5 pl-1.5'
-      : 'hover:bg-white/5',
+      : 'hover:bg-white/[0.04]',
   ].join(' ');
 
   return (
@@ -229,7 +229,6 @@ function ChannelRow({
                 ? {
                     background:
                       'linear-gradient(115deg, var(--orange) 0%, var(--purple-strong) 75%)',
-                    boxShadow: '0 0 0 1px rgba(255, 145, 77, 0.35)',
                   }
                 : undefined
             }
@@ -329,7 +328,7 @@ export default function ChannelSidebar({
   };
 
   return (
-    <aside className="flex flex-col w-60 min-w-[200px] bg-[var(--surface)] border-r border-[var(--border)] h-full overflow-hidden">
+    <aside className="flex h-full w-60 min-w-[200px] flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--surface)]/40">
       {/* Server header */}
       <div className="h-14 px-4 border-b border-[var(--border)] font-semibold text-sm tracking-wide flex items-center">
         Rustyfin
@@ -433,14 +432,14 @@ export default function ChannelSidebar({
 
       {pendingRenameChannel && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-[2px] p-4">
-          <div className="panel rounded-2xl p-6 w-full max-w-sm space-y-4 border border-[var(--border)]">
+          <div className="w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 p-6">
             <h2 className="font-semibold text-lg">Rename Channel</h2>
             <p className="text-sm muted">
               Enter a new name for &ldquo;{pendingRenameChannel.name}&rdquo;.
             </p>
             <input
               ref={renameInputRef}
-              className="input rounded-xl px-3 py-2 text-sm"
+              className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {

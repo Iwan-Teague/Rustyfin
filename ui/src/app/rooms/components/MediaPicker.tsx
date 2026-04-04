@@ -49,7 +49,7 @@ export default function MediaPicker({
   selectedItem,
   layout = 'split',
   noShadow = false,
-  surfaceClassName = 'panel',
+  surfaceClassName = 'rf-flat-section',
   applyActionLabel = 'Apply Media',
   applyActionPendingLabel = 'Applying…',
   applyActionDisabled = false,
@@ -127,7 +127,7 @@ export default function MediaPicker({
 
   return (
     <section
-      className={`${surfaceClassName} space-y-4 p-5 sm:p-6`}
+      className={`${surfaceClassName} space-y-4`}
       style={noShadow ? { boxShadow: 'none' } : undefined}
     >
       <div className="space-y-2">
@@ -149,7 +149,7 @@ export default function MediaPicker({
               onLibraryChange(e.target.value);
               onSelectItem(null);
             }}
-            className="select px-3 py-2 text-sm"
+            className="rf-flat-input px-3 py-2 text-sm"
             aria-label="Library"
           >
             {visibleLibraries.length === 0 && <option value="">No shared libraries</option>}
@@ -197,7 +197,7 @@ export default function MediaPicker({
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="input w-full px-3 py-2 pr-10 text-sm"
+              className="rf-flat-input w-full px-3 py-2 pr-10 text-sm"
               placeholder="Search titles"
               aria-label="Search media titles"
             />
@@ -223,20 +223,20 @@ export default function MediaPicker({
           </div>
 
           {loading ? (
-            <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">Loading media…</div>
+            <div className="rf-flat-empty text-sm muted">Loading media…</div>
           ) : error ? (
             <div className="notice-error rounded-xl px-3 py-3 text-sm">{error}</div>
           ) : filteredItems.length === 0 ? (
-            <div className="panel-soft rounded-xl px-3 py-3 text-sm muted">No media found at this level.</div>
+            <div className="rf-flat-empty text-sm muted">No media found at this level.</div>
           ) : (
             <div className="max-h-[26rem] overflow-y-auto pr-1">
-              <ul className="space-y-2">
+              <ul className="rf-flat-list">
                 {filteredItems.map((item) => {
                   const selected = selectedItem?.id === item.id;
                   return (
                     <li
                       key={item.id}
-                      className={`tile rounded-xl px-3 py-2 ${selected ? 'border-[var(--orange-soft)]' : ''}`}
+                      className={`rf-flat-row ${selected ? 'border-[var(--orange-soft)]' : ''}`}
                     >
                       <div className="flex items-center gap-3">
                         <div className="min-w-0 flex-1">

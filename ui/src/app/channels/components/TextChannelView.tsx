@@ -115,7 +115,7 @@ function AttachmentPreview({
   }
 
   return (
-    <div className="panel-soft rounded-lg px-3 py-2 text-xs flex items-center justify-between gap-2">
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] px-3 py-2 text-xs">
       <div className="min-w-0">
         <p className="truncate font-medium">{attachment.filename}</p>
         <p className="muted">
@@ -450,8 +450,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       </div>
 
       {/* Input */}
-      <div className="min-h-16 px-4 py-3 border-t border-[var(--border)] shrink-0">
-        <div className="flex items-stretch gap-2">
+      <div className="min-h-16 shrink-0 border-t border-[var(--border)] bg-[var(--surface)]/20 px-4 py-3">
+        <div className="flex items-end gap-2 rounded-2xl border border-[var(--border-subtle)] bg-black/10 px-2 py-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -464,7 +464,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           />
           <button
             type="button"
-            className="btn-primary h-10 w-10 shrink-0 text-xl leading-none"
+            className="btn-ghost h-10 w-10 shrink-0 text-xl leading-none"
             onClick={() => fileInputRef.current?.click()}
             aria-label="Attach file"
             title="Attach file"
@@ -473,7 +473,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             +
           </button>
           <textarea
-            className="panel h-10 flex-1 resize-none overflow-y-auto rounded-lg px-3 py-2 text-sm"
+            className="min-h-10 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 text-sm outline-none"
             rows={1}
             placeholder={`Message #${channel.name}`}
             value={draft}
@@ -484,7 +484,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           />
           <button
             type="button"
-            className="btn-primary h-10 px-4 text-sm shrink-0 disabled:opacity-60"
+            className="btn-primary h-10 shrink-0 px-4 text-sm disabled:opacity-60"
             onClick={() => void handleSend()}
             disabled={uploading || (!draft.trim() && !pendingFile)}
           >
@@ -493,7 +493,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
         </div>
         {pendingFile && (
           <div className="mt-2 flex items-center gap-2">
-            <div className="panel-soft rounded-md px-2 py-1 text-xs max-w-[22rem] truncate">
+            <div className="max-w-[22rem] truncate rounded-full border border-[var(--border-subtle)] px-2.5 py-1 text-xs">
               {pendingFile.name} · {formatBytes(pendingFile.size)}
             </div>
             {!uploading && (

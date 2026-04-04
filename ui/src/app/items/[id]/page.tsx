@@ -63,7 +63,7 @@ export default function ItemPage() {
 
   if (!item) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Loading...</p>
       </div>
     );
@@ -72,8 +72,8 @@ export default function ItemPage() {
   // ── Artist page ────────────────────────────────────────────────────────────
   if (item.kind === 'artist') {
     return (
-      <div className="space-y-7 animate-rise">
-        <header className="space-y-2">
+      <div className="rf-flat-page rf-flat-scope animate-rise">
+        <header className="rf-flat-header">
           <h1 className="text-3xl font-semibold">{item.title}</h1>
           {item.overview && <p className="max-w-3xl leading-relaxed muted">{item.overview}</p>}
         </header>
@@ -129,7 +129,7 @@ export default function ItemPage() {
     const albumArtUrl = item.poster_url ?? undefined;
 
     return (
-      <div className="space-y-7 animate-rise">
+      <div className="rf-flat-page rf-flat-scope animate-rise">
         <div className="flex flex-col gap-6 sm:flex-row">
           {/* Album art */}
           <div className="w-48 shrink-0">
@@ -227,7 +227,7 @@ export default function ItemPage() {
   // ── Track page (direct navigation) ────────────────────────────────────────
   if (item.kind === 'track') {
     return (
-      <div className="space-y-6 animate-rise">
+      <div className="rf-flat-page rf-flat-scope animate-rise">
         <h1 className="text-3xl font-semibold">{item.title}</h1>
         {item.parent_id && (
           <Link href={`/items/${item.parent_id}`} className="text-sm muted hover:underline block">
@@ -271,7 +271,7 @@ export default function ItemPage() {
     : 'grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6';
 
   return (
-    <div className="relative isolate">
+    <div className="rf-flat-scope relative isolate">
       {item.backdrop_url && (
         <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden" aria-hidden="true">
           <Image
@@ -287,7 +287,7 @@ export default function ItemPage() {
         </div>
       )}
 
-      <div className="relative z-10 space-y-7 animate-rise">
+      <div className="relative z-10 rf-flat-page animate-rise">
         <div className="flex flex-col gap-6 lg:flex-row">
           {item.poster_url && (
             <div className="w-64 max-w-full flex-shrink-0 sm:w-72">

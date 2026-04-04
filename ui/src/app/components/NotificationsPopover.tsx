@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { createPortal } from 'react-dom';
+import { usePathname } from 'next/navigation';
 import SurfaceTabsBar from '@/app/components/SurfaceTabsBar';
 import { clientErrorMessage } from '@/lib/errors';
 import {
@@ -63,6 +64,7 @@ function kindLabel(kind: AdminDiagnosticNotification['kind']): string {
 }
 
 export default function NotificationsPopover({ isAdmin, className = '' }: Props) {
+  const pathname = usePathname();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -77,6 +79,7 @@ export default function NotificationsPopover({ isAdmin, className = '' }: Props)
 
   const totalCount = invites.length + (isAdmin ? adminNotifications.length : 0);
   const activeInboxCount = activeInbox === 'admin' ? adminNotifications.length : invites.length;
+  const isAiRoute = pathname.startsWith('/ai');
   const panelLabel = isAdmin
     ? activeInbox === 'admin'
       ? 'Admin notifications'
@@ -249,6 +252,7 @@ export default function NotificationsPopover({ isAdmin, className = '' }: Props)
           badges={inboxBadges}
           className="rf-notify-tabs mb-3"
           badgesClassName="rf-notify-tabs-badges"
+          variant={isAiRoute ? 'surface' : 'flat'}
         />
       ) : null}
 
@@ -259,17 +263,26 @@ export default function NotificationsPopover({ isAdmin, className = '' }: Props)
       {(!isAdmin || activeInbox === 'user') && (
         <>
           {loading && invites.length === 0 ? (
-            <div className="rf-notify-empty panel-soft rounded-xl px-3 py-3 text-sm muted">
+            <div
+              className={`rf-notify-empty ${isAiRoute ? 'panel-soft rounded-xl px-3 py-3' : 'rf-flat-empty'} text-sm muted`}
+            >
               Loading notifications...
             </div>
           ) : invites.length === 0 ? (
-            <div className="rf-notify-empty panel-soft rounded-xl px-3 py-3 text-sm muted">
+            <div
+              className={`rf-notify-empty ${isAiRoute ? 'panel-soft rounded-xl px-3 py-3' : 'rf-flat-empty'} text-sm muted`}
+            >
               No user notifications right now.
             </div>
           ) : (
-            <ul className="rf-notify-list max-h-[24rem] space-y-2 overflow-y-auto pr-1">
+            <ul
+              className={`rf-notify-list max-h-[24rem] overflow-y-auto pr-1 ${isAiRoute ? 'space-y-2' : 'rf-flat-list'}`}
+            >
               {invites.map((invite) => (
-                <li key={invite.room_id} className="rf-notify-item tile rounded-xl px-3 py-2.5">
+                <li
+                  key={invite.room_id}
+                  className={`rf-notify-item ${isAiRoute ? 'tile rounded-xl px-3 py-2.5' : 'rf-flat-row'}`}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{invite.item_title}</p>
@@ -312,17 +325,26 @@ export default function NotificationsPopover({ isAdmin, className = '' }: Props)
       {isAdmin && activeInbox === 'admin' && (
         <>
           {loading && adminNotifications.length === 0 ? (
-            <div className="rf-notify-empty panel-soft rounded-xl px-3 py-3 text-sm muted">
+            <div
+              className={`rf-notify-empty ${isAiRoute ? 'panel-soft rounded-xl px-3 py-3' : 'rf-flat-empty'} text-sm muted`}
+            >
               Loading admin notifications...
             </div>
           ) : adminNotifications.length === 0 ? (
-            <div className="rf-notify-empty panel-soft rounded-xl px-3 py-3 text-sm muted">
+            <div
+              className={`rf-notify-empty ${isAiRoute ? 'panel-soft rounded-xl px-3 py-3' : 'rf-flat-empty'} text-sm muted`}
+            >
               No admin diagnostics yet.
             </div>
           ) : (
-            <ul className="rf-notify-list max-h-[24rem] space-y-2 overflow-y-auto pr-1">
+            <ul
+              className={`rf-notify-list max-h-[24rem] overflow-y-auto pr-1 ${isAiRoute ? 'space-y-2' : 'rf-flat-list'}`}
+            >
               {adminNotifications.map((notification) => (
-                <li key={notification.id} className="rf-notify-item tile rounded-xl px-3 py-2.5">
+                <li
+                  key={notification.id}
+                  className={`rf-notify-item ${isAiRoute ? 'tile rounded-xl px-3 py-2.5' : 'rf-flat-row'}`}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{notification.title}</p>

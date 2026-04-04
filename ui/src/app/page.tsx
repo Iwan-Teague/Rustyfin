@@ -200,7 +200,7 @@ export default function HomePage() {
 
   if (!setupChecked) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Checking setup status...</p>
       </div>
     );
@@ -208,7 +208,7 @@ export default function HomePage() {
 
   if (!setupComplete) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Setup is required. Redirecting to setup wizard...</p>
       </div>
     );
@@ -216,7 +216,7 @@ export default function HomePage() {
 
   if (authLoading) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Loading your home view...</p>
       </div>
     );
@@ -224,21 +224,19 @@ export default function HomePage() {
 
   if (!me) {
     return (
-      <div className="panel-soft animate-rise px-5 py-4">
+      <div className="rf-flat-empty animate-rise">
         <p className="text-sm muted">Redirecting to login...</p>
       </div>
     );
   }
 
   return (
-    <div className="animate-rise space-y-8">
-      <header className="panel p-6 sm:p-8">
-        <div className="space-y-3">
-          <h1 className="text-3xl font-semibold sm:text-4xl">Welcome back, {me.username}</h1>
-          <p className="max-w-2xl text-sm muted sm:text-base">
-            Resume what you were watching and keep tabs on active rooms.
-          </p>
-        </div>
+    <div className="animate-rise rf-flat-page">
+      <header className="rf-flat-header">
+        <h1 className="text-2xl font-semibold sm:text-3xl">Welcome back, {me.username}</h1>
+        <p className="max-w-2xl text-sm muted">
+          Resume what you were watching and keep tabs on active rooms.
+        </p>
       </header>
 
       {error && (
@@ -247,8 +245,8 @@ export default function HomePage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-7 xl:grid-cols-2 xl:items-start">
-        <section id="continue-watching" className="space-y-3">
+      <div className="grid grid-cols-1 gap-10 xl:grid-cols-2 xl:items-start">
+        <section id="continue-watching" className="rf-flat-section">
           <div className="flex items-end justify-between gap-3">
             <div className="space-y-1">
               <h2 className="text-xl font-semibold sm:text-2xl">Continue Watching</h2>
@@ -262,14 +260,14 @@ export default function HomePage() {
             </Link>
           </div>
           {continueWatching.length === 0 ? (
-            <div className="panel-soft px-4 py-3 text-sm muted">
+            <div className="rf-flat-empty text-sm muted">
               <p>Start a movie or episode from a library and Rustyfin will keep your place here.</p>
               <Link href="/libraries" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
                 Open libraries
               </Link>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4">
+            <div className="rf-flat-list">
               {continueWatching.slice(0, 3).map((item) => {
                 const totalMs = item.duration_ms && item.duration_ms > 0 ? item.duration_ms : null;
                 const progressPct = totalMs
@@ -288,7 +286,7 @@ export default function HomePage() {
                   >
                     <button
                       type="button"
-                      className="btn-ghost absolute right-3 top-3 z-20 h-7 w-7 rounded-full border border-white/20 bg-black/60 p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                      className="btn-ghost absolute right-0 top-4 z-20 h-7 w-7 rounded-full p-0 text-white/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
                       onClick={() => void handleDismissContinueItem(item.id)}
                       disabled={dismissing}
                       aria-label={`Remove ${item.title} from Continue Watching`}
@@ -298,9 +296,9 @@ export default function HomePage() {
                     </button>
                     <Link
                       href={`/player/${item.id}`}
-                      className="tile tile-hover home-card-sheen block overflow-hidden"
+                      className="rf-flat-row block pr-10"
                     >
-                      <div className="flex min-h-[9rem] gap-4 p-4">
+                      <div className="flex min-h-[9rem] gap-4">
                         <div className="h-32 w-24 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65">
                           {item.poster_url ? (
                             <Image
@@ -348,7 +346,7 @@ export default function HomePage() {
           )}
         </section>
 
-        <section className="space-y-3">
+        <section className="rf-flat-section">
           <div className="flex items-end justify-between gap-3">
             <div className="space-y-1">
               <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
@@ -359,33 +357,31 @@ export default function HomePage() {
             </Link>
           </div>
           {loadingData ? (
-            <div className="panel-soft px-4 py-3 text-sm muted" aria-live="polite">
+            <div className="rf-flat-empty text-sm muted" aria-live="polite">
               Loading open rooms...
             </div>
           ) : publicRooms.length > 0 ? (
-            <div className="grid grid-cols-1 gap-3">
+            <div className="rf-flat-list">
               {publicRooms.map((room) => (
                 <Link
                   key={room.room_id}
                   href={`/rooms/${room.room_id}`}
-                  className="tile tile-hover home-card-sheen flex flex-col gap-3 p-4"
+                  className="rf-flat-row flex items-center justify-between gap-4"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="font-semibold truncate leading-snug">{room.title}</p>
-                    <span className="chip chip-accent text-[0.67rem] uppercase tracking-[0.18em]">
-                      Join
-                    </span>
+                  <div className="min-w-0 space-y-1">
+                    <p className="truncate font-semibold leading-snug">{room.title}</p>
+                    <div className="flex items-center gap-3 text-xs muted">
+                      <span>Hosted by {room.host_username}</span>
+                      <span>{formatRoomMembersLabel(room.member_count)}</span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-xs muted">
-                    <span>Hosted by {room.host_username}</span>
-                    <span>{formatRoomMembersLabel(room.member_count)}</span>
-                  </div>
+                  <span className="btn-primary shrink-0 px-3 py-1.5 text-xs">Join</span>
                 </Link>
               ))}
             </div>
           ) : null}
           {!loadingData && publicRooms.length === 0 ? (
-            <div className="panel-soft px-4 py-3 text-sm muted">
+            <div className="rf-flat-empty text-sm muted">
               <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
               <Link href="/rooms" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
                 Join an active room
@@ -395,7 +391,7 @@ export default function HomePage() {
         </section>
       </div>
 
-      <section className="space-y-3">
+      <section className="rf-flat-section">
         <div className="flex items-end justify-between gap-3">
           <div className="space-y-1">
             <h2 className="text-xl font-semibold sm:text-2xl">Calendar: Next 7 Days</h2>
@@ -406,18 +402,17 @@ export default function HomePage() {
           </Link>
         </div>
         {loadingData ? (
-          <div className="panel-soft px-4 py-3 text-sm muted" aria-live="polite">
+          <div className="rf-flat-empty text-sm muted" aria-live="polite">
             Loading upcoming events...
           </div>
         ) : !hasUpcomingCalendarEvents ? (
-          <div className="panel-soft px-4 py-3 text-sm muted">
+          <div className="rf-flat-empty text-sm muted">
             Nothing scheduled for the next 7 days.
           </div>
         ) : (
-          <div className="panel p-4 sm:p-5">
-            <ul className="space-y-2">
+          <ul className="rf-flat-list">
               {nextSevenDayCalendar.map((day) => (
-                <li key={`home-calendar-${day.dateKey}`} className="panel-soft rounded-xl px-3 py-3">
+                <li key={`home-calendar-${day.dateKey}`} className="rf-flat-row">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-sm font-semibold">{day.dateLabel}</p>
@@ -432,7 +427,7 @@ export default function HomePage() {
                         {day.events.slice(0, 3).map((event) => (
                           <p
                             key={`home-calendar-event-${day.dateKey}-${event.occurrence_id}`}
-                            className="text-right text-sm"
+                            className="text-sm sm:text-right"
                           >
                             {event.title}
                             {event.scope === 'global' ? ' · Global' : ''}
@@ -446,8 +441,7 @@ export default function HomePage() {
                   </div>
                 </li>
               ))}
-            </ul>
-          </div>
+          </ul>
         )}
       </section>
     </div>

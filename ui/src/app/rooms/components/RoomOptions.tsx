@@ -38,8 +38,8 @@ export default function RoomOptions({
     <section
       className={
         fillHeight
-          ? 'panel h-full min-h-0 p-5 sm:p-6 flex flex-col gap-4'
-          : 'panel space-y-4 p-5 sm:p-6'
+          ? 'rf-flat-section flex h-full min-h-0 flex-col gap-4'
+          : 'rf-flat-section space-y-4'
       }
       style={noShadow ? { boxShadow: 'none' } : undefined}
     >
@@ -55,14 +55,14 @@ export default function RoomOptions({
             type="password"
             value={password}
             onChange={(e) => onPasswordChange(e.target.value)}
-            className="input px-3 py-2 text-sm"
+            className="rf-flat-input px-3 py-2 text-sm"
             placeholder="Leave empty for no password"
             minLength={4}
             maxLength={128}
           />
         </label>
 
-        <div className="space-y-2 rounded-xl border border-white/10 bg-black/15 p-3">
+        <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] px-3 py-3">
           <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
             <input
               type="checkbox"
@@ -94,7 +94,7 @@ export default function RoomOptions({
         <label className="block text-sm">
           <span className="mb-1 block text-xs uppercase tracking-wide muted">Default access for link joins</span>
           <select
-            className="select px-3 py-2 text-sm"
+            className="rf-flat-input px-3 py-2 text-sm"
             aria-label="Default access for link joins"
             value={defaultJoinRole}
             onChange={(e) => onDefaultJoinRoleChange(e.target.value as 'viewer' | 'controller')}

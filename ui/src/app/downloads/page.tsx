@@ -41,15 +41,18 @@ function PlatformSection({
   if (items.length === 0) return null;
 
   return (
-    <section className="space-y-4">
+    <section className="rf-flat-section">
       <h2 className="text-xl font-semibold">{title}</h2>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="rf-flat-list">
         {items.map((item) => (
-          <article key={item.id} className="tile flex flex-col justify-between space-y-4 px-5 py-5">
-            <div className="space-y-2">
+          <article
+            key={item.id}
+            className="rf-flat-row flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"
+          >
+            <div className="min-w-0 space-y-2">
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-semibold">{item.title}</h3>
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold sm:text-lg">{item.title}</h3>
                   <div className="mt-1 flex flex-wrap gap-2">
                     {item.version && <span className="chip chip-accent">v{item.version}</span>}
                     <span className="chip">{availabilityLabel(item.availability)}</span>
@@ -61,7 +64,7 @@ function PlatformSection({
               {item.detail && <p className="text-xs text-slate-400">{item.detail}</p>}
             </div>
 
-            <div className="flex flex-wrap gap-3 pt-2">
+            <div className="flex shrink-0 flex-wrap gap-3 pt-2 lg:justify-end">
               {item.availability === 'available' ? (
                 <>
                   {item.distribution_mode === 'external_store' && item.external_url ? (
@@ -158,11 +161,19 @@ export default function DownloadsPage() {
   }
 
   if (authLoading) {
-    return <div className="panel-soft animate-rise px-5 py-4"><p className="text-sm muted">Loading...</p></div>;
+    return (
+      <div className="rf-flat-empty animate-rise">
+        <p className="text-sm muted">Loading...</p>
+      </div>
+    );
   }
 
   if (!me) {
-    return <div className="panel-soft animate-rise px-5 py-4"><p className="text-sm muted">Redirecting...</p></div>;
+    return (
+      <div className="rf-flat-empty animate-rise">
+        <p className="text-sm muted">Redirecting...</p>
+      </div>
+    );
   }
 
   const desktop = catalog.filter((i) => ['windows', 'macos', 'linux'].includes(i.platform));
@@ -170,36 +181,48 @@ export default function DownloadsPage() {
   const other = catalog.filter((i) => !['windows', 'macos', 'linux', 'android', 'ios'].includes(i.platform));
 
   return (
-    <div className="space-y-8 animate-rise">
-      <header className="panel overflow-hidden p-6 sm:p-8">
-        <div className="space-y-4">
-          <span className="chip border-[var(--border-strong)] bg-black/20 text-white/90">
-            Official Releases
-          </span>
-          <div className="space-y-2">
-            <h1 className="text-3xl font-semibold sm:text-4xl">Downloads</h1>
-            <p className="max-w-3xl text-sm muted sm:text-base">
-              Get official Rustyfin clients and extensions directly from your host.
-            </p>
-          </div>
+    <div className="animate-rise rf-flat-page">
+      <header className="rf-flat-header">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold sm:text-3xl">Downloads</h1>
+          <p className="max-w-3xl text-sm muted">
+            Get official Rustyfin clients and extensions directly from your host.
+          </p>
         </div>
       </header>
 
-      {message && <div className="panel-soft px-4 py-3 text-sm text-[var(--ok)]">{message}</div>}
+      {message && (
+        <div className="rounded-xl border border-[var(--ok)]/20 bg-[var(--ok-dim)] px-4 py-3 text-sm text-[var(--ok)]">
+          {message}
+        </div>
+      )}
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
 
       {catalogLoading ? (
-        <div className="panel-soft px-5 py-8 text-center muted">Loading catalog...</div>
+        <div className="rf-flat-empty text-center muted">Loading catalog...</div>
       ) : (
         <div className="space-y-10">
-          <PlatformSection title="Desktop" items={desktop} onDownload={handleDownload} pendingId={downloadPendingId} />
-          <PlatformSection title="Mobile" items={mobile} onDownload={handleDownload} pendingId={downloadPendingId} />
-          <PlatformSection title="Other" items={other} onDownload={handleDownload} pendingId={downloadPendingId} />
-          
+          <PlatformSection
+            title="Desktop"
+            items={desktop}
+            onDownload={handleDownload}
+            pendingId={downloadPendingId}
+          />
+          <PlatformSection
+            title="Mobile"
+            items={mobile}
+            onDownload={handleDownload}
+            pendingId={downloadPendingId}
+          />
+          <PlatformSection
+            title="Other"
+            items={other}
+            onDownload={handleDownload}
+            pendingId={downloadPendingId}
+          />
+
           {catalog.length === 0 && (
-             <div className="panel-soft px-5 py-8 text-center muted">
-               No downloads available at this time.
-             </div>
+            <div className="rf-flat-empty text-center muted">No downloads available at this time.</div>
           )}
         </div>
       )}

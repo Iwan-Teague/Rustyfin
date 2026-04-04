@@ -104,7 +104,7 @@ export default function ChannelsPage() {
   };
 
   return (
-    <div className="flex h-[calc(100dvh-8rem)] overflow-hidden rounded-2xl border border-[var(--border)] animate-rise">
+    <div className="animate-rise flex h-[calc(100dvh-8rem)] w-full overflow-hidden">
       {/* Sidebar */}
       <div className={['sm:flex shrink-0 h-full', sidebarOpen ? 'flex' : 'hidden'].join(' ')}>
         <ChannelSidebar
@@ -134,9 +134,9 @@ export default function ChannelsPage() {
       </div>
 
       {/* Main content */}
-      <div className="flex flex-col flex-1 h-full overflow-hidden bg-[var(--bg)]">
+      <div className="flex h-full flex-1 flex-col overflow-hidden bg-transparent">
         {/* Mobile header with sidebar toggle */}
-        <div className="sm:hidden flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 shrink-0">
+        <div className="sm:hidden flex shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 py-2">
           <button
             className="btn-ghost px-2 py-1 text-xl leading-none"
             onClick={() => setSidebarOpen((v) => !v)}
@@ -186,9 +186,12 @@ export default function ChannelsPage() {
 
       {/* Create channel modal */}
       {createModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setCreateModal(null)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setCreateModal(null)}
+        >
           <div
-            className="panel rounded-2xl p-6 w-full max-w-sm space-y-4"
+            className="w-full max-w-sm space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 p-6"
             role="dialog"
             aria-modal="true"
             aria-labelledby={createDialogTitleId}
@@ -198,10 +201,12 @@ export default function ChannelsPage() {
               Create {createModal.kind === 'text' ? 'Text' : 'Voice'} Channel
             </h2>
             <div className="space-y-2">
-              <label htmlFor={createDialogFieldId} className="text-sm muted">Channel name</label>
+              <label htmlFor={createDialogFieldId} className="text-sm muted">
+                Channel name
+              </label>
               <input
                 id={createDialogFieldId}
-                className="panel w-full rounded-lg px-3 py-2 text-sm"
+                className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                 placeholder={createModal.kind === 'text' ? 'general' : 'Lobby'}
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
@@ -210,7 +215,7 @@ export default function ChannelsPage() {
               />
             </div>
             {me.role === 'admin' && (
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={createPrivate}
@@ -220,7 +225,7 @@ export default function ChannelsPage() {
               </label>
             )}
             {createError && <p className="text-sm text-red-400" role="alert">{createError}</p>}
-            <div className="flex gap-2 justify-end">
+            <div className="flex justify-end gap-2">
               <button onClick={() => setCreateModal(null)} className="btn-ghost px-4 py-2 text-sm">
                 Cancel
               </button>

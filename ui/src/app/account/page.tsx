@@ -360,8 +360,8 @@ export default function AccountPage() {
   }
 
   return (
-    <div className="space-y-6 animate-rise">
-      <section className="panel rounded-3xl border border-[var(--border)] p-5 md:p-6">
+    <div className="animate-rise rf-flat-page">
+      <section className="rf-flat-header">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4 min-w-0">
             {avatarPreviewUrl ? (
@@ -384,7 +384,7 @@ export default function AccountPage() {
               <p className="text-sm muted">Role: {account.profile?.role ?? me.role}</p>
             </div>
           </div>
-          <div className="rounded-2xl border border-[var(--border)] bg-black/15 px-4 py-3 text-sm text-white/80 space-y-1 min-w-[220px]">
+          <div className="min-w-[220px] space-y-1 border-t border-[var(--border-subtle)] pt-3 text-sm text-white/80 md:border-t-0 md:border-l md:pl-4 md:pt-0">
             <p className="text-xs muted">Date joined</p>
             <p className="font-medium text-white/90">{joinedDateLabel}</p>
             <p className="text-xs muted">{joinedDaysLabel}</p>
@@ -400,7 +400,7 @@ export default function AccountPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] gap-6">
         <div className="space-y-6">
-          <section className="panel-soft rounded-2xl border border-[var(--border)] p-5 space-y-4">
+          <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Profile</h2>
               <button
@@ -420,7 +420,7 @@ export default function AccountPage() {
                 <label htmlFor="account-display-name" className="text-xs muted">Display name</label>
                 <input
                   id="account-display-name"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={displayName}
                   onChange={(event) => setDisplayName(event.target.value)}
                   maxLength={40}
@@ -430,7 +430,7 @@ export default function AccountPage() {
                 <label htmlFor="account-time-zone" className="text-xs muted">Time zone</label>
                 <input
                   id="account-time-zone"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={timeZone}
                   onChange={(event) => setTimeZone(event.target.value)}
                   list="rustyfin-time-zones"
@@ -446,7 +446,7 @@ export default function AccountPage() {
                 <label htmlFor="account-login-username" className="text-xs muted">Login username</label>
                 <input
                   id="account-login-username"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm opacity-80"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm opacity-80"
                   value={account.profile?.login_username ?? me.login_username ?? me.username}
                   readOnly
                 />
@@ -455,7 +455,7 @@ export default function AccountPage() {
                 <label htmlFor="account-role" className="text-xs muted">Role</label>
                 <input
                   id="account-role"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm opacity-80"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm opacity-80"
                   value={account.profile?.role ?? me.role}
                   readOnly
                 />
@@ -490,7 +490,7 @@ export default function AccountPage() {
             </div>
           </section>
 
-          <section className="panel-soft rounded-2xl border border-[var(--border)] p-5 space-y-4">
+          <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Preferences</h2>
               <button
@@ -510,7 +510,7 @@ export default function AccountPage() {
                 <label htmlFor="account-input-device" className="text-xs muted">Input device</label>
                 <select
                   id="account-input-device"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={selectedInputDeviceId ?? ''}
                   onChange={(event) => setSelectedInputDeviceId(event.target.value || null)}
                 >
@@ -529,7 +529,7 @@ export default function AccountPage() {
                 <label htmlFor="account-output-device" className="text-xs muted">Output device</label>
                 <select
                   id="account-output-device"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={selectedOutputDeviceId ?? ''}
                   onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
                   disabled={!supportsOutputDeviceSelection}
@@ -548,7 +548,7 @@ export default function AccountPage() {
             </div>
           </section>
 
-          <section className="panel-soft rounded-2xl border border-[var(--border)] p-5 space-y-4">
+          <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Security</h2>
               <button
@@ -568,7 +568,7 @@ export default function AccountPage() {
                 <input
                   id="account-current-password"
                   type="password"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={passwordForm.current_password}
                   onChange={(event) =>
                     setPasswordForm((current) => ({
@@ -583,7 +583,7 @@ export default function AccountPage() {
                 <input
                   id="account-new-password"
                   type="password"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={passwordForm.new_password}
                   onChange={(event) =>
                     setPasswordForm((current) => ({
@@ -598,7 +598,7 @@ export default function AccountPage() {
                 <input
                   id="account-confirm-password"
                   type="password"
-                  className="panel w-full rounded-lg px-3 py-2 text-sm"
+                  className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                   value={passwordForm.confirm_password}
                   onChange={(event) =>
                     setPasswordForm((current) => ({
@@ -610,7 +610,7 @@ export default function AccountPage() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[var(--border)] bg-black/15 px-4 py-3">
+            <div className="rounded-xl border border-[var(--border-subtle)] px-4 py-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm muted">Sign out of this browser session.</p>
                 <button
@@ -626,7 +626,7 @@ export default function AccountPage() {
         </div>
 
         <div className="space-y-6">
-          <section className="panel-soft rounded-2xl border border-[var(--border)] p-5 space-y-4">
+          <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Data and Privacy</h2>
               <button
@@ -643,7 +643,7 @@ export default function AccountPage() {
             <p className="text-sm muted">
               Rustyfin stores personal activity summaries for section presence, watch rooms, voice channels, and media watch time so your account page can show simple usage insights.
             </p>
-            <label htmlFor="account-activity-insights" className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-black/15 px-4 py-3 text-sm">
+            <label htmlFor="account-activity-insights" className="flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] px-4 py-3 text-sm">
               <input
                 id="account-activity-insights"
                 type="checkbox"
@@ -660,11 +660,11 @@ export default function AccountPage() {
             </label>
           </section>
 
-          <section className="panel-soft rounded-2xl border border-[var(--border)] p-5 space-y-4">
+          <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Activity</h2>
               <select
-                className="panel rounded-lg px-3 py-2 text-sm"
+                className="rf-flat-input rounded-xl px-3 py-2 text-sm"
                 value={account.activityRange}
                 onChange={(event) => account.setActivityRange(event.target.value as '7d' | '30d' | 'all')}
               >
@@ -679,25 +679,25 @@ export default function AccountPage() {
             )}
 
             <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+              <div className="rounded-2xl border border-[var(--border-subtle)] p-4">
                 <p className="text-xs muted">Time on Rustyfin</p>
                 <p className="mt-2 text-xl font-semibold">{formatDuration(account.activitySummary.totals.total_time_ms)}</p>
               </div>
-              <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+              <div className="rounded-2xl border border-[var(--border-subtle)] p-4">
                 <p className="text-xs muted">Rooms time</p>
                 <p className="mt-2 text-xl font-semibold">{formatDuration(account.activitySummary.totals.rooms_time_ms)}</p>
               </div>
-              <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+              <div className="rounded-2xl border border-[var(--border-subtle)] p-4">
                 <p className="text-xs muted">Voice time</p>
                 <p className="mt-2 text-xl font-semibold">{formatDuration(account.activitySummary.totals.voice_time_ms)}</p>
               </div>
-              <div className="rounded-2xl border border-[var(--border)] bg-black/15 p-4">
+              <div className="rounded-2xl border border-[var(--border-subtle)] p-4">
                 <p className="text-xs muted">Media watch time</p>
                 <p className="mt-2 text-xl font-semibold">{formatDuration(account.activitySummary.totals.media_watch_time_ms)}</p>
               </div>
             </div>
 
-            <section className="rounded-2xl border border-[var(--border)] bg-black/15 p-4 space-y-4">
+            <section className="rounded-2xl border border-[var(--border-subtle)] p-4 space-y-4">
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold">Activity mix</h3>
                 <span className="text-xs muted">
@@ -707,7 +707,7 @@ export default function AccountPage() {
               <div className="grid grid-cols-1 md:grid-cols-[220px_minmax(0,1fr)] gap-6 items-center">
                 <div className="flex justify-center">
                   <div
-                    className="h-48 w-48 rounded-full border border-[var(--border)] shadow-[0_18px_42px_rgba(0,0,0,0.28)]"
+                    className="h-48 w-48 rounded-full border border-[var(--border)]"
                     style={{ background: activityPie.background }}
                     aria-label="Activity pie chart"
                   />
@@ -716,7 +716,7 @@ export default function AccountPage() {
                   {activityPie.percentages.map((slice) => (
                     <div
                       key={slice.key}
-                      className="rounded-xl border border-[var(--border)] bg-black/10 px-3 py-3"
+                      className="rounded-xl border border-[var(--border-subtle)] px-3 py-3"
                     >
                       <div className="flex items-center gap-2">
                         <span

@@ -241,7 +241,7 @@ export default function ChannelUserSettings({
               onClick={() => setOpen(false)}
             >
               <div
-                className="panel w-full max-w-2xl rounded-2xl border border-[var(--border)] p-5 md:p-6 space-y-4"
+                className="w-full max-w-2xl space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 p-5 md:p-6"
                 role="dialog"
                 aria-modal="true"
                 aria-label="User settings"
@@ -271,7 +271,7 @@ export default function ChannelUserSettings({
                   <p className="muted text-sm">Loading settings...</p>
                 ) : (
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
+                    <section className="space-y-3 border-t border-[var(--border-subtle)] pt-4">
                       <h3 className="text-sm font-semibold">Profile</h3>
                       <div className="flex items-center gap-3">
                         {avatarPreviewUrl ? (
@@ -313,25 +313,25 @@ export default function ChannelUserSettings({
                       </div>
                       <label className="text-xs muted">Display Name</label>
                       <input
-                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                         value={displayName}
                         onChange={(event) => setDisplayName(event.target.value)}
                         maxLength={40}
                       />
                       <label className="text-xs muted">Time Zone</label>
                       <input
-                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                         value={timeZone}
                         onChange={(event) => setTimeZone(event.target.value)}
                         placeholder="Europe/Dublin"
                       />
                     </section>
 
-                    <section className="panel-soft rounded-xl border border-[var(--border)] p-4 space-y-3">
+                    <section className="space-y-3 border-t border-[var(--border-subtle)] pt-4">
                       <h3 className="text-sm font-semibold">Audio Devices</h3>
                       <label className="text-xs muted">Input Device</label>
                       <select
-                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                         value={selectedInputDeviceId ?? ''}
                         onChange={(event) => setSelectedInputDeviceId(event.target.value || null)}
                       >
@@ -350,7 +350,7 @@ export default function ChannelUserSettings({
 
                       <label className="text-xs muted">Output Device</label>
                       <select
-                        className="panel w-full rounded-lg px-3 py-2 text-sm"
+                        className="rf-flat-input w-full rounded-xl px-3 py-2 text-sm"
                         value={selectedOutputDeviceId ?? ''}
                         onChange={(event) => setSelectedOutputDeviceId(event.target.value || null)}
                         disabled={!supportsOutputDeviceSelection}

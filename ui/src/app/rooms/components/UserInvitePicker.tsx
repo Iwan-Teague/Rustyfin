@@ -44,8 +44,8 @@ export default function UserInvitePicker({
     <section
       className={
         fillHeight
-          ? 'panel h-full min-h-0 p-5 sm:p-6 flex flex-col gap-4'
-          : 'panel space-y-4 p-5 sm:p-6'
+          ? 'rf-flat-section flex h-full min-h-0 flex-col gap-4'
+          : 'rf-flat-section space-y-4'
       }
       style={noShadow ? { boxShadow: 'none' } : undefined}
     >
@@ -54,7 +54,13 @@ export default function UserInvitePicker({
         <p className="text-sm muted">Set each user&apos;s access level, then check the box to invite them.</p>
       </div>
 
-      <ul className={fillHeight ? 'min-h-0 flex-1 space-y-2 overflow-y-auto pr-1' : 'space-y-2'}>
+      <ul
+        className={
+          fillHeight
+            ? 'rf-flat-list min-h-0 flex-1 overflow-y-auto pr-1'
+            : 'rf-flat-list'
+        }
+      >
         {users
           .filter((user) => user.id !== currentUserId)
           .map((user) => {
@@ -63,7 +69,7 @@ export default function UserInvitePicker({
             return (
               <li
                 key={user.id}
-                className="tile rounded-xl px-3 py-2"
+                className="rf-flat-row"
                 style={{ boxShadow: 'none' }}
               >
                 <div className="flex items-center justify-between gap-3">
@@ -81,7 +87,7 @@ export default function UserInvitePicker({
                   </div>
                   <div className="w-[7.75rem] shrink-0">
                     <select
-                      className="select w-full px-2 py-1.5 text-sm"
+                      className="rf-flat-input w-full px-2 py-1.5 text-sm"
                       aria-label={`Role for ${user.username}`}
                       value={role}
                       onChange={(e) => {

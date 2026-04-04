@@ -428,8 +428,8 @@ export default function CalendarPage() {
   }, []);
 
   return (
-    <div className="space-y-6 animate-rise">
-      <header className="space-y-2">
+    <div className="rf-flat-page rf-flat-scope animate-rise">
+      <header className="rf-flat-header">
         <h1 className="text-3xl font-semibold sm:text-4xl">Calendar</h1>
         <p className="text-sm muted sm:text-base">
           Shared scheduling for your server. Admins can publish global events, and each user can keep private personal events.
@@ -452,7 +452,7 @@ export default function CalendarPage() {
           panelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
         }`}
       >
-        <section className="panel rounded-2xl p-4 sm:p-5 space-y-4 flex flex-col lg:h-full lg:min-h-0">
+        <section className="rf-flat-section border-t border-[var(--border)]/70 pt-4 sm:pt-5 flex flex-col lg:h-full lg:min-h-0">
           <div className="flex flex-wrap items-center gap-2 justify-between">
             <div className="flex items-center gap-2">
               <button
@@ -501,7 +501,7 @@ export default function CalendarPage() {
           <div className="flex-1 min-h-0">
             {loading ? (
               <div
-                className="panel-soft rounded-xl h-full px-4 py-10 text-sm muted text-center flex items-center justify-center"
+                className="rf-flat-empty h-full px-4 py-10 text-sm muted text-center flex items-center justify-center"
                 role="status"
                 aria-live="polite"
               >
@@ -520,7 +520,7 @@ export default function CalendarPage() {
 
                   if (dayRows.length === 0) {
                     return (
-                      <div className="panel-soft rounded-xl px-4 py-4 text-sm muted">
+                      <div className="rf-flat-empty px-4 py-4 text-sm muted">
                         No events in this 30-day window.
                       </div>
                     );
@@ -531,7 +531,7 @@ export default function CalendarPage() {
                     return (
                     <div
                       key={key}
-                      className={`panel-soft rounded-xl px-3 py-2 space-y-2 border ${
+                      className={`rounded-xl border px-3 py-2 space-y-2 ${
                         isToday
                           ? 'calendar-today-outline border-transparent'
                           : 'border-[var(--border)]'
@@ -609,7 +609,7 @@ export default function CalendarPage() {
                       return (
                         <div
                           key={key}
-                          className={`panel-soft rounded-xl px-3 py-2 space-y-2 border ${
+                          className={`rounded-xl border px-3 py-2 space-y-2 ${
                             isToday
                               ? 'calendar-today-outline border-transparent'
                               : 'border-[var(--border)]'
@@ -911,7 +911,7 @@ export default function CalendarPage() {
         </section>
 
         {panelOpen && (
-          <aside className="panel rounded-2xl p-4 sm:p-5 space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto">
+          <aside className="rf-flat-section border-t border-[var(--border)]/70 pt-4 sm:pt-5 lg:h-full lg:min-h-0 lg:overflow-y-auto">
             {sidePanelMode === 'day' ? (
               <>
                 <div className="flex items-center justify-between gap-2">
@@ -951,7 +951,7 @@ export default function CalendarPage() {
 
                 <div className="space-y-2">
                   {selectedDayEvents.length === 0 ? (
-                    <div className="panel-soft rounded-xl px-4 py-4 text-sm muted">
+                    <div className="rf-flat-empty px-4 py-4 text-sm muted">
                       This day is clear.
                     </div>
                   ) : (
@@ -1140,10 +1140,10 @@ export default function CalendarPage() {
                     <h3 className="text-sm font-semibold">Personal Events (Admin View)</h3>
                     <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
                       {adminPersonalEvents.length === 0 ? (
-                        <div className="panel-soft rounded-xl px-3 py-2 text-xs muted">No personal events in this range.</div>
+                        <div className="rf-flat-empty px-3 py-2 text-xs muted">No personal events in this range.</div>
                       ) : (
                         adminPersonalEvents.map((event) => (
-                          <div key={event.occurrence_id} className="panel-soft rounded-xl px-3 py-2 text-xs">
+                          <div key={event.occurrence_id} className="rounded-xl border border-[var(--border)]/70 px-3 py-2 text-xs">
                             <p className="font-semibold">{event.title}</p>
                             <p className="muted">
                               {coerceYmd(event.event_date) ?? event.event_date} ·{' '}
