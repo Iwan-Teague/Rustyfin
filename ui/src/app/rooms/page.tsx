@@ -34,22 +34,22 @@ const DEFAULT_POLICY: WatchPartyPolicy = {
 const ROOM_MODE_OPTIONS: Array<{ value: RoomMode; label: string; description: string }> = [
   {
     value: 'watch',
-    label: 'Watch Together',
+    label: 'Watch',
     description: 'Synchronized movie and episode playback with shared controls.',
   },
   {
     value: 'audio',
-    label: 'Listen Together',
+    label: 'Listen',
     description: 'Low-latency shared listening sessions for music and audio.',
   },
   {
     value: 'play',
-    label: 'Play Together',
+    label: 'Challenge',
     description: 'Party-style interactive rooms for gameplay sessions.',
   },
   {
     value: 'create',
-    label: 'Create Together',
+    label: 'Create',
     description: 'Collaborative creation rooms for writing and planning.',
   },
 ];
@@ -329,20 +329,20 @@ export default function WatchPartyPage() {
           className="rf-flat-section flex h-full min-h-0 flex-col gap-4"
           style={fixedTopPanelsStyle}
         >
-          <div className="space-y-2">
+          <div className="space-y-0">
             <h2 className="text-xl font-semibold">Open Rooms</h2>
-            <p className="text-sm muted">Public rooms you can join right now.</p>
           </div>
 
           {publicRooms.length === 0 ? (
             <div className="rf-flat-empty text-sm muted">No open rooms right now.</div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              <div className="rf-flat-list">
+              <div className="rf-flat-list pt-2">
                 {publicRooms.map((room) => (
-                  <div
+                  <Link
                     key={room.room_id}
-                    className="rf-flat-row flex items-center justify-between gap-3"
+                    href={`/rooms/${room.room_id}`}
+                    className="rf-flat-row flex items-center justify-between gap-3 rounded-2xl px-3 transition hover:bg-white/[0.05]"
                   >
                     <div className="min-w-0 space-y-0.5">
                       <p className="font-semibold truncate">{room.title}</p>
@@ -356,13 +356,7 @@ export default function WatchPartyPage() {
                         <span className="chip text-xs">Password Protected</span>
                       )}
                     </div>
-                    <Link
-                      href={`/rooms/${room.room_id}`}
-                      className="btn-primary shrink-0 px-3 py-1.5 text-sm"
-                    >
-                      Join
-                    </Link>
-                  </div>
+                  </Link>
                 ))}
               </div>
             </div>
@@ -402,7 +396,7 @@ export default function WatchPartyPage() {
               }}
             >
               <div
-                className="rf-preserve-surface w-full max-w-5xl space-y-5 rounded-2xl border border-[var(--border)] bg-[rgb(19,24,36)] p-6 shadow-[0_30px_60px_rgba(0,0,0,0.42)]"
+                className="rf-preserve-surface w-full max-w-5xl max-h-[calc(100vh-3rem)] overflow-y-auto rounded-[1.6rem] border border-[var(--border)] bg-[rgb(19,24,36)] p-6 shadow-[0_30px_60px_rgba(0,0,0,0.42)]"
                 role="dialog"
                 aria-modal="true"
                 aria-label="Create room"
