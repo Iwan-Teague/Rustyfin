@@ -159,9 +159,10 @@ button:focus-visible {
   }
 
   .app-nav.app-nav-rail {
+    position: fixed;
+    left: var(--page-pad-inline);
     top: var(--page-pad-top);
-    align-self: flex-start;
-    min-height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
+    height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
     padding: 1rem;
     overflow: hidden;
     border-radius: 2rem;
@@ -235,12 +236,15 @@ button:focus-visible {
 
 @media (min-width: 768px) {
   .app-shell {
-    flex-direction: row;
-    align-items: flex-start;
+    display: block;
   }
 
   .app-main {
-    flex: 1;
+    margin-left: calc(18.25rem + 1.25rem);
+    margin-right: 0;
+    width: auto;
+    max-width: none;
+    min-height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
     padding-top: 0;
   }
 }
