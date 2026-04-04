@@ -178,7 +178,7 @@ export default function NavBar() {
   };
 
   const railLinkClass = (href: string) =>
-    `rf-nav-link btn-ghost flex min-h-[3.25rem] items-center rounded-[1.1rem] text-sm font-medium transition ${
+    `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] items-center rounded-[1.1rem] text-base font-semibold transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     } ${
       railExpanded ? 'w-full justify-start gap-3 px-3.5' : 'w-full justify-center px-0'
@@ -215,7 +215,7 @@ export default function NavBar() {
       </div>
 
       <div className="mt-5 flex min-h-0 flex-1 flex-col gap-2">
-        <div className="flex flex-col gap-1.5">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
           {ROOT_NAV_ITEMS.map((item) => {
             const showChildren = Boolean(item.items.length && openGroupHrefs.has(item.href));
             return (
@@ -253,7 +253,7 @@ export default function NavBar() {
                       <Link
                         key={subItem.href}
                         href={subItem.href}
-                        className={`rf-nav-link btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-sm font-medium ${
+                        className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-[0.95rem] font-medium ${
                           isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
                         }`}
                         aria-current={isActivePath(subItem.href) ? 'page' : undefined}
