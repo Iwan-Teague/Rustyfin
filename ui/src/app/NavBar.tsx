@@ -196,7 +196,7 @@ export default function NavBar() {
   const desktopRail = (
     <aside
       className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
-        railExpanded ? 'w-[18.25rem]' : 'w-[5.75rem]'
+        railExpanded ? 'w-[15.75rem]' : 'w-[5.75rem]'
       }`}
       data-expanded={railExpanded ? 'true' : 'false'}
       onMouseEnter={() => setRailHovered(true)}
