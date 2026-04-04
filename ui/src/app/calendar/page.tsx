@@ -438,32 +438,14 @@ export default function CalendarPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 w-full overflow-hidden">
-      <header className="rf-flat-header shrink-0">
-        <h1 className="text-3xl font-semibold sm:text-4xl">Calendar</h1>
-        <p className="text-sm muted sm:text-base">
-          Shared scheduling for your server. Admins can publish global events, and each user can keep private personal events.
-        </p>
-        <div>
-          <button
-            type="button"
-            className="btn-secondary px-3 py-1.5 text-sm"
-            onClick={() =>
-              setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
-            }
-          >
-            {eventPanelButtonLabel}
-          </button>
-        </div>
-      </header>
-
       <div
         className={`grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full ${
           panelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
         }`}
       >
-        <section className="rf-flat-section border-t border-[var(--border)]/70 pt-4 sm:pt-5 flex flex-col lg:h-full lg:min-h-0">
-          <div className="flex flex-wrap items-center gap-2 justify-between">
-            <div className="flex items-center gap-2">
+        <section className="rf-flat-section flex flex-col lg:h-full lg:min-h-0">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 className="btn-secondary px-3 py-1.5 text-sm"
@@ -485,26 +467,32 @@ export default function CalendarPage() {
               >
                 Next
               </button>
+              <button
+                type="button"
+                className="btn-secondary px-3 py-1.5 text-sm"
+                onClick={() =>
+                  setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
+                }
+              >
+                {eventPanelButtonLabel}
+              </button>
             </div>
-            <select
-              className="select w-full sm:w-auto px-3 py-2 text-sm"
-              value={view}
-              onChange={(e) => setView(e.target.value as CalendarView)}
-            >
-              <option value="month">Monthly</option>
-              <option value="week">This Week</option>
-              <option value="next_week">Upcoming Week</option>
-              <option value="next_7_days">Next 7 Days</option>
-              <option value="agenda_30">Agenda (30 Days)</option>
-              <option value="events_30">Events Only (30 Days)</option>
-            </select>
-          </div>
-
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
-            <span className="chip">
-              {events.length} events
-            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
+              <span className="text-xs text-white/55">{events.length} events</span>
+              <select
+                className="select w-full sm:w-auto px-3 py-2 text-sm"
+                value={view}
+                onChange={(e) => setView(e.target.value as CalendarView)}
+              >
+                <option value="month">Monthly</option>
+                <option value="week">This Week</option>
+                <option value="next_week">Upcoming Week</option>
+                <option value="next_7_days">Next 7 Days</option>
+                <option value="agenda_30">Agenda (30 Days)</option>
+                <option value="events_30">Events Only (30 Days)</option>
+              </select>
+            </div>
           </div>
 
           <div className="flex-1 min-h-0">
