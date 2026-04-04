@@ -301,16 +301,17 @@ fn stream_chat_response(
                 Ok(payload) => payload,
                 Err(message) => {
                     assistant_content = message;
-                    stats = Some(build_turn_stats(
-                        0,
-                        0,
-                        0,
+                    stats = Some(build_server_authored_turn_stats(
+                        &req,
+                        &assistant_content,
+                        &grounding_chunks,
                         0,
                         0,
                         turn_started.elapsed().as_millis() as u64,
                         0,
                         0,
-                        0.0,
+                        None,
+                        None,
                     ));
                     persist_chat_audit_event(
                         &state,
@@ -450,16 +451,17 @@ fn stream_chat_response(
                 assistant_content = assistant_text_for_confirmed_action(&block);
             }
 
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 0,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 0,
                 0,
-                0.0,
+                None,
+                None,
             ));
 
             if let Some(persistence) = &persistence {
@@ -574,16 +576,17 @@ fn stream_chat_response(
                 }
                 Err(message) => message,
             };
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 0,
                 0,
                 turn_started.elapsed().as_millis() as u64,
                 0,
                 0,
-                0.0,
+                None,
+                None,
             ));
             persist_chat_audit_event(
                 &state,
@@ -654,16 +657,17 @@ fn stream_chat_response(
                 },
             ));
             assistant_content = message;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 0,
                 0,
                 turn_started.elapsed().as_millis() as u64,
                 0,
                 0,
-                0.0,
+                None,
+                None,
             ));
             persist_chat_audit_event(
                 &state,
@@ -734,16 +738,17 @@ fn stream_chat_response(
                 },
             ));
             assistant_content = message;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 0,
                 0,
                 turn_started.elapsed().as_millis() as u64,
                 0,
                 0,
-                0.0,
+                None,
+                None,
             ));
             persist_chat_audit_event(
                 &state,
@@ -805,16 +810,17 @@ fn stream_chat_response(
                 },
             ));
             assistant_content = message;
-            stats = Some(build_turn_stats(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 0,
                 0,
                 turn_started.elapsed().as_millis() as u64,
                 0,
                 0,
-                0.0,
+                None,
+                None,
             ));
             persist_chat_audit_event(
                 &state,
@@ -1483,16 +1489,15 @@ fn stream_chat_response(
             executor.finalize_bounded_failure();
             execution_trace = Some(executor.trace().clone());
             planner_debug.execution_trace = execution_trace.clone();
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -1587,16 +1592,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -1691,16 +1695,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -1786,16 +1789,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -1881,16 +1883,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -1976,16 +1977,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -2069,16 +2069,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -2164,16 +2163,15 @@ fn stream_chat_response(
                 execution_trace = Some(executor.trace().clone());
                 planner_debug.execution_trace = execution_trace.clone();
             }
-            stats = Some(build_turn_stats_with_planner(
-                0,
-                0,
-                0,
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
                 planner_duration_ms,
                 tool_duration_ms,
                 turn_started.elapsed().as_millis() as u64,
                 queue_duration_ms,
                 model_load_duration_ms,
-                0.0,
                 Some(&planner_debug),
                 execution_trace.as_ref(),
             ));
@@ -2360,16 +2358,16 @@ fn stream_chat_response(
                                 finished_ts_ms: Some(generating_finished_ts_ms),
                             },
                         ));
-                        stats = Some(build_turn_stats_with_planner(
-                            0,
-                            0,
+                        stats = Some(build_estimated_model_turn_stats(
+                            &req,
+                            &assistant_content,
+                            &grounding_chunks,
                             generation_duration_ms,
                             planner_duration_ms,
                             tool_duration_ms,
                             turn_started.elapsed().as_millis() as u64,
                             queue_duration_ms,
                             model_load_duration_ms,
-                            0.0,
                             Some(&planner_debug),
                             execution_trace.as_ref(),
                         ));
@@ -2697,14 +2695,16 @@ fn parse_device_indices_override(name: &str, value: Option<&str>) -> Vec<usize> 
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        LoadedRoleModel, build_turn_stats_with_planner, find_loaded_backend_for_route,
-        grounding_recovery_plan, parse_device_indices_override, parse_gpu_split_mode_override,
-        parse_i32_override,
+        LoadedRoleModel, build_server_authored_turn_stats, build_turn_stats_with_planner,
+        find_loaded_backend_for_route, grounding_recovery_plan, parse_device_indices_override,
+        parse_gpu_split_mode_override, parse_i32_override,
     };
     use crate::ai_assistant::registry::AssistantToolName;
     use crate::ai_assistant::types::{
-        AssistantPlannerDebug, AssistantResponseMode, AssistantToolContextBlock,
-        AssistantToolInput, PlannedToolCall, PlannerExecutionStats, PlannerFallbackReason,
+        AssistantChatRequest, AssistantGroundingChunk, AssistantGroundingVisibility,
+        AssistantHistoryMessage, AssistantPlannerDebug, AssistantResponseMode,
+        AssistantToolContextBlock, AssistantToolInput, PlannedToolCall, PlannerExecutionStats,
+        PlannerFallbackReason,
     };
     use futures::stream::BoxStream;
     use rustfin_ai_agent::engine::LlamaGpuSplitMode;
@@ -2845,6 +2845,51 @@ mod tests {
             stats.planner_fallback_reason.as_deref(),
             Some("argument_invalid")
         );
+    }
+
+    #[test]
+    fn build_server_authored_turn_stats_estimates_prompt_and_completion_tokens() {
+        let stats = build_server_authored_turn_stats(
+            &AssistantChatRequest {
+                model: "test.gguf".to_string(),
+                message: "What is the weather in Campile?".to_string(),
+                response_mode: AssistantResponseMode::Thinking,
+                confirmation_token: None,
+                history: vec![AssistantHistoryMessage {
+                    role: "user".to_string(),
+                    content: "What was it like yesterday in Campile?".to_string(),
+                    grounding_tools: Vec::new(),
+                    follow_up_contexts: Vec::new(),
+                    grounding_chunks: Vec::new(),
+                }],
+            },
+            "Forecast for Campile, County Wexford, Leinster, Ireland over the next 7 days.",
+            &[AssistantGroundingChunk {
+                id: "grounding:test".to_string(),
+                source_kind: "weather_get_forecast".to_string(),
+                title: "Weather grounding".to_string(),
+                excerpt: "Campile, County Wexford, Leinster, Ireland".to_string(),
+                score: 1.0,
+                visibility: AssistantGroundingVisibility::User,
+                topic_key: None,
+                owner_user_id: None,
+                source_id: None,
+                source_sub_id: None,
+                citation: None,
+            }],
+            5_000,
+            250,
+            5_600,
+            100,
+            50,
+            None,
+            None,
+        );
+
+        assert!(stats.prompt_tokens > 0);
+        assert!(stats.completion_tokens > 0);
+        assert_eq!(stats.generation_duration_ms, 0);
+        assert_eq!(stats.tokens_per_second, 0.0);
     }
 
     #[test]
@@ -3183,17 +3228,57 @@ fn finish_tool(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_turn_stats(
-    prompt_tokens: u64,
-    completion_tokens: u64,
+#[allow(clippy::too_many_arguments)]
+fn build_server_authored_turn_stats(
+    request: &AssistantChatRequest,
+    assistant_content: &str,
+    grounding_chunks: &[AssistantGroundingChunk],
+    planner_duration_ms: u64,
+    tool_duration_ms: u64,
+    end_to_end_duration_ms: u64,
+    queue_duration_ms: u64,
+    model_load_duration_ms: u64,
+    planner_debug: Option<&AssistantPlannerDebug>,
+    execution_trace: Option<&AssistantExecutionTrace>,
+) -> AssistantTurnStats {
+    let prompt_tokens = estimated_prompt_tokens(request, grounding_chunks);
+    let completion_tokens = estimated_completion_tokens(assistant_content);
+    build_turn_stats_with_planner(
+        prompt_tokens,
+        completion_tokens,
+        0,
+        planner_duration_ms,
+        tool_duration_ms,
+        end_to_end_duration_ms,
+        queue_duration_ms,
+        model_load_duration_ms,
+        0.0,
+        planner_debug,
+        execution_trace,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_estimated_model_turn_stats(
+    request: &AssistantChatRequest,
+    assistant_content: &str,
+    grounding_chunks: &[AssistantGroundingChunk],
     generation_duration_ms: u64,
     planner_duration_ms: u64,
     tool_duration_ms: u64,
     end_to_end_duration_ms: u64,
     queue_duration_ms: u64,
     model_load_duration_ms: u64,
-    tokens_per_second: f64,
+    planner_debug: Option<&AssistantPlannerDebug>,
+    execution_trace: Option<&AssistantExecutionTrace>,
 ) -> AssistantTurnStats {
+    let prompt_tokens = estimated_prompt_tokens(request, grounding_chunks);
+    let completion_tokens = estimated_completion_tokens(assistant_content);
+    let tokens_per_second = if generation_duration_ms > 0 && completion_tokens > 0 {
+        (completion_tokens as f64) / ((generation_duration_ms as f64) / 1000.0)
+    } else {
+        0.0
+    };
     build_turn_stats_with_planner(
         prompt_tokens,
         completion_tokens,
@@ -3204,9 +3289,38 @@ fn build_turn_stats(
         queue_duration_ms,
         model_load_duration_ms,
         tokens_per_second,
-        None,
-        None,
+        planner_debug,
+        execution_trace,
     )
+}
+
+fn estimated_prompt_tokens(
+    request: &AssistantChatRequest,
+    grounding_chunks: &[AssistantGroundingChunk],
+) -> u64 {
+    let messages = build_assistant_messages(request.clone(), grounding_chunks);
+    estimate_chat_message_tokens(&messages)
+}
+
+fn estimated_completion_tokens(assistant_content: &str) -> u64 {
+    if assistant_content.trim().is_empty() {
+        return 0;
+    }
+    estimate_chat_message_tokens(&[rustfin_ai_agent::ChatMessage {
+        role: "assistant".to_string(),
+        content: assistant_content.to_string(),
+    }])
+}
+
+fn estimate_chat_message_tokens(messages: &[rustfin_ai_agent::ChatMessage]) -> u64 {
+    messages
+        .iter()
+        .fold(0_u64, |total, message| {
+            let role_cost = (message.role.len() / 4).saturating_add(4) as u64;
+            let content_cost = (message.content.len() / 4).saturating_add(1) as u64;
+            total.saturating_add(role_cost).saturating_add(content_cost)
+        })
+        .max(1)
 }
 
 #[allow(clippy::too_many_arguments)]
