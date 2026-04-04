@@ -19,7 +19,7 @@ import {
 import { playTelegramDeleteAnimation } from '@/lib/deleteAnimation';
 import { clientErrorMessage } from '@/lib/errors';
 
-type CalendarView = 'month' | 'week' | 'next_week' | 'next_7_days' | 'agenda_30' | 'events_30';
+type CalendarView = 'month' | 'week' | 'next_7_days' | 'agenda_30' | 'events_30';
 type CalendarSidePanelMode = 'closed' | 'editor' | 'day';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -96,11 +96,6 @@ function rangeForView(view: CalendarView, anchorDate: Date): { from: Date; to: D
   }
   if (view === 'week') {
     const from = startOfWeek(anchor);
-    const to = addDays(from, 6);
-    return { from, to, days: enumerateDays(from, to) };
-  }
-  if (view === 'next_week') {
-    const from = addDays(startOfWeek(anchor), 7);
     const to = addDays(from, 6);
     return { from, to, days: enumerateDays(from, to) };
   }
@@ -285,7 +280,7 @@ export default function CalendarPage() {
   }, [reload]);
 
   useEffect(() => {
-    if (view === 'week' || view === 'next_week' || view === 'next_7_days') {
+    if (view === 'week' || view === 'next_7_days') {
       setAnchorDate(withNoon(new Date()));
     }
   }, [view]);
@@ -437,7 +432,7 @@ export default function CalendarPage() {
     <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 w-full overflow-hidden">
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full lg:grid-cols-[minmax(0,1fr)_auto]">
         <section className="rf-flat-section flex flex-col lg:h-full lg:min-h-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 lg:flex-nowrap">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 lg:flex-nowrap">
             <div className="flex min-w-0 flex-wrap items-center gap-3 lg:flex-nowrap">
               <div className="min-w-[13rem] sm:min-w-[17rem] lg:min-w-[20rem]">
                 <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
@@ -450,7 +445,6 @@ export default function CalendarPage() {
               >
                 <option value="month">Monthly</option>
                 <option value="week">This Week</option>
-                <option value="next_week">Upcoming Week</option>
                 <option value="next_7_days">Next 7 Days</option>
                 <option value="agenda_30">Agenda (30 Days)</option>
                 <option value="events_30">Events Only (30 Days)</option>
@@ -694,7 +688,7 @@ export default function CalendarPage() {
                       </div>
                     ))}
                   </div>
-                  <div className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)]">
+                  <div className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-[var(--border-subtle)]">
                     {days.map((day) => {
                       const key = formatYmd(day);
                       const dayEvents = eventsByDate.get(key) ?? [];
@@ -792,7 +786,7 @@ export default function CalendarPage() {
                 </div>
                 <div
                   ref={monthGridRef}
-                  className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)]"
+                  className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-[var(--border-subtle)]"
                   style={{
                     gridTemplateRows: `repeat(${view === 'month' ? monthRowCount : 1}, minmax(0, 1fr))`,
                   }}

@@ -157,6 +157,18 @@ button:focus-visible {
     position: sticky;
     top: 0.5rem;
   }
+
+  .app-nav.app-nav-rail {
+    top: var(--page-pad-top);
+    align-self: flex-start;
+    min-height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
+    padding: 0.9rem;
+    overflow: hidden;
+    transition:
+      width 240ms var(--ease-out-quart),
+      border-color var(--motion-base) var(--ease-out-quart),
+      box-shadow var(--motion-base) var(--ease-out-quart);
+  }
 }
 
 .accent-logo {
@@ -208,12 +220,28 @@ button:focus-visible {
   padding-inline: var(--page-pad-inline);
   padding-top: var(--page-pad-top);
   padding-bottom: var(--page-pad-bottom);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.9rem, 2vw, 1.4rem);
 }
 
 .app-main {
   margin-inline: auto;
   width: min(100%, var(--page-max-width));
   padding-block: clamp(1rem, 2.1vw, 2rem);
+  min-width: 0;
+}
+
+@media (min-width: 768px) {
+  .app-shell {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .app-main {
+    flex: 1;
+    padding-top: 0;
+  }
 }
 
 .rf-flat-page {
@@ -1604,6 +1632,12 @@ input[type="checkbox"]:disabled {
 .app-nav .rf-notify-trigger.rf-nav-link {
   overflow: visible;
   min-width: 2.75rem;
+}
+
+.app-nav-rail .rf-notify-root.w-full .rf-notify-trigger {
+  width: 100%;
+  justify-content: flex-start;
+  padding-inline: 0.75rem;
 }
 
 .rf-notify-bell {
