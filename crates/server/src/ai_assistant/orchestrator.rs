@@ -3702,11 +3702,48 @@ fn extract_weather_location(message: &str) -> Option<String> {
         " for ",
         " in ",
     ] {
+        if matches!(marker, " for " | " in ")
+            && !weather_prefix_allows_generic_location_marker(&lower, marker)
+        {
+            continue;
+        }
         if let Some(candidate) = extract_location_after_marker(message, &lower, marker) {
             return Some(candidate);
         }
     }
     None
+}
+
+fn weather_prefix_allows_generic_location_marker(message_lower: &str, marker: &str) -> bool {
+    let Some(idx) = message_lower.find(marker) else {
+        return false;
+    };
+    let prefix = message_lower[..idx].trim();
+    if prefix.is_empty() {
+        return false;
+    }
+    has_any(
+        prefix,
+        &[
+            "weather",
+            "forecast",
+            "temperature",
+            "conditions",
+            "rain",
+            "raining",
+            "wind",
+            "windy",
+            "humidity",
+            "humid",
+            "hot",
+            "cold",
+            "today",
+            "tomorrow",
+            "yesterday",
+            "week",
+            "weekend",
+        ],
+    )
 }
 
 fn extract_location_after_marker(message: &str, lower: &str, marker: &str) -> Option<String> {
@@ -3718,6 +3755,17 @@ fn extract_location_after_marker(message: &str, lower: &str, marker: &str) -> Op
 fn normalize_weather_location_candidate(raw: &str) -> Option<String> {
     let trimmed =
         raw.trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch));
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let trimmed = trimmed
+        .strip_prefix("for ")
+        .or_else(|| trimmed.strip_prefix("For "))
+        .or_else(|| trimmed.strip_prefix("in "))
+        .or_else(|| trimmed.strip_prefix("In "))
+        .unwrap_or(trimmed)
+        .trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -6141,6 +6189,56 @@ mod tests {
                 assert_eq!(*forecast_days, Some(7));
             }
             _ => panic!("expected weather forecast input"),
+        }
+    }
+
+    #[test]
+    fn planner_uses_weather_follow_up_history_for_location_with_in_country_phrase() {
+        let history = history_with_follow_up_context(
+            "weather_get_current",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Campile, County Wexford, Ireland".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("campile in ireland", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetCurrent);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "campile in ireland");
+                assert_eq!(*forecast_days, None);
+            }
+            _ => panic!("expected weather current input"),
+        }
+    }
+
+    #[test]
+    fn planner_strips_leading_for_from_weather_follow_up_location() {
+        let history = history_with_follow_up_context(
+            "weather_get_current",
+            &[],
+            AssistantFollowUpInputHint {
+                weather_location: Some("Campile, County Wexford, Ireland".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("for Campile, Ireland?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::WeatherGetCurrent);
+        match &tools[0].input {
+            AssistantToolInput::Weather {
+                location,
+                forecast_days,
+            } => {
+                assert_eq!(location, "Campile, Ireland");
+                assert_eq!(*forecast_days, None);
+            }
+            _ => panic!("expected weather current input"),
         }
     }
 

@@ -338,6 +338,15 @@ fn classify_weather_outcome(block: &AssistantToolContextBlock) -> OutcomeInspect
             ..OutcomeInspection::default()
         };
     }
+    if weather_resolution_looks_weak(&block.data) {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::WeakMatch,
+            confidence: 0.90,
+            message,
+            recovery_hints: vec!["normalize_location".to_string()],
+            ..OutcomeInspection::default()
+        };
+    }
     if block.tool == "weather_get_forecast"
         && block
             .data
@@ -358,6 +367,105 @@ fn classify_weather_outcome(block: &AssistantToolContextBlock) -> OutcomeInspect
         message,
         ..OutcomeInspection::default()
     }
+}
+
+fn weather_resolution_looks_weak(data: &serde_json::Value) -> bool {
+    let query = data
+        .get("location_query")
+        .and_then(serde_json::Value::as_str)
+        .map(strip_weather_prefixes)
+        .filter(|value| !value.is_empty());
+    let resolved = data
+        .get("resolved_location")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(query) = query else {
+        return false;
+    };
+    let Some(resolved) = resolved else {
+        return false;
+    };
+
+    let primary_query = primary_weather_segment(query);
+    let primary_resolved = primary_weather_segment(resolved);
+    if primary_query.is_empty() || primary_resolved.is_empty() {
+        return false;
+    }
+
+    let primary_query_text = normalize_weather_text(primary_query);
+    let primary_resolved_text = normalize_weather_text(primary_resolved);
+    if primary_query_text.is_empty() || primary_resolved_text.is_empty() {
+        return false;
+    }
+    if primary_resolved_text.contains(&primary_query_text)
+        || primary_query_text.contains(&primary_resolved_text)
+    {
+        return false;
+    }
+
+    let query_tokens = significant_weather_tokens(query);
+    if query_tokens.len() < 2 {
+        return false;
+    }
+    let resolved_tokens = significant_weather_tokens(resolved);
+    let overlap = query_tokens
+        .iter()
+        .filter(|token| resolved_tokens.contains(*token))
+        .count();
+
+    overlap == 0
+}
+
+fn strip_weather_prefixes(value: &str) -> &str {
+    value
+        .trim()
+        .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        .strip_prefix("for ")
+        .or_else(|| value.trim().strip_prefix("For "))
+        .or_else(|| value.trim().strip_prefix("in "))
+        .or_else(|| value.trim().strip_prefix("In "))
+        .map(str::trim)
+        .filter(|trimmed| !trimmed.is_empty())
+        .unwrap_or_else(|| {
+            value
+                .trim()
+                .trim_matches(|ch: char| ['"', '\'', '(', ')', ',', '.', '?', '!'].contains(&ch))
+        })
+}
+
+fn primary_weather_segment(value: &str) -> &str {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .unwrap_or(value)
+        .split(" in ")
+        .next()
+        .map(str::trim)
+        .unwrap_or(value)
+}
+
+fn normalize_weather_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn significant_weather_tokens(value: &str) -> Vec<String> {
+    normalize_weather_text(value)
+        .split_whitespace()
+        .filter(|token| token.len() > 2)
+        .filter(|token| {
+            !matches!(
+                *token,
+                "for" | "the" | "and" | "county" | "state" | "province"
+            )
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn classify_library_outcome(
@@ -724,6 +832,41 @@ mod tests {
         assert_eq!(
             outcome.kind,
             crate::ai_assistant::types::AssistantToolOutcomeKind::Partial
+        );
+    }
+
+    #[test]
+    fn normalizes_wrong_weather_geocode_as_weak_match() {
+        let outcome = normalize_tool_result(
+            "for Campile, Ireland?",
+            &PlannedToolCall {
+                tool: AssistantToolName::WeatherGetCurrent,
+                input: AssistantToolInput::Weather {
+                    location: "for Campile, Ireland".to_string(),
+                    forecast_days: None,
+                },
+            },
+            AssistantToolContextBlock {
+                tool: "weather_get_current",
+                label: "Current weather for For, Blue Nile State, Sudan".to_string(),
+                status: "ok",
+                data: json!({
+                    "location_query": "for Campile, Ireland",
+                    "resolved_location": "For, Blue Nile State, Sudan",
+                    "condition": "Partly cloudy",
+                    "temperature_c": 36.4
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::WeakMatch
+        );
+        assert!(
+            outcome
+                .recovery_hints
+                .iter()
+                .any(|hint| hint == "normalize_location")
         );
     }
 }

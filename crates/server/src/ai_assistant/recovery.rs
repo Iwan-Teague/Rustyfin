@@ -368,12 +368,22 @@ fn library_edges(
 fn weather_location_variants(location: &str) -> Vec<String> {
     let mut variants = Vec::new();
     push_variant(&mut variants, location);
-    let tokens = location
+    let normalized_location = strip_weather_location_prefix(location);
+    if normalized_location != location {
+        push_variant(&mut variants, normalized_location);
+    }
+    if normalized_location.to_ascii_lowercase().contains(" in ") {
+        push_variant(
+            &mut variants,
+            &replace_case_insensitive(normalized_location, " in ", ", "),
+        );
+    }
+    let tokens = normalized_location
         .split_whitespace()
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    if !location.contains(',') && tokens.len() >= 2 {
+    if !normalized_location.contains(',') && tokens.len() >= 2 {
         push_variant(
             &mut variants,
             &format!("{}, {}", tokens[0], tokens[1..].join(" ")),
@@ -394,6 +404,28 @@ fn weather_location_variants(location: &str) -> Vec<String> {
         push_variant(&mut variants, core);
     }
     variants
+}
+
+fn strip_weather_location_prefix(location: &str) -> &str {
+    location
+        .strip_prefix("for ")
+        .or_else(|| location.strip_prefix("For "))
+        .or_else(|| location.strip_prefix("in "))
+        .or_else(|| location.strip_prefix("In "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(location)
+}
+
+fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    let lower = haystack.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    if let Some(index) = lower.find(&needle_lower) {
+        let end = index + needle.len();
+        format!("{}{}{}", &haystack[..index], replacement, &haystack[end..])
+    } else {
+        haystack.to_string()
+    }
 }
 
 fn push_variant(variants: &mut Vec<String>, candidate: &str) {
@@ -547,5 +579,74 @@ mod tests {
             decision,
             crate::ai_assistant::types::AssistantRecoveryDecision::Stop { .. }
         ));
+    }
+
+    #[test]
+    fn weather_weak_match_retries_with_sanitized_location_variant() {
+        let decision = choose_recovery_step(
+            "for Campile, Ireland?",
+            AssistantResponseMode::Extended,
+            &AssistantExecutionBudget::for_mode(AssistantResponseMode::Extended),
+            &AssistantExecutionTrace {
+                response_mode: AssistantResponseMode::Extended,
+                budget: AssistantExecutionBudget::for_mode(AssistantResponseMode::Extended),
+                planner_mode: Some("deterministic_fallback".to_string()),
+                attempts: Vec::new(),
+                retained_evidence: Vec::new(),
+                stop_reason:
+                    crate::ai_assistant::types::AssistantExecutionStopReason::WeakEvidenceOnly,
+                final_outcome_kind: None,
+                final_answer_path: crate::ai_assistant::types::AssistantSynthesisMode::None,
+                planner_pass_count: 1,
+                tool_step_count: 1,
+                alternate_tool_count: 0,
+                recovery_step_count: 0,
+                clarification_count: 0,
+                conflict_count: 0,
+                deterministic_answer_used: false,
+                synthesis_used: false,
+                used_role_backends: Vec::new(),
+                outcome_counts: Default::default(),
+            },
+            &PlannedToolCall {
+                tool: AssistantToolName::WeatherGetCurrent,
+                input: AssistantToolInput::Weather {
+                    location: "for Campile, Ireland".to_string(),
+                    forecast_days: None,
+                },
+            },
+            &AssistantToolOutcome {
+                tool: "weather_get_current".to_string(),
+                label: "Weather".to_string(),
+                domain_family: crate::ai_assistant::types::AssistantDomainFamily::Weather,
+                kind: AssistantToolOutcomeKind::WeakMatch,
+                confidence: 0.9,
+                block: crate::ai_assistant::types::AssistantToolContextBlock {
+                    tool: "weather_get_current",
+                    label: "Weather".to_string(),
+                    status: "ok",
+                    data: json!({"resolved_location":"For, Blue Nile State, Sudan"}),
+                },
+                evidence_items: Vec::new(),
+                ambiguity_keys: Vec::new(),
+                recovery_hints: vec!["normalize_location".to_string()],
+                args_hash: "hash".to_string(),
+                result_signature: "sig".to_string(),
+                message: Some("weak match".to_string()),
+                stale: false,
+            },
+            &ToolExecutionProfile::full_access(),
+        );
+        match decision {
+            crate::ai_assistant::types::AssistantRecoveryDecision::RunNext { call, .. } => {
+                match call.input {
+                    AssistantToolInput::Weather { location, .. } => {
+                        assert_eq!(location, "Campile, Ireland");
+                    }
+                    other => panic!("expected weather input, got {other:?}"),
+                }
+            }
+            other => panic!("expected recovery step, got {other:?}"),
+        }
     }
 }
