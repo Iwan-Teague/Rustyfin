@@ -421,6 +421,23 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
         } => format!(
             "document_create_download:file_name={file_name}:format={format}:model={model_name}"
         ),
+        AssistantToolInput::ConversationArchive {
+            conversation_ids,
+            selection_label,
+            archived,
+            ..
+        } => format!(
+            "conversations_archive:count={}:archived={archived}:selection={selection_label}",
+            conversation_ids.len()
+        ),
+        AssistantToolInput::ConversationDelete {
+            conversation_ids,
+            selection_label,
+            ..
+        } => format!(
+            "conversations_delete:count={}:selection={selection_label}",
+            conversation_ids.len()
+        ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))
         }

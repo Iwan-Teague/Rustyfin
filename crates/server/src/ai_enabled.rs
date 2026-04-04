@@ -3118,6 +3118,96 @@ fn assistant_text_for_confirmed_action(block: &AssistantToolContextBlock) -> Str
             .to_string();
     }
 
+    if block.tool == "conversations_archive_selection" {
+        let count = block
+            .data
+            .get("conversation_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let titles = block
+            .data
+            .get("conversations")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .filter_map(|item| item.get("title").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut response = if count == 1 {
+            format!(
+                "I moved \"{}\" into the archive.",
+                titles.first().copied().unwrap_or("that conversation")
+            )
+        } else {
+            format!("I moved {count} AI conversations into the archive")
+        };
+        if count > 1 && !titles.is_empty() {
+            response.push_str(": ");
+            response.push_str(
+                &titles
+                    .into_iter()
+                    .map(|title| format!("\"{title}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            if count > 3 {
+                response.push_str(&format!(", and {} more", count.saturating_sub(3)));
+            }
+            response.push('.');
+        } else if !response.ends_with('.') {
+            response.push('.');
+        }
+        return response;
+    }
+
+    if block.tool == "conversations_delete_selection" {
+        let count = block
+            .data
+            .get("conversation_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let titles = block
+            .data
+            .get("conversations")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .filter_map(|item| item.get("title").and_then(serde_json::Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut response = if count == 1 {
+            format!(
+                "I permanently deleted \"{}\" from your AI history.",
+                titles.first().copied().unwrap_or("that conversation")
+            )
+        } else {
+            format!("I permanently deleted {count} AI conversations")
+        };
+        if count > 1 && !titles.is_empty() {
+            response.push_str(": ");
+            response.push_str(
+                &titles
+                    .into_iter()
+                    .map(|title| format!("\"{title}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            if count > 3 {
+                response.push_str(&format!(", and {} more", count.saturating_sub(3)));
+            }
+            response.push('.');
+        } else if !response.ends_with('.') {
+            response.push('.');
+        }
+        return response;
+    }
+
     let event = block.data.get("event");
     let title = event
         .and_then(|value| value.get("title"))
@@ -3468,6 +3558,23 @@ fn tool_input_summary(input: &AssistantToolInput) -> String {
             ..
         } => format!(
             "document_create_download:file_name={file_name}:format={format}:model={model_name}"
+        ),
+        AssistantToolInput::ConversationArchive {
+            conversation_ids,
+            selection_label,
+            archived,
+            ..
+        } => format!(
+            "conversations_archive:count={}:archived={archived}:selection={selection_label}",
+            conversation_ids.len()
+        ),
+        AssistantToolInput::ConversationDelete {
+            conversation_ids,
+            selection_label,
+            ..
+        } => format!(
+            "conversations_delete:count={}:selection={selection_label}",
+            conversation_ids.len()
         ),
         AssistantToolInput::ChannelsFilter { query } => {
             format!("channels:query={}", query.as_deref().unwrap_or("*"))

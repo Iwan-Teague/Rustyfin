@@ -195,7 +195,9 @@ export type AiPendingActionKind =
   | 'calendar_create_event'
   | 'calendar_create_birthday'
   | 'calendar_delete_event'
-  | 'document_create_download';
+  | 'document_create_download'
+  | 'conversation_archive'
+  | 'conversation_delete';
 
 export type AiPendingActionStatus = 'pending' | 'confirmed' | 'expired';
 

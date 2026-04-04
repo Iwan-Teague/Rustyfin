@@ -10,7 +10,8 @@ use rustfin_ai_agent::backends::PromptBackend;
 
 use super::confirmation::{
     is_supported_calendar_create_intent, is_supported_calendar_delete_intent,
-    is_supported_document_create_intent, pending_action_request_for_message_with_state,
+    is_supported_conversation_manage_intent, is_supported_document_create_intent,
+    pending_action_request_for_message_with_state,
 };
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, extract_single_calendar_date};
@@ -758,6 +759,12 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
         AssistantToolName::DocumentCreateDownload => {
             " Args: required title/file name/format/content request; explicit user confirmation is required before the backend will execute it."
         }
+        AssistantToolName::ConversationsArchiveSelection => {
+            " Args: required resolved conversation ids/titles; explicit user confirmation is required before the backend will execute it."
+        }
+        AssistantToolName::ConversationsDeleteSelection => {
+            " Args: required resolved conversation ids/titles; explicit user confirmation is required before the backend will execute it."
+        }
         AssistantToolName::CalendarListEvents => {
             " Args: none; the backend derives the calendar time window from the message."
         }
@@ -1127,7 +1134,9 @@ fn normalize_planner_tool_input(
         AssistantToolName::CalendarCreateEvent
         | AssistantToolName::CalendarCreateBirthday
         | AssistantToolName::CalendarDeleteEvent
-        | AssistantToolName::DocumentCreateDownload => Err(planner_issue(
+        | AssistantToolName::DocumentCreateDownload
+        | AssistantToolName::ConversationsArchiveSelection
+        | AssistantToolName::ConversationsDeleteSelection => Err(planner_issue(
             "tool_not_allowed",
             "write tools are not allowed in model planning",
             None,
@@ -1461,6 +1470,7 @@ pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     if is_supported_calendar_create_intent(&lower)
         || is_supported_calendar_delete_intent(&lower)
         || is_supported_document_create_intent(&lower)
+        || is_supported_conversation_manage_intent(&lower)
     {
         return None;
     }
@@ -1489,6 +1499,11 @@ pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
     if has_any(&lower, &["channel", "channels"]) {
         return Some(
             "I can read channel activity right now, but I can't create, rename, or delete channels yet through Rustyfin AI.".to_string(),
+        );
+    }
+    if has_any(&lower, &["conversation", "conversations", "chat", "chats"]) {
+        return Some(
+            "I can archive or delete your AI conversations after explicit confirmation, but I can't rename or regroup them through Rustyfin AI yet.".to_string(),
         );
     }
 
@@ -2284,7 +2299,9 @@ fn apply_follow_up_tool_hints(
             AssistantToolName::CalendarCreateEvent
             | AssistantToolName::CalendarCreateBirthday
             | AssistantToolName::CalendarDeleteEvent
-            | AssistantToolName::DocumentCreateDownload => {}
+            | AssistantToolName::DocumentCreateDownload
+            | AssistantToolName::ConversationsArchiveSelection
+            | AssistantToolName::ConversationsDeleteSelection => {}
             AssistantToolName::CalendarListEvents => {
                 if let Some(query) = extract_calendar_event_detail_query(message) {
                     push_tool(

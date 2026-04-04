@@ -915,6 +915,17 @@ function PendingActionCard({
   const expired = pendingActionExpired(pendingAction);
   const confirmed = pendingAction.status === 'confirmed';
   const statusLabel = confirmed ? 'Confirmed' : expired ? 'Expired' : 'Confirmation required';
+  const detailLabel = (() => {
+    switch (pendingAction.action_kind) {
+      case 'conversation_archive':
+      case 'conversation_delete':
+        return 'AI conversation action requires an explicit confirmation.';
+      case 'document_create_download':
+        return 'Document creation requires an explicit confirmation.';
+      default:
+        return 'Calendar action requires an explicit confirmation.';
+    }
+  })();
 
   return (
     <div
@@ -929,7 +940,7 @@ function PendingActionCard({
           <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-[var(--orange-soft)]">
             {statusLabel}
           </p>
-          <p className="mt-1 text-xs muted">Calendar action requires an explicit confirmation.</p>
+          <p className="mt-1 text-xs muted">{detailLabel}</p>
         </div>
         {!confirmed && !expired ? (
           <button
@@ -942,7 +953,7 @@ function PendingActionCard({
           </button>
         ) : null}
       </div>
-      <p className="text-sm leading-relaxed">{pendingAction.summary}</p>
+      <p className="text-sm leading-relaxed whitespace-pre-wrap">{pendingAction.summary}</p>
     </div>
   );
 }

@@ -3312,6 +3312,156 @@ async fn ai_conversation_stream_confirms_and_persists_birthday_writes() {
 
 #[cfg(feature = "ai")]
 #[tokio::test]
+async fn ai_conversation_stream_confirms_group_delete_actions() {
+    let (server, state) = test_app_with_state().await;
+    let admin_token = login(&server, "admin", "admin_secure_123").await;
+    let admin_hdr = auth_hdr(&admin_token);
+
+    let user_id = create_user_with_libraries(
+        &server,
+        &admin_hdr,
+        "ai_conversation_delete_user",
+        "ai_conversation_delete_user_pass_123",
+        "user",
+        &[],
+    )
+    .await;
+    let user_token = login(
+        &server,
+        "ai_conversation_delete_user",
+        "ai_conversation_delete_user_pass_123",
+    )
+    .await;
+    let user_hdr = auth_hdr(&user_token);
+
+    let target_one = rustfin_db::repo::ai_conversations::create_conversation(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationParams {
+            user_id: &user_id,
+            title: "Weather notes",
+        },
+    )
+    .await
+    .unwrap();
+    let target_two = rustfin_db::repo::ai_conversations::create_conversation(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationParams {
+            user_id: &user_id,
+            title: "Server checks",
+        },
+    )
+    .await
+    .unwrap();
+    let control = rustfin_db::repo::ai_conversations::create_conversation(
+        &state.db,
+        rustfin_db::repo::ai_conversations::CreateAiConversationParams {
+            user_id: &user_id,
+            title: "Control thread",
+        },
+    )
+    .await
+    .unwrap();
+
+    rustfin_db::repo::ai_conversations::update_conversation_for_user(
+        &state.db,
+        &target_one.id,
+        &user_id,
+        None,
+        None,
+        Some(Some("Trips")),
+        None,
+    )
+    .await
+    .unwrap();
+    rustfin_db::repo::ai_conversations::update_conversation_for_user(
+        &state.db,
+        &target_two.id,
+        &user_id,
+        None,
+        None,
+        Some(Some("Trips")),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let stream_resp = server
+        .post(&format!(
+            "/api/v1/ai/conversations/{}/messages/stream",
+            control.id
+        ))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .json(&json!({
+            "model": "missing-model.gguf",
+            "message": "Delete all conversations in group Trips"
+        }))
+        .await;
+    stream_resp.assert_status_ok();
+    let body = String::from_utf8(stream_resp.as_bytes().to_vec()).unwrap();
+    assert!(body.contains("event: confirmation_required"));
+    let confirmation = extract_sse_json_event(&body, "confirmation_required");
+    let confirmation_token = confirmation["token"]
+        .as_str()
+        .expect("confirmation token")
+        .to_string();
+    assert_eq!(
+        confirmation["action_kind"].as_str(),
+        Some("conversation_delete")
+    );
+    let summary = confirmation["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("Weather notes"));
+    assert!(summary.contains("Server checks"));
+
+    let confirm_resp = server
+        .post(&format!(
+            "/api/v1/ai/conversations/{}/messages/stream",
+            control.id
+        ))
+        .add_header(user_hdr.0.clone(), user_hdr.1.clone())
+        .json(&json!({
+            "model": "missing-model.gguf",
+            "message": "Confirm",
+            "confirmation_token": confirmation_token,
+        }))
+        .await;
+    confirm_resp.assert_status_ok();
+    let confirm_body = String::from_utf8(confirm_resp.as_bytes().to_vec()).unwrap();
+    assert!(confirm_body.contains("permanently deleted 2 AI conversations"));
+
+    assert!(
+        rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            &target_one.id,
+            &user_id,
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            &target_two.id,
+            &user_id,
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            &control.id,
+            &user_id,
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+}
+
+#[cfg(feature = "ai")]
+#[tokio::test]
 async fn ai_assistant_network_grounding_hides_trusted_proxy_details_from_non_admins() {
     let (server, state) = test_app_with_state().await;
     let admin_token = login(&server, "admin", "admin_secure_123").await;

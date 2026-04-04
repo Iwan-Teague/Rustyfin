@@ -598,6 +598,26 @@ pub(crate) async fn execute_documents_provider_tool(
     tool_context_block_for_result(call.tool, result)
 }
 
+pub(crate) async fn execute_conversations_provider_tool(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> AssistantToolContextBlock {
+    let result = match call.tool {
+        AssistantToolName::ConversationsArchiveSelection => {
+            conversations_archive_selection(state, context, call).await
+        }
+        AssistantToolName::ConversationsDeleteSelection => {
+            conversations_delete_selection(state, context, call).await
+        }
+        _ => Err(format!(
+            "{} is not handled by the conversations provider.",
+            call.tool.as_str()
+        )),
+    };
+    tool_context_block_for_result(call.tool, result)
+}
+
 pub(crate) async fn execute_downloads_provider_tool(
     state: &AppState,
     context: &AssistantContext,
@@ -1829,6 +1849,173 @@ async fn document_create_download(
     ))
 }
 
+async fn conversations_archive_selection(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::ConversationArchive {
+        conversation_ids,
+        titles,
+        selection_label,
+        archived,
+    } = &call.input
+    else {
+        return Err("missing conversation archive payload".to_string());
+    };
+
+    if conversation_ids.is_empty() {
+        return Err("no AI conversations were selected for archiving".to_string());
+    }
+
+    let mut verified = Vec::with_capacity(conversation_ids.len());
+    for conversation_id in conversation_ids {
+        let Some(row) = rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+        )
+        .await
+        .map_err(|e| format!("failed to load AI conversation {conversation_id}: {e}"))?
+        else {
+            return Err(
+                "one of those AI conversations is no longer available. Ask me to prepare the action again."
+                    .to_string(),
+            );
+        };
+
+        let updated = rustfin_db::repo::ai_conversations::update_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+            None,
+            Some(*archived),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| format!("failed to update AI conversation \"{}\": {e}", row.title))?
+        .ok_or_else(|| format!("AI conversation \"{}\" is no longer available.", row.title))?;
+
+        if updated.archived != *archived {
+            return Err(format!(
+                "Rustyfin AI changed \"{}\", but could not verify the archive state.",
+                updated.title
+            ));
+        }
+        verified.push(json!({
+            "id": updated.id,
+            "title": updated.title,
+            "archived": updated.archived,
+            "group_name": updated.group_name,
+        }));
+    }
+
+    let action_label = if *archived { "Archived" } else { "Restored" };
+    let fallback_titles = titles
+        .iter()
+        .map(|title| json!({ "title": title }))
+        .collect::<Vec<_>>();
+
+    Ok((
+        format!("{action_label} {} AI conversations", conversation_ids.len()),
+        json!({
+            "verified": true,
+            "operation": if *archived { "archive" } else { "restore" },
+            "selection_label": selection_label,
+            "conversation_count": conversation_ids.len(),
+            "conversations": if verified.is_empty() { fallback_titles } else { verified },
+        }),
+    ))
+}
+
+async fn conversations_delete_selection(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+) -> Result<(String, serde_json::Value), String> {
+    let AssistantToolInput::ConversationDelete {
+        conversation_ids,
+        titles,
+        selection_label,
+    } = &call.input
+    else {
+        return Err("missing conversation delete payload".to_string());
+    };
+
+    if conversation_ids.is_empty() {
+        return Err("no AI conversations were selected for deletion".to_string());
+    }
+
+    let mut deleted_conversations = Vec::with_capacity(conversation_ids.len());
+    for (index, conversation_id) in conversation_ids.iter().enumerate() {
+        let Some(row) = rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+        )
+        .await
+        .map_err(|e| format!("failed to load AI conversation {conversation_id}: {e}"))?
+        else {
+            return Err(
+                "one of those AI conversations is no longer available. Ask me to prepare the action again."
+                    .to_string(),
+            );
+        };
+
+        let deleted = rustfin_db::repo::ai_conversations::delete_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+        )
+        .await
+        .map_err(|e| format!("failed to delete AI conversation \"{}\": {e}", row.title))?;
+        if !deleted {
+            return Err(format!(
+                "Rustyfin AI could not delete \"{}\" because it was no longer available.",
+                row.title
+            ));
+        }
+
+        let exists_after_delete = rustfin_db::repo::ai_conversations::get_conversation_for_user(
+            &state.db,
+            conversation_id,
+            &context.user_id,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "failed to verify deleted AI conversation \"{}\": {e}",
+                row.title
+            )
+        })?
+        .is_some();
+        if exists_after_delete {
+            return Err(format!(
+                "Rustyfin AI deleted \"{}\", but could not verify the removal.",
+                row.title
+            ));
+        }
+
+        deleted_conversations.push(json!({
+            "id": conversation_id,
+            "title": titles.get(index).cloned().unwrap_or(row.title),
+            "deleted": true,
+        }));
+    }
+
+    Ok((
+        format!("Deleted {} AI conversations", conversation_ids.len()),
+        json!({
+            "verified": true,
+            "operation": "delete",
+            "selection_label": selection_label,
+            "conversation_count": conversation_ids.len(),
+            "conversations": deleted_conversations,
+        }),
+    ))
+}
+
 fn validate_calendar_title(raw: &str) -> Result<String, String> {
     let title = raw.trim();
     if title.is_empty() {
@@ -2716,6 +2903,8 @@ fn calendar_window_for_call(
         | AssistantToolInput::WebSearch { .. }
         | AssistantToolInput::WebFetch { .. }
         | AssistantToolInput::DocumentCreateDownload { .. }
+        | AssistantToolInput::ConversationArchive { .. }
+        | AssistantToolInput::ConversationDelete { .. }
         | AssistantToolInput::CurrentDateTime { .. }
         | AssistantToolInput::RoomsFilter { .. }
         | AssistantToolInput::ServerFilter { .. } => {
@@ -3809,6 +3998,8 @@ fn follow_up_input_hint(call: &PlannedToolCall) -> AssistantFollowUpInputHint {
                 ..AssistantFollowUpInputHint::default()
             }
         }
+        AssistantToolInput::ConversationArchive { .. }
+        | AssistantToolInput::ConversationDelete { .. } => AssistantFollowUpInputHint::default(),
         AssistantToolInput::CurrentDateTime { location } => AssistantFollowUpInputHint {
             current_datetime_location: location.clone(),
             ..AssistantFollowUpInputHint::default()
@@ -3834,6 +4025,31 @@ fn follow_up_entities(
     block: &AssistantToolContextBlock,
 ) -> Vec<AssistantFollowUpEntity> {
     match tool {
+        AssistantToolName::ConversationsArchiveSelection
+        | AssistantToolName::ConversationsDeleteSelection => block
+            .data
+            .get("conversations")
+            .and_then(serde_json::Value::as_array)
+            .map(|conversations| {
+                conversations
+                    .iter()
+                    .take(8)
+                    .enumerate()
+                    .filter_map(|(index, conversation)| {
+                        Some(AssistantFollowUpEntity {
+                            ordinal: index + 1,
+                            label: conversation.get("title")?.as_str()?.to_string(),
+                            identifier: conversation
+                                .get("id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_string),
+                            kind: Some("ai_conversation".to_string()),
+                            ..Default::default()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         AssistantToolName::CalendarDeleteEvent => block
             .data
             .get("event")
