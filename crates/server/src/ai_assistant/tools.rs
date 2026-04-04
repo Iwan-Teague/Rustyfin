@@ -839,6 +839,21 @@ pub fn build_follow_up_context(
     block: &AssistantToolContextBlock,
 ) -> AssistantFollowUpContext {
     let mut input_hint = follow_up_input_hint(call);
+    if matches!(
+        call.tool,
+        AssistantToolName::WeatherGetCurrent
+            | AssistantToolName::WeatherGetForecast
+            | AssistantToolName::WeatherGetHistory
+    ) {
+        input_hint.weather_location = block
+            .data
+            .get("resolved_location")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or(input_hint.weather_location);
+    }
     if call.tool == AssistantToolName::CalendarGetNextEvent {
         input_hint.calendar_label = Some("your next calendar event".to_string());
         input_hint.calendar_from_date = block
@@ -4542,6 +4557,35 @@ mod tests {
         assert_eq!(context.entities.len(), 2);
         assert_eq!(context.entities[0].label, "Star Trek");
         assert_eq!(context.entities[1].identifier.as_deref(), Some("item-2"));
+    }
+
+    #[test]
+    fn build_follow_up_context_prefers_resolved_weather_location() {
+        let call = PlannedToolCall {
+            tool: AssistantToolName::WeatherGetForecast,
+            input: AssistantToolInput::Weather {
+                location: "Campile Ireland".to_string(),
+                forecast_days: Some(7),
+            },
+        };
+        let block = AssistantToolContextBlock {
+            tool: call.tool.as_str(),
+            label: "7-day weather forecast for Campile, County Wexford, Leinster, Ireland"
+                .to_string(),
+            status: "ok",
+            data: json!({
+                "location_query": "Campile Ireland",
+                "resolved_location": "Campile, County Wexford, Leinster, Ireland",
+                "forecast_days": []
+            }),
+        };
+
+        let context = build_follow_up_context(&call, &block);
+        assert_eq!(
+            context.input_hint.weather_location.as_deref(),
+            Some("Campile, County Wexford, Leinster, Ireland")
+        );
+        assert_eq!(context.input_hint.weather_days, Some(7));
     }
 
     fn birthday_event(title: &str, owner_username: Option<&str>) -> CalendarEventRow {
