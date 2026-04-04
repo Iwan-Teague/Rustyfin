@@ -121,7 +121,7 @@ export default function NavBar() {
   const [portalMounted, setPortalMounted] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
   const [railHovered, setRailHovered] = useState(false);
-  const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(null);
+  const [expandedGroupHrefs, setExpandedGroupHrefs] = useState<string[]>([]);
 
   useEffect(() => {
     setPortalMounted(true);
@@ -140,7 +140,9 @@ export default function NavBar() {
 
   useEffect(() => {
     if (activeGroup?.href) {
-      setExpandedGroupHref((prev) => prev ?? activeGroup.href);
+      setExpandedGroupHrefs((prev) =>
+        prev.includes(activeGroup.href) ? prev : [...prev, activeGroup.href],
+      );
     }
   }, [activeGroup?.href]);
 
@@ -176,25 +178,25 @@ export default function NavBar() {
   };
 
   const railLinkClass = (href: string) =>
-    `rf-nav-link btn-ghost h-11 rounded-2xl text-sm transition ${
+    `rf-nav-link btn-ghost flex min-h-[3.25rem] items-center rounded-[1.1rem] text-sm font-medium transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     } ${
-      railExpanded ? 'w-full justify-start gap-3 px-3' : 'w-11 justify-center px-0'
+      railExpanded ? 'w-full justify-start gap-3 px-3.5' : 'w-full justify-center px-0'
     }`;
 
   const railUtilityClass = (href: string) =>
-    `rf-nav-link btn-ghost h-11 rounded-2xl text-sm transition ${
+    `rf-nav-link btn-ghost flex min-h-[3.25rem] items-center rounded-[1.1rem] text-sm font-medium transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     } ${
-      railExpanded ? 'w-full justify-start gap-3 px-3' : 'w-11 justify-center px-0'
+      railExpanded ? 'w-full justify-start gap-3 px-3.5' : 'w-full justify-center px-0'
     }`;
 
-  const openGroupHref = railExpanded ? expandedGroupHref ?? activeGroup?.href ?? null : null;
+  const openGroupHrefs = railExpanded ? new Set(expandedGroupHrefs) : new Set<string>();
 
   const desktopRail = (
     <aside
       className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
-        railExpanded ? 'w-[17rem]' : 'w-[5.5rem]'
+        railExpanded ? 'w-[18.25rem]' : 'w-[5.75rem]'
       }`}
       data-expanded={railExpanded ? 'true' : 'false'}
       onMouseEnter={() => setRailHovered(true)}
@@ -215,7 +217,7 @@ export default function NavBar() {
       <div className="mt-5 flex min-h-0 flex-1 flex-col gap-2">
         <div className="flex flex-col gap-1.5">
           {ROOT_NAV_ITEMS.map((item) => {
-            const showChildren = Boolean(item.items.length && openGroupHref === item.href);
+            const showChildren = Boolean(item.items.length && openGroupHrefs.has(item.href));
             return (
               <div key={item.href} className="flex flex-col gap-1">
                 {item.items.length ? (
@@ -224,9 +226,13 @@ export default function NavBar() {
                     className={railLinkClass(item.href)}
                     aria-current={isActivePath(item.href) ? 'page' : undefined}
                     aria-expanded={showChildren}
-                    onClick={() =>
-                      setExpandedGroupHref((prev) => (prev === item.href ? null : item.href))
-                    }
+                    onClick={() => {
+                      setExpandedGroupHrefs((prev) =>
+                        prev.includes(item.href)
+                          ? prev.filter((href) => href !== item.href)
+                          : [...prev, item.href],
+                      );
+                    }}
                   >
                     <span className="shrink-0">{item.icon}</span>
                     {railExpanded ? <span className="truncate">{item.label}</span> : null}
@@ -236,19 +242,18 @@ export default function NavBar() {
                     href={item.href}
                     className={railLinkClass(item.href)}
                     aria-current={isActivePath(item.href) ? 'page' : undefined}
-                    onClick={() => setExpandedGroupHref(null)}
                   >
                     <span className="shrink-0">{item.icon}</span>
                     {railExpanded ? <span className="truncate">{item.label}</span> : null}
                   </Link>
                 )}
                 {showChildren ? (
-                  <div className="ml-2 flex flex-col gap-1 border-l border-[var(--border-subtle)] pl-3">
+                  <div className="ml-3 flex flex-col gap-1 pt-0.5">
                     {item.items.map((subItem) => (
                       <Link
                         key={subItem.href}
                         href={subItem.href}
-                        className={`rf-nav-link btn-ghost min-h-9 rounded-xl px-3 py-2 text-left text-sm ${
+                        className={`rf-nav-link btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-sm font-medium ${
                           isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
                         }`}
                         aria-current={isActivePath(subItem.href) ? 'page' : undefined}
