@@ -243,13 +243,10 @@ export default function CalendarPage() {
     () => (selectedDayYmd ? eventsByDate.get(selectedDayYmd) ?? [] : []),
     [eventsByDate, selectedDayYmd],
   );
+  const monthRowCount = Math.max(1, Math.ceil(days.length / 7));
   const panelOpen = sidePanelMode !== 'closed';
   const eventPanelButtonLabel =
-    sidePanelMode === 'editor'
-      ? 'Hide Event Panel ▴'
-      : sidePanelMode === 'day'
-        ? 'Open Event Panel ▸'
-        : 'Show Event Panel ▾';
+    sidePanelMode === 'closed' ? 'Show Event Panel' : 'Hide Event Panel';
 
   useEffect(() => {
     document.documentElement.dataset.rfPage = 'calendar';
@@ -305,7 +302,7 @@ export default function CalendarPage() {
     }
 
     const updateDensity = () => {
-      const rowHeight = node.getBoundingClientRect().height / 6;
+      const rowHeight = node.getBoundingClientRect().height / monthRowCount;
       setMonthViewCondensed(rowHeight < 118);
     };
 
@@ -313,7 +310,7 @@ export default function CalendarPage() {
     const observer = new ResizeObserver(updateDensity);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [loading, view]);
+  }, [loading, monthRowCount, view]);
 
   useEffect(() => {
     if (sidePanelMode !== 'day' || !selectedDayYmd) {
@@ -438,18 +435,14 @@ export default function CalendarPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 w-full overflow-hidden">
-      <div
-        className={`grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full ${
-          panelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
-        }`}
-      >
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full lg:grid-cols-[minmax(0,1fr)_auto]">
         <section className="rf-flat-section flex flex-col lg:h-full lg:min-h-0">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 lg:flex-nowrap">
+            <div className="flex min-w-0 flex-wrap items-center gap-3 lg:flex-nowrap">
               <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
               <span className="text-xs text-white/55">{events.length} events</span>
               <select
-                className="select w-full sm:w-auto px-3 py-2 text-sm"
+                className="rf-inline-select w-full sm:w-auto text-sm"
                 value={view}
                 onChange={(e) => setView(e.target.value as CalendarView)}
               >
@@ -461,33 +454,33 @@ export default function CalendarPage() {
                 <option value="events_30">Events Only (30 Days)</option>
               </select>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-4 sm:gap-5">
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 lg:flex-nowrap">
               <button
                 type="button"
-                className="rf-text-action text-sm"
+                className="rf-text-action rf-text-action-soft text-sm"
                 onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, -1))}
               >
                 Previous
               </button>
               <button
                 type="button"
-                className="rf-text-action text-sm"
+                className="rf-text-action rf-text-action-soft text-sm"
                 onClick={() => setAnchorDate(withNoon(new Date()))}
               >
                 Today
               </button>
               <button
                 type="button"
-                className="rf-text-action text-sm"
+                className="rf-text-action rf-text-action-soft text-sm"
                 onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, 1))}
               >
                 Next
               </button>
               <button
                 type="button"
-                className="rf-text-action text-sm"
+                className="rf-text-action rf-text-action-soft text-sm"
                 onClick={() =>
-                  setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
+                  setSidePanelMode((prev) => (prev === 'closed' ? 'editor' : 'closed'))
                 }
               >
                 {eventPanelButtonLabel}
@@ -799,7 +792,10 @@ export default function CalendarPage() {
                 </div>
                 <div
                   ref={monthGridRef}
-                  className={`grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)] ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}
+                  className="grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)]"
+                  style={{
+                    gridTemplateRows: `repeat(${view === 'month' ? monthRowCount : 1}, minmax(0, 1fr))`,
+                  }}
                 >
                   {days.map((day) => {
                     const key = formatYmd(day);
@@ -913,8 +909,13 @@ export default function CalendarPage() {
           </div>
         </section>
 
-        {panelOpen && (
-          <aside className="rf-flat-section border-t border-[var(--border)]/70 pt-4 sm:pt-5 lg:h-full lg:min-h-0 lg:overflow-y-auto">
+        <aside
+          className={`rf-flat-section border-t border-[var(--border)]/70 pt-4 transition-[width,opacity] duration-200 ease-out sm:pt-5 ${
+            panelOpen
+              ? 'block lg:w-[15rem] lg:opacity-100'
+              : 'hidden lg:block lg:w-0 lg:overflow-hidden lg:border-transparent lg:opacity-0'
+          } lg:h-full lg:min-h-0 lg:pt-0 lg:overflow-y-auto`}
+        >
             {sidePanelMode === 'day' ? (
               <>
                 <div className="flex items-center justify-between gap-2">
@@ -1167,7 +1168,6 @@ export default function CalendarPage() {
               </div>
             )}
           </aside>
-        )}
       </div>
     </div>
   );

@@ -239,6 +239,29 @@
 
 ### Regression notes
 - `/ai` remains untouched.
+
+## Post-Review Refinements - Channels and Calendar Stability
+
+### Start
+- `2026-04-04 18:18:00 IST`
+
+### Files changed
+- [globals.css](/Users/iwanteague/Desktop/Rustyfin/ui/src/app/globals.css)
+- [VoiceChannelView.tsx](/Users/iwanteague/Desktop/Rustyfin/ui/src/app/channels/components/VoiceChannelView.tsx)
+- [calendar/page.tsx](/Users/iwanteague/Desktop/Rustyfin/ui/src/app/calendar/page.tsx)
+
+### Why
+- Fixed the voice-call header so the `Connect`/`Disconnect` action keeps a stable width and no longer shifts the `Transcripts` control horizontally.
+- Reworked the calendar toolbar into a consistent single inline control row on larger screens, using text-style controls and subtle hover backgrounds instead of boxed buttons.
+- Removed the month-grid extra left border by deriving the visible month row count from the actual number of displayed day cells instead of hard-coding six rows.
+- Tightened the desktop event panel into a narrower sliding side panel and removed the triangle affordances from the toggle label.
+
+### Tests / validation
+- `npm --prefix ui run build`
+- Result: passed
+
+### Regression notes
+- `/ai` remains untouched.
 - Reduced item-detail chrome by keeping artwork as functional media surfaces while removing the heavy tile-hover treatment and loading-card treatment around the page.
 - Replaced the player’s decorative loading pill with a flat status block so playback still feels focused on the media surface rather than on a decorative wrapper.
 - Added route-scoped flat-surface overrides for legacy `panel` / `panel-soft` / `tile` usage so these pages could be flattened without touching `/ai` or shared modal behavior.

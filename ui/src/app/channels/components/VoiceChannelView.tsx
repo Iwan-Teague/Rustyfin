@@ -503,7 +503,7 @@ export default function VoiceChannelView({
           <button
             onClick={isConnectedHere ? handleDisconnect : () => void handleConnect()}
             disabled={isConnectedElsewhere}
-            className={`text-sm ${
+            className={`inline-flex min-w-[6.75rem] justify-start text-sm ${
               isConnectedHere
                 ? 'rf-text-action rf-text-action-danger'
                 : isConnectedElsewhere

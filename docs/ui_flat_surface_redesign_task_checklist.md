@@ -99,3 +99,11 @@
 - [x] Move Rooms create flow into an overlay dialog triggered from a single page button
 - [x] Run frontend validation for this refinement pass
 - [x] Record final validation result in the implementation log
+
+## Post-Review Refinements - Channels and Calendar Stability
+- [x] Keep the channels connect/disconnect control width stable
+- [x] Remove the extra month-grid left border by deriving the calendar row count
+- [x] Convert calendar toolbar controls to text-style hoverable actions
+- [x] Narrow and animate the desktop calendar event panel
+- [x] Run frontend validation for this refinement pass
+- [x] Record final validation result in the implementation log
