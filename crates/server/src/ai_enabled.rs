@@ -113,6 +113,10 @@ pub fn ai_router() -> Router<AppState> {
                 .delete(crate::ai_conversations::delete_conversation),
         )
         .route(
+            "/conversations/{id}/move",
+            post(crate::ai_conversations::move_conversation),
+        )
+        .route(
             "/conversations/{id}/messages/stream",
             post(stream_conversation_message),
         )
