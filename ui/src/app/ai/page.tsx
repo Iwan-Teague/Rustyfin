@@ -1013,6 +1013,21 @@ function RuntimePanel({
           <div className="mt-2 space-y-1 text-xs muted">
             <p>{runtime.turn.active_request_count} active requests</p>
             <p>Queue depth {runtime.turn.queue_depth}</p>
+            {runtime.turn.last_execution ? (
+              <>
+                <p>
+                  Last stop {titleCase(runtime.turn.last_execution.stop_reason.replaceAll('_', ' '))}
+                </p>
+                <p>
+                  {runtime.turn.last_execution.attempt_count} attempts ·{' '}
+                  {runtime.turn.last_execution.tool_step_count} tool steps
+                </p>
+                <p>
+                  {runtime.turn.last_execution.alternate_tool_count} alternates ·{' '}
+                  {runtime.turn.last_execution.recovery_step_count} recovery steps
+                </p>
+              </>
+            ) : null}
           </div>
         </section>
 

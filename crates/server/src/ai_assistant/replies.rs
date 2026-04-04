@@ -5,7 +5,8 @@ use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
 
 use super::types::{
-    AssistantGroundingChunk, AssistantGroundingCitation, AssistantToolContextBlock,
+    AssistantExecutionStopReason, AssistantExecutionTrace, AssistantGroundingChunk,
+    AssistantGroundingCitation, AssistantToolContextBlock, AssistantToolOutcomeKind,
 };
 
 pub const MAX_GROUNDING_CHUNKS: usize = 10;
@@ -510,6 +511,93 @@ pub fn deterministic_library_reply(
             .as_deref(),
         envelope,
     ))
+}
+
+pub fn deterministic_multi_step_reply(
+    message: &str,
+    execution_trace: Option<&AssistantExecutionTrace>,
+    grounding_blocks: &[AssistantToolContextBlock],
+) -> Option<String> {
+    let trace = execution_trace?;
+    if matches!(
+        trace.stop_reason,
+        AssistantExecutionStopReason::DeterministicReply
+            | AssistantExecutionStopReason::SufficientAnswer
+            | AssistantExecutionStopReason::ModelAnswerCompleted
+            | AssistantExecutionStopReason::ClarificationRequired
+    ) {
+        return None;
+    }
+
+    if trace.stop_reason == AssistantExecutionStopReason::ConflictUnresolved {
+        return Some(
+            "I found conflicting grounded results and couldn't safely reconcile them in this bounded pass."
+                .to_string(),
+        );
+    }
+
+    if let Some(kind) = trace.final_outcome_kind {
+        if matches!(
+            kind,
+            AssistantToolOutcomeKind::NotFound
+                | AssistantToolOutcomeKind::Empty
+                | AssistantToolOutcomeKind::ValidationFailed
+                | AssistantToolOutcomeKind::WeakMatch
+        ) {
+            if let Some(reply) = deterministic_calendar_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+            if let Some(reply) = deterministic_library_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+            if let Some(reply) =
+                super::weather::deterministic_weather_reply(message, grounding_blocks)
+            {
+                return Some(reply);
+            }
+            if let Some(reply) = deterministic_ai_runtime_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+            if let Some(reply) = deterministic_network_reply(message, grounding_blocks) {
+                return Some(reply);
+            }
+        }
+    }
+
+    let last_message = grounding_blocks
+        .last()
+        .and_then(|block| block.data.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match trace.stop_reason {
+        AssistantExecutionStopReason::BudgetExhausted => Some(
+            "I checked the most likely grounded sources, but I still don't have a confident answer."
+                .to_string(),
+        ),
+        AssistantExecutionStopReason::NoPermittedFallback
+        | AssistantExecutionStopReason::WeakEvidenceOnly => last_message
+            .map(str::to_string)
+            .or_else(|| {
+                Some(
+                    "I checked the most likely grounded sources, but I couldn't confirm a stronger answer."
+                        .to_string(),
+                )
+            }),
+        AssistantExecutionStopReason::DuplicateSignature => Some(
+            "I hit the same grounded result again, so I stopped rather than looping."
+                .to_string(),
+        ),
+        AssistantExecutionStopReason::AclDenied => Some(
+            "I couldn't continue because the next grounded step was outside your allowed access scope."
+                .to_string(),
+        ),
+        AssistantExecutionStopReason::FatalError => Some(
+            "I couldn't complete that grounded lookup because the underlying tool failed."
+                .to_string(),
+        ),
+        _ => None,
+    }
 }
 
 fn format_next_event_reply(envelope: GroundedNextEventEnvelope) -> String {

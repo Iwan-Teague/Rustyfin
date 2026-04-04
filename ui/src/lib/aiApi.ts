@@ -236,6 +236,23 @@ export interface AiRuntimeResponse {
     phase: AiRuntimePhase;
     queue_depth: number;
     active_request_count: number;
+    last_execution?: {
+      stop_reason: string;
+      final_answer_path: string;
+      tool_step_count: number;
+      alternate_tool_count: number;
+      recovery_step_count: number;
+      clarification_count: number;
+      conflict_count: number;
+      attempt_count: number;
+      deterministic_answer_used: boolean;
+      synthesis_used: boolean;
+      outcome_counts: Array<{
+        outcome_kind: string;
+        count: number;
+      }>;
+      role_backend_usage: string[];
+    } | null;
     prompt?: {
       context_length: number;
       prompt_budget_tokens: number;

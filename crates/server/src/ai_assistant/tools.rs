@@ -10,12 +10,13 @@ use serde_json::json;
 
 use super::context::AssistantContext;
 use super::dates::{assistant_local_now, assistant_local_today, assistant_local_year};
+use super::outcomes::normalize_tool_result;
 use super::provider::{ToolExecutionProfile, default_tool_registry};
 use super::registry::AssistantToolName;
 use super::types::{
     AssistantFollowUpContext, AssistantFollowUpEntity, AssistantFollowUpInputHint,
-    AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
-    ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
+    AssistantGroundingSource, AssistantToolContextBlock, AssistantToolInput, AssistantToolOutcome,
+    PlannedToolCall, ToolAccessMode, ToolConfirmationPolicy, ToolRoleRequirement,
 };
 use super::weather::{
     fetch_public_weather_current, fetch_public_weather_forecast, fetch_public_weather_history,
@@ -436,7 +437,16 @@ pub async fn execute_tool(
     call: &PlannedToolCall,
 ) -> AssistantToolContextBlock {
     let profile = ToolExecutionProfile::full_access();
-    execute_tool_with_profile(state, context, call, &profile).await
+    execute_tool_raw(state, context, call, &profile).await
+}
+
+pub async fn execute_tool_raw(
+    state: &AppState,
+    context: &AssistantContext,
+    call: &PlannedToolCall,
+    profile: &ToolExecutionProfile,
+) -> AssistantToolContextBlock {
+    execute_tool_with_profile(state, context, call, profile).await
 }
 
 pub async fn execute_tool_with_profile(
@@ -469,6 +479,14 @@ pub async fn execute_tool_with_profile(
     };
 
     provider.execute(state, context, call).await
+}
+
+pub fn tool_result_to_outcome(
+    message: &str,
+    call: &PlannedToolCall,
+    block: AssistantToolContextBlock,
+) -> AssistantToolOutcome {
+    normalize_tool_result(message, call, block)
 }
 
 fn tool_context_block_for_result(

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier, ToolRoleRequirement,
+    AssistantDomainFamily, AssistantToolSpec, ToolAccessMode, ToolConfirmationPolicy, ToolRiskTier,
+    ToolRoleRequirement,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -519,5 +520,106 @@ impl AssistantToolName {
                 max_result_bytes: 8 * 1024,
             },
         }
+    }
+
+    pub const fn domain_family(self) -> AssistantDomainFamily {
+        match self {
+            Self::AccountGetProfileSummary => AssistantDomainFamily::Account,
+            Self::CalendarListEvents
+            | Self::CalendarGetNextEvent
+            | Self::CalendarUpcomingBirthdays
+            | Self::CalendarGetEventDetails
+            | Self::CalendarCreateEvent
+            | Self::CalendarCreateBirthday
+            | Self::CalendarDeleteEvent => AssistantDomainFamily::Calendar,
+            Self::DocumentCreateDownload => AssistantDomainFamily::Documents,
+            Self::ChannelsListUnreadActivity => AssistantDomainFamily::Channels,
+            Self::ChannelsGetTranscriptSummary => AssistantDomainFamily::Transcript,
+            Self::DownloadsListAvailableArtifacts => AssistantDomainFamily::Downloads,
+            Self::NetworkGetTopologySummary => AssistantDomainFamily::Network,
+            Self::LibrariesListAccessible
+            | Self::LibrarySearchTitles
+            | Self::LibraryGetItemSummary
+            | Self::LibrariesGetRecentlyAdded => AssistantDomainFamily::Library,
+            Self::WeatherGetCurrent | Self::WeatherGetForecast | Self::WeatherGetHistory => {
+                AssistantDomainFamily::Weather
+            }
+            Self::WebSearchPublicWeb | Self::WebFetchPublicPageSummary => {
+                AssistantDomainFamily::Web
+            }
+            Self::RoomsListActive | Self::RoomsListJoinable | Self::RoomsGetRoomSummary => {
+                AssistantDomainFamily::Rooms
+            }
+            Self::SystemGetCurrentDateTime
+            | Self::SystemGetHostRuntimeSummary
+            | Self::SystemGetBackupSummary
+            | Self::SystemGetServiceHealth
+            | Self::SystemGetTranscodeSummary
+            | Self::SystemGetStorageSummary
+            | Self::SystemGetRecentErrors => AssistantDomainFamily::System,
+            Self::SystemGetAiRuntimeSummary => AssistantDomainFamily::AiRuntime,
+            Self::ServersListMinecraftStatus | Self::ServersGetMinecraftServerSummary => {
+                AssistantDomainFamily::Servers
+            }
+        }
+    }
+
+    pub const fn recovery_eligible(self) -> bool {
+        matches!(self.spec().access_mode, ToolAccessMode::ReadOnly)
+            && !matches!(
+                self,
+                Self::WebSearchPublicWeb | Self::WebFetchPublicPageSummary
+            )
+    }
+
+    pub const fn can_parallelize(self) -> bool {
+        matches!(
+            self,
+            Self::CalendarListEvents
+                | Self::CalendarUpcomingBirthdays
+                | Self::DownloadsListAvailableArtifacts
+                | Self::LibrariesListAccessible
+                | Self::LibrarySearchTitles
+                | Self::LibrariesGetRecentlyAdded
+                | Self::RoomsListActive
+                | Self::RoomsListJoinable
+                | Self::ServersListMinecraftStatus
+        )
+    }
+
+    pub const fn ambiguity_prone(self) -> bool {
+        matches!(
+            self,
+            Self::CalendarListEvents
+                | Self::CalendarUpcomingBirthdays
+                | Self::CalendarGetEventDetails
+                | Self::ChannelsGetTranscriptSummary
+                | Self::LibrarySearchTitles
+                | Self::LibraryGetItemSummary
+                | Self::WeatherGetCurrent
+                | Self::WeatherGetForecast
+                | Self::WeatherGetHistory
+                | Self::RoomsGetRoomSummary
+                | Self::ServersGetMinecraftServerSummary
+        )
+    }
+
+    pub const fn freshness_sensitive(self) -> bool {
+        matches!(
+            self,
+            Self::WeatherGetCurrent
+                | Self::WeatherGetForecast
+                | Self::WeatherGetHistory
+                | Self::NetworkGetTopologySummary
+                | Self::RoomsListActive
+                | Self::SystemGetAiRuntimeSummary
+                | Self::SystemGetHostRuntimeSummary
+                | Self::SystemGetServiceHealth
+                | Self::SystemGetTranscodeSummary
+                | Self::SystemGetStorageSummary
+                | Self::SystemGetRecentErrors
+                | Self::ServersListMinecraftStatus
+                | Self::ServersGetMinecraftServerSummary
+        )
     }
 }

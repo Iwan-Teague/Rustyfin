@@ -1,0 +1,729 @@
+use sha2::{Digest, Sha256};
+
+use super::registry::AssistantToolName;
+use super::replies::compact_text;
+use super::types::{
+    AssistantDomainFamily, AssistantEvidenceItem, AssistantToolContextBlock, AssistantToolInput,
+    AssistantToolOutcome, AssistantToolOutcomeKind, decode_assistant_clarification_message,
+};
+
+pub fn normalized_args_hash(input: &AssistantToolInput) -> String {
+    let json = serde_json::to_vec(input).unwrap_or_default();
+    short_hash(&json)
+}
+
+pub fn salient_result_signature(block: &AssistantToolContextBlock) -> String {
+    let json = serde_json::to_vec(&block.data).unwrap_or_default();
+    short_hash(&json)
+}
+
+pub fn normalize_tool_result(
+    message: &str,
+    call: &super::types::PlannedToolCall,
+    block: AssistantToolContextBlock,
+) -> AssistantToolOutcome {
+    let args_hash = normalized_args_hash(&call.input);
+    let result_signature = salient_result_signature(&block);
+    let domain_family = call.tool.domain_family();
+    let inspector = if block.status == "error" {
+        classify_error_outcome(call.tool, &block)
+    } else {
+        classify_ok_outcome(message, call.tool, &block)
+    };
+    let evidence_items = extract_evidence_items(call.tool, &block, inspector.kind);
+
+    AssistantToolOutcome {
+        tool: call.tool.as_str().to_string(),
+        label: block.label.clone(),
+        domain_family,
+        kind: inspector.kind,
+        confidence: inspector.confidence,
+        block,
+        evidence_items,
+        ambiguity_keys: inspector.ambiguity_keys,
+        recovery_hints: inspector.recovery_hints,
+        args_hash,
+        result_signature,
+        message: inspector.message,
+        stale: inspector.stale,
+    }
+}
+
+#[derive(Default)]
+struct OutcomeInspection {
+    kind: AssistantToolOutcomeKind,
+    confidence: f32,
+    ambiguity_keys: Vec<String>,
+    recovery_hints: Vec<String>,
+    message: Option<String>,
+    stale: bool,
+}
+
+fn classify_error_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    let mut inspection = OutcomeInspection {
+        kind: AssistantToolOutcomeKind::FatalError,
+        confidence: 0.95,
+        message: tool_message(block),
+        ..OutcomeInspection::default()
+    };
+    let lower = inspection
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if let Some(clarification) = inspection
+        .message
+        .as_deref()
+        .and_then(decode_assistant_clarification_message)
+    {
+        inspection.kind = if clarification.to_ascii_lowercase().contains("which one") {
+            AssistantToolOutcomeKind::Ambiguous
+        } else {
+            AssistantToolOutcomeKind::ClarificationNeeded
+        };
+        inspection.message = Some(clarification.to_string());
+        inspection.confidence = 0.99;
+        return inspection;
+    }
+
+    if lower.contains("multiple") && lower.contains("which one") {
+        inspection.kind = AssistantToolOutcomeKind::Ambiguous;
+        inspection.confidence = 0.98;
+        return inspection;
+    }
+
+    if lower.contains("not available in this assistant execution profile")
+        || lower.contains("read-only")
+        || lower.contains("requires admin")
+        || lower.contains("admin-only")
+        || lower.contains("blocked")
+    {
+        inspection.kind = AssistantToolOutcomeKind::Denied;
+        inspection.confidence = 0.99;
+        return inspection;
+    }
+
+    if lower.contains("confirmation token") || lower.contains("confirmation") {
+        inspection.kind = AssistantToolOutcomeKind::Denied;
+        inspection.confidence = 0.99;
+        return inspection;
+    }
+
+    if lower.contains("invalid")
+        || lower.contains("required")
+        || lower.contains("missing")
+        || lower.contains("must be")
+        || lower.contains("validation failed")
+    {
+        inspection.kind = AssistantToolOutcomeKind::ValidationFailed;
+        inspection.confidence = 0.96;
+        return inspection;
+    }
+
+    if lower.contains("timed out")
+        || lower.contains("temporarily")
+        || lower.contains("try again")
+        || lower.contains("unavailable")
+    {
+        inspection.kind = AssistantToolOutcomeKind::TransientError;
+        inspection.confidence = 0.90;
+        return inspection;
+    }
+
+    if lower.contains("no accessible")
+        || lower.contains("no public weather location matched")
+        || lower.contains("couldn't find")
+        || lower.contains("not found")
+        || lower.contains("no visible")
+    {
+        inspection.kind = outcome_kind_for_not_found(tool);
+        inspection.confidence = 0.96;
+    }
+
+    inspection
+}
+
+fn classify_ok_outcome(
+    message: &str,
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    if let Some(clarification) = tool_message(block)
+        .as_deref()
+        .and_then(decode_assistant_clarification_message)
+    {
+        return OutcomeInspection {
+            kind: if clarification.to_ascii_lowercase().contains("which one") {
+                AssistantToolOutcomeKind::Ambiguous
+            } else {
+                AssistantToolOutcomeKind::ClarificationNeeded
+            },
+            confidence: 0.99,
+            message: Some(clarification.to_string()),
+            ..OutcomeInspection::default()
+        };
+    }
+
+    if tool == AssistantToolName::SystemGetHostRuntimeSummary && ai_runtime_intent(message) {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Partial,
+            confidence: 0.88,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            recovery_hints: vec!["ai_runtime_summary".to_string()],
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        };
+    }
+
+    match tool.domain_family() {
+        AssistantDomainFamily::Calendar => classify_calendar_outcome(message, tool, block),
+        AssistantDomainFamily::Weather => classify_weather_outcome(block),
+        AssistantDomainFamily::Library => classify_library_outcome(message, tool, block),
+        AssistantDomainFamily::Transcript => classify_transcript_outcome(block),
+        AssistantDomainFamily::Rooms => classify_rooms_outcome(tool, block),
+        AssistantDomainFamily::Servers => classify_servers_outcome(tool, block),
+        AssistantDomainFamily::AiRuntime => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.99,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
+        AssistantDomainFamily::Network | AssistantDomainFamily::System => OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Answer,
+            confidence: 0.97,
+            stale: tool.freshness_sensitive() && !block.data.is_null(),
+            message: tool_message(block),
+            ..OutcomeInspection::default()
+        },
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn ai_runtime_intent(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "ai model",
+        "what model are you",
+        "loaded model",
+        "ai runtime",
+        "backend",
+        "scheduler",
+        "warm pool",
+        "queue depth",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn classify_calendar_outcome(
+    _message: &str,
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::CalendarGetNextEvent => {
+            if block.data.get("next_event").is_none()
+                || block
+                    .data
+                    .get("next_event")
+                    .is_some_and(|value| value.is_null())
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Empty,
+                    confidence: 0.99,
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.99,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::CalendarUpcomingBirthdays => {
+            let birthdays = block
+                .data
+                .get("birthdays")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            if birthdays == 0 {
+                OutcomeInspection {
+                    kind: if block
+                        .data
+                        .get("query")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some()
+                    {
+                        AssistantToolOutcomeKind::NotFound
+                    } else {
+                        AssistantToolOutcomeKind::Empty
+                    },
+                    confidence: 0.99,
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.99,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::CalendarGetEventDetails => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no visible")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::CalendarListEvents => {
+            let events = block
+                .data
+                .get("events")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            OutcomeInspection {
+                kind: if events == 0 {
+                    AssistantToolOutcomeKind::Empty
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                ..OutcomeInspection::default()
+            }
+        }
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_weather_outcome(block: &AssistantToolContextBlock) -> OutcomeInspection {
+    let message = tool_message(block);
+    let lower = message.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if lower.contains("multiple locations matching") {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Ambiguous,
+            confidence: 0.99,
+            message,
+            ..OutcomeInspection::default()
+        };
+    }
+    if lower.contains("no public weather location matched") {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::ValidationFailed,
+            confidence: 0.98,
+            message,
+            recovery_hints: vec!["normalize_location".to_string()],
+            ..OutcomeInspection::default()
+        };
+    }
+    if block.tool == "weather_get_forecast"
+        && block
+            .data
+            .get("forecast_days")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::Empty,
+            confidence: 0.99,
+            ..OutcomeInspection::default()
+        };
+    }
+    OutcomeInspection {
+        kind: AssistantToolOutcomeKind::Answer,
+        confidence: 0.98,
+        stale: true,
+        message,
+        ..OutcomeInspection::default()
+    }
+}
+
+fn classify_library_outcome(
+    message: &str,
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::LibrarySearchTitles => {
+            let matches = block
+                .data
+                .get("matches")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            if matches == 0 {
+                return OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.99,
+                    ..OutcomeInspection::default()
+                };
+            }
+            let lower = message.to_ascii_lowercase();
+            let wants_detail = ["summary", "about", "details", "tell me more", "what is"]
+                .iter()
+                .any(|needle| lower.contains(needle));
+            OutcomeInspection {
+                kind: if matches == 1 && wants_detail {
+                    AssistantToolOutcomeKind::Partial
+                } else {
+                    AssistantToolOutcomeKind::Answer
+                },
+                confidence: 0.97,
+                recovery_hints: if matches == 1 && wants_detail {
+                    vec!["library_detail".to_string()]
+                } else {
+                    Vec::new()
+                },
+                ..OutcomeInspection::default()
+            }
+        }
+        AssistantToolName::LibraryGetItemSummary => {
+            if tool_message(block)
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("no accessible library item matched")
+            {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::NotFound,
+                    confidence: 0.98,
+                    message: tool_message(block),
+                    ..OutcomeInspection::default()
+                }
+            } else {
+                OutcomeInspection {
+                    kind: AssistantToolOutcomeKind::Answer,
+                    confidence: 0.98,
+                    ..OutcomeInspection::default()
+                }
+            }
+        }
+        AssistantToolName::LibrariesGetRecentlyAdded
+        | AssistantToolName::LibrariesListAccessible => {
+            classify_generic_list_outcome(block, "items")
+        }
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_transcript_outcome(block: &AssistantToolContextBlock) -> OutcomeInspection {
+    let message = tool_message(block);
+    if message
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .contains("no accessible")
+    {
+        return OutcomeInspection {
+            kind: AssistantToolOutcomeKind::NotFound,
+            confidence: 0.97,
+            message,
+            ..OutcomeInspection::default()
+        };
+    }
+    OutcomeInspection {
+        kind: AssistantToolOutcomeKind::Answer,
+        confidence: 0.96,
+        ..OutcomeInspection::default()
+    }
+}
+
+fn classify_rooms_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::RoomsListActive | AssistantToolName::RoomsListJoinable => {
+            classify_generic_list_outcome(block, "rooms")
+        }
+        AssistantToolName::RoomsGetRoomSummary => classify_generic_outcome(block),
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_servers_outcome(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+) -> OutcomeInspection {
+    match tool {
+        AssistantToolName::ServersListMinecraftStatus => {
+            classify_generic_list_outcome(block, "servers")
+        }
+        AssistantToolName::ServersGetMinecraftServerSummary => classify_generic_outcome(block),
+        _ => classify_generic_outcome(block),
+    }
+}
+
+fn classify_generic_list_outcome(
+    block: &AssistantToolContextBlock,
+    array_key: &str,
+) -> OutcomeInspection {
+    let count = block
+        .data
+        .get(array_key)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    OutcomeInspection {
+        kind: if count == 0 {
+            AssistantToolOutcomeKind::Empty
+        } else {
+            AssistantToolOutcomeKind::Answer
+        },
+        confidence: 0.95,
+        ..OutcomeInspection::default()
+    }
+}
+
+fn classify_generic_outcome(block: &AssistantToolContextBlock) -> OutcomeInspection {
+    let message = tool_message(block);
+    if let Some(message) = message.as_deref() {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("not found") || lower.contains("couldn't find") {
+            return OutcomeInspection {
+                kind: AssistantToolOutcomeKind::NotFound,
+                confidence: 0.95,
+                message: Some(message.to_string()),
+                ..OutcomeInspection::default()
+            };
+        }
+        if lower.contains("multiple") && lower.contains("which one") {
+            return OutcomeInspection {
+                kind: AssistantToolOutcomeKind::Ambiguous,
+                confidence: 0.95,
+                message: Some(message.to_string()),
+                ..OutcomeInspection::default()
+            };
+        }
+    }
+    OutcomeInspection {
+        kind: AssistantToolOutcomeKind::Answer,
+        confidence: 0.90,
+        message,
+        ..OutcomeInspection::default()
+    }
+}
+
+fn extract_evidence_items(
+    tool: AssistantToolName,
+    block: &AssistantToolContextBlock,
+    kind: AssistantToolOutcomeKind,
+) -> Vec<AssistantEvidenceItem> {
+    let mut items = Vec::new();
+    let base_excerpt = summarize_value(&block.data);
+    if !base_excerpt.is_empty() {
+        items.push(AssistantEvidenceItem {
+            id: format!(
+                "ev:{}:{}",
+                tool.as_str(),
+                short_hash(base_excerpt.as_bytes())
+            ),
+            tool: tool.as_str().to_string(),
+            domain_family: tool.domain_family(),
+            title: block.label.clone(),
+            excerpt: base_excerpt,
+            score: evidence_score(kind),
+            tags: vec![kind.as_str().to_string()],
+            source_chunk_id: None,
+            freshness_hint: if tool.freshness_sensitive() {
+                Some("live".to_string())
+            } else {
+                None
+            },
+            conflict_key: None,
+        });
+    }
+
+    items.truncate(2);
+    items
+}
+
+fn evidence_score(kind: AssistantToolOutcomeKind) -> f64 {
+    match kind {
+        AssistantToolOutcomeKind::Answer => 1.0,
+        AssistantToolOutcomeKind::Partial => 0.8,
+        AssistantToolOutcomeKind::Ambiguous
+        | AssistantToolOutcomeKind::ClarificationNeeded
+        | AssistantToolOutcomeKind::WeakMatch => 0.6,
+        AssistantToolOutcomeKind::NotFound | AssistantToolOutcomeKind::Empty => 0.5,
+        AssistantToolOutcomeKind::Stale => 0.4,
+        AssistantToolOutcomeKind::Conflicting => 0.3,
+        AssistantToolOutcomeKind::Denied
+        | AssistantToolOutcomeKind::ValidationFailed
+        | AssistantToolOutcomeKind::TransientError
+        | AssistantToolOutcomeKind::FatalError => 0.2,
+    }
+}
+
+fn summarize_value(value: &serde_json::Value) -> String {
+    if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
+        return compact_text(message, 220);
+    }
+    compact_text(&serde_json::to_string(value).unwrap_or_default(), 220)
+}
+
+fn tool_message(block: &AssistantToolContextBlock) -> Option<String> {
+    block
+        .data
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn outcome_kind_for_not_found(tool: AssistantToolName) -> AssistantToolOutcomeKind {
+    match tool.domain_family() {
+        AssistantDomainFamily::Weather => AssistantToolOutcomeKind::ValidationFailed,
+        _ => AssistantToolOutcomeKind::NotFound,
+    }
+}
+
+fn short_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    hex::encode(&digest[..8])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_tool_result;
+    use crate::ai_assistant::registry::AssistantToolName;
+    use crate::ai_assistant::types::{
+        AssistantToolContextBlock, AssistantToolInput, PlannedToolCall,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn normalizes_empty_birthday_payload_as_not_found() {
+        let outcome = normalize_tool_result(
+            "When is Rachel's birthday?",
+            &PlannedToolCall {
+                tool: AssistantToolName::CalendarUpcomingBirthdays,
+                input: AssistantToolInput::CalendarWindow {
+                    from_date: "2026-04-04".to_string(),
+                    to_date: "2027-04-04".to_string(),
+                    label: "the next year".to_string(),
+                    query: Some("Rachel".to_string()),
+                },
+            },
+            AssistantToolContextBlock {
+                tool: "calendar_upcoming_birthdays",
+                label: "Birthdays".to_string(),
+                status: "ok",
+                data: json!({
+                    "query": "Rachel",
+                    "birthdays": []
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::NotFound
+        );
+    }
+
+    #[test]
+    fn normalizes_weather_clarification_as_ambiguous() {
+        let outcome = normalize_tool_result(
+            "What's the weather tomorrow in Cork?",
+            &PlannedToolCall {
+                tool: AssistantToolName::WeatherGetForecast,
+                input: AssistantToolInput::Weather {
+                    location: "Cork".to_string(),
+                    forecast_days: Some(2),
+                },
+            },
+            AssistantToolContextBlock {
+                tool: "weather_get_forecast",
+                label: "Forecast".to_string(),
+                status: "ok",
+                data: json!({
+                    "message": "clarification:I found multiple locations matching \"Cork\". Which one did you mean?"
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Ambiguous
+        );
+        assert!(
+            outcome
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Which one did you mean")
+        );
+    }
+
+    #[test]
+    fn normalizes_denied_tool_errors() {
+        let outcome = normalize_tool_result(
+            "Delete my event",
+            &PlannedToolCall {
+                tool: AssistantToolName::CalendarDeleteEvent,
+                input: AssistantToolInput::None,
+            },
+            AssistantToolContextBlock {
+                tool: "calendar_delete_event",
+                label: "Delete".to_string(),
+                status: "error",
+                data: json!({
+                    "message": "calendar_delete_event is blocked because this assistant execution profile is read-only."
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Denied
+        );
+    }
+
+    #[test]
+    fn normalizes_host_runtime_for_ai_model_question_as_partial() {
+        let outcome = normalize_tool_result(
+            "What AI model is loaded?",
+            &PlannedToolCall {
+                tool: AssistantToolName::SystemGetHostRuntimeSummary,
+                input: AssistantToolInput::None,
+            },
+            AssistantToolContextBlock {
+                tool: "system_get_host_runtime_summary",
+                label: "Current Rustyfin host runtime summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "cpu_usage_percent": 11.4,
+                    "memory_used_bytes": 11000000000_u64,
+                    "memory_total_bytes": 33000000000_u64
+                }),
+            },
+        );
+        assert_eq!(
+            outcome.kind,
+            crate::ai_assistant::types::AssistantToolOutcomeKind::Partial
+        );
+    }
+}
