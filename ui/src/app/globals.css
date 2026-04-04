@@ -320,23 +320,23 @@ textarea:focus-visible {
   gap: 1rem;
 }
 
-body:not([data-rf-page="ai"]) .rf-flat-scope .panel,
-body:not([data-rf-page="ai"]) .rf-flat-scope .panel-soft,
-body:not([data-rf-page="ai"]) .rf-flat-scope .tile {
+body:not([data-rf-page="ai"]) .rf-flat-scope .panel:not(.rf-preserve-surface),
+body:not([data-rf-page="ai"]) .rf-flat-scope .panel-soft:not(.rf-preserve-surface),
+body:not([data-rf-page="ai"]) .rf-flat-scope .tile:not(.rf-preserve-surface) {
   box-shadow: none;
 }
 
-body:not([data-rf-page="ai"]) .rf-flat-scope .panel {
+body:not([data-rf-page="ai"]) .rf-flat-scope .panel:not(.rf-preserve-surface) {
   background: transparent;
   border-color: rgba(215, 223, 255, 0.12);
 }
 
-body:not([data-rf-page="ai"]) .rf-flat-scope .panel-soft {
+body:not([data-rf-page="ai"]) .rf-flat-scope .panel-soft:not(.rf-preserve-surface) {
   background: rgba(255, 255, 255, 0.025);
   border-color: rgba(215, 223, 255, 0.12);
 }
 
-body:not([data-rf-page="ai"]) .rf-flat-scope .tile {
+body:not([data-rf-page="ai"]) .rf-flat-scope .tile:not(.rf-preserve-surface) {
   background: rgba(255, 255, 255, 0.025);
   border-color: rgba(215, 223, 255, 0.12);
 }

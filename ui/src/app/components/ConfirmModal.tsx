@@ -60,7 +60,7 @@ export default function ConfirmModal({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
-        className={`panel w-full ${maxWidthClassName} space-y-4 rounded-2xl border border-[var(--border)] p-6`}
+        className={`panel rf-preserve-surface w-full ${maxWidthClassName} space-y-4 rounded-2xl border border-[var(--border)] p-6`}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="space-y-2">
