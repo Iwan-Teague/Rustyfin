@@ -160,7 +160,7 @@ button:focus-visible {
 
   .app-nav.app-nav-rail {
     position: fixed;
-    left: var(--page-pad-inline);
+    left: clamp(0.35rem, 0.85vw, 0.75rem);
     top: var(--page-pad-top);
     height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
     padding: 1rem;
@@ -168,6 +168,7 @@ button:focus-visible {
     border-radius: 2rem;
     transition:
       width 240ms var(--ease-out-quart),
+      left var(--motion-base) var(--ease-out-quart),
       border-color var(--motion-base) var(--ease-out-quart),
       box-shadow var(--motion-base) var(--ease-out-quart);
   }
@@ -1626,6 +1627,32 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.05) !important;
   box-shadow: none !important;
   color: var(--text-main);
+}
+
+.app-nav-rail .rf-nav-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(-0.35rem);
+  transform-origin: top;
+  pointer-events: none;
+  transition:
+    grid-template-rows 260ms var(--ease-out-quart),
+    opacity 180ms var(--ease-out-quart),
+    transform 260ms var(--ease-out-quart),
+    margin-top 260ms var(--ease-out-quart);
+}
+
+.app-nav-rail .rf-nav-children[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.app-nav-rail .rf-nav-children-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .rf-room-mode-btn {

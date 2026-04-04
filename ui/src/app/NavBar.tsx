@@ -44,6 +44,17 @@ const ROOT_NAV_ITEMS: RootNavItem[] = [
     ),
   },
   {
+    href: '/ai',
+    label: 'AI',
+    items: [],
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+        <path d="M8 6.5 12 4l4 2.5v5L12 14l-4-2.5v-5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M8.5 15.5 12 18l3.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
     href: '/server',
     label: 'Server',
     items: PRIMARY_NAV_GROUPS[2]?.items ?? [],
@@ -52,17 +63,6 @@ const ROOT_NAV_ITEMS: RootNavItem[] = [
         <rect x="4" y="5" width="16" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
         <rect x="4" y="14" width="16" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
         <path d="M8 7.5h.01M8 16.5h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    href: '/ai',
-    label: 'AI',
-    items: [],
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <path d="M8 6.5 12 4l4 2.5v5L12 14l-4-2.5v-5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-        <path d="M8.5 15.5 12 18l3.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
     ),
   },
@@ -247,20 +247,27 @@ export default function NavBar() {
                     {railExpanded ? <span className="truncate">{item.label}</span> : null}
                   </Link>
                 )}
-                {showChildren ? (
-                  <div className="ml-3 flex flex-col gap-1 pt-0.5">
-                    {item.items.map((subItem) => (
-                      <Link
-                        key={subItem.href}
-                        href={subItem.href}
-                        className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-[0.95rem] font-medium ${
-                          isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
-                        }`}
-                        aria-current={isActivePath(subItem.href) ? 'page' : undefined}
-                      >
-                        {subItem.label}
-                      </Link>
-                    ))}
+                {item.items.length ? (
+                  <div
+                    className="rf-nav-children ml-3"
+                    data-open={showChildren ? 'true' : 'false'}
+                    aria-hidden={!showChildren}
+                  >
+                    <div className="rf-nav-children-inner flex flex-col gap-1 pt-0.5">
+                      {item.items.map((subItem) => (
+                        <Link
+                          key={subItem.href}
+                          href={subItem.href}
+                          className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-[0.95rem] font-medium ${
+                            isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
+                          }`}
+                          aria-current={isActivePath(subItem.href) ? 'page' : undefined}
+                          tabIndex={showChildren ? 0 : -1}
+                        >
+                          {subItem.label}
+                        </Link>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
               </div>
