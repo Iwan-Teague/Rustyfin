@@ -322,19 +322,20 @@ textarea:focus-visible {
   background: linear-gradient(
     110deg,
     rgba(239, 244, 255, 0.74) 0%,
-    rgba(239, 244, 255, 0.74) 45%,
+    rgba(239, 244, 255, 0.74) 46%,
     rgba(255, 255, 255, 1) 49%,
     rgba(255, 255, 255, 1) 51%,
-    rgba(239, 244, 255, 0.74) 55%,
+    rgba(239, 244, 255, 0.74) 54%,
     rgba(239, 244, 255, 0.74) 100%
   );
-  background-size: 260% 100%;
-  background-position: 135% 0;
+  background-size: 320% 100%;
+  background-position: 170% 0;
+  background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  animation: ai-activity-text-shimmer 2.3s ease-in-out infinite;
+  animation: ai-activity-text-shimmer 4.4s ease-in-out infinite;
 }
 
 .ai-activity-meta {
@@ -1397,16 +1398,16 @@ input[type="checkbox"]:disabled {
 
 @keyframes ai-activity-text-shimmer {
   0%,
-  18% {
-    background-position: 135% 0;
+  24% {
+    background-position: 170% 0;
   }
 
-  62% {
-    background-position: -135% 0;
+  72% {
+    background-position: -190% 0;
   }
 
   100% {
-    background-position: -135% 0;
+    background-position: -190% 0;
   }
 }
 

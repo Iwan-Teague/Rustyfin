@@ -1174,7 +1174,7 @@ function MessageBubble({
           />
         ) : null}
 
-        <div className="panel-soft rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed">
+        <div className="px-0 py-0 text-sm leading-relaxed text-[var(--text-main)]">
           {entry.errorMessage ? (
             <span className="text-[var(--danger)]">{entry.errorMessage}</span>
           ) : content ? (
@@ -1187,27 +1187,22 @@ function MessageBubble({
         </div>
 
         {entry.grounding_chunks.length > 0 ? (
-          <div className="mt-3 space-y-2 rounded-2xl border border-[var(--border)] bg-[var(--panel)]/45 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] muted">Sources</p>
-              <p className="text-[11px] muted">
-                {entry.grounding_chunks.length} chunk
-                {entry.grounding_chunks.length === 1 ? '' : 's'}
-              </p>
-            </div>
-            <div className="space-y-2">
+          <div className="mt-3 space-y-2 text-xs">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] muted">
+              Sources
+            </p>
+            <div className="space-y-3">
               {entry.grounding_chunks.map((chunk) => (
-                <div key={chunk.id} className="rounded-xl border border-[var(--border)]/70 px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="chip border-[var(--border)] text-[var(--text-muted)]">
-                      {chunk.source_kind}
+                <div key={chunk.id} className="space-y-1">
+                  <p className="text-sm font-medium text-[var(--text-main)]">
+                    {chunk.title}
+                    <span className="ml-2 text-[11px] font-normal muted">
+                      {chunk.source_kind} · {chunk.id}
                     </span>
-                    <p className="text-sm font-medium text-[var(--text-main)]">{chunk.title}</p>
-                    <span className="text-[11px] muted">{chunk.id}</span>
-                  </div>
-                  <p className="mt-1 text-xs muted">{chunk.excerpt}</p>
+                  </p>
+                  <p className="text-xs muted">{chunk.excerpt}</p>
                   {chunk.citation ? (
-                    <p className="mt-1 text-[11px] muted">
+                    <p className="text-[11px] muted">
                       {groundingCitationSummary(chunk.citation)}
                     </p>
                   ) : null}
