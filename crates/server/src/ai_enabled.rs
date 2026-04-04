@@ -2889,7 +2889,7 @@ mod tests {
         assert!(stats.prompt_tokens > 0);
         assert!(stats.completion_tokens > 0);
         assert_eq!(stats.generation_duration_ms, 0);
-        assert_eq!(stats.tokens_per_second, 0.0);
+        assert!(stats.tokens_per_second > 0.0);
     }
 
     #[test]
@@ -3243,6 +3243,14 @@ fn build_server_authored_turn_stats(
 ) -> AssistantTurnStats {
     let prompt_tokens = estimated_prompt_tokens(request, grounding_chunks);
     let completion_tokens = estimated_completion_tokens(assistant_content);
+    let tokens_per_second = estimated_server_authored_tokens_per_second(
+        completion_tokens,
+        planner_duration_ms,
+        tool_duration_ms,
+        end_to_end_duration_ms,
+        queue_duration_ms,
+        model_load_duration_ms,
+    );
     build_turn_stats_with_planner(
         prompt_tokens,
         completion_tokens,
@@ -3252,7 +3260,7 @@ fn build_server_authored_turn_stats(
         end_to_end_duration_ms,
         queue_duration_ms,
         model_load_duration_ms,
-        0.0,
+        tokens_per_second,
         planner_debug,
         execution_trace,
     )
@@ -3321,6 +3329,34 @@ fn estimate_chat_message_tokens(messages: &[rustfin_ai_agent::ChatMessage]) -> u
             total.saturating_add(role_cost).saturating_add(content_cost)
         })
         .max(1)
+}
+
+fn estimated_server_authored_tokens_per_second(
+    completion_tokens: u64,
+    planner_duration_ms: u64,
+    tool_duration_ms: u64,
+    end_to_end_duration_ms: u64,
+    queue_duration_ms: u64,
+    model_load_duration_ms: u64,
+) -> f64 {
+    if completion_tokens == 0 {
+        return 0.0;
+    }
+
+    let estimated_authoring_duration_ms = if planner_duration_ms > 0 {
+        planner_duration_ms
+    } else {
+        end_to_end_duration_ms
+            .saturating_sub(tool_duration_ms)
+            .saturating_sub(queue_duration_ms)
+            .saturating_sub(model_load_duration_ms)
+    };
+
+    if estimated_authoring_duration_ms == 0 {
+        return 0.0;
+    }
+
+    (completion_tokens as f64) / ((estimated_authoring_duration_ms as f64) / 1000.0)
 }
 
 #[allow(clippy::too_many_arguments)]
