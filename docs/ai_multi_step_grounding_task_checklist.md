@@ -48,18 +48,18 @@
 - [x] Add unit tests for outcome normalization and graph selection.
 - [x] Add integration tests for multi-step recovery traces.
 - [x] Add eval corpus for empty/ambiguous/partial/conflict/ACL/write safety cases.
-- [ ] Verify `Instant` remains narrow and low-latency.
-- [ ] Verify `Thinking` improves bounded recovery quality.
-- [ ] Verify `Extended` remains hard-capped and observable.
-- [ ] Verify no chain-of-thought exposure.
-- [ ] Verify no ACL regressions.
-- [ ] Verify no write-confirmation regressions.
-- [ ] Run full relevant validation suite and record results.
-- [ ] Deploy to Ubuntu.
-- [ ] Verify service health, AI/runtime health, admin diagnostics, stop reasons, and recovery telemetry live.
-- [ ] Update implementation log with deployment verification.
-- [ ] Commit the completed work.
-- [ ] Push to `main`.
+- [x] Verify `Instant` remains narrow and low-latency.
+- [x] Verify `Thinking` improves bounded recovery quality.
+- [x] Verify `Extended` remains hard-capped and observable.
+- [x] Verify no chain-of-thought exposure.
+- [x] Verify no ACL regressions.
+- [x] Verify no write-confirmation regressions.
+- [x] Run full relevant validation suite and record results.
+- [x] Deploy to Ubuntu.
+- [x] Verify service health, AI/runtime health, admin diagnostics, stop reasons, and recovery telemetry live.
+- [x] Update implementation log with deployment verification.
+- [x] Commit the completed work.
+- [x] Push to `main`.
 
 ## Final Checklist
 
@@ -82,15 +82,15 @@
 - [x] Add unit tests for outcome normalization and graph selection.
 - [x] Add integration tests for multi-step recovery traces.
 - [x] Add eval corpus for empty/ambiguous/partial/conflict/ACL/write safety cases.
-- [ ] Verify `Instant` remains narrow and low-latency.
-- [ ] Verify `Thinking` improves bounded recovery quality.
-- [ ] Verify `Extended` remains hard-capped and observable.
-- [ ] Verify no chain-of-thought exposure.
-- [ ] Verify no ACL regressions.
-- [ ] Verify no write-confirmation regressions.
+- [x] Verify `Instant` remains narrow and low-latency.
+- [x] Verify `Thinking` improves bounded recovery quality.
+- [x] Verify `Extended` remains hard-capped and observable.
+- [x] Verify no chain-of-thought exposure.
+- [x] Verify no ACL regressions.
+- [x] Verify no write-confirmation regressions.
 
 ## Completion
 
-- [ ] All phases completed
-- [ ] Deployment verified
-- [ ] Pushed to `main`
+- [x] All phases completed
+- [x] Deployment verified
+- [x] Pushed to `main`
