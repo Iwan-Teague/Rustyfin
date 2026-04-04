@@ -356,6 +356,41 @@ button:focus-visible {
   color: color-mix(in srgb, var(--danger) 72%, white 28%);
 }
 
+.rf-text-action-soft {
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+}
+
+.rf-text-action-soft:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.rf-inline-select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: rgba(248, 248, 255, 0.92);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  transition:
+    color var(--motion-fast) var(--ease-out-quart),
+    background-color var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-inline-select:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.rf-inline-select:focus,
+.rf-inline-select:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .rf-inline-meta {
   display: flex;
   flex-wrap: wrap;
