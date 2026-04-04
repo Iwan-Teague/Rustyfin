@@ -11,6 +11,8 @@ import TextChannelView from './components/TextChannelView';
 import VoiceChannelView from './components/VoiceChannelView';
 import ChannelUserSettings from './components/ChannelUserSettings';
 
+const LAST_USED_CHANNEL_KEY = 'rustyfin:last-used-channel-id';
+
 export default function ChannelsPage() {
   const { me, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -31,25 +33,46 @@ export default function ChannelsPage() {
 
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+  const [isDesktop, setIsDesktop] = useState(false);
   const preselectedApplied = useRef(false);
 
-  // Auto-select a channel when deep-linking via ?channel=<id>, or default to active voice channel
+  // Auto-select a channel when deep-linking via ?channel=<id>, last-used choice, or default channel
   useEffect(() => {
     if (preselectedApplied.current || activeChannelId || channels.length === 0) return;
     const params = new URLSearchParams(window.location.search);
     const channelId = params.get('channel');
+    const lastUsedChannelId =
+      typeof window !== 'undefined' ? window.localStorage.getItem(LAST_USED_CHANNEL_KEY) : null;
+    const firstTextChannel = channels.find((channel) => channel.kind === 'text') ?? null;
+    const firstVoiceChannel = channels.find((channel) => channel.kind === 'voice') ?? null;
+    const fallbackChannelId =
+      lastUsedChannelId && channels.some((channel) => channel.id === lastUsedChannelId)
+        ? lastUsedChannelId
+        : connectedVoiceChannelId && channels.some((channel) => channel.id === connectedVoiceChannelId)
+          ? connectedVoiceChannelId
+          : firstTextChannel?.id ?? firstVoiceChannel?.id ?? channels[0]?.id ?? null;
+
     if (channelId && channels.some((c) => c.id === channelId)) {
       preselectedApplied.current = true;
       setActiveChannelId(channelId);
-    } else if (
-      connectedVoiceChannelId &&
-      channels.some((c) => c.id === connectedVoiceChannelId)
-    ) {
-      // If no URL param, default to active voice channel if user is connected
+    } else if (fallbackChannelId) {
       preselectedApplied.current = true;
-      setActiveChannelId(connectedVoiceChannelId);
+      setActiveChannelId(fallbackChannelId);
     }
   }, [channels, activeChannelId, connectedVoiceChannelId]);
+
+  useEffect(() => {
+    if (!activeChannelId || typeof window === 'undefined') return;
+    window.localStorage.setItem(LAST_USED_CHANNEL_KEY, activeChannelId);
+  }, [activeChannelId]);
+
+  useEffect(() => {
+    if (!activeChannelId) return;
+    if (channels.some((channel) => channel.id === activeChannelId)) return;
+    setActiveChannelId(null);
+    preselectedApplied.current = false;
+  }, [activeChannelId, channels]);
 
   // Modal state
   const [createModal, setCreateModal] = useState<{ kind: 'text' | 'voice' } | null>(null);
@@ -66,6 +89,15 @@ export default function ChannelsPage() {
       delete document.documentElement.dataset.rfPage;
       delete document.body.dataset.rfPage;
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const media = window.matchMedia('(min-width: 768px)');
+    const update = () => setIsDesktop(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
   }, []);
 
   if (!authLoading && !me) {
@@ -112,51 +144,85 @@ export default function ChannelsPage() {
     }
   };
 
+  const handleToggleSidebar = () => {
+    if (typeof window !== 'undefined' && window.innerWidth >= 768) {
+      setDesktopSidebarOpen((current) => !current);
+      return;
+    }
+    setSidebarOpen((current) => !current);
+  };
+
+  const desktopSidebarWidth = desktopSidebarOpen ? '15rem' : '0px';
+
   return (
     <div className="animate-rise flex h-full min-h-0 w-full overflow-hidden">
       {/* Sidebar */}
-      <div className={['sm:flex shrink-0 h-full min-h-0', sidebarOpen ? 'flex' : 'hidden'].join(' ')}>
-        <ChannelSidebar
-          channels={channels}
-          voicePresence={voicePresence}
-          voiceActiveSince={voiceActiveSince}
-          voiceSpeaking={voiceSpeaking}
-          activeChannelId={activeChannelId}
-          connectedVoiceChannelId={connectedVoiceChannelId}
-          isAdmin={me.role === 'admin'}
-          onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
-          onQuickJoinVoice={(id, name) => {
-            void joinVoice(id, name);
-          }}
-          onCreateText={() => { setCreateModal({ kind: 'text' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
-          onCreateVoice={() => { setCreateModal({ kind: 'voice' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
-          onDeleteChannel={handleDeleteChannel}
-          bottomContent={
-            <ChannelUserSettings
-              me={me}
-              preferredInputDeviceId={preferredInputDeviceId}
-              preferredOutputDeviceId={preferredOutputDeviceId}
-              setPreferredAudioDevices={setPreferredAudioDevices}
-            />
-          }
-        />
+      <aside
+        className="ai-side-panel-shell ai-side-panel-shell-left hidden md:flex md:min-h-0 md:flex-col md:overflow-hidden"
+        data-open={desktopSidebarOpen ? 'true' : 'false'}
+        data-side="left"
+        style={{ width: desktopSidebarWidth }}
+      >
+        <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-r border-[var(--border)]">
+          <ChannelSidebar
+            channels={channels}
+            voicePresence={voicePresence}
+            voiceActiveSince={voiceActiveSince}
+            voiceSpeaking={voiceSpeaking}
+            activeChannelId={activeChannelId}
+            connectedVoiceChannelId={connectedVoiceChannelId}
+            isAdmin={me.role === 'admin'}
+            onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
+            onQuickJoinVoice={(id, name) => {
+              void joinVoice(id, name);
+            }}
+            onCreateText={() => { setCreateModal({ kind: 'text' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
+            onCreateVoice={() => { setCreateModal({ kind: 'voice' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
+            onDeleteChannel={handleDeleteChannel}
+            bottomContent={
+              <ChannelUserSettings
+                me={me}
+                preferredInputDeviceId={preferredInputDeviceId}
+                preferredOutputDeviceId={preferredOutputDeviceId}
+                setPreferredAudioDevices={setPreferredAudioDevices}
+              />
+            }
+          />
+        </div>
+      </aside>
+
+      <div className={['fixed inset-y-0 left-0 z-40 w-60 max-w-[85vw] md:hidden', sidebarOpen ? 'block' : 'hidden'].join(' ')}>
+        <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
+        <div className="relative h-full w-full border-r border-[var(--border)] bg-[var(--surface)]">
+          <ChannelSidebar
+            channels={channels}
+            voicePresence={voicePresence}
+            voiceActiveSince={voiceActiveSince}
+            voiceSpeaking={voiceSpeaking}
+            activeChannelId={activeChannelId}
+            connectedVoiceChannelId={connectedVoiceChannelId}
+            isAdmin={me.role === 'admin'}
+            onSelect={(id) => { setActiveChannelId(id); setSidebarOpen(false); }}
+            onQuickJoinVoice={(id, name) => {
+              void joinVoice(id, name);
+            }}
+            onCreateText={() => { setCreateModal({ kind: 'text' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
+            onCreateVoice={() => { setCreateModal({ kind: 'voice' }); setCreateName(''); setCreatePrivate(false); setCreateError(''); }}
+            onDeleteChannel={handleDeleteChannel}
+            bottomContent={
+              <ChannelUserSettings
+                me={me}
+                preferredInputDeviceId={preferredInputDeviceId}
+                preferredOutputDeviceId={preferredOutputDeviceId}
+                setPreferredAudioDevices={setPreferredAudioDevices}
+              />
+            }
+          />
+        </div>
       </div>
 
       {/* Main content */}
       <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
-        {/* Mobile header with sidebar toggle */}
-        <div className="sm:hidden flex shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 py-2">
-          <button
-            className="rf-inline-icon-btn h-9 w-9 text-xl leading-none"
-            onClick={() => setSidebarOpen((v) => !v)}
-            aria-label="Toggle sidebar"
-          >
-            ☰
-          </button>
-          {activeChannel && (
-            <span className="text-sm font-medium truncate">{activeChannel.name}</span>
-          )}
-        </div>
         {!wsReady && (
           <div className="px-4 py-1 text-xs bg-yellow-900/30 text-yellow-300 text-center">
             Connecting…
@@ -165,9 +231,8 @@ export default function ChannelsPage() {
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {!activeChannel ? (
-            <div className="flex flex-col items-center justify-center h-full gap-2 muted">
-              <span className="text-4xl">💬</span>
-              <p className="text-sm">Select a channel to get started</p>
+            <div className="flex h-full items-center justify-center muted">
+              <p className="text-sm">No channels are available yet.</p>
             </div>
           ) : activeChannel.kind === 'text' ? (
             <TextChannelView
@@ -178,6 +243,8 @@ export default function ChannelsPage() {
               isAdmin={me.role === 'admin'}
               wsEvents={lastWsEvent}
               onSendMessage={handleSendMessage}
+              onToggleSidebar={handleToggleSidebar}
+              sidebarVisible={isDesktop ? desktopSidebarOpen : sidebarOpen}
             />
           ) : (
             <VoiceChannelView
@@ -187,6 +254,8 @@ export default function ChannelsPage() {
               currentUserId={me.id}
               currentUsername={me.username}
               wsEvents={lastWsEvent}
+              onToggleSidebar={handleToggleSidebar}
+              sidebarVisible={isDesktop ? desktopSidebarOpen : sidebarOpen}
             />
           )}
         </div>

@@ -437,7 +437,7 @@ export default function CalendarPage() {
   }, []);
 
   return (
-    <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 overflow-hidden">
+    <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 w-full overflow-hidden">
       <header className="rf-flat-header shrink-0">
         <h1 className="text-3xl font-semibold sm:text-4xl">Calendar</h1>
         <p className="text-sm muted sm:text-base">
