@@ -251,6 +251,15 @@ export default function CalendarPage() {
         ? 'Open Event Panel ▸'
         : 'Show Event Panel ▾';
 
+  useEffect(() => {
+    document.documentElement.dataset.rfPage = 'calendar';
+    document.body.dataset.rfPage = 'calendar';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -428,8 +437,8 @@ export default function CalendarPage() {
   }, []);
 
   return (
-    <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header">
+    <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 overflow-hidden">
+      <header className="rf-flat-header shrink-0">
         <h1 className="text-3xl font-semibold sm:text-4xl">Calendar</h1>
         <p className="text-sm muted sm:text-base">
           Shared scheduling for your server. Admins can publish global events, and each user can keep private personal events.
@@ -448,7 +457,7 @@ export default function CalendarPage() {
       </header>
 
       <div
-        className={`grid grid-cols-1 gap-4 min-h-[40rem] lg:h-[calc(100dvh-11.5rem)] ${
+        className={`grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full ${
           panelOpen ? 'lg:grid-cols-[minmax(0,1.6fr)_minmax(20rem,1fr)]' : ''
         }`}
       >
@@ -786,14 +795,14 @@ export default function CalendarPage() {
               </>
             ) : (
               <div className="space-y-2 h-full flex flex-col min-h-0">
-                <div className="grid grid-cols-7 gap-2">
+                <div className="grid grid-cols-7 gap-0 border-y border-[var(--border-subtle)]">
                   {weekdayHeaders.map(({ label, isToday }) => (
                     <div
                       key={label}
-                      className={`rounded-lg border px-2 py-1 text-center text-xs font-semibold ${
+                      className={`px-2 py-1 text-center text-xs font-semibold ${
                         isToday
-                          ? 'border-white/30 bg-gradient-to-r from-[var(--orange)] via-[var(--danger)] to-[var(--purple-strong)] text-white'
-                          : 'border-[var(--border)] bg-white/5 muted'
+                          ? 'text-white'
+                          : 'muted'
                       }`}
                     >
                       {label}
@@ -802,7 +811,7 @@ export default function CalendarPage() {
                 </div>
                 <div
                   ref={monthGridRef}
-                  className={`grid grid-cols-7 gap-2 flex-1 min-h-0 ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}
+                  className={`grid grid-cols-7 gap-0 flex-1 min-h-0 border-l border-t border-[var(--border-subtle)] ${view === 'month' ? 'grid-rows-6' : 'grid-rows-1'}`}
                 >
                   {days.map((day) => {
                     const key = formatYmd(day);
@@ -816,13 +825,13 @@ export default function CalendarPage() {
                     return (
                       <div
                         key={key}
-                        className={`rounded-xl border px-2 ${view === 'month' ? 'py-3' : 'py-2'} overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
+                        className={`border-b border-r border-[var(--border-subtle)] px-2 ${view === 'month' ? 'py-3' : 'py-2'} overflow-hidden flex flex-col h-full min-h-0 gap-2 ${
                           isToday
-                            ? 'calendar-today-outline border-transparent bg-white/[0.08]'
+                            ? 'bg-white/[0.03]'
                             : outsideMonth
-                              ? 'border-[var(--border)]/60 opacity-70'
-                              : 'border-[var(--border)] bg-white/5'
-                        } cursor-pointer transition hover:border-white/20 hover:bg-white/[0.08]`}
+                              ? 'opacity-70'
+                              : ''
+                        } cursor-pointer transition`}
                         onClick={(event) => {
                           if (shouldIgnoreDaySurfaceActivation(event.target, event.currentTarget)) {
                             return;
@@ -845,16 +854,22 @@ export default function CalendarPage() {
                         <div className="sm:hidden">
                           <p className="text-xs font-semibold leading-tight">{dayCellDay(day)}</p>
                           <p className="text-[11px] muted leading-tight">{dayCellMonth(day)}</p>
-                          <span className="block text-[11px] muted leading-tight">{dayEvents.length}</span>
+                          <span className="block text-[11px] muted leading-tight">
+                            {dayEvents.length === 0
+                              ? 'No events'
+                              : `${dayEvents.length} event${dayEvents.length === 1 ? '' : 's'}`}
+                          </span>
                         </div>
                         <div className="hidden items-center justify-between sm:flex">
                           <p className="text-xs font-semibold">{dayCellLabel(day)}</p>
-                          <span className="text-[11px] muted">{dayEvents.length}</span>
+                          <span className="text-[11px] muted">
+                            {dayEvents.length === 0
+                              ? 'No events'
+                              : `${dayEvents.length} event${dayEvents.length === 1 ? '' : 's'}`}
+                          </span>
                         </div>
                         {monthViewCondensed ? (
-                          <div className="mt-auto rounded-lg border border-[var(--border)] bg-black/10 px-2 py-1.5 text-[11px]">
-                            <p className="font-medium leading-tight">{condensedCountLabel}</p>
-                          </div>
+                          <p className="mt-auto text-[11px] muted">{condensedCountLabel}</p>
                         ) : (
                           <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
                             {dayEvents.map((event) => (

@@ -26,6 +26,7 @@ export default function WatchSourceTabsBar({
 }: Props) {
   return (
     <RoomModeTabsBar
+      variant="flat"
       className={className}
       activeKey={activeSource}
       onSelect={onSwitchSource}

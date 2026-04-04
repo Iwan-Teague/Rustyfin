@@ -8,15 +8,15 @@ import { clientErrorMessage } from '@/lib/errors';
 
 function StatusBadge({ status }: { status: string }) {
   if (status === 'online') {
-    return <span className="chip text-[var(--ok)] bg-[var(--ok-dim)] border-[var(--ok)]">Online</span>;
+    return <span className="text-sm text-[var(--ok)]">Online</span>;
   }
   if (status === 'offline') {
-    return <span className="chip muted">Offline</span>;
+    return <span className="text-sm muted">Offline</span>;
   }
   if (status === 'loopback') {
-    return <span className="chip text-blue-300 bg-blue-900/20 border-blue-500/30">Loopback</span>;
+    return <span className="text-sm text-blue-300">Loopback</span>;
   }
-  return <span className="chip">{status}</span>;
+  return <span className="text-sm text-white/72">{status}</span>;
 }
 
 export default function NetworkPage() {

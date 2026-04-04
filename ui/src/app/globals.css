@@ -268,12 +268,12 @@ textarea:focus-visible {
 }
 
 .rf-flat-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
 }
 
 .rf-flat-empty {
   border: 1px dashed rgba(215, 223, 255, 0.18);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.025);
   color: var(--text-muted);
   padding: 1rem 1.1rem;
@@ -318,6 +318,81 @@ textarea:focus-visible {
 .rf-flat-cardless-grid {
   display: grid;
   gap: 1rem;
+}
+
+.rf-text-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: rgba(248, 248, 255, 0.92);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.2;
+  transition:
+    color var(--motion-fast) var(--ease-out-quart),
+    opacity var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-text-action:hover {
+  color: #fff;
+}
+
+.rf-text-action:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.rf-text-action-muted {
+  color: var(--text-muted);
+}
+
+.rf-text-action-danger {
+  color: color-mix(in srgb, var(--danger) 84%, white 16%);
+}
+
+.rf-text-action-danger:hover {
+  color: color-mix(in srgb, var(--danger) 72%, white 28%);
+}
+
+.rf-inline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 1rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.rf-inline-meta strong {
+  color: rgba(248, 248, 255, 0.88);
+  font-weight: 500;
+}
+
+.rf-inline-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: rgba(248, 248, 255, 0.82);
+  transition:
+    color var(--motion-fast) var(--ease-out-quart),
+    background-color var(--motion-fast) var(--ease-out-quart);
+}
+
+.rf-inline-icon-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.rf-inline-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 body:not([data-rf-page="ai"]) .rf-flat-scope .panel:not(.rf-preserve-surface),
@@ -372,6 +447,31 @@ body:not([data-rf-page="ai"]) .rf-flat-scope .select:focus-visible {
   box-shadow: 0 0 0 3px rgba(255, 194, 122, 0.1);
 }
 
+html[data-rf-page="channels"],
+body[data-rf-page="channels"] {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body[data-rf-page="channels"] .app-shell {
+  display: flex;
+  min-height: 100dvh;
+  height: 100dvh;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+body[data-rf-page="channels"] .app-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  overflow: hidden;
+  padding-top: clamp(0.5rem, 1vw, 0.95rem);
+  padding-bottom: 0;
+}
+
 @media (min-width: 768px) {
   html[data-rf-page="ai"],
   body[data-rf-page="ai"] {
@@ -393,6 +493,30 @@ body:not([data-rf-page="ai"]) .rf-flat-scope .select:focus-visible {
     min-height: 0;
     overflow: hidden;
     padding-top: clamp(0.5rem, 1vw, 0.95rem);
+    padding-bottom: 0;
+  }
+}
+
+@media (min-width: 1024px) {
+  html[data-rf-page="calendar"],
+  body[data-rf-page="calendar"] {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  body[data-rf-page="calendar"] .app-shell {
+    display: flex;
+    min-height: 100dvh;
+    height: 100dvh;
+    flex-direction: column;
+    padding-bottom: 0;
+  }
+
+  body[data-rf-page="calendar"] .app-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
     padding-bottom: 0;
   }
 }

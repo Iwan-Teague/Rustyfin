@@ -357,7 +357,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
   }, []);
 
   return (
-    <div className="flex flex-col flex-1 h-full overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
         <span className="muted">#</span>
@@ -450,8 +450,8 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
       </div>
 
       {/* Input */}
-      <div className="min-h-16 shrink-0 border-t border-[var(--border)] bg-[var(--surface)]/20 px-4 py-3">
-        <div className="flex items-end gap-2 rounded-2xl border border-[var(--border-subtle)] bg-black/10 px-2 py-2">
+      <div className="shrink-0 border-t border-[var(--border)] bg-transparent px-4 py-3">
+        <div className="flex items-end gap-2 rounded-[18px] border border-[var(--border-subtle)] bg-black/10 px-2 py-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -464,7 +464,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           />
           <button
             type="button"
-            className="btn-ghost h-10 w-10 shrink-0 text-xl leading-none"
+            className="rf-inline-icon-btn h-10 w-10 shrink-0 text-[1.35rem] leading-none"
             onClick={() => fileInputRef.current?.click()}
             aria-label="Attach file"
             title="Attach file"
@@ -484,11 +484,25 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
           />
           <button
             type="button"
-            className="btn-primary h-10 shrink-0 px-4 text-sm disabled:opacity-60"
+            className="rf-inline-icon-btn h-10 w-10 shrink-0 disabled:opacity-60"
             onClick={() => void handleSend()}
             disabled={uploading || (!draft.trim() && !pendingFile)}
+            aria-label="Send message"
           >
-            {uploading ? 'Sending…' : 'Send'}
+            {uploading ? (
+              '…'
+            ) : (
+              <svg
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+              >
+                <path d="M5 12h12" />
+                <path d="m13 6 6 6-6 6" />
+              </svg>
+            )}
           </button>
         </div>
         {pendingFile && (
@@ -499,7 +513,7 @@ export default function TextChannelView({ channel, newMessages, currentUserId, i
             {!uploading && (
               <button
                 type="button"
-                className="btn-ghost px-2 py-1 text-xs"
+                className="rf-text-action text-xs"
                 onClick={() => {
                   setPendingFile(null);
                   if (fileInputRef.current) {

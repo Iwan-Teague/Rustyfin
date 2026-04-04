@@ -254,7 +254,7 @@ export default function HomePage() {
             </div>
             <Link
               href="/libraries#continue-watching"
-              className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]"
+              className="rf-text-action text-sm"
             >
               View all
             </Link>
@@ -262,7 +262,7 @@ export default function HomePage() {
           {continueWatching.length === 0 ? (
             <div className="rf-flat-empty text-sm muted">
               <p>Start a movie or episode from a library and Rustyfin will keep your place here.</p>
-              <Link href="/libraries" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
+              <Link href="/libraries" className="rf-text-action mt-3 text-sm">
                 Open libraries
               </Link>
             </div>
@@ -352,7 +352,7 @@ export default function HomePage() {
               <h2 className="text-xl font-semibold sm:text-2xl">Open Rooms</h2>
               <p className="text-xs muted sm:text-sm">See who is active and jump in now.</p>
             </div>
-            <Link href="/rooms" className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]">
+            <Link href="/rooms" className="rf-text-action text-sm">
               View all
             </Link>
           </div>
@@ -375,7 +375,7 @@ export default function HomePage() {
                       <span>{formatRoomMembersLabel(room.member_count)}</span>
                     </div>
                   </div>
-                  <span className="btn-primary shrink-0 px-3 py-1.5 text-xs">Join</span>
+                  <span className="rf-text-action shrink-0 text-sm">Join</span>
                 </Link>
               ))}
             </div>
@@ -383,7 +383,7 @@ export default function HomePage() {
           {!loadingData && publicRooms.length === 0 ? (
             <div className="rf-flat-empty text-sm muted">
               <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
-              <Link href="/rooms" className="btn-secondary mt-3 px-3 py-1.5 text-xs">
+              <Link href="/rooms" className="rf-text-action mt-3 text-sm">
                 Join an active room
               </Link>
             </div>
@@ -397,7 +397,7 @@ export default function HomePage() {
             <h2 className="text-xl font-semibold sm:text-2xl">Calendar: Next 7 Days</h2>
             <p className="text-xs muted sm:text-sm">Read-only preview of upcoming events.</p>
           </div>
-          <Link href="/calendar" className="btn-ghost px-3 py-1.5 text-sm text-[var(--orange-soft)]">
+          <Link href="/calendar" className="rf-text-action text-sm">
             Full calendar
           </Link>
         </div>

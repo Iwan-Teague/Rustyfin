@@ -59,6 +59,15 @@ export default function ChannelsPage() {
   const createDialogTitleId = 'create-channel-dialog-title';
   const createDialogFieldId = 'create-channel-name';
 
+  useEffect(() => {
+    document.documentElement.dataset.rfPage = 'channels';
+    document.body.dataset.rfPage = 'channels';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
   if (!authLoading && !me) {
     router.replace('/login');
     return null;
@@ -104,9 +113,9 @@ export default function ChannelsPage() {
   };
 
   return (
-    <div className="animate-rise flex h-[calc(100dvh-8rem)] w-full overflow-hidden">
+    <div className="animate-rise flex h-full min-h-0 w-full overflow-hidden">
       {/* Sidebar */}
-      <div className={['sm:flex shrink-0 h-full', sidebarOpen ? 'flex' : 'hidden'].join(' ')}>
+      <div className={['sm:flex shrink-0 h-full min-h-0', sidebarOpen ? 'flex' : 'hidden'].join(' ')}>
         <ChannelSidebar
           channels={channels}
           voicePresence={voicePresence}
@@ -134,11 +143,11 @@ export default function ChannelsPage() {
       </div>
 
       {/* Main content */}
-      <div className="flex h-full flex-1 flex-col overflow-hidden bg-transparent">
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent">
         {/* Mobile header with sidebar toggle */}
         <div className="sm:hidden flex shrink-0 items-center gap-2 border-b border-[var(--border)] px-3 py-2">
           <button
-            className="btn-ghost px-2 py-1 text-xl leading-none"
+            className="rf-inline-icon-btn h-9 w-9 text-xl leading-none"
             onClick={() => setSidebarOpen((v) => !v)}
             aria-label="Toggle sidebar"
           >
@@ -154,7 +163,7 @@ export default function ChannelsPage() {
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
           {!activeChannel ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 muted">
               <span className="text-4xl">💬</span>
