@@ -130,11 +130,8 @@ export default function LibrariesPage() {
 
   return (
     <div className="animate-rise rf-flat-page">
-      <header className="rf-flat-header">
+      <header className="space-y-1">
         <h1 className="text-2xl font-semibold sm:text-3xl">Libraries</h1>
-        <p className="text-sm muted">
-          Explore all configured media directories and jump into items instantly.
-        </p>
       </header>
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
@@ -204,8 +201,8 @@ export default function LibrariesPage() {
                     {dismissing ? '…' : '×'}
                   </button>
                   <Link href={`/player/${item.id}`} className="rf-flat-row block pr-10">
-                    <div className="flex min-h-[9rem] gap-4">
-                      <div className="h-20 w-36 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65 sm:h-24 sm:w-40">
+                    <div className="flex items-center gap-4">
+                      <div className="h-18 w-32 flex-shrink-0 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--panel)]/65 sm:h-20 sm:w-36">
                         {thumbnailUrl ? (
                           <Image
                             src={thumbnailUrl}
@@ -221,7 +218,7 @@ export default function LibrariesPage() {
                           </div>
                         )}
                       </div>
-                      <div className="flex min-w-0 flex-1 flex-col justify-between">
+                      <div className="flex min-w-0 flex-1 flex-col justify-center">
                         <div className="space-y-2">
                           <div className="flex items-start gap-3">
                             <div className="min-w-0">
