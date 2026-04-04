@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
@@ -63,11 +64,13 @@ export default function WatchPartyPage() {
   const [roomName, setRoomName] = useState('');
   const [policy, setPolicy] = useState<WatchPartyPolicy>(DEFAULT_POLICY);
   const [password, setPassword] = useState('');
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const [createError, setCreateError] = useState('');
   const [publicRooms, setPublicRooms] = useState<PublicRoom[]>([]);
   const [invites, setInvites] = useState<WatchPartyInvite[]>([]);
   const [decliningInviteRoomId, setDecliningInviteRoomId] = useState<string | null>(null);
@@ -79,6 +82,11 @@ export default function WatchPartyPage() {
     : roomMode === 'create'
       ? 'create'
       : 'video';
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -216,8 +224,7 @@ export default function WatchPartyPage() {
 
   async function handleCreateRoom() {
     setCreating(true);
-    setError('');
-    setMessage('');
+    setCreateError('');
 
     try {
       const invitesPayload = Object.entries(selectedInvites).map(([user_id, config]) => ({
@@ -237,7 +244,7 @@ export default function WatchPartyPage() {
           policy,
         };
         const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
+        setCreateModalOpen(false);
         router.push(created.join_path);
       } else if (roomMode === 'audio') {
         const payload = {
@@ -249,7 +256,7 @@ export default function WatchPartyPage() {
         };
 
         const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
+        setCreateModalOpen(false);
         router.push(created.join_path);
       } else if (roomMode === 'play') {
         const payload = {
@@ -260,7 +267,7 @@ export default function WatchPartyPage() {
           policy,
         };
         const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
+        setCreateModalOpen(false);
         router.push(created.join_path);
       } else if (roomMode === 'watch') {
         const payload = {
@@ -272,17 +279,22 @@ export default function WatchPartyPage() {
         };
 
         const created = await createWatchPartyRoom(payload);
-        setMessage(`Room created: ${created.room_id}`);
+        setCreateModalOpen(false);
         router.push(created.join_path);
       } else {
-        setError('Unsupported room mode.');
+        setCreateError('Unsupported room mode.');
         return;
       }
     } catch (err: unknown) {
-      setError(clientErrorMessage(err, 'Failed to create watch party room'));
+      setCreateError(clientErrorMessage(err, 'Failed to create watch party room'));
     } finally {
       setCreating(false);
     }
+  }
+
+  function openCreateRoomModal() {
+    setCreateError('');
+    setCreateModalOpen(true);
   }
 
   if (authLoading || loading) {
@@ -311,7 +323,6 @@ export default function WatchPartyPage() {
     <div className="animate-rise rf-flat-page">
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
-      {message && <div className="notice-ok rounded-xl px-4 py-2 text-sm">{message}</div>}
 
       <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
         <section
@@ -368,104 +379,155 @@ export default function WatchPartyPage() {
         </div>
       </div>
 
-      {/* Create room section */}
       <section className="rf-flat-section">
-        <h2 className="text-xl font-semibold sm:text-2xl">Create a Room</h2>
-      </section>
-
-      <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
-        <div className="space-y-3">
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs uppercase tracking-wide muted">Room Name</span>
-            <input
-              type="text"
-              value={roomName}
-              onChange={(e) => setRoomName(e.target.value)}
-              className="rf-flat-input px-3 py-2 text-sm"
-              placeholder="Optional room name"
-              maxLength={120}
-            />
-          </label>
-
-          <div className="flex flex-wrap gap-2">
-            {ROOM_MODE_OPTIONS.map((option) => {
-              const isActive = roomMode === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  data-active={isActive ? 'true' : 'false'}
-                  className={`rf-room-mode-btn px-4 py-2 text-sm ${isActive ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => handleRoomModeSelect(option.value)}
-                  aria-pressed={isActive}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-          <p className={`rf-room-mode-feedback text-xs muted ${modeMotionClass}`}>{activeModeOption.description}</p>
-        </div>
-      </section>
-
-      <div className="mt-0 space-y-3">
-        <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
-          <section className={`space-y-4 ${modeMotionClass}`}>
-            <div style={fixedColumnHeightStyle}>
-              <RoomOptions
-                roomMode={effectivePolicyRoomMode}
-                password={password}
-                allowPlayPause={policy.allow_non_host_play_pause}
-                allowSeek={policy.allow_non_host_seek}
-                inviteOnly={policy.invite_only}
-                defaultJoinRole={policy.default_join_role}
-                noShadow
-                fillHeight
-                onPasswordChange={setPassword}
-                onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
-                onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
-                onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
-                onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
-              />
-            </div>
-          </section>
-
-          <section className={`space-y-4 rf-room-mode-panel-late ${modeMotionClass}`}>
-            <div style={fixedColumnHeightStyle}>
-              <UserInvitePicker
-                users={users}
-                currentUserId={me.id}
-                roomMode={effectivePolicyRoomMode}
-                selected={selectedInvites}
-                noShadow
-                fillHeight
-                onToggle={toggleInvite}
-                onRoleChange={setInviteRole}
-              />
-            </div>
-          </section>
-        </div>
-
-        <section
-          className={`rf-flat-section mt-[5px] border-t border-[var(--border-subtle)] pt-5 rf-room-mode-panel-later ${modeMotionClass}`}
-        >
+        <div className="flex justify-end">
           <button
             type="button"
-            className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
-            onClick={handleCreateRoom}
-            disabled={creating || !canCreate}
+            className="btn-primary px-5 py-3 text-sm"
+            onClick={openCreateRoomModal}
           >
-            {creating ? (
-              <span className="rf-room-create-loading">
-                <span className="rf-room-create-spinner" aria-hidden="true" />
-                Creating room…
-              </span>
-            ) : (
-              'Create Room'
-            )}
+            Create Room
           </button>
-        </section>
-      </div>
+        </div>
+      </section>
+
+      {mounted && createModalOpen
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]"
+              role="presentation"
+              onClick={() => {
+                if (creating) return;
+                setCreateModalOpen(false);
+              }}
+            >
+              <div
+                className="panel rf-preserve-surface w-full max-w-5xl space-y-5 rounded-2xl border border-[var(--border)] p-6"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Create room"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <h2 className="text-xl font-semibold sm:text-2xl">Create a Room</h2>
+                    <p className="text-sm muted">Choose the room type, invite people, and open it directly.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="rf-inline-icon-btn h-9 w-9 text-lg"
+                    onClick={() => {
+                      if (creating) return;
+                      setCreateModalOpen(false);
+                    }}
+                    aria-label="Close create room dialog"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {createError ? <div className="notice-error rounded-xl px-4 py-2 text-sm">{createError}</div> : null}
+
+                <section className="space-y-3">
+                  <label className="block text-sm">
+                    <span className="mb-1 block text-xs uppercase tracking-wide muted">Room Name</span>
+                    <input
+                      type="text"
+                      value={roomName}
+                      onChange={(e) => setRoomName(e.target.value)}
+                      className="rf-flat-input px-3 py-2 text-sm"
+                      placeholder="Optional room name"
+                      maxLength={120}
+                    />
+                  </label>
+
+                  <div className="flex flex-wrap gap-2">
+                    {ROOM_MODE_OPTIONS.map((option) => {
+                      const isActive = roomMode === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          data-active={isActive ? 'true' : 'false'}
+                          className={`rf-room-mode-btn px-4 py-2 text-sm ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+                          onClick={() => handleRoomModeSelect(option.value)}
+                          aria-pressed={isActive}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className={`rf-room-mode-feedback text-xs muted ${modeMotionClass}`}>{activeModeOption.description}</p>
+                </section>
+
+                <div className="grid gap-5 md:grid-cols-2 md:[grid-template-columns:minmax(0,1fr)_minmax(0,1fr)]">
+                  <section className={`space-y-4 ${modeMotionClass}`}>
+                    <div style={fixedColumnHeightStyle}>
+                      <RoomOptions
+                        roomMode={effectivePolicyRoomMode}
+                        password={password}
+                        allowPlayPause={policy.allow_non_host_play_pause}
+                        allowSeek={policy.allow_non_host_seek}
+                        inviteOnly={policy.invite_only}
+                        defaultJoinRole={policy.default_join_role}
+                        noShadow
+                        fillHeight
+                        onPasswordChange={setPassword}
+                        onAllowPlayPauseChange={(value) => setPolicyField('allow_non_host_play_pause', value)}
+                        onAllowSeekChange={(value) => setPolicyField('allow_non_host_seek', value)}
+                        onInviteOnlyChange={(value) => setPolicyField('invite_only', value)}
+                        onDefaultJoinRoleChange={(value) => setPolicyField('default_join_role', value)}
+                      />
+                    </div>
+                  </section>
+
+                  <section className={`space-y-4 rf-room-mode-panel-late ${modeMotionClass}`}>
+                    <div style={fixedColumnHeightStyle}>
+                      <UserInvitePicker
+                        users={users}
+                        currentUserId={me.id}
+                        roomMode={effectivePolicyRoomMode}
+                        selected={selectedInvites}
+                        noShadow
+                        fillHeight
+                        onToggle={toggleInvite}
+                        onRoleChange={setInviteRole}
+                      />
+                    </div>
+                  </section>
+                </div>
+
+                <div className="flex justify-end gap-2 border-t border-[var(--border-subtle)] pt-5">
+                  <button
+                    type="button"
+                    className="btn-ghost px-4 py-2 text-sm"
+                    onClick={() => setCreateModalOpen(false)}
+                    disabled={creating}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary px-5 py-3 text-sm disabled:opacity-50"
+                    onClick={handleCreateRoom}
+                    disabled={creating || !canCreate}
+                  >
+                    {creating ? (
+                      <span className="rf-room-create-loading">
+                        <span className="rf-room-create-spinner" aria-hidden="true" />
+                        Creating room…
+                      </span>
+                    ) : (
+                      'Create Room'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
     </div>
   );

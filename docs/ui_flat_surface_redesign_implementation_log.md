@@ -218,6 +218,27 @@
 
 ### Why
 - Flattened the calendar’s primary workspace and side panel into divider-led page sections so the scheduling UI no longer reads like two floating windows.
+
+## Post-Review Refinements - Libraries and Rooms
+
+### Start
+- `2026-04-04 18:10:00 IST`
+
+### Files changed
+- [libraries/page.tsx](/Users/iwanteague/Desktop/Rustyfin/ui/src/app/libraries/page.tsx)
+- [rooms/page.tsx](/Users/iwanteague/Desktop/Rustyfin/ui/src/app/rooms/page.tsx)
+
+### Why
+- Removed the redundant descriptive copy on the Libraries page and tightened the top spacing so the library list starts higher.
+- Reduced Continue Watching row height on the Libraries page so landscape artwork does not create oversized gaps between entries.
+- Reworked the Rooms page so the default page shows open rooms, invite inbox, and a single create-room trigger, with the full create-room workflow moved into an overlay dialog.
+
+### Tests / validation
+- `npm --prefix ui run build`
+- Result: passed
+
+### Regression notes
+- `/ai` remains untouched.
 - Reduced item-detail chrome by keeping artwork as functional media surfaces while removing the heavy tile-hover treatment and loading-card treatment around the page.
 - Replaced the player’s decorative loading pill with a flat status block so playback still feels focused on the media surface rather than on a decorative wrapper.
 - Added route-scoped flat-surface overrides for legacy `panel` / `panel-soft` / `tile` usage so these pages could be flattened without touching `/ai` or shared modal behavior.
