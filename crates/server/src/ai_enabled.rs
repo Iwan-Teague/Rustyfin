@@ -37,9 +37,10 @@ use crate::ai_assistant::types::{
 };
 use crate::ai_assistant::weather::deterministic_weather_reply;
 use crate::ai_assistant::{
-    AssistantChatRequest, build_assistant_messages, deterministic_ai_runtime_reply,
-    deterministic_calendar_reply, deterministic_current_datetime_reply,
-    deterministic_library_reply, deterministic_multi_step_reply, deterministic_network_reply,
+    AssistantChatRequest, build_assistant_messages, build_assistant_messages_with_budget,
+    deterministic_ai_runtime_reply, deterministic_calendar_reply,
+    deterministic_current_datetime_reply, deterministic_library_reply,
+    deterministic_multi_step_reply, deterministic_network_reply,
     deterministic_tool_inventory_reply, immediate_response_for_message, plan_execution_candidates,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
     unsupported_write_response_for_message,
@@ -941,6 +942,11 @@ fn stream_chat_response(
                 },
                 tuning_profile: None,
             });
+        let answer_context_length_tokens = answer_route
+            .tuning_profile
+            .as_ref()
+            .and_then(|profile| u32::try_from(profile.context_window.max(1)).ok())
+            .unwrap_or(4096);
         model_name = answer_route.selection.model_name.clone();
         {
             let mut guard = state.engine.lock().await;
@@ -2279,70 +2285,49 @@ fn stream_chat_response(
             confirmation_token: req.confirmation_token.clone(),
             history: augmented_history.clone(),
         };
-        let messages = build_assistant_messages(prompt_request, &grounding_chunks);
         let sampling = rustfin_ai_agent::SamplingParams {
             max_tokens: scheduler_decision.max_generation_tokens,
             ..rustfin_ai_agent::SamplingParams::default()
         };
-        let raw_stream = answer_backend.chat_stream_boxed(
-            rustfin_ai_agent::ModelRole::Answer,
-            messages,
-            sampling,
-            None,
-        );
-        futures::pin_mut!(raw_stream);
+        let mut emergency_prompt_compaction = false;
+        'answer_generation: loop {
+            let (messages, current_prompt_debug) = build_assistant_messages_with_budget(
+                prompt_request.clone(),
+                &grounding_chunks,
+                answer_context_length_tokens,
+                emergency_prompt_compaction,
+            );
+            {
+                let mut guard = state.engine.lock().await;
+                guard.last_prompt_debug = Some(current_prompt_debug.clone());
+            }
 
-        while let Some(chunk) = raw_stream.next().await {
-            match chunk {
-                Ok(rustfin_ai_agent::ChatChunk::Token(text)) => {
-                    assistant_content.push_str(&text);
-                    yield Ok::<Event, Infallible>(
-                        Event::default()
-                            .event("token")
-                            .data(json!({ "text": text }).to_string()),
-                    );
-                }
-                Ok(rustfin_ai_agent::ChatChunk::Stats {
-                    prompt_tokens,
-                    completion_tokens,
-                    prefill_duration_ms: _prefill_duration_ms,
-                    total_duration_ms,
-                    tokens_per_second,
-                }) => {
-                    let generating_finished_ts_ms = now_ts_ms();
-                    finish_phase(
-                        &mut activity_trace,
-                        AssistantPhase::Generating,
-                        generating_finished_ts_ms,
-                    );
-                    yield Ok::<Event, Infallible>(sse_json_event(
-                        "phase",
-                        &AssistantPhaseEvent {
-                            phase: AssistantPhase::Generating,
-                            label: "Thinking...".to_string(),
-                            started_ts_ms: generation_phase_started_ms,
-                            finished_ts_ms: Some(generating_finished_ts_ms),
-                        },
-                    ));
-                    stats = Some(build_turn_stats_with_planner(
+            let raw_stream = answer_backend.chat_stream_boxed(
+                rustfin_ai_agent::ModelRole::Answer,
+                messages,
+                sampling.clone(),
+                None,
+            );
+            futures::pin_mut!(raw_stream);
+            let mut retry_after_context_overflow = false;
+
+            while let Some(chunk) = raw_stream.next().await {
+                match chunk {
+                    Ok(rustfin_ai_agent::ChatChunk::Token(text)) => {
+                        assistant_content.push_str(&text);
+                        yield Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("token")
+                                .data(json!({ "text": text }).to_string()),
+                        );
+                    }
+                    Ok(rustfin_ai_agent::ChatChunk::Stats {
                         prompt_tokens,
                         completion_tokens,
+                        prefill_duration_ms: _prefill_duration_ms,
                         total_duration_ms,
-                        planner_duration_ms,
-                        tool_duration_ms,
-                        turn_started.elapsed().as_millis() as u64,
-                        queue_duration_ms,
-                        model_load_duration_ms,
                         tokens_per_second,
-                        Some(&planner_debug),
-                        execution_trace.as_ref(),
-                    ));
-                    yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
-                }
-                Ok(rustfin_ai_agent::ChatChunk::Done) => {
-                    if stats.is_none() {
-                        let generation_duration_ms =
-                            generation_started.elapsed().as_millis() as u64;
+                    }) => {
                         let generating_finished_ts_ms = now_ts_ms();
                         finish_phase(
                             &mut activity_trace,
@@ -2358,148 +2343,211 @@ fn stream_chat_response(
                                 finished_ts_ms: Some(generating_finished_ts_ms),
                             },
                         ));
-                        stats = Some(build_estimated_model_turn_stats(
-                            &req,
-                            &assistant_content,
-                            &grounding_chunks,
-                            generation_duration_ms,
+                        let mut built_stats = build_turn_stats_with_planner(
+                            prompt_tokens,
+                            completion_tokens,
+                            total_duration_ms,
                             planner_duration_ms,
                             tool_duration_ms,
                             turn_started.elapsed().as_millis() as u64,
                             queue_duration_ms,
                             model_load_duration_ms,
+                            tokens_per_second,
                             Some(&planner_debug),
                             execution_trace.as_ref(),
-                        ));
+                        );
+                        apply_prompt_debug_to_stats(&mut built_stats, &current_prompt_debug);
+                        stats = Some(built_stats);
                         yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
                     }
+                    Ok(rustfin_ai_agent::ChatChunk::Done) => {
+                        if stats.is_none() {
+                            let generation_duration_ms =
+                                generation_started.elapsed().as_millis() as u64;
+                            let generating_finished_ts_ms = now_ts_ms();
+                            finish_phase(
+                                &mut activity_trace,
+                                AssistantPhase::Generating,
+                                generating_finished_ts_ms,
+                            );
+                            yield Ok::<Event, Infallible>(sse_json_event(
+                                "phase",
+                                &AssistantPhaseEvent {
+                                    phase: AssistantPhase::Generating,
+                                    label: "Thinking...".to_string(),
+                                    started_ts_ms: generation_phase_started_ms,
+                                    finished_ts_ms: Some(generating_finished_ts_ms),
+                                },
+                            ));
+                            stats = Some(build_estimated_model_turn_stats(
+                                &req,
+                                &assistant_content,
+                                &grounding_chunks,
+                                generation_duration_ms,
+                                planner_duration_ms,
+                                tool_duration_ms,
+                                turn_started.elapsed().as_millis() as u64,
+                                queue_duration_ms,
+                                model_load_duration_ms,
+                                Some(&planner_debug),
+                                execution_trace.as_ref(),
+                                Some(&current_prompt_debug),
+                            ));
+                            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+                        }
 
-                    if let Some(persistence) = &persistence {
-                        let grounding_tools = planned_tools
-                            .iter()
-                            .map(|call| call.tool.as_str().to_string())
-                            .collect::<Vec<_>>();
-                        let turn_result = crate::ai_conversations::persist_assistant_turn(
-                            &state,
-                            &user.user_id,
-                            &persistence.conversation_id,
-                            &assistant_content,
-                            &model_name,
-                            &grounding_tools,
-                            &follow_up_contexts,
-                            &grounding_chunks,
-                            &grounding_sources,
-                            &activity_trace,
-                            stats.as_ref(),
-                            None,
-                            Some(&trace_id),
-                        )
-                        .await;
-                        persist_turn_grounding_artifacts(
-                            &state,
-                            &assistant_context,
-                            &persistence.conversation_id,
-                            turn_result,
-                            &grounding_chunks,
-                            &follow_up_contexts,
-                        )
-                        .await;
-                    }
+                        if let Some(persistence) = &persistence {
+                            let grounding_tools = planned_tools
+                                .iter()
+                                .map(|call| call.tool.as_str().to_string())
+                                .collect::<Vec<_>>();
+                            let turn_result = crate::ai_conversations::persist_assistant_turn(
+                                &state,
+                                &user.user_id,
+                                &persistence.conversation_id,
+                                &assistant_content,
+                                &model_name,
+                                &grounding_tools,
+                                &follow_up_contexts,
+                                &grounding_chunks,
+                                &grounding_sources,
+                                &activity_trace,
+                                stats.as_ref(),
+                                None,
+                                Some(&trace_id),
+                            )
+                            .await;
+                            persist_turn_grounding_artifacts(
+                                &state,
+                                &assistant_context,
+                                &persistence.conversation_id,
+                                turn_result,
+                                &grounding_chunks,
+                                &follow_up_contexts,
+                            )
+                            .await;
+                        }
 
-                    persist_chat_audit_event_with_planner(
-                        &state,
-                        &user,
-                        &req,
-                        &trace_id,
-                        AiAssistantAuditResponseKind::Completed,
-                        &attempted_tool_calls,
-                        &grounding_blocks,
-                        &grounding_chunks,
-                        &grounding_sources,
-                        Some(&planner_debug),
-                        None,
-                    )
-                    .await;
-                    {
-                        let mut guard = state.engine.lock().await;
-                        guard.last_execution_trace = execution_trace.clone();
-                    }
-                    yield Ok::<Event, Infallible>(sse_json_event(
-                        "assistant_stop_reason",
-                        &AssistantStopReasonSseEvent {
-                            reason: execution_trace
-                                .as_ref()
-                                .map(|trace| trace.stop_reason.as_str().to_string())
-                                .unwrap_or_else(|| "model_answer_completed".to_string()),
-                            final_answer_path: execution_trace
-                                .as_ref()
-                                .map(|trace| trace.final_answer_path.as_str().to_string())
-                                .unwrap_or_else(|| "model_answer".to_string()),
-                            tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
-                            alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
-                            recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
-                        },
-                    ));
-                    chat_metrics.mark_success();
-                    set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
-                    info!(
-                        trace_id = %trace_id,
-                        user_id = %user.user_id,
-                        model = %model_name,
-                        grounded_tool_count = grounding_blocks.len(),
-                        "ai chat completed"
-                    );
-                    yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
-                }
-                Err(error) => {
-                    let error_message = error.to_string();
-                    let finished_ts_ms = now_ts_ms();
-                    finish_phase(
-                        &mut activity_trace,
-                        AssistantPhase::Generating,
-                        finished_ts_ms,
-                    );
-                    yield Ok::<Event, Infallible>(sse_json_event(
-                        "phase",
-                        &AssistantPhaseEvent {
-                            phase: AssistantPhase::Generating,
-                            label: "Thinking...".to_string(),
-                            started_ts_ms: generation_phase_started_ms,
-                            finished_ts_ms: Some(finished_ts_ms),
-                        },
-                    ));
-                    if !audit_written {
                         persist_chat_audit_event_with_planner(
                             &state,
                             &user,
                             &req,
                             &trace_id,
-                            AiAssistantAuditResponseKind::StreamError,
-                            &planned_tools,
+                            AiAssistantAuditResponseKind::Completed,
+                            &attempted_tool_calls,
                             &grounding_blocks,
                             &grounding_chunks,
                             &grounding_sources,
                             Some(&planner_debug),
-                            Some(&error_message),
+                            None,
                         )
                         .await;
-                        audit_written = true;
+                        {
+                            let mut guard = state.engine.lock().await;
+                            guard.last_execution_trace = execution_trace.clone();
+                        }
+                        yield Ok::<Event, Infallible>(sse_json_event(
+                            "assistant_stop_reason",
+                            &AssistantStopReasonSseEvent {
+                                reason: execution_trace
+                                    .as_ref()
+                                    .map(|trace| trace.stop_reason.as_str().to_string())
+                                    .unwrap_or_else(|| "model_answer_completed".to_string()),
+                                final_answer_path: execution_trace
+                                    .as_ref()
+                                    .map(|trace| trace.final_answer_path.as_str().to_string())
+                                    .unwrap_or_else(|| "model_answer".to_string()),
+                                tool_step_count: execution_trace.as_ref().map(|trace| trace.tool_step_count).unwrap_or(0),
+                                alternate_tool_count: execution_trace.as_ref().map(|trace| trace.alternate_tool_count).unwrap_or(0),
+                                recovery_step_count: execution_trace.as_ref().map(|trace| trace.recovery_step_count).unwrap_or(0),
+                            },
+                        ));
+                        chat_metrics.mark_success();
+                        set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+                        info!(
+                            trace_id = %trace_id,
+                            user_id = %user.user_id,
+                            model = %model_name,
+                            grounded_tool_count = grounding_blocks.len(),
+                            "ai chat completed"
+                        );
+                        yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
                     }
-                    warn!(
-                        trace_id = %trace_id,
-                        user_id = %user.user_id,
-                        model = %model_name,
-                        error = %error_message,
-                        "ai chat stream failed"
-                    );
-                    yield Ok::<Event, Infallible>(
-                        Event::default()
-                            .event("error")
-                            .data(json!({ "message": error_message }).to_string()),
-                    );
-                    set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+                    Err(error) => {
+                        let mut error_message = error.to_string();
+                        if is_context_overflow_error(&error_message) && !emergency_prompt_compaction {
+                            warn!(
+                                trace_id = %trace_id,
+                                user_id = %user.user_id,
+                                model = %model_name,
+                                prompt_budget_tokens = current_prompt_debug.prompt_budget_tokens,
+                                context_length_tokens = answer_context_length_tokens,
+                                error = %error_message,
+                                "ai chat prompt exceeded context; retrying with emergency history compaction"
+                            );
+                            assistant_content.clear();
+                            stats = None;
+                            emergency_prompt_compaction = true;
+                            retry_after_context_overflow = true;
+                            break;
+                        }
+                        if is_context_overflow_error(&error_message) {
+                            error_message = "This conversation is too large to fit the current AI model context, even after compaction. Start a new chat or remove the very large earlier turn.".to_string();
+                        }
+                        let finished_ts_ms = now_ts_ms();
+                        finish_phase(
+                            &mut activity_trace,
+                            AssistantPhase::Generating,
+                            finished_ts_ms,
+                        );
+                        yield Ok::<Event, Infallible>(sse_json_event(
+                            "phase",
+                            &AssistantPhaseEvent {
+                                phase: AssistantPhase::Generating,
+                                label: "Thinking...".to_string(),
+                                started_ts_ms: generation_phase_started_ms,
+                                finished_ts_ms: Some(finished_ts_ms),
+                            },
+                        ));
+                        if !audit_written {
+                            persist_chat_audit_event_with_planner(
+                                &state,
+                                &user,
+                                &req,
+                                &trace_id,
+                                AiAssistantAuditResponseKind::StreamError,
+                                &planned_tools,
+                                &grounding_blocks,
+                                &grounding_chunks,
+                                &grounding_sources,
+                                Some(&planner_debug),
+                                Some(&error_message),
+                            )
+                            .await;
+                            audit_written = true;
+                        }
+                        warn!(
+                            trace_id = %trace_id,
+                            user_id = %user.user_id,
+                            model = %model_name,
+                            error = %error_message,
+                            "ai chat stream failed"
+                        );
+                        yield Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("error")
+                                .data(json!({ "message": error_message }).to_string()),
+                        );
+                        set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+                    }
                 }
             }
+
+            if retry_after_context_overflow {
+                continue 'answer_generation;
+            }
+
+            break 'answer_generation;
         }
     };
 
@@ -2697,8 +2745,10 @@ mod tests {
     use super::{
         LoadedRoleModel, assistant_text_for_confirmed_action, build_server_authored_turn_stats,
         build_turn_stats_with_planner, find_loaded_backend_for_route, grounding_recovery_plan,
-        parse_device_indices_override, parse_gpu_split_mode_override, parse_i32_override,
+        is_context_overflow_error, parse_device_indices_override, parse_gpu_split_mode_override,
+        parse_i32_override,
     };
+    use crate::ai_assistant::build_assistant_messages_with_budget;
     use crate::ai_assistant::registry::AssistantToolName;
     use crate::ai_assistant::types::{
         AssistantChatRequest, AssistantGroundingChunk, AssistantGroundingVisibility,
@@ -2890,6 +2940,65 @@ mod tests {
         assert!(stats.completion_tokens > 0);
         assert_eq!(stats.generation_duration_ms, 0);
         assert!(stats.tokens_per_second > 0.0);
+    }
+
+    #[test]
+    fn build_assistant_messages_with_budget_compacts_oversized_history() {
+        let request = AssistantChatRequest {
+            model: "test.gguf".to_string(),
+            message: "hello?".to_string(),
+            response_mode: AssistantResponseMode::Thinking,
+            confirmation_token: None,
+            history: (0..12)
+                .flat_map(|index| {
+                    [
+                        AssistantHistoryMessage {
+                            role: "user".to_string(),
+                            content: format!(
+                                "user message {index}: {}",
+                                "books and basements ".repeat(80)
+                            ),
+                            grounding_tools: Vec::new(),
+                            follow_up_contexts: Vec::new(),
+                            grounding_chunks: Vec::new(),
+                        },
+                        AssistantHistoryMessage {
+                            role: "assistant".to_string(),
+                            content: format!(
+                                "assistant reply {index}: {}",
+                                "3.1415926535 ".repeat(160)
+                            ),
+                            grounding_tools: Vec::new(),
+                            follow_up_contexts: Vec::new(),
+                            grounding_chunks: Vec::new(),
+                        },
+                    ]
+                })
+                .collect(),
+        };
+
+        let (messages, prompt_debug) =
+            build_assistant_messages_with_budget(request, &[], 4096, false);
+        let estimated_tokens = messages.iter().fold(0_u64, |total, message| {
+            let role_cost = (message.role.len() / 4).saturating_add(4) as u64;
+            let content_cost = (message.content.len() / 4).saturating_add(1) as u64;
+            total.saturating_add(role_cost).saturating_add(content_cost)
+        });
+
+        assert!(estimated_tokens <= u64::from(prompt_debug.prompt_budget_tokens));
+        assert!(prompt_debug.summarized_turns > 0);
+        assert!(prompt_debug.compact_boundary_count > 0);
+        assert!(prompt_debug.history_message_count > 0);
+    }
+
+    #[test]
+    fn context_overflow_error_detection_matches_llama_error() {
+        assert!(is_context_overflow_error(
+            "context build error: prompt token count (7828) exceeds context (4096)"
+        ));
+        assert!(!is_context_overflow_error(
+            "inference error: llama decode failed"
+        ));
     }
 
     #[test]
@@ -3440,6 +3549,7 @@ fn build_estimated_model_turn_stats(
     model_load_duration_ms: u64,
     planner_debug: Option<&AssistantPlannerDebug>,
     execution_trace: Option<&AssistantExecutionTrace>,
+    prompt_debug: Option<&ConversationPromptDebug>,
 ) -> AssistantTurnStats {
     let prompt_tokens = estimated_prompt_tokens(request, grounding_chunks);
     let completion_tokens = estimated_completion_tokens(assistant_content);
@@ -3448,7 +3558,7 @@ fn build_estimated_model_turn_stats(
     } else {
         0.0
     };
-    build_turn_stats_with_planner(
+    let mut stats = build_turn_stats_with_planner(
         prompt_tokens,
         completion_tokens,
         generation_duration_ms,
@@ -3460,7 +3570,11 @@ fn build_estimated_model_turn_stats(
         tokens_per_second,
         planner_debug,
         execution_trace,
-    )
+    );
+    if let Some(prompt_debug) = prompt_debug {
+        apply_prompt_debug_to_stats(&mut stats, prompt_debug);
+    }
+    stats
 }
 
 fn estimated_prompt_tokens(
@@ -3579,6 +3693,27 @@ fn build_turn_stats_with_planner(
     }
 
     stats
+}
+
+fn apply_prompt_debug_to_stats(
+    stats: &mut AssistantTurnStats,
+    prompt_debug: &ConversationPromptDebug,
+) {
+    stats.context_length_tokens = prompt_debug.context_length_tokens;
+    stats.prompt_budget_tokens = prompt_debug.prompt_budget_tokens;
+    stats.reserved_completion_tokens = prompt_debug.reserved_completion_tokens;
+    stats.completion_budget_tokens = prompt_debug.completion_budget_tokens;
+    stats.loaded_history_turns = prompt_debug.loaded_history_turns;
+    stats.retained_raw_turns = prompt_debug.retained_raw_turns;
+    stats.summarized_turns = prompt_debug.summarized_turns;
+    stats.recent_grounded_context_count = prompt_debug.grounding_chunk_count;
+    stats.compact_boundary_count = prompt_debug.compact_boundary_count;
+}
+
+fn is_context_overflow_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("context build error")
+        && (lower.contains("prompt token count") || lower.contains("exceeds context"))
 }
 
 fn clamp_token_count(value: u64) -> u32 {
