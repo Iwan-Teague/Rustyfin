@@ -156,7 +156,7 @@ function ChannelRow({
   const rowClass = [
     'group relative flex cursor-pointer select-none items-center gap-2 rounded-2xl px-2 py-1.5 text-sm',
     isActive
-      ? 'border-l-2 border-[var(--orange-soft)] bg-white/5 pl-1.5'
+      ? 'bg-white/6'
       : 'hover:bg-white/[0.04]',
   ].join(' ');
 
@@ -325,32 +325,22 @@ export default function ChannelSidebar({
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
-      {isAdmin ? (
-        <div className="shrink-0 px-3 pb-4 pt-3 space-y-1">
-          <button
-            type="button"
-            onClick={onCreateText}
-            className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)]"
-          >
-            New text channel
-          </button>
-          <button
-            type="button"
-            onClick={onCreateVoice}
-            className="w-full rounded-[0.95rem] px-2.5 py-2 text-left text-[0.92rem] font-medium text-[var(--text-main)] transition-colors hover:bg-[rgba(255,255,255,0.03)]"
-          >
-            New voice channel
-          </button>
-        </div>
-      ) : null}
-
       <div ref={channelListRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-4">
         {/* TEXT CHANNELS */}
         <section className="space-y-2">
-          <div className="rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
-            <span className="uppercase tracking-wider">
-              Text Channels
-            </span>
+          <div className="flex items-center justify-between gap-2 rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
+            <span className="uppercase tracking-wider">Text Channels</span>
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={onCreateText}
+                className="rf-inline-icon-btn h-6 w-6 text-sm"
+                aria-label="Create text channel"
+                title="Create text channel"
+              >
+                +
+              </button>
+            ) : null}
           </div>
           <div className="space-y-1">
             {textChannels.map((ch) => (
@@ -385,10 +375,19 @@ export default function ChannelSidebar({
 
         {/* VOICE CHANNELS */}
         <section className="mt-5 space-y-2">
-          <div className="rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
-            <span className="uppercase tracking-wider">
-              Voice Channels
-            </span>
+          <div className="flex items-center justify-between gap-2 rounded-[0.8rem] px-2 py-1 text-[0.74rem] font-semibold text-[var(--text-muted)]">
+            <span className="uppercase tracking-wider">Voice Channels</span>
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={onCreateVoice}
+                className="rf-inline-icon-btn h-6 w-6 text-sm"
+                aria-label="Create voice channel"
+                title="Create voice channel"
+              >
+                +
+              </button>
+            ) : null}
           </div>
           <div className="space-y-1">
             {voiceChannels.map((ch) => (

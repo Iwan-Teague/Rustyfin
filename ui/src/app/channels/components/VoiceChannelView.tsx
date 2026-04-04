@@ -470,40 +470,17 @@ export default function VoiceChannelView({
           ☰
         </button>
         <span className="font-semibold truncate">{channel.name}</span>
-        <span className="chip text-xs shrink-0">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-black/20 text-[10px] font-semibold mr-1">
-            {members.length}
-          </span>
-          member{members.length !== 1 ? 's' : ''}
+        <span className="shrink-0 pl-2 text-xs text-white/55">
+          {members.length} member{members.length !== 1 ? 's' : ''}
         </span>
 
-        <div className="ml-auto flex items-center gap-2 shrink-0">
+        <div className="ml-auto flex items-center gap-5 shrink-0">
           {error && <p className="text-xs text-red-400 max-w-[12rem] truncate">{error}</p>}
 
           {isConnectedHere && (
             <>
               {!voiceSession?.localStream && (
                 <span className="text-xs muted px-2">Listening</span>
-              )}
-              {transcriptionState?.status === 'running' ? (
-                <>
-                  <button
-                    onClick={handleStopTranscription}
-                    disabled={transcriptionBusy}
-                    className="btn-secondary px-3 py-1.5 text-sm"
-                  >
-                    Stop &amp; Save
-                  </button>
-                  <button
-                    onClick={handleCancelTranscription}
-                    disabled={transcriptionBusy}
-                    className="btn-secondary px-3 py-1.5 text-sm text-red-300"
-                  >
-                    Discard Transcript
-                  </button>
-                </>
-              ) : (
-                <span className="text-xs muted px-2">Transcript ready</span>
               )}
             </>
           )}

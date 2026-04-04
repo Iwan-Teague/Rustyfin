@@ -444,39 +444,7 @@ export default function CalendarPage() {
         }`}
       >
         <section className="rf-flat-section flex flex-col lg:h-full lg:min-h-0">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-sm"
-                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, -1))}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-sm"
-                onClick={() => setAnchorDate(withNoon(new Date()))}
-              >
-                Today
-              </button>
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-sm"
-                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, 1))}
-              >
-                Next
-              </button>
-              <button
-                type="button"
-                className="btn-secondary px-3 py-1.5 text-sm"
-                onClick={() =>
-                  setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
-                }
-              >
-                {eventPanelButtonLabel}
-              </button>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-base font-semibold">{formatHeader(view, from, to, anchorDate)}</h2>
               <span className="text-xs text-white/55">{events.length} events</span>
@@ -492,6 +460,38 @@ export default function CalendarPage() {
                 <option value="agenda_30">Agenda (30 Days)</option>
                 <option value="events_30">Events Only (30 Days)</option>
               </select>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-4 sm:gap-5">
+              <button
+                type="button"
+                className="rf-text-action text-sm"
+                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, -1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="rf-text-action text-sm"
+                onClick={() => setAnchorDate(withNoon(new Date()))}
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                className="rf-text-action text-sm"
+                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, 1))}
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="rf-text-action text-sm"
+                onClick={() =>
+                  setSidePanelMode((prev) => (prev === 'editor' ? 'closed' : 'editor'))
+                }
+              >
+                {eventPanelButtonLabel}
+              </button>
             </div>
           </div>
 
