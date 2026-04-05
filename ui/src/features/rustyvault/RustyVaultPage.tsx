@@ -816,14 +816,14 @@ export default function RustyVaultPage() {
     return (
       <div className="rf-flat-page rf-flat-scope animate-rise">
         <header className="rf-flat-header pb-3">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
             <div className="space-y-2">
               <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
               <p className="max-w-3xl text-sm muted sm:text-base">
                 Client-side encrypted password storage, password generation, and browser-extension pairing in the existing Rustyfin security model.
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[30rem]">
               <div className="space-y-1">
                 <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Items</p>
                 <p className="text-lg font-semibold">{config?.item_count ?? 0}</p>
@@ -971,14 +971,14 @@ export default function RustyVaultPage() {
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
       <header className="rf-flat-header pb-3">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
             <p className="max-w-3xl text-sm muted sm:text-base">
               Client-side encrypted password storage, password generation, and browser-extension pairing in the existing Rustyfin security model.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[30rem]">
             <div className="space-y-1">
               <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Items</p>
               <p className="text-lg font-semibold">{config?.item_count ?? 0}</p>
