@@ -31,6 +31,7 @@
   --page-pad-top: clamp(0.8rem, 2vw, 1.4rem);
   --page-pad-bottom: clamp(5rem, 10vw, 7.25rem);
   --rail-left-offset: clamp(0.35rem, 0.85vw, 0.75rem);
+  --rail-bottom-offset: clamp(2.35rem, 4.8vw, 3.6rem);
   --rail-collapsed-width: 4.05rem;
   --rail-collapsed-clearance: calc(
     var(--rail-left-offset) + var(--rail-collapsed-width) + 0.2rem
@@ -167,7 +168,7 @@ button:focus-visible {
     position: fixed;
     left: var(--rail-left-offset);
     top: var(--page-pad-top);
-    height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
+    height: calc(100vh - var(--page-pad-top) - var(--rail-bottom-offset));
     padding: 1rem;
     overflow: hidden;
     border-radius: 2rem;
@@ -2092,8 +2093,7 @@ input[type="checkbox"]:disabled {
 }
 
 .app-nav-rail .rf-nav-utility:hover::after,
-.app-nav-rail .rf-nav-utility:focus-visible::after,
-.app-nav-rail .rf-nav-utility[aria-current="page"]::after {
+.app-nav-rail .rf-nav-utility:focus-visible::after {
   opacity: 0.95;
   transform: scaleX(1);
 }
@@ -2106,8 +2106,7 @@ input[type="checkbox"]:disabled {
 }
 
 .app-nav-rail .rf-nav-utility:hover,
-.app-nav-rail .rf-nav-utility:focus-visible,
-.app-nav-rail .rf-nav-utility[aria-current="page"] {
+.app-nav-rail .rf-nav-utility:focus-visible {
   color: var(--text-main);
 }
 
