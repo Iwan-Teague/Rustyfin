@@ -12,6 +12,14 @@ type AudioDeviceOption = {
   label: string;
 };
 
+type AccountTab = 'profile' | 'privacy' | 'activity';
+
+const ACCOUNT_TABS: { key: AccountTab; label: string }[] = [
+  { key: 'profile', label: 'Profile settings' },
+  { key: 'privacy', label: 'Data and privacy' },
+  { key: 'activity', label: 'Activity' },
+];
+
 const SYNTHETIC_INPUT_PREFIX = 'synthetic-audioinput-';
 const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
 const FALLBACK_TIME_ZONES = [
@@ -95,6 +103,7 @@ export default function AccountPage() {
   const [inputDevices, setInputDevices] = useState<AudioDeviceOption[]>([]);
   const [outputDevices, setOutputDevices] = useState<AudioDeviceOption[]>([]);
   const [supportsOutputDeviceSelection, setSupportsOutputDeviceSelection] = useState(true);
+  const [activeTab, setActiveTab] = useState<AccountTab>('profile');
   const [profileSaving, setProfileSaving] = useState(false);
   const [preferencesSaving, setPreferencesSaving] = useState(false);
   const [privacySaving, setPrivacySaving] = useState(false);
@@ -398,7 +407,21 @@ export default function AccountPage() {
       {accountError && <p className="text-sm text-red-300">{accountError}</p>}
       {formSuccess && <p className="text-sm text-emerald-300">{formSuccess}</p>}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] gap-6">
+      <div className="rf-top-tabbar border-b border-[var(--border-subtle)] pb-0">
+        {ACCOUNT_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            className="rf-top-tab"
+            data-active={activeTab === tab.key}
+            onClick={() => setActiveTab(tab.key)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'profile' ? (
         <div className="space-y-6">
           <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
@@ -415,7 +438,7 @@ export default function AccountPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="account-display-name" className="text-xs muted">Display name</label>
                 <input
@@ -505,7 +528,7 @@ export default function AccountPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <label htmlFor="account-input-device" className="text-xs muted">Input device</label>
                 <select
@@ -562,7 +585,7 @@ export default function AccountPage() {
                 {passwordSaving ? 'Saving...' : 'Change password'}
               </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <label htmlFor="account-current-password" className="text-xs muted">Current password</label>
                 <input
@@ -624,7 +647,9 @@ export default function AccountPage() {
             </div>
           </section>
         </div>
+      ) : null}
 
+      {activeTab === 'privacy' ? (
         <div className="space-y-6">
           <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
@@ -643,23 +668,42 @@ export default function AccountPage() {
             <p className="text-sm muted">
               Rustyfin stores personal activity summaries for section presence, watch rooms, voice channels, and media watch time so your account page can show simple usage insights.
             </p>
-            <label htmlFor="account-activity-insights" className="flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] px-4 py-3 text-sm">
-              <input
-                id="account-activity-insights"
-                type="checkbox"
-                className="mt-1"
-                checked={account.preferences.privacy.personal_activity_enabled}
-                disabled={privacySaving}
-                onChange={(event) => {
-                  void handleSavePrivacy(event.target.checked);
-                }}
-              />
-              <span>
-                Store personal activity insights for this account.
-              </span>
-            </label>
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide muted">Personal activity insights</p>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: true, label: 'Enabled' },
+                  { key: false, label: 'Disabled' },
+                ].map((option) => {
+                  const isActive =
+                    account.preferences.privacy.personal_activity_enabled === option.key;
+                  return (
+                    <button
+                      key={option.label}
+                      type="button"
+                      data-active={isActive ? 'true' : 'false'}
+                      className={`rf-room-mode-btn px-4 py-2 text-sm ${isActive ? 'btn-primary' : 'btn-secondary'}`}
+                      aria-pressed={isActive}
+                      disabled={privacySaving}
+                      onClick={() => {
+                        if (privacySaving || isActive) {
+                          return;
+                        }
+                        void handleSavePrivacy(option.key);
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </section>
+        </div>
+      ) : null}
 
+      {activeTab === 'activity' ? (
+        <div className="space-y-6">
           <section className="rf-flat-section border-t border-[var(--border-subtle)] pt-5">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">Activity</h2>
@@ -736,7 +780,7 @@ export default function AccountPage() {
             </section>
           </section>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
