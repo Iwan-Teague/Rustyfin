@@ -24,6 +24,7 @@ export default function NetworkPage() {
   const { me, loading: authLoading } = useAuth();
 
   const [topology, setTopology] = useState<NetworkTopologySnapshot | null>(null);
+  const [activeView, setActiveView] = useState<'overview' | 'third-party'>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -83,8 +84,126 @@ export default function NetworkPage() {
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
 
+      <div className="rf-top-tabbar border-b border-[var(--border-subtle)] pb-0">
+        <button
+          className="rf-top-tab"
+          data-active={activeView === 'overview'}
+          onClick={() => setActiveView('overview')}
+        >
+          Overview
+        </button>
+        <button
+          className="rf-top-tab"
+          data-active={activeView === 'third-party'}
+          onClick={() => setActiveView('third-party')}
+        >
+          Third Party
+        </button>
+      </div>
+
       {loading ? (
         <div className="rf-flat-empty text-center muted">Scanning network...</div>
+      ) : activeView === 'third-party' ? (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+          <section className="rf-flat-section space-y-5">
+            <div className="space-y-2">
+              <h2 className="text-xl font-semibold">WireGuard via Rustyfin</h2>
+              <p className="max-w-3xl text-sm muted">
+                This placeholder area is reserved for third-party network setup flows managed from
+                Rustyfin. The first target here is WireGuard so users can bring remote network
+                access online without leaving the product.
+              </p>
+            </div>
+
+            <div className="rf-flat-list">
+              <div className="rf-flat-row space-y-2">
+                <h3 className="font-medium">Planned Setup Flow</h3>
+                <p className="text-sm muted">Install or detect a host WireGuard runtime</p>
+                <p className="text-sm muted">Generate server and peer configuration</p>
+                <p className="text-sm muted">Download client config files and QR codes</p>
+                <p className="text-sm muted">Show connection status and peer health inside Rustyfin</p>
+              </div>
+
+              <div className="rf-flat-row space-y-2">
+                <h3 className="font-medium">Placeholder Inputs</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-2 text-sm">
+                    <span className="muted">Tunnel Network</span>
+                    <input
+                      disabled
+                      value="10.8.0.0/24"
+                      readOnly
+                      className="w-full rounded-full border border-white/10 bg-black/10 px-4 py-3 text-white/70 outline-none"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="muted">Listen Port</span>
+                    <input
+                      disabled
+                      value="51820"
+                      readOnly
+                      className="w-full rounded-full border border-white/10 bg-black/10 px-4 py-3 text-white/70 outline-none"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4">
+              <button className="btn-primary px-4 py-2 text-sm opacity-60" disabled>
+                Set Up WireGuard
+              </button>
+              <p className="text-xs muted">
+                Placeholder only. This section is here so the full WireGuard flow can land in the
+                existing product structure later.
+              </p>
+            </div>
+          </section>
+
+          <aside className="space-y-6 lg:pt-11">
+            <section className="rf-flat-section">
+              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-400">
+                Planned Integrations
+              </h3>
+              <div className="rf-flat-list">
+                <div className="rf-flat-row space-y-1">
+                  <p className="font-medium text-white">WireGuard</p>
+                  <p className="text-sm muted">Next network integration target</p>
+                </div>
+                <div className="rf-flat-row space-y-1">
+                  <p className="font-medium text-white/70">More soon</p>
+                  <p className="text-sm muted">
+                    Additional third-party network services can slot into this view later.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="rf-flat-section">
+              <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-400">
+                Host Context
+              </h3>
+              <div className="rf-flat-list">
+                <div className="rf-flat-row space-y-1">
+                  <p className="text-xs uppercase text-slate-500">Public Host</p>
+                  <p className="font-mono text-sm">
+                    {topology?.public_host || 'Not configured'}
+                  </p>
+                </div>
+                <div className="rf-flat-row space-y-1">
+                  <p className="text-xs uppercase text-slate-500">Remote Access</p>
+                  <p className="text-sm">
+                    {topology?.remote_access_enabled ? (
+                      <span className="text-[var(--ok)]">Enabled</span>
+                    ) : (
+                      <span className="text-slate-400">Disabled</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </div>
       ) : !topology ? (
         <div className="rf-flat-empty text-center muted">No topology data available.</div>
       ) : !topology.available ? (

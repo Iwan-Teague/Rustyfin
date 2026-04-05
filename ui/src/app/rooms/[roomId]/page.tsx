@@ -884,7 +884,7 @@ export default function WatchPartyRoomPage() {
                 </div>
                 <button
                   type="button"
-                  className="btn-secondary px-3 py-1.5 text-xs"
+                  className="rf-text-action text-sm"
                   onClick={() => reconfigure.setReconfigureModalOpen(false)}
                 >
                   Close
@@ -893,7 +893,7 @@ export default function WatchPartyRoomPage() {
 
               {joinedRole === 'host' ? (
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -907,7 +907,7 @@ export default function WatchPartyRoomPage() {
                         onClick={() => reconfigure.selectReconfigureMode('video')}
                         disabled={currentReconfigureCategory === 'watch'}
                       >
-                        Watch Together
+                        Watch
                       </button>
                       <button
                         type="button"
@@ -921,7 +921,7 @@ export default function WatchPartyRoomPage() {
                         onClick={() => reconfigure.selectReconfigureMode('audio')}
                         disabled={currentReconfigureCategory === 'audio'}
                       >
-                        Listen Together
+                        Listen
                       </button>
                       <button
                         type="button"
@@ -935,7 +935,7 @@ export default function WatchPartyRoomPage() {
                         onClick={() => reconfigure.selectReconfigureMode('play')}
                         disabled={currentReconfigureCategory === 'play'}
                       >
-                        Play Together
+                        Challenge
                       </button>
                       <button
                         type="button"
@@ -949,7 +949,7 @@ export default function WatchPartyRoomPage() {
                         onClick={() => reconfigure.selectReconfigureMode('create')}
                         disabled={currentReconfigureCategory === 'create'}
                       >
-                        Create Together
+                        Create
                       </button>
                     </div>
                     <div className="flex w-full justify-end sm:w-auto">
@@ -969,32 +969,32 @@ export default function WatchPartyRoomPage() {
 
                   {reconfigure.reconfigureMode === 'audio' ? (
                     <div className="space-y-3">
-                      <p className="text-xs uppercase tracking-wide muted">Listen Together</p>
-                      <div className="rf-flat-empty text-sm muted">
+                      <p className="text-xs uppercase tracking-wide muted">Listen</p>
+                      <div className="text-sm muted">
                         Listen together with one shared queue. Search online tracks, browse local
                         library tracks, and control playback together.
                       </div>
                     </div>
                   ) : reconfigure.reconfigureMode === 'create' ? (
                     <div className="space-y-3">
-                      <p className="text-xs uppercase tracking-wide muted">Create Together</p>
-                      <div className="rf-flat-empty text-sm muted">
+                      <p className="text-xs uppercase tracking-wide muted">Create</p>
+                      <div className="text-sm muted">
                         Collaborate in shared documents and a shared canvas in real time. Edit, draw,
                         and export your work directly from the room.
                       </div>
                     </div>
                   ) : reconfigure.reconfigureMode === 'play' ? (
                     <div className="space-y-3">
-                      <p className="text-xs uppercase tracking-wide muted">Play Together</p>
-                      <div className="rf-flat-empty text-sm muted">
+                      <p className="text-xs uppercase tracking-wide muted">Challenge</p>
+                      <div className="text-sm muted">
                         Play shared games in real time with room members. Start with Chess, assign players,
                         and take turns on the same board.
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      <p className="text-xs uppercase tracking-wide muted">Watch Together</p>
-                      <div className="rf-flat-empty text-sm muted">
+                      <p className="text-xs uppercase tracking-wide muted">Watch</p>
+                      <div className="text-sm muted">
                         Watch together using Local Media, YouTube, Web, or Screen sources. Use shared
                         controls for playback, navigation, or live screen presentation depending on the source.
                       </div>
@@ -1002,7 +1002,7 @@ export default function WatchPartyRoomPage() {
                   )}
                 </div>
               ) : (
-                <div className="rf-flat-empty text-sm muted">
+                <div className="text-sm muted">
                   Only room admins can reconfigure the room.
                 </div>
               )}
@@ -1313,7 +1313,7 @@ export default function WatchPartyRoomPage() {
                             </div>
                             <div className="w-[7.75rem] shrink-0">
                               <select
-                                className="select w-full px-2 py-1.5 text-sm"
+                                className="room-inline-role-select w-full text-sm"
                                 value={role}
                                 onChange={(e) =>
                                   setInviteSelections((prev) => ({

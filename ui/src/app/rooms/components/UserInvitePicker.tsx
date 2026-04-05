@@ -89,7 +89,7 @@ export default function UserInvitePicker({
                   </div>
                   <div className="w-[7.75rem] shrink-0">
                     <select
-                      className="rf-flat-input w-full px-2 py-1.5 text-sm"
+                      className="room-inline-role-select w-full text-sm"
                       aria-label={`Role for ${user.username}`}
                       value={role}
                       onChange={(e) => {
