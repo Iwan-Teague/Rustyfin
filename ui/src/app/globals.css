@@ -30,6 +30,11 @@
   --page-pad-inline: clamp(1rem, 2.6vw, 2.75rem);
   --page-pad-top: clamp(0.8rem, 2vw, 1.4rem);
   --page-pad-bottom: clamp(5rem, 10vw, 7.25rem);
+  --rail-left-offset: clamp(0.35rem, 0.85vw, 0.75rem);
+  --rail-collapsed-width: 4.05rem;
+  --rail-collapsed-clearance: calc(
+    var(--rail-left-offset) + var(--rail-collapsed-width) + 0.45rem
+  );
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
@@ -160,7 +165,7 @@ button:focus-visible {
 
   .app-nav.app-nav-rail {
     position: fixed;
-    left: clamp(0.35rem, 0.85vw, 0.75rem);
+    left: var(--rail-left-offset);
     top: var(--page-pad-top);
     height: calc(100vh - var(--page-pad-top) - var(--page-pad-bottom));
     padding: 1rem;
@@ -247,6 +252,7 @@ button:focus-visible {
 @media (min-width: 768px) {
   .app-shell {
     display: block;
+    padding-inline-start: calc(var(--page-pad-inline) + var(--rail-collapsed-clearance));
   }
 
   .app-main {
