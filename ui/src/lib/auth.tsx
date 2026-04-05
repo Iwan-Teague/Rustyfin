@@ -38,34 +38,41 @@ function isRole(value: unknown): value is Me['role'] {
   return value === 'admin' || value === 'user';
 }
 
+function normalizeMe(raw: unknown): Me | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const parsed = raw as Partial<Me>;
+  if (
+    typeof parsed.id !== 'string' ||
+    typeof parsed.username !== 'string' ||
+    !isRole(parsed.role)
+  ) {
+    return null;
+  }
+  return {
+    id: parsed.id,
+    username: parsed.username,
+    role: parsed.role,
+    login_username:
+      typeof parsed.login_username === 'string' ? parsed.login_username : undefined,
+    time_zone:
+      typeof parsed.time_zone === 'string' || parsed.time_zone === null
+        ? parsed.time_zone
+        : undefined,
+    avatar_url:
+      typeof parsed.avatar_url === 'string' || parsed.avatar_url === null
+        ? parsed.avatar_url
+        : undefined,
+  };
+}
+
 function readCachedMe(): Me | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = localStorage.getItem(AUTH_ME_CACHE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<Me>;
-    if (
-      typeof parsed?.id !== 'string' ||
-      typeof parsed?.username !== 'string' ||
-      !isRole(parsed?.role)
-    ) {
-      return null;
-    }
-    return {
-      id: parsed.id,
-      username: parsed.username,
-      role: parsed.role,
-      login_username:
-        typeof parsed.login_username === 'string' ? parsed.login_username : undefined,
-      time_zone:
-        typeof parsed.time_zone === 'string' || parsed.time_zone === null
-          ? parsed.time_zone
-          : undefined,
-      avatar_url:
-        typeof parsed.avatar_url === 'string' || parsed.avatar_url === null
-          ? parsed.avatar_url
-          : undefined,
-    };
+    return normalizeMe(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -147,7 +154,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     try {
-      const data = await apiJson<Me>('/users/me');
+      const data = normalizeMe(await apiJson<unknown>('/users/me'));
+      if (!data) {
+        throw new Error('Invalid authenticated user payload');
+      }
       syncMe(data, true);
     } catch {
       clearBrowserToken();

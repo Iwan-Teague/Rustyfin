@@ -24,6 +24,81 @@ interface ContinueWatchingItem {
   last_played_ts: number;
 }
 
+function normalizeContinueWatchingItems(raw: unknown): ContinueWatchingItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return [];
+    }
+    const item = entry as Partial<ContinueWatchingItem>;
+    if (
+      typeof item.id !== 'string' ||
+      typeof item.library_id !== 'string' ||
+      typeof item.title !== 'string' ||
+      typeof item.kind !== 'string' ||
+      typeof item.progress_ms !== 'number' ||
+      typeof item.last_played_ts !== 'number'
+    ) {
+      return [];
+    }
+    return [{
+      id: item.id,
+      library_id: item.library_id,
+      title: item.title,
+      kind: item.kind,
+      year: typeof item.year === 'number' ? item.year : undefined,
+      poster_url: typeof item.poster_url === 'string' ? item.poster_url : undefined,
+      progress_ms: item.progress_ms,
+      duration_ms:
+        typeof item.duration_ms === 'number' || item.duration_ms === null
+          ? item.duration_ms
+          : undefined,
+      last_played_ts: item.last_played_ts,
+    }];
+  });
+}
+
+function normalizePublicRooms(raw: unknown): PublicRoom[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return [];
+    }
+    const room = entry as Partial<PublicRoom>;
+    if (
+      typeof room.room_id !== 'string' ||
+      typeof room.host_username !== 'string' ||
+      typeof room.title !== 'string' ||
+      typeof room.room_mode !== 'string' ||
+      typeof room.password_required !== 'boolean' ||
+      typeof room.member_count !== 'number' ||
+      typeof room.created_ts !== 'number'
+    ) {
+      return [];
+    }
+    return [room as PublicRoom];
+  });
+}
+
+function normalizeCalendarEvents(raw: unknown): CalendarEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return [];
+    }
+    const event = entry as Partial<CalendarEvent>;
+    if (
+      typeof event.id !== 'string' ||
+      typeof event.occurrence_id !== 'string' ||
+      typeof event.title !== 'string' ||
+      typeof event.event_date !== 'string'
+    ) {
+      return [];
+    }
+    return [event as CalendarEvent];
+  });
+}
+
 function formatDurationLabel(totalSeconds: number): string {
   const safeTotal = Math.max(0, Math.floor(totalSeconds));
   const hours = Math.floor(safeTotal / 3600);
@@ -116,18 +191,14 @@ export default function HomePage() {
         const fromYmd = formatYmd(today);
         const toYmd = formatYmd(addDays(today, 6));
         const [continueItems, rooms, calendarEvents] = await Promise.all([
-          apiJson<ContinueWatchingItem[]>('/playback/continue').catch(
-            () => [] as ContinueWatchingItem[],
-          ),
-          listPublicRooms().catch(() => [] as PublicRoom[]),
-          listCalendarEvents({ from: fromYmd, to: toYmd, scope: 'all' }).catch(
-            () => [] as CalendarEvent[],
-          ),
+          apiJson<unknown>('/playback/continue').catch(() => []),
+          listPublicRooms().catch(() => []),
+          listCalendarEvents({ from: fromYmd, to: toYmd, scope: 'all' }).catch(() => []),
         ]);
         if (cancelled) return;
-        setContinueWatching(continueItems);
-        setPublicRooms(rooms);
-        setUpcomingCalendarEvents(calendarEvents);
+        setContinueWatching(normalizeContinueWatchingItems(continueItems));
+        setPublicRooms(normalizePublicRooms(rooms));
+        setUpcomingCalendarEvents(normalizeCalendarEvents(calendarEvents));
       } catch (err: unknown) {
         if (!cancelled) {
           setError(clientErrorMessage(err, 'Failed to load home view'));
