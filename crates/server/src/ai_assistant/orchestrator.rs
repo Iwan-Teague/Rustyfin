@@ -122,7 +122,11 @@ pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
         schema_version: 2,
         ..AssistantPlannerDebug::default()
     };
-    if is_tool_inventory_query(&message.to_ascii_lowercase()) {
+    let lower = message.to_ascii_lowercase();
+    if is_tool_inventory_query(&lower)
+        || is_direct_model_chat_request(message, history)
+        || is_unsafe_destructive_host_request(&lower)
+    {
         debug.planner_mode = Some(
             AssistantPlannerMode::DeterministicFallback
                 .as_str()
@@ -423,6 +427,14 @@ pub async fn prepare_assistant_turn(
     user: &AuthUser,
     request: AssistantChatRequest,
 ) -> PreparedAssistantTurn {
+    if let Some(refusal) = unsafe_action_response_for_message(&request.message) {
+        return PreparedAssistantTurn {
+            messages: Vec::new(),
+            sources: Vec::new(),
+            immediate_response: Some(refusal),
+        };
+    }
+
     if let Some(result) = pending_action_request_for_message_with_state(
         state,
         user,
@@ -705,7 +717,7 @@ Rules:\n\
 - Use system_get_recent_errors for recent failures, problem summaries, or error overviews.\n\
 - Use web_fetch_public_page_summary only for explicit public URLs.\n\
 - Use web_search_public_web only for current public web information not already covered by a Rustyfin tool or curated public-weather tools.\n\
-- If the request is unsupported, casual chat, or a write action, return mode none.\n\
+- If the request is unsupported, casual chat, a joke, simple math, roleplay, a tone/style instruction, a reset request, or a write action, return mode none.\n\
 - Allowed availability values for downloads: available, planned, unavailable.\n\
 - Allowed availability values for servers: online, offline, healthy, problem.\n\
 - Allowed room_mode values: video, audio, youtube, web, screen, create, play.\n\
@@ -1473,12 +1485,25 @@ fn build_system_prompt() -> String {
 Be concise and genuinely helpful. Respond in plain text unless code or markdown lists add real clarity. \
 If authoritative Rustyfin grounding is supplied in another system message, treat it as the source of truth for this turn. \
 Do not invent data that was not grounded. If a grounded tool reports an error or missing data, say so plainly. \
-Do not claim to have created, updated, deleted, or changed anything in Rustyfin unless a confirmed server-side write tool actually ran and the backend verified the result."
+Do not claim to have created, updated, deleted, or changed anything in Rustyfin unless a confirmed server-side write tool actually ran and the backend verified the result. \
+If the user is just chatting, joking, roleplaying, asking for tone changes, or doing simple math, answer directly instead of pretending Rustyfin data was used. \
+Do not dump extremely long walls of text, digits, or copied content when a concise answer or a narrower follow-up would be better."
         .to_string()
 }
 
 pub fn immediate_response_for_message(message: &str) -> Option<String> {
-    clarification_for_message(message)
+    oversized_numeric_dump_response(message).or_else(|| clarification_for_message(message))
+}
+
+pub fn unsafe_action_response_for_message(message: &str) -> Option<String> {
+    if !is_unsafe_destructive_host_request(&message.to_ascii_lowercase()) {
+        return None;
+    }
+
+    Some(
+        "I can’t help delete system files, format a computer, wipe disks, or perform other destructive host actions."
+            .to_string(),
+    )
 }
 
 pub fn unsupported_write_response_for_message(message: &str) -> Option<String> {
@@ -1683,7 +1708,10 @@ pub fn plan_tool_calls_with_history(
     history: &[AssistantHistoryMessage],
 ) -> Vec<PlannedToolCall> {
     let lower = message.to_ascii_lowercase();
-    if is_tool_inventory_query(&lower) {
+    if is_tool_inventory_query(&lower)
+        || is_direct_model_chat_request(message, history)
+        || is_unsafe_destructive_host_request(&lower)
+    {
         return Vec::new();
     }
     let mut planned = Vec::new();
@@ -2550,6 +2578,15 @@ fn apply_follow_up_tool_hints(
                         AssistantToolName::CalendarListEvents,
                         extract_calendar_window(message, 7, None),
                     );
+                } else if is_single_event_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_calendar_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::CalendarGetEventDetails,
+                            extract_calendar_window(message, 30, Some(entity_label)),
+                        );
+                    }
                 } else if is_next_calendar_event_query(&message.to_ascii_lowercase()) {
                     push_tool(
                         planned,
@@ -2585,6 +2622,15 @@ fn apply_follow_up_tool_hints(
                         AssistantToolName::CalendarListEvents,
                         extract_calendar_window(message, 7, None),
                     );
+                } else if is_single_event_detail_follow_up(message, history) {
+                    if let Some(entity_label) = recent_single_calendar_entity_label(history) {
+                        push_tool(
+                            planned,
+                            seen,
+                            AssistantToolName::CalendarGetEventDetails,
+                            extract_calendar_window(message, 30, Some(entity_label)),
+                        );
+                    }
                 }
             }
             AssistantToolName::ChannelsListUnreadActivity => {
@@ -2983,6 +3029,17 @@ fn recent_follow_up_contexts(
         .unwrap_or_default()
 }
 
+fn recent_single_calendar_entity_label(history: &[AssistantHistoryMessage]) -> Option<String> {
+    let contexts = recent_follow_up_contexts(history);
+    let context = contexts.iter().find(|context| {
+        matches!(
+            context.tool.as_str(),
+            "calendar_list_events" | "calendar_get_next_event" | "calendar_get_event_details"
+        ) && context.entities.len() == 1
+    })?;
+    Some(context.entities.first()?.label.clone())
+}
+
 fn follow_up_context_matches_message(context: &AssistantFollowUpContext, message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     match context.tool.as_str() {
@@ -3148,6 +3205,28 @@ fn message_has_calendar_follow_up_hint(message: &str) -> bool {
                 "what else",
             ],
         )
+}
+
+fn is_single_event_detail_follow_up(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if recent_single_calendar_entity_label(history).is_none() {
+        return false;
+    }
+
+    let lower = message.to_ascii_lowercase();
+    has_any(
+        &lower,
+        &[
+            "its description",
+            "it description",
+            "the description",
+            "what is its description",
+            "what's its description",
+            "whats its description",
+            "describe it",
+            "tell me more about it",
+            "more about it",
+        ],
+    )
 }
 
 fn is_next_calendar_event_query(message_lower: &str) -> bool {
@@ -3471,6 +3550,7 @@ fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
         &[
             "details",
             "detail",
+            "description",
             "tell me more",
             "tell me about",
             "more about",
@@ -3492,6 +3572,7 @@ fn extract_calendar_event_detail_query(message: &str) -> Option<String> {
         "event called ",
         "event named ",
         "details for ",
+        "description for ",
         "tell me about ",
         "tell me more about ",
         "more about ",
@@ -4648,6 +4729,254 @@ fn is_service_health_query(message_lower: &str) -> bool {
     )
 }
 
+fn is_direct_model_chat_request(message: &str, history: &[AssistantHistoryMessage]) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let trimmed = lower.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    if is_tool_inventory_query(trimmed)
+        || is_supported_calendar_create_intent(trimmed)
+        || is_supported_calendar_delete_intent(trimmed)
+        || is_supported_document_create_intent(trimmed)
+        || is_supported_conversation_manage_intent(trimmed)
+        || is_unsupported_write_intent(trimmed)
+        || clarification_for_message(message).is_some()
+        || is_non_birthday_calendar_query(trimmed)
+        || is_next_calendar_event_query(trimmed)
+        || extract_calendar_event_detail_query(message).is_some()
+        || extract_birthday_query(message).is_some()
+        || is_channel_activity_query(trimmed)
+        || is_transcript_summary_query(trimmed)
+        || is_joinable_rooms_query(trimmed)
+        || is_network_query(trimmed)
+        || is_current_datetime_query(trimmed)
+        || is_ai_runtime_query(trimmed)
+        || is_host_runtime_query(trimmed)
+        || is_backup_query(trimmed)
+        || is_service_health_query(trimmed)
+        || is_transcode_query(trimmed)
+        || is_storage_query(trimmed)
+        || is_recent_errors_query(trimmed)
+        || is_weather_query(trimmed)
+        || extract_weather_location(message).is_some()
+        || extract_public_web_url(message).is_some()
+        || extract_public_web_search_query(message).is_some()
+        || extract_library_search_query(message).is_some()
+        || is_recent_library_query(trimmed)
+        || message_has_library_listing_follow_up_hint(message)
+        || extract_server_query(message).is_some()
+        || extract_server_availability(message).is_some()
+        || extract_follow_up_entity_reference(message).is_some()
+    {
+        return false;
+    }
+
+    is_reset_conversation_request(trimmed)
+        || is_tone_or_style_request(trimmed)
+        || is_smalltalk_message(trimmed)
+        || is_joke_message(trimmed, history)
+        || is_general_math_or_pi_message(trimmed)
+        || is_self_introduction_message(trimmed)
+}
+
+fn is_reset_conversation_request(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "reset chat",
+            "reset conversation",
+            "reset this conversation",
+            "start fresh",
+            "start afresh",
+            "start over",
+            "fresh start",
+            "new conversation",
+            "stop looking",
+            "stop searching",
+            "nevermind",
+            "never mind",
+        ],
+    ) || matches!(
+        message_lower.trim(),
+        "reset" | "clear chat" | "clear conversation"
+    )
+}
+
+fn is_tone_or_style_request(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "pirate talk",
+            "talk like a pirate",
+            "speak like a pirate",
+            "use pirate",
+            "from now on",
+            "only use",
+            "make this change permanent",
+            "keep this permanent",
+            "keep talking like",
+            "change your tone",
+            "change your style",
+        ],
+    )
+}
+
+fn is_smalltalk_message(message_lower: &str) -> bool {
+    let trimmed = message_lower.trim();
+    matches!(
+        trimmed,
+        "hi" | "hello"
+            | "hello?"
+            | "hey"
+            | "hey there"
+            | "yo"
+            | "test"
+            | "thanks"
+            | "thank you"
+            | "cheers"
+            | "yarrr"
+            | "yarrrr"
+            | "yarr"
+            | ":("
+    ) || has_any(
+        trimmed,
+        &[
+            "do you love",
+            "are you mates with",
+            "are u mates with",
+            "who are you",
+            "what are you",
+            "can you chat",
+            "let's start afresh",
+            "lets start afresh",
+        ],
+    )
+}
+
+fn is_joke_message(message_lower: &str, history: &[AssistantHistoryMessage]) -> bool {
+    if has_any(
+        message_lower,
+        &[
+            "tell me a joke",
+            "funny joke",
+            "what do you call ",
+            "make me laugh",
+            "say something funny",
+        ],
+    ) {
+        return true;
+    }
+
+    let trimmed = message_lower.trim();
+    if trimmed.split_whitespace().count() <= 3
+        && history
+            .iter()
+            .rev()
+            .find(|message| message.role.eq_ignore_ascii_case("user"))
+            .is_some_and(|message| {
+                let previous = message.content.to_ascii_lowercase();
+                previous.contains("what do you call ")
+                    || previous.contains("tell me a joke")
+                    || previous.contains("funny joke")
+            })
+    {
+        return true;
+    }
+
+    false
+}
+
+fn is_general_math_or_pi_message(message_lower: &str) -> bool {
+    has_any(
+        message_lower,
+        &[
+            "plus ",
+            " minus ",
+            " times ",
+            " multiplied by ",
+            " divided by ",
+            "digit of pi",
+            "digits of pi",
+            "give me pi",
+            "value of pi",
+        ],
+    )
+}
+
+fn is_self_introduction_message(message_lower: &str) -> bool {
+    let trimmed = message_lower.trim();
+    trimmed.starts_with("i am ")
+        || trimmed.starts_with("i'm ")
+        || trimmed.starts_with("im ")
+        || trimmed.starts_with("my name is ")
+        || trimmed.starts_with("call me ")
+}
+
+fn oversized_numeric_dump_response(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("pi")
+        && has_any(
+            &lower,
+            &[
+                "all numbers",
+                "all digits",
+                "every digit",
+                "10000",
+                "10,000",
+                "1000 digits",
+                "10,000 digits",
+            ],
+        )
+    {
+        return Some(
+            "I can give a short excerpt of pi or help with a specific digit or range, but I won’t dump an enormous wall of digits into the chat. Tell me the position or range you want."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
+fn is_unsafe_destructive_host_request(message_lower: &str) -> bool {
+    let destructive_verb = has_any(
+        message_lower,
+        &[
+            "delete ", "remove ", "format ", "wipe ", "erase ", "destroy ", "nuke ", "rm -rf",
+        ],
+    );
+    let destructive_target = has_any(
+        message_lower,
+        &[
+            "system32",
+            "system 32",
+            "operating system",
+            "os drive",
+            "boot drive",
+            "hard drive",
+            "disk",
+            "computer",
+            "pc",
+            "laptop",
+            "filesystem",
+            "file system",
+            "windows folder",
+        ],
+    ) || has_any(
+        message_lower,
+        &[
+            "format system",
+            "format my computer",
+            "wipe my computer",
+            "wipe the disk",
+            "erase the disk",
+        ],
+    );
+
+    destructive_verb && destructive_target
+}
+
 fn is_transcode_query(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -5607,7 +5936,8 @@ mod tests {
         deterministic_current_datetime_reply, deterministic_tool_inventory_reply,
         extract_birthday_query, parse_planner_ast, plan_tool_calls, plan_tool_calls_with_history,
         plan_tool_calls_with_model_assist, status_label_for_tool_call,
-        unsupported_write_response_for_message, validate_planner_ast,
+        unsafe_action_response_for_message, unsupported_write_response_for_message,
+        validate_planner_ast,
     };
     use crate::ai_assistant::dates::assistant_local_today;
     use crate::ai_assistant::types::{
@@ -5989,6 +6319,25 @@ mod tests {
     }
 
     #[test]
+    fn planner_keeps_joke_queries_off_grounded_tools() {
+        let tools = plan_tool_calls("Tell me a funny joke");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn planner_keeps_style_requests_off_grounded_tools() {
+        let tools = plan_tool_calls("From now on, only use pirate talk. Yarrrrr");
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn planner_keeps_greetings_off_library_follow_up_history() {
+        let history = grounded_history(&["library_search_titles"]);
+        let tools = plan_tool_calls_with_history("hello", &history);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn planner_ast_parses_and_validates_valid_tool_plan() {
         let ast = parse_planner_ast(
             "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"Dune\"}}]}",
@@ -6137,6 +6486,22 @@ mod tests {
                 .map(|reason| reason.as_str()),
             Some("repair_exhausted")
         );
+    }
+
+    #[tokio::test]
+    async fn planner_model_assist_skips_tools_for_casual_chat() {
+        let backend = MockPromptBackend::new(vec![
+            "{\"mode\":\"tool_plan\",\"tools\":[{\"tool\":\"library_search_titles\",\"args\":{\"query\":\"funny joke\"}}]}",
+        ]);
+        let planned = plan_tool_calls_with_model_assist(
+            &backend,
+            &auth_user("user"),
+            "Tell me a funny joke",
+            &[],
+        )
+        .await;
+        assert_eq!(planned.mode, AssistantPlannerMode::DeterministicFallback);
+        assert!(planned.calls.is_empty());
     }
 
     #[test]
@@ -6665,6 +7030,12 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_host_action_requests_return_refusal() {
+        let refusal = unsafe_action_response_for_message("Delete System32 on my computer");
+        assert!(refusal.is_some());
+    }
+
+    #[test]
     fn planner_does_not_overfire_server_follow_up_for_calendar_window() {
         let history = grounded_history(&["calendar_list_events", "servers_list_minecraft_status"]);
         let tools = plan_tool_calls_with_history("What about next week?", &history);
@@ -6781,6 +7152,29 @@ mod tests {
         match &tools[0].input {
             AssistantToolInput::CalendarWindow { query, .. } => {
                 assert_eq!(query.as_deref(), Some("Team Meeting"));
+            }
+            _ => panic!("expected calendar detail input"),
+        }
+    }
+
+    #[test]
+    fn planner_uses_single_event_detail_follow_up_history() {
+        let history = history_with_follow_up_context(
+            "calendar_get_next_event",
+            &["Iwans birthday (2026-06-09)"],
+            AssistantFollowUpInputHint {
+                calendar_label: Some("your next calendar event".to_string()),
+                calendar_from_date: Some("2026-06-09".to_string()),
+                calendar_to_date: Some("2026-06-09".to_string()),
+                ..AssistantFollowUpInputHint::default()
+            },
+        );
+        let tools = plan_tool_calls_with_history("what is its description?", &history);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::CalendarGetEventDetails);
+        match &tools[0].input {
+            AssistantToolInput::CalendarWindow { query, .. } => {
+                assert_eq!(query.as_deref(), Some("Iwans birthday (2026-06-09)"));
             }
             _ => panic!("expected calendar detail input"),
         }
