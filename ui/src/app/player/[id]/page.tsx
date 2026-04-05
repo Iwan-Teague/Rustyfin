@@ -951,7 +951,7 @@ export default function PlayerPage() {
   const loadingArtworkUrl = item?.thumb_url ?? item?.poster_url ?? item?.backdrop_url ?? null;
 
   return (
-    <div className="rf-flat-page animate-rise">
+    <div className="rf-flat-page animate-rise h-full min-h-0 gap-4">
       <header className="rf-flat-header">
         <h1 className="text-3xl font-semibold">{playerTitle}</h1>
         {showTitle && <p className="text-sm muted">{showTitle}</p>}
@@ -974,6 +974,7 @@ export default function PlayerPage() {
         artworkUrl={loadingArtworkUrl}
         artworkAlt={playerTitle}
         enableSpacebarToggle
+        surfaceStyle="immersive"
         canStartPlayback={canStartPlayback}
         knownDurationSecs={knownDurationSecs}
         bufferedWindowEndSecs={
@@ -1006,7 +1007,7 @@ export default function PlayerPage() {
         downloadDisabled={startingHls || !descriptor?.file_id}
         playbackEnabled={canStartPlayback}
         seekEnabled={canStartPlayback}
-        maxViewportHeightClassName="max-h-[80vh]"
+        maxViewportHeightClassName="h-full max-h-full"
         videoElementProps={{
           preload: 'metadata',
           onError: () => {
