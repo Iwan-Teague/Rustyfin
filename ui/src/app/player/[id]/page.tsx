@@ -961,7 +961,7 @@ export default function PlayerPage() {
 
   return (
     <div className="rf-flat-page animate-rise h-full min-h-0 w-full gap-3 overflow-hidden">
-      <header className="rf-flat-header shrink-0">
+      <header className="rf-flat-header shrink-0 md:pl-[calc(var(--rail-collapsed-width)*0.32)]">
         <h1 className="text-3xl font-semibold">{playerTitle}</h1>
         {showTitle && <p className="text-sm muted">{showTitle}</p>}
       </header>
