@@ -586,37 +586,9 @@ export default function CalendarPage() {
                             .map((event) => (
                             <div
                               key={event.occurrence_id}
-                              data-calendar-event-id={event.id}
                               className={`${CALENDAR_EVENT_ITEM_CLASS} text-xs`}
                             >
                               <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
-                              {event.display_description && <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>}
-                              {event.owner_username && event.scope === 'personal' && (
-                                <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
-                              )}
-                              {(event.can_edit || event.can_delete) && (
-                                <div className="mt-1 flex gap-2">
-                                  {event.can_edit && (
-                                    <button type="button" className={CALENDAR_EVENT_ACTION_CLASS} onClick={() => onEdit(event)}>
-                                      Edit
-                                    </button>
-                                  )}
-                                  {event.can_delete && (
-                                    <button
-                                      type="button"
-                                      className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
-                                      onClick={(e) =>
-                                        void onDelete(
-                                          event.id,
-                                          (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
-                                        )
-                                      }
-                                    >
-                                      Delete
-                                    </button>
-                                  )}
-                                </div>
-                              )}
                             </div>
                           ))}
                         </div>
@@ -676,37 +648,9 @@ export default function CalendarPage() {
                                 .map((event) => (
                                 <div
                                   key={event.occurrence_id}
-                                  data-calendar-event-id={event.id}
                                   className={`${CALENDAR_EVENT_ITEM_CLASS} text-xs`}
                                 >
                                   <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
-                                  {event.display_description && <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>}
-                                  {event.owner_username && event.scope === 'personal' && (
-                                    <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
-                                  )}
-                                  {(event.can_edit || event.can_delete) && (
-                                    <div className="mt-1 flex gap-2">
-                                      {event.can_edit && (
-                                        <button type="button" className={CALENDAR_EVENT_ACTION_CLASS} onClick={() => onEdit(event)}>
-                                          Edit
-                                        </button>
-                                      )}
-                                      {event.can_delete && (
-                                        <button
-                                          type="button"
-                                          className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
-                                          onClick={(e) =>
-                                            void onDelete(
-                                              event.id,
-                                              (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
-                                            )
-                                          }
-                                        >
-                                          Delete
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
                                 </div>
                               ))}
                             </div>
@@ -767,43 +711,9 @@ export default function CalendarPage() {
                               .map((event) => (
                               <div
                                 key={event.occurrence_id}
-                                data-calendar-event-id={event.id}
                                 className={`${CALENDAR_EVENT_ITEM_CLASS} text-[11px]`}
                               >
                                 <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
-                                {event.display_description && (
-                                  <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>
-                                )}
-                                {event.owner_username && event.scope === 'personal' && (
-                                  <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
-                                )}
-                                {(event.can_edit || event.can_delete) && (
-                                  <div className="mt-1 flex gap-1">
-                                    {event.can_edit && (
-                                      <button
-                                        type="button"
-                                        className={CALENDAR_EVENT_ACTION_CLASS}
-                                        onClick={() => onEdit(event)}
-                                      >
-                                        Edit
-                                      </button>
-                                    )}
-                                    {event.can_delete && (
-                                      <button
-                                        type="button"
-                                        className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
-                                        onClick={(e) =>
-                                          void onDelete(
-                                            event.id,
-                                            (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
-                                          )
-                                        }
-                                      >
-                                        Delete
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
                               </div>
                             ))}
                           </div>
@@ -900,43 +810,9 @@ export default function CalendarPage() {
                               .map((event) => (
                               <div
                                 key={event.occurrence_id}
-                                data-calendar-event-id={event.id}
                                 className={`${CALENDAR_EVENT_ITEM_CLASS} text-[11px]`}
                               >
                                 <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
-                                {event.display_description && (
-                                  <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>
-                                )}
-                                {event.owner_username && event.scope === 'personal' && (
-                                  <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
-                                )}
-                                {(event.can_edit || event.can_delete) && (
-                                  <div className="mt-1 flex gap-1">
-                                    {event.can_edit && (
-                                      <button
-                                        type="button"
-                                        className={CALENDAR_EVENT_ACTION_CLASS}
-                                        onClick={() => onEdit(event)}
-                                      >
-                                        Edit
-                                      </button>
-                                    )}
-                                    {event.can_delete && (
-                                      <button
-                                        type="button"
-                                        className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
-                                        onClick={(e) =>
-                                          void onDelete(
-                                            event.id,
-                                            (e.currentTarget as HTMLElement).closest('[data-calendar-event-id]') as HTMLElement | null,
-                                          )
-                                        }
-                                      >
-                                        Delete
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
                               </div>
                             ))}
                           </div>
