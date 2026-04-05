@@ -107,24 +107,24 @@ run_installer() {
   "$REPO_ROOT/scripts/rustfin-installer.sh" "$@"
 }
 
-[[ "$(uname -s)" == "Linux" ]] || die "Native runtime is supported on Linux hosts only. Use Debian 12 or Debian 13."
+[[ "$(uname -s)" == "Linux" ]] || die "Native runtime is supported on Linux hosts only. Use ./scripts/install_linux.sh on Debian 12/13 or Ubuntu 22.04/24.04."
 
 if ! command -v cargo >/dev/null 2>&1 && [[ -f "${HOME}/.cargo/env" ]]; then
   # shellcheck disable=SC1090
   source "${HOME}/.cargo/env"
 fi
 
-command -v caddy >/dev/null 2>&1 || die "caddy is not installed. Run ./scripts/install_native_debian.sh first."
-command -v node >/dev/null 2>&1 || die "node is not installed. Run ./scripts/install_native_debian.sh first."
+command -v caddy >/dev/null 2>&1 || die "caddy is not installed. Run ./scripts/install_linux.sh first."
+command -v node >/dev/null 2>&1 || die "node is not installed. Run ./scripts/install_linux.sh first."
 command -v curl >/dev/null 2>&1 || die "curl is required for native runtime startup."
 command -v openssl >/dev/null 2>&1 || die "openssl is required for native runtime startup."
 command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg is required for playback/transcoding."
 command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for media probing."
 
 if [[ "$BUILD" == "true" ]]; then
-  command -v cargo >/dev/null 2>&1 || die "cargo is not installed. Run ./scripts/install_native_debian.sh first."
-  command -v rustc >/dev/null 2>&1 || die "rustc is not installed. Run ./scripts/install_native_debian.sh first."
-  command -v npm >/dev/null 2>&1 || die "npm is not installed. Run ./scripts/install_native_debian.sh first."
+  command -v cargo >/dev/null 2>&1 || die "cargo is not installed. Run ./scripts/install_linux.sh first."
+  command -v rustc >/dev/null 2>&1 || die "rustc is not installed. Run ./scripts/install_linux.sh first."
+  command -v npm >/dev/null 2>&1 || die "npm is not installed. Run ./scripts/install_linux.sh first."
 fi
 
 user_enable_servers_agent="${RUSTFIN_ENABLE_SERVERS_AGENT-}"
@@ -154,13 +154,14 @@ chmod 700 "$SAFE_TMP_DIR" 2>/dev/null || true
 [[ -w "$SAFE_TMP_DIR" ]] || die "Temp dir is not writable: $SAFE_TMP_DIR"
 export TMPDIR="$SAFE_TMP_DIR"
 
-RUNTIME_ROOT="${RUSTFIN_NATIVE_RUNTIME_DIR:-$SAFE_TMP_DIR/native-runtime}"
-PID_DIR="$RUNTIME_ROOT/pids"
-LOG_DIR="$RUNTIME_ROOT/logs"
-CACHE_DIR="$RUNTIME_ROOT/cache"
-CONFIG_DIR="$RUNTIME_ROOT/config"
-TRANSCODE_DIR="$RUNTIME_ROOT/transcode"
-mkdir -p "$PID_DIR" "$LOG_DIR" "$CACHE_DIR" "$CONFIG_DIR" "$TRANSCODE_DIR"
+recompute_runtime_dirs() {
+  RUNTIME_ROOT="${RUSTFIN_NATIVE_RUNTIME_DIR:-$SAFE_TMP_DIR/native-runtime}"
+  PID_DIR="$RUNTIME_ROOT/pids"
+  LOG_DIR="$RUNTIME_ROOT/logs"
+  CACHE_DIR="$RUNTIME_ROOT/cache"
+  CONFIG_DIR="$RUNTIME_ROOT/config"
+  TRANSCODE_DIR="$RUNTIME_ROOT/transcode"
+}
 
 RUNTIME_ENV_FILE="$REPO_ROOT/.rustyfin.runtime.env"
 INSTALL_DEFAULTS_FILE="/etc/rustyfin/native-runtime.defaults.sh"
@@ -189,6 +190,9 @@ if [[ -f "$RUNTIME_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$RUNTIME_ENV_FILE" || true
 fi
+
+recompute_runtime_dirs
+mkdir -p "$PID_DIR" "$LOG_DIR" "$CACHE_DIR" "$CONFIG_DIR" "$TRANSCODE_DIR"
 
 if [[ -z "${RUSTFIN_SERVERS_DEFAULT_JAVA:-}" ]] && [[ -x /opt/rustyfin/java/current/bin/java ]]; then
   export RUSTFIN_SERVERS_DEFAULT_JAVA=/opt/rustyfin/java/current/bin/java

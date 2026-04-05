@@ -125,7 +125,7 @@ Rustyfin is a native-Debian-first local media platform with:
 - Start native Debian runtime directly: `./scripts/start-native.sh`
 - Deploy/update native Debian runtime: `./scripts/deploy-native.sh`
 - Stop native Debian runtime directly: `./scripts/stop-native.sh`
-- Install native Debian prerequisites: `./scripts/install_native_debian.sh`
+- Deprecated compatibility shim: `./scripts/install_native_debian.sh`
 - Install native Debian `systemd` integration: `./scripts/install_native_systemd.sh`
 - Clean install/reset: `./scripts/clean_install.sh`
 

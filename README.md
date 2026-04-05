@@ -2,12 +2,14 @@
 
 Rustyfin is a local-first home server platform for media playback, live rooms, channels, calendar planning, and native game server management.
 
-The supported runtime target is native Debian 12 and Debian 13. The repository no longer ships or supports Docker, Windows, or macOS runtime paths.
+The supported native Linux install flow is implemented for Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04. The repository no longer ships or supports Docker, Windows, or macOS runtime paths.
 
-## Supported Host
+## Supported Linux Install Hosts
 
 - Debian 12 (Bookworm)
 - Debian 13 (Trixie)
+- Ubuntu 22.04 (Jammy)
+- Ubuntu 24.04 (Noble)
 - Headless/minimal install is recommended
 - `systemd` is required for the native service model
 
@@ -164,7 +166,7 @@ Native Rustyfin on supported Debian hosts runs these services directly on the ho
 - `/Users/iwanteague/Desktop/Rustyfin/tests` - tests and E2E harnesses
 - `/Users/iwanteague/Desktop/Rustyfin/docs` - current operations guides, active plans, architecture docs, and setup specs
 
-## Native Debian Quick Start
+## Native Linux Quick Start
 
 Preferred one-shot Linux installer:
 
@@ -173,15 +175,15 @@ Preferred one-shot Linux installer:
 ```
 
 This bootstraps the host for Rustyfin, including sudo preflight, Ubuntu repository components, official Caddy setup, and Node.js 20 bootstrap where needed, then hands off to `cargo run --locked -p rustfin-installer -- install --skip-prereqs`.
-The current full native install flow is implemented for Debian 12 and Debian 13, plus Ubuntu 22.04 and Ubuntu 24.04.
+The current full native install flow is implemented for Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04.
 The Rust installer now owns native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, first-install starter AI model seeding into the active AI model directory when AI is enabled, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if startup fails.
 The public native scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
 
-Install host dependencies:
-
-```bash
-./scripts/install_native_debian.sh
-```
+Compatibility note:
+- `./scripts/install_native_debian.sh` is a deprecated shim that delegates to `./scripts/install_linux.sh`.
+- If you invoke the installer directly as `root`, set `RUSTFIN_NATIVE_USER=<user>` unless root-owned repo/build artifacts are intentional.
+- Debian CUDA installs still require the appropriate `non-free` / `non-free-firmware` repository components to be enabled.
+- The Whisper transcription model is downloaded lazily on first transcription use rather than during install.
 
 Start Rustyfin:
 
@@ -435,4 +437,4 @@ Database:
 
 ## Historical Notes
 
-Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the supported-Debian native runtime documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.
+Some archived planning/reference documents under `/Users/iwanteague/Desktop/Rustyfin/docs/` still discuss earlier design phases. Current operational guidance is limited to the supported native Linux install/runtime surface documented in this file, `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`, and `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`.

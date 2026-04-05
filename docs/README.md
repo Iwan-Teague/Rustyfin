@@ -2,12 +2,12 @@
 
 This tree is intentionally trimmed to active documentation only.
 
-The supported runtime for Rustyfin is **native Debian 12 and Debian 13**. If a document stops matching the code or the supported runtime, update or remove it rather than keeping an in-repo archive.
+The supported native Linux install flow for Rustyfin is **Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04**. If a document stops matching the code or the supported install/runtime surface, update or remove it rather than keeping an in-repo archive.
 
 ## Read First
 
 - `/Users/iwanteague/Desktop/Rustyfin/README.md`
-  - product summary and native Debian quick start
+  - product summary and native Linux quick start
 - `/Users/iwanteague/Desktop/Rustyfin/AGENTS.md`
   - repository operating rules and runtime policy
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
@@ -20,6 +20,8 @@ The supported runtime for Rustyfin is **native Debian 12 and Debian 13**. If a d
   - execution-ready breakdown of remaining project work, split into four agent workstreams with prompts and done criteria
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-03-26-installer-platform-runtime-open-work-audit.md`
   - detailed open installer, platform, runtime-layout, and validation audit used by the execution program
+- `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-04-05-rustyfin-linux-install-audit-second-pass-execution.md`
+  - second-pass Linux install cleanup execution checklist and completion record
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/servers-backups-open-work-audit-2026-03-26.md`
   - detailed open backups and advanced `Servers` audit used by the execution program
 
