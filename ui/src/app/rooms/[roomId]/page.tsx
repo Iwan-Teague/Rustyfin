@@ -131,6 +131,7 @@ export default function WatchPartyRoomPage() {
   const [ending, setEnding] = useState(false);
   const [pendingEndRoomConfirm, setPendingEndRoomConfirm] = useState(false);
   const [roomItem, setRoomItem] = useState<RoomItemSummary | null>(null);
+  const [mediaDrawerOpen, setMediaDrawerOpen] = useState(false);
 
   // In-room invite state
   const [allUsers, setAllUsers] = useState<WatchPartyUser[]>([]);
@@ -437,6 +438,16 @@ export default function WatchPartyRoomPage() {
   }, [room]);
 
   useEffect(() => {
+    if (!joinedRole || !isVideoRoom || joinedRole !== 'host') {
+      setMediaDrawerOpen(false);
+      return;
+    }
+    if (!roomItemId || roomItemId.trim().length === 0) {
+      setMediaDrawerOpen(true);
+    }
+  }, [isVideoRoom, joinedRole, roomItemId]);
+
+  useEffect(() => {
     if (!joinedRole) return;
     if (!realtime.wsConnected) {
       void refreshRoom();
@@ -473,6 +484,8 @@ export default function WatchPartyRoomPage() {
   const handleSwitchWatchSource = reconfigure.handleSwitchWatchSource;
   const handleApplyLocalMedia = reconfigure.handleApplyLocalMedia;
   const handleConfigureAudioLibrary = reconfigure.handleConfigureAudioLibrary;
+  const hostCanChooseLocalMedia =
+    joinedRole === 'host' && isVideoRoom && reconfigure.reconfigureVideoLibraries.length > 0;
 
   const handleDownloadCurrentVideo = useCallback(async () => {
     if (!playback.descriptor?.file_id || !roomItemId) return;
@@ -1021,7 +1034,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`rf-flat-section relative flex flex-col gap-4 ${watchWindowShiftClass}`}
+            className={`rf-flat-section relative overflow-hidden ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
@@ -1036,158 +1049,189 @@ export default function WatchPartyRoomPage() {
                 ]}
               />
             )}
+            <div className="relative min-h-[min(72vh,44rem)]">
+              {hostCanChooseLocalMedia && (
+                <button
+                  type="button"
+                  className="btn-secondary absolute right-4 top-4 z-20 px-3 py-1.5 text-xs sm:right-6"
+                  onClick={() => setMediaDrawerOpen((open) => !open)}
+                >
+                  {mediaDrawerOpen ? 'Close Media' : 'Choose Media'}
+                </button>
+              )}
 
-            {!roomItemId || roomItemId.trim().length === 0 ? (
-              joinedRole === 'host' ? (
-                <div className="space-y-3">
-                  {reconfigure.reconfigureVideoLibraries.length === 0 ? (
-                    <div className="rf-flat-empty text-sm muted">
-                      No shared local video libraries are available for current room participants.
-                    </div>
-                  ) : (
-                    <>
-                      <p className="text-sm muted">
-                        Select local media to load into this room.
-                      </p>
-                      <MediaPicker
-                        libraries={reconfigure.allLibraries}
-                        eligibleLibraryIds={reconfigure.eligibleLibraryIds}
-                        selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
-                        selectedItem={reconfigure.reconfigureVideoItem}
-                        layout="stacked"
-                        surfaceClassName="rf-flat-section"
-                        noShadow
-                        showHeading={false}
-                        applyActionLabel="Apply Local Media"
-                        applyActionPendingLabel="Applying…"
-                        applyActionDisabled={!reconfigure.reconfigureVideoItem}
-                        applyActionLoading={reconfigure.reconfiguring}
-                        onApplyAction={() => void handleApplyLocalMedia()}
-                        onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
-                        onSelectItem={reconfigure.setReconfigureVideoItem}
-                      />
-                    </>
-                  )}
+              {!roomItemId || roomItemId.trim().length === 0 ? (
+                <div className="flex min-h-[min(72vh,44rem)] items-center justify-center rounded-[2rem] bg-white/[0.02] px-6 py-8 text-center">
+                  <div className="mx-auto max-w-xl space-y-4">
+                    <h2 className="text-2xl font-semibold sm:text-3xl">Local Media</h2>
+                    <p className="text-sm muted sm:text-base">
+                      {joinedRole === 'host'
+                        ? hostCanChooseLocalMedia
+                          ? 'Open the media drawer to choose a library and load a movie or episode into this room.'
+                          : 'No shared local video libraries are available for current room participants.'
+                        : 'Waiting for a room admin to load local media.'}
+                    </p>
+                    {hostCanChooseLocalMedia && (
+                      <button
+                        type="button"
+                        className="btn-primary px-5 py-2.5 text-sm"
+                        onClick={() => setMediaDrawerOpen(true)}
+                      >
+                        Open Media Browser
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <div className="rf-flat-empty text-sm muted">
-                  Waiting for a room admin to load local media.
-                </div>
-              )
-            ) : (
-              <>
                 <div className="min-h-[min(72vh,44rem)] flex-1">
-                <VideoPlayerSurface
-                  shellRef={roomVideoShellRef}
-                  videoRef={playback.videoRef}
-                  playbackKey={roomItemId}
-                  artworkUrl={roomLoadingArtworkUrl}
-                  artworkAlt={roomLoadingArtworkAlt}
-                  surfaceStyle="immersive"
-                  canStartPlayback={Boolean(playback.descriptor)}
-                  knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
-                  bufferedWindowEndSecs={
-                    playback.hlsSessionStartOffsetSecs + playback.hlsAvailableWindowDurationSecs
-                  }
-                  sessionStartOffsetSecs={playback.hlsSessionStartOffsetSecs}
-                  qualityValue={playback.hlsTargetHeight ?? 'auto'}
-                  qualityOptions={qualityOptions}
-                  qualityDisabled={playback.startingHls}
-                  onQualityChange={(value) => {
-                    const previousTargetHeight = playback.hlsTargetHeight;
-                    const nextTargetHeight = value === 'auto' ? null : value;
-                    const video = playback.videoRef.current;
-                    const currentAbsoluteSeconds =
-                      video && Number.isFinite(video.currentTime) && video.currentTime >= 0
-                        ? playback.hlsSessionStartOffsetSecs + video.currentTime
-                        : undefined;
-                    playback.setHlsTargetHeight(nextTargetHeight);
-                    void (async () => {
-                      const started = await playback.startHls({
-                        silent: false,
-                        targetHeightOverride: nextTargetHeight,
-                        seekTimeOverrideSecs:
-                          currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
-                            ? currentAbsoluteSeconds
-                            : undefined,
-                        syncRoomStateOnReady: false,
-                      });
-                      if (!started) {
-                        playback.setHlsTargetHeight(previousTargetHeight ?? null);
-                      }
-                    })();
-                  }}
-                  onSeekRequest={async (targetSeconds) => {
-                    if (!canSeek) return;
-                    playback.notePendingSeek(targetSeconds);
+                  <VideoPlayerSurface
+                    shellRef={roomVideoShellRef}
+                    videoRef={playback.videoRef}
+                    playbackKey={roomItemId}
+                    artworkUrl={roomLoadingArtworkUrl}
+                    artworkAlt={roomLoadingArtworkAlt}
+                    surfaceStyle="immersive"
+                    canStartPlayback={Boolean(playback.descriptor)}
+                    knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
+                    bufferedWindowEndSecs={
+                      playback.hlsSessionStartOffsetSecs + playback.hlsAvailableWindowDurationSecs
+                    }
+                    sessionStartOffsetSecs={playback.hlsSessionStartOffsetSecs}
+                    qualityValue={playback.hlsTargetHeight ?? 'auto'}
+                    qualityOptions={qualityOptions}
+                    qualityDisabled={playback.startingHls}
+                    onQualityChange={(value) => {
+                      const previousTargetHeight = playback.hlsTargetHeight;
+                      const nextTargetHeight = value === 'auto' ? null : value;
+                      const video = playback.videoRef.current;
+                      const currentAbsoluteSeconds =
+                        video && Number.isFinite(video.currentTime) && video.currentTime >= 0
+                          ? playback.hlsSessionStartOffsetSecs + video.currentTime
+                          : undefined;
+                      playback.setHlsTargetHeight(nextTargetHeight);
+                      void (async () => {
+                        const started = await playback.startHls({
+                          silent: false,
+                          targetHeightOverride: nextTargetHeight,
+                          seekTimeOverrideSecs:
+                            currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                              ? currentAbsoluteSeconds
+                              : undefined,
+                          syncRoomStateOnReady: false,
+                        });
+                        if (!started) {
+                          playback.setHlsTargetHeight(previousTargetHeight ?? null);
+                        }
+                      })();
+                    }}
+                    onSeekRequest={async (targetSeconds) => {
+                      if (!canSeek) return;
+                      playback.notePendingSeek(targetSeconds);
 
-                    if (playback.applyingRemoteRef.current) return;
-                    sendWs({
-                      type: 'seek',
-                      position_ms: Math.floor(targetSeconds * 1000),
-                    });
+                      if (playback.applyingRemoteRef.current) return;
+                      sendWs({
+                        type: 'seek',
+                        position_ms: Math.floor(targetSeconds * 1000),
+                      });
 
-                    await playback.handleSeek(targetSeconds);
-                  }}
-                  onDownload={handleDownloadCurrentVideo}
-                  downloading={downloadingVideo}
-                  downloadDisabled={!playback.descriptor || playback.startingHls}
-                  playbackEnabled={canPlayPause}
-                  seekEnabled={canSeek}
-                  playbackDisabledReason={
-                    !controlsEnabled ? 'Playback controls are host-only in this room.' : null
-                  }
-                  statusText={!controlsEnabled ? 'Playback controls are host-only in this room.' : null}
-                  maxViewportHeightClassName="h-full max-h-full"
-                  videoElementProps={{
-                    preload: 'auto',
-                    onPlay: (event) => {
-                      if (playback.applyingRemoteRef.current || !canPlayPause) return;
-                      sendWs({
-                        type: 'play',
-                        position_ms: Math.floor(
-                          (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
-                        ),
-                      });
-                    },
-                    onPause: (event) => {
-                      if (playback.applyingRemoteRef.current || !canPlayPause) return;
-                      sendWs({
-                        type: 'pause',
-                        position_ms: Math.floor(
-                          (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
-                        ),
-                      });
-                    },
-                    onError: () => {
-                      setError('HLS playback failed. Refresh the room and retry.');
-                    },
-                  }}
-                />
+                      await playback.handleSeek(targetSeconds);
+                    }}
+                    onDownload={handleDownloadCurrentVideo}
+                    downloading={downloadingVideo}
+                    downloadDisabled={!playback.descriptor || playback.startingHls}
+                    playbackEnabled={canPlayPause}
+                    seekEnabled={canSeek}
+                    playbackDisabledReason={
+                      !controlsEnabled ? 'Playback controls are host-only in this room.' : null
+                    }
+                    statusText={!controlsEnabled ? 'Playback controls are host-only in this room.' : null}
+                    maxViewportHeightClassName="h-full max-h-full"
+                    videoElementProps={{
+                      preload: 'auto',
+                      onPlay: (event) => {
+                        if (playback.applyingRemoteRef.current || !canPlayPause) return;
+                        sendWs({
+                          type: 'play',
+                          position_ms: Math.floor(
+                            (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
+                          ),
+                        });
+                      },
+                      onPause: (event) => {
+                        if (playback.applyingRemoteRef.current || !canPlayPause) return;
+                        sendWs({
+                          type: 'pause',
+                          position_ms: Math.floor(
+                            (playback.hlsSessionStartOffsetSecs + event.currentTarget.currentTime) * 1000,
+                          ),
+                        });
+                      },
+                      onError: () => {
+                        setError('HLS playback failed. Refresh the room and retry.');
+                      },
+                    }}
+                  />
                 </div>
-                {joinedRole === 'host' && reconfigure.reconfigureVideoLibraries.length > 0 ? (
-                  <div className="border-t border-[var(--border-subtle)] pt-4">
-                    <MediaPicker
-                      libraries={reconfigure.allLibraries}
-                      eligibleLibraryIds={reconfigure.eligibleLibraryIds}
-                      selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
-                      selectedItem={reconfigure.reconfigureVideoItem}
-                      layout="stacked"
-                      surfaceClassName="space-y-4"
-                      noShadow
-                      showHeading={false}
-                      applyActionLabel="Apply Local Media"
-                      applyActionPendingLabel="Applying…"
-                      applyActionDisabled={!reconfigure.reconfigureVideoItem}
-                      applyActionLoading={reconfigure.reconfiguring}
-                      onApplyAction={() => void handleApplyLocalMedia()}
-                      onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
-                      onSelectItem={reconfigure.setReconfigureVideoItem}
-                    />
-                  </div>
-                ) : null}
-              </>
-            )}
+              )}
+
+              {hostCanChooseLocalMedia && (
+                <>
+                  <div
+                    className={`absolute inset-0 z-20 bg-black/30 transition-opacity duration-200 ${
+                      mediaDrawerOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
+                    }`}
+                    onClick={() => setMediaDrawerOpen(false)}
+                  />
+                  <aside
+                    className={`absolute inset-y-0 right-0 z-30 w-full max-w-[25rem] border-l border-[var(--border-subtle)] bg-[var(--surface)]/96 px-4 py-5 backdrop-blur-md transition-transform duration-200 ease-out sm:px-5 ${
+                      mediaDrawerOpen ? 'translate-x-0' : 'translate-x-full'
+                    }`}
+                  >
+                    <div className="flex h-full min-h-0 flex-col gap-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <h3 className="text-lg font-semibold">Choose Local Media</h3>
+                          <p className="text-sm muted">
+                            Select a library, then load a movie or episode into this room.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="rf-text-action text-sm"
+                          onClick={() => setMediaDrawerOpen(false)}
+                        >
+                          Close
+                        </button>
+                      </div>
+
+                      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                        <MediaPicker
+                          libraries={reconfigure.allLibraries}
+                          eligibleLibraryIds={reconfigure.eligibleLibraryIds}
+                          selectedLibraryId={reconfigure.reconfigureVideoLibraryId}
+                          selectedItem={reconfigure.reconfigureVideoItem}
+                          layout="stacked"
+                          surfaceClassName="space-y-4"
+                          noShadow
+                          showHeading={false}
+                          librarySelectorMode="tabs"
+                          applyActionLabel="Load Into Room"
+                          applyActionPendingLabel="Loading…"
+                          applyActionDisabled={!reconfigure.reconfigureVideoItem}
+                          applyActionLoading={reconfigure.reconfiguring}
+                          onApplyAction={() => {
+                            void handleApplyLocalMedia();
+                            setMediaDrawerOpen(false);
+                          }}
+                          onLibraryChange={reconfigure.setReconfigureVideoLibraryId}
+                          onSelectItem={reconfigure.setReconfigureVideoItem}
+                        />
+                      </div>
+                    </div>
+                  </aside>
+                </>
+              )}
+            </div>
           </section>
         </>
       )}
