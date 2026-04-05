@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { useAuth } from '@/lib/auth';
 import { useChannels } from '@/lib/channelsContext';
+import RfSwitch from '@/app/components/RfSwitch';
 import { useMyAccount } from './hooks/useMyAccount';
 
 type AudioDeviceOption = {
@@ -668,35 +669,16 @@ export default function AccountPage() {
             <p className="text-sm muted">
               Rustyfin stores personal activity summaries for section presence, watch rooms, voice channels, and media watch time so your account page can show simple usage insights.
             </p>
-            <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wide muted">Personal activity insights</p>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { key: true, label: 'Enabled' },
-                  { key: false, label: 'Disabled' },
-                ].map((option) => {
-                  const isActive =
-                    account.preferences.privacy.personal_activity_enabled === option.key;
-                  return (
-                    <button
-                      key={option.label}
-                      type="button"
-                      data-active={isActive ? 'true' : 'false'}
-                      className={`rf-room-mode-btn px-4 py-2 text-sm ${isActive ? 'btn-primary' : 'btn-secondary'}`}
-                      aria-pressed={isActive}
-                      disabled={privacySaving}
-                      onClick={() => {
-                        if (privacySaving || isActive) {
-                          return;
-                        }
-                        void handleSavePrivacy(option.key);
-                      }}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
+            <div className="max-w-xl">
+              <RfSwitch
+                label="Personal activity insights"
+                checked={account.preferences.privacy.personal_activity_enabled}
+                disabled={privacySaving}
+                className="rf-room-options-switch"
+                onChange={(nextValue) => {
+                  void handleSavePrivacy(nextValue);
+                }}
+              />
             </div>
           </section>
         </div>
