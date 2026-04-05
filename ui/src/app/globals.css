@@ -701,6 +701,10 @@ body[data-rf-page="calendar"] .app-main {
   .ai-side-panel-shell[data-side="left"] {
     padding-top: calc(var(--rail-collapsed-width) + 0.45rem);
   }
+
+  body[data-rf-page="channels"] .ai-side-panel-shell[data-side="left"] {
+    padding-top: 0;
+  }
 }
 
 .ai-side-panel-shell[data-side="right"][data-open="false"] .ai-side-panel-inner {
