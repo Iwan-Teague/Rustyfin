@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import type {
   ChannelEvent,
   UserInfo,
-  VoiceTranscribeChunkRequest,
+  VoiceTranscriptionRecordingUpload,
   VoiceTranscriptionState,
 } from '@/lib/channelsApi';
 
@@ -21,7 +21,10 @@ interface Props {
   preferredOutputDeviceId: string | null;
   onSpeakingChange: (channelId: string, userId: string, speaking: boolean) => void;
   transcriptionState: VoiceTranscriptionState | null;
-  onTranscriptionChunk: (channelId: string, payload: VoiceTranscribeChunkRequest) => Promise<void>;
+  onTranscriptionRecordingUpload: (
+    channelId: string,
+    payload: VoiceTranscriptionRecordingUpload,
+  ) => Promise<void>;
 }
 
 const STUN_URL =
@@ -29,9 +32,6 @@ const STUN_URL =
 const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
-const TRANSCRIPTION_SAMPLE_RATE = 16_000;
-const TRANSCRIPTION_CHUNK_SECONDS = 4;
-const TRANSCRIPTION_CHUNK_SAMPLES = TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
 const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
 
 type SpeakingMonitor = {
@@ -73,7 +73,7 @@ export default function VoiceEngine({
   preferredOutputDeviceId,
   onSpeakingChange,
   transcriptionState,
-  onTranscriptionChunk,
+  onTranscriptionRecordingUpload,
 }: Props) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -86,10 +86,7 @@ export default function VoiceEngine({
   const localMicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const localMicProcessedStreamRef = useRef<MediaStream | null>(null);
   const localMicInputTrackIdRef = useRef<string | null>(null);
-  const transcriptionContextRef = useRef<AudioContext | null>(null);
-  const transcriptionSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const transcriptionProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const transcriptionSamplesRef = useRef<number[]>([]);
+  const transcriptionRecorderRef = useRef<MediaRecorder | null>(null);
   const activeTranscriptionSessionRef = useRef<string | null>(null);
 
   function getAudioContext(): AudioContext | null {
@@ -106,123 +103,31 @@ export default function VoiceEngine({
     return audioContextRef.current;
   }
 
-  function floatToInt16(input: Float32Array): Int16Array {
-    const out = new Int16Array(input.length);
-    for (let i = 0; i < input.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, input[i]));
-      out[i] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
+  function preferredRecorderMimeType(): string {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+      return '';
     }
-    return out;
-  }
-
-  function downsampleTo16k(input: Float32Array, inputRate: number): Int16Array {
-    if (!Number.isFinite(inputRate) || inputRate <= 0) {
-      return new Int16Array();
-    }
-    if (inputRate === TRANSCRIPTION_SAMPLE_RATE) {
-      return floatToInt16(input);
-    }
-
-    const ratio = inputRate / TRANSCRIPTION_SAMPLE_RATE;
-    const outputLength = Math.max(1, Math.floor(input.length / ratio));
-    const output = new Int16Array(outputLength);
-    let outputIndex = 0;
-    let sourceIndex = 0;
-    while (outputIndex < outputLength) {
-      const nextSourceIndex = Math.min(input.length, Math.round((outputIndex + 1) * ratio));
-      let accumulator = 0;
-      let count = 0;
-      for (let i = sourceIndex; i < nextSourceIndex; i++) {
-        accumulator += input[i];
-        count += 1;
-      }
-      const sample = count > 0 ? accumulator / count : 0;
-      const clamped = Math.max(-1, Math.min(1, sample));
-      output[outputIndex] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7fff);
-      outputIndex += 1;
-      sourceIndex = nextSourceIndex;
-    }
-    return output;
-  }
-
-  function pcmInt16ToBase64(samples: Int16Array): string {
-    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-    let binary = '';
-    const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-    return btoa(binary);
-  }
-
-  function measurePeak(samples: Int16Array): number {
-    if (samples.length === 0) return 0;
-    let peak = 0;
-    for (let i = 0; i < samples.length; i++) {
-      const value = Math.abs(samples[i]);
-      if (value > peak) peak = value;
-    }
-    return peak / 32768;
-  }
-
-  function normalizeChunk(samples: Int16Array): Int16Array {
-    const peak = measurePeak(samples);
-    if (peak <= 0.0001 || peak >= 0.14) {
-      return samples;
-    }
-    const gain = Math.min(8, 0.14 / peak);
-    const out = new Int16Array(samples.length);
-    for (let i = 0; i < samples.length; i++) {
-      const value = Math.round(samples[i] * gain);
-      if (value > 32767) {
-        out[i] = 32767;
-      } else if (value < -32768) {
-        out[i] = -32768;
-      } else {
-        out[i] = value;
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+    ];
+    for (const mimeType of candidates) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        return mimeType;
       }
     }
-    return out;
+    return '';
   }
 
   function teardownTranscriptionCapture() {
-    transcriptionProcessorRef.current?.disconnect();
-    transcriptionSourceRef.current?.disconnect();
-    if (transcriptionContextRef.current && transcriptionContextRef.current !== audioContextRef.current) {
-      void transcriptionContextRef.current.close().catch(() => {});
+    const recorder = transcriptionRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
     }
-    transcriptionProcessorRef.current = null;
-    transcriptionSourceRef.current = null;
-    transcriptionContextRef.current = null;
-    transcriptionSamplesRef.current = [];
+    transcriptionRecorderRef.current = null;
     activeTranscriptionSessionRef.current = null;
-  }
-
-  function flushTranscriptionChunk(sessionId: string, force = false) {
-    const samples = transcriptionSamplesRef.current;
-    if (samples.length === 0) return;
-    if (!force && samples.length < TRANSCRIPTION_CHUNK_SAMPLES) return;
-
-    const chunkSize = force ? samples.length : TRANSCRIPTION_CHUNK_SAMPLES;
-    const chunk = samples.splice(0, chunkSize);
-    if (chunk.length === 0) return;
-    const raw = Int16Array.from(chunk);
-    if (measurePeak(raw) < 0.001) {
-      return;
-    }
-    const normalized = normalizeChunk(raw);
-
-    const now = Date.now();
-    const durationMs = Math.max(1, Math.round((chunk.length / TRANSCRIPTION_SAMPLE_RATE) * 1000));
-    const payload: VoiceTranscribeChunkRequest = {
-      session_id: sessionId,
-      sample_rate_hz: TRANSCRIPTION_SAMPLE_RATE,
-      started_ts_ms: now - durationMs,
-      ended_ts_ms: now,
-      pcm_s16le_base64: pcmInt16ToBase64(normalized),
-    };
-
-    void onTranscriptionChunk(channelId, payload);
   }
 
   function stopSpeakingMonitor(userId: string) {
@@ -666,71 +571,61 @@ export default function VoiceEngine({
     const localTrack = transcriptionStream?.getAudioTracks()[0] ?? null;
 
     if (!transcriptionStream || !localTrack || !sessionId) {
-      const previousSession = activeTranscriptionSessionRef.current;
-      if (previousSession) {
-        flushTranscriptionChunk(previousSession, true);
-      }
       teardownTranscriptionCapture();
       return;
     }
 
-    if (
-      transcriptionContextRef.current &&
-      activeTranscriptionSessionRef.current === sessionId
-    ) {
+    if (transcriptionRecorderRef.current && activeTranscriptionSessionRef.current === sessionId) {
       return;
     }
 
-    const previousSession = activeTranscriptionSessionRef.current;
-    if (previousSession) {
-      flushTranscriptionChunk(previousSession, true);
-    }
     teardownTranscriptionCapture();
 
-    const context = getAudioContext();
-    if (!context) {
-      return;
-    }
-
     try {
-      const source = context.createMediaStreamSource(transcriptionStream);
-      const processor = context.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (event) => {
-        if (!localTrack.enabled) {
-          return;
-        }
-        const input = event.inputBuffer.getChannelData(0);
-        const downsampled = downsampleTo16k(input, event.inputBuffer.sampleRate);
-        if (downsampled.length === 0) {
-          return;
-        }
-        const target = transcriptionSamplesRef.current;
-        for (let i = 0; i < downsampled.length; i++) {
-          target.push(downsampled[i]);
-        }
-        while (target.length >= TRANSCRIPTION_CHUNK_SAMPLES) {
-          flushTranscriptionChunk(sessionId, false);
+      if (typeof MediaRecorder === 'undefined') {
+        return;
+      }
+      const mimeType = preferredRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(transcriptionStream, { mimeType })
+        : new MediaRecorder(transcriptionStream);
+      const startedAt = Date.now();
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
         }
       };
-
-      source.connect(processor);
-      processor.connect(context.destination);
-      void context.resume().catch(() => {});
-
-      transcriptionContextRef.current = context;
-      transcriptionSourceRef.current = source;
-      transcriptionProcessorRef.current = processor;
+      recorder.onerror = (event) => {
+        console.warn('VoiceEngine: transcript recorder error', event);
+      };
+      recorder.onstop = () => {
+        if (chunks.length === 0) {
+          return;
+        }
+        const endedAt = Date.now();
+        const blob = new Blob(chunks, {
+          type: recorder.mimeType || mimeType || 'audio/webm',
+        });
+        const uploadPayload: VoiceTranscriptionRecordingUpload = {
+          sessionId,
+          captureStartedTsMs: startedAt,
+          captureEndedTsMs: Math.max(endedAt, startedAt + 1),
+          blob,
+          fileName: `voice-transcript-${sessionId}.webm`,
+        };
+        void onTranscriptionRecordingUpload(channelId, uploadPayload);
+      };
+      recorder.start(1000);
+      transcriptionRecorderRef.current = recorder;
       activeTranscriptionSessionRef.current = sessionId;
     } catch (err) {
-      console.warn('VoiceEngine: failed to start transcription capture pipeline', err);
+      console.warn('VoiceEngine: failed to start transcription recording pipeline', err);
       teardownTranscriptionCapture();
       return;
     }
 
     return () => {
-      if (activeTranscriptionSessionRef.current === sessionId) {
-        flushTranscriptionChunk(sessionId, true);
-      }
       teardownTranscriptionCapture();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -762,9 +657,6 @@ export default function VoiceEngine({
       const audioContext = getAudioContext();
       if (audioContext && audioContext.state !== 'running') {
         void audioContext.resume().catch(() => {});
-      }
-      if (transcriptionContextRef.current && transcriptionContextRef.current.state !== 'running') {
-        void transcriptionContextRef.current.resume().catch(() => {});
       }
       audioElementsRef.current.forEach((audio) => {
         if (audio.muted) return;

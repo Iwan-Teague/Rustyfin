@@ -150,6 +150,19 @@ export type VoiceTranscribeChunkResponse = {
   persisted_segments: number;
 };
 
+export type VoiceTranscriptionRecordingUpload = {
+  sessionId: string;
+  captureStartedTsMs: number;
+  captureEndedTsMs: number;
+  blob: Blob;
+  fileName?: string;
+};
+
+export type VoiceTranscriptionRecordingUploadResponse = {
+  accepted: boolean;
+  persisted_segments: number;
+};
+
 // ── REST API ─────────────────────────────────────────────────────────────────
 
 export async function listChannels(): Promise<Channel[]> {
@@ -279,4 +292,32 @@ export async function uploadVoiceTranscriptionChunk(
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function uploadVoiceTranscriptionRecording(
+  channelId: string,
+  payload: VoiceTranscriptionRecordingUpload,
+): Promise<VoiceTranscriptionRecordingUploadResponse> {
+  const body = new FormData();
+  body.append(
+    'file',
+    payload.blob,
+    payload.fileName ?? `voice-transcript-${payload.sessionId}.webm`,
+  );
+  body.append('session_id', payload.sessionId);
+  body.append('capture_started_ts_ms', String(payload.captureStartedTsMs));
+  body.append('capture_ended_ts_ms', String(payload.captureEndedTsMs));
+
+  const res = await apiFetch(`/channels/${channelId}/transcription/recording`, {
+    method: 'POST',
+    body,
+  });
+  const parsed = await parseResponseBody(res);
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(parsed, 'Failed to upload transcript recording'));
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Transcript upload response was empty');
+  }
+  return parsed as VoiceTranscriptionRecordingUploadResponse;
 }

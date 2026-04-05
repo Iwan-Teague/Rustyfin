@@ -1,4 +1,5 @@
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, patch, post};
 
 use crate::state::AppState;
@@ -52,6 +53,11 @@ pub fn channels_router() -> Router<AppState> {
         .route(
             "/{id}/transcription/chunk",
             post(super::handlers::transcribe_chunk),
+        )
+        .route(
+            "/{id}/transcription/recording",
+            post(super::handlers::upload_transcription_recording)
+                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route(
             "/{id}/transcription/sessions/{session_id}/download",

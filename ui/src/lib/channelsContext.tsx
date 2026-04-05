@@ -10,13 +10,13 @@ import {
 } from 'react';
 import { useAuth } from './auth';
 import { readBrowserToken } from './browserAuth';
-import { uploadVoiceTranscriptionChunk } from './channelsApi';
+import { uploadVoiceTranscriptionRecording } from './channelsApi';
 import type {
   ChannelEvent,
   ChannelInfo,
   ChannelMessage,
   UserInfo,
-  VoiceTranscribeChunkRequest,
+  VoiceTranscriptionRecordingUpload,
   VoiceTranscriptionState,
 } from './channelsApi';
 import VoiceEngine from '@/app/channels/components/VoiceEngine';
@@ -72,9 +72,9 @@ export interface ChannelsContextValue {
     channelId: string,
     next: VoiceTranscriptionState | null,
   ) => void;
-  sendTranscriptionChunk: (
+  uploadTranscriptionRecording: (
     channelId: string,
-    payload: VoiceTranscribeChunkRequest,
+    payload: VoiceTranscriptionRecordingUpload,
   ) => Promise<void>;
 }
 
@@ -766,12 +766,12 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const sendTranscriptionChunk = useCallback(
-    async (channelId: string, payload: VoiceTranscribeChunkRequest) => {
+  const uploadTranscriptionRecordingForSession = useCallback(
+    async (channelId: string, payload: VoiceTranscriptionRecordingUpload) => {
       const maxAttempts = 5;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          await uploadVoiceTranscriptionChunk(channelId, payload);
+          await uploadVoiceTranscriptionRecording(channelId, payload);
           return;
         } catch (err) {
           const message =
@@ -788,13 +788,13 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
             continue;
           }
           console.warn(
-            'Voice transcription chunk upload failed',
+            'Voice transcription recording upload failed',
             {
               channelId,
-              sessionId: payload.session_id,
-              sampleRateHz: payload.sample_rate_hz,
-              startedTsMs: payload.started_ts_ms,
-              endedTsMs: payload.ended_ts_ms,
+              sessionId: payload.sessionId,
+              startedTsMs: payload.captureStartedTsMs,
+              endedTsMs: payload.captureEndedTsMs,
+              sizeBytes: payload.blob.size,
             },
             err,
           );
@@ -857,7 +857,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     setLocalMicGain,
     setPreferredAudioDevices,
     setVoiceTranscriptionState,
-    sendTranscriptionChunk,
+    uploadTranscriptionRecording: uploadTranscriptionRecordingForSession,
   };
 
   return (
@@ -879,7 +879,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           preferredOutputDeviceId={preferredOutputDeviceId}
           onSpeakingChange={handleSpeakingChange}
           transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
-          onTranscriptionChunk={sendTranscriptionChunk}
+          onTranscriptionRecordingUpload={uploadTranscriptionRecordingForSession}
         />
       )}
     </ChannelsContext.Provider>

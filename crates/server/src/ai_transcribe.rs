@@ -84,22 +84,23 @@ pub async fn transcribe_audio(
 }
 
 #[derive(Debug)]
-struct DecodedAudio {
-    sample_rate_hz: u32,
-    pcm_s16le: Vec<u8>,
+pub(crate) struct DecodedAudio {
+    pub sample_rate_hz: u32,
+    pub pcm_s16le: Vec<u8>,
 }
 
-async fn transcribe_pcm_chunks(
+pub(crate) async fn transcribe_pcm_chunks_to_segments(
     state: &AppState,
     user: &AuthUser,
     session_id: &str,
     decoded: &DecodedAudio,
-) -> Result<String, AppError> {
+    first_chunk_started_ts_ms: i64,
+) -> Result<Vec<transcription_agent::AgentTranscriptSegment>, AppError> {
     let samples_per_chunk =
         ((decoded.sample_rate_hz as i64 * MAX_AGENT_CHUNK_MS) / 1000).max(1) as usize;
     let bytes_per_chunk = samples_per_chunk.saturating_mul(2);
-    let mut chunk_start_ms = 0_i64;
-    let mut transcript_parts = Vec::new();
+    let mut chunk_start_ms = first_chunk_started_ts_ms.max(1);
+    let mut transcript_segments = Vec::new();
 
     for chunk in decoded.pcm_s16le.chunks(bytes_per_chunk.max(2)) {
         let chunk_duration_ms =
@@ -123,12 +124,32 @@ async fn transcribe_pcm_chunks(
         for segment in segments {
             let text = segment.text.trim();
             if !text.is_empty() {
-                transcript_parts.push(text.to_string());
+                transcript_segments.push(transcription_agent::AgentTranscriptSegment {
+                    started_ts_ms: segment.started_ts_ms,
+                    ended_ts_ms: segment.ended_ts_ms,
+                    text: text.to_string(),
+                });
             }
         }
 
         chunk_start_ms = chunk_end_ms.max(chunk_start_ms + 1);
     }
+
+    Ok(transcript_segments)
+}
+
+async fn transcribe_pcm_chunks(
+    state: &AppState,
+    user: &AuthUser,
+    session_id: &str,
+    decoded: &DecodedAudio,
+) -> Result<String, AppError> {
+    let segments = transcribe_pcm_chunks_to_segments(state, user, session_id, decoded, 1).await?;
+
+    let transcript_parts = segments
+        .into_iter()
+        .map(|segment| segment.text)
+        .collect::<Vec<_>>();
 
     Ok(transcript_parts
         .join(" ")
@@ -137,7 +158,7 @@ async fn transcribe_pcm_chunks(
         .join(" "))
 }
 
-async fn decode_audio_upload(
+pub(crate) async fn decode_audio_upload(
     state: &AppState,
     payload: &[u8],
     file_name: Option<&str>,
