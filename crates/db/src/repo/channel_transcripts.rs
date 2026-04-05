@@ -195,6 +195,35 @@ pub async fn get_running_session_for_channel(
     Ok(row.map(map_session))
 }
 
+pub async fn get_active_session_for_channel(
+    pool: &DbPool,
+    channel_id: &str,
+) -> Result<Option<TranscriptSessionRow>, sqlx::Error> {
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
+         FROM channel_transcript_session \
+         WHERE channel_id = $1 AND status IN ('running', 'finalizing') \
+         ORDER BY started_ts DESC \
+         LIMIT 1",
+    )
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(map_session))
+}
+
 pub async fn get_latest_session_for_channel(
     pool: &DbPool,
     channel_id: &str,
@@ -275,6 +304,30 @@ pub async fn list_running_sessions(
                 started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
          FROM channel_transcript_session \
          WHERE status = 'running' \
+         ORDER BY started_ts ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(map_session).collect())
+}
+
+pub async fn list_active_sessions(pool: &DbPool) -> Result<Vec<TranscriptSessionRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT id, channel_id, status, started_by_user_id, started_by_username, \
+                started_ts, ended_ts, output_path, failure_reason, CAST(entry_count AS BIGINT) AS entry_count \
+         FROM channel_transcript_session \
+         WHERE status IN ('running', 'finalizing') \
          ORDER BY started_ts ASC",
     )
     .fetch_all(pool)
@@ -414,6 +467,18 @@ pub async fn complete_session(
     )
     .bind(now)
     .bind(output_path)
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_session_finalizing(pool: &DbPool, session_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE channel_transcript_session \
+         SET status = 'finalizing', failure_reason = NULL \
+         WHERE id = $1 AND status = 'running'",
+    )
     .bind(session_id)
     .execute(pool)
     .await?;

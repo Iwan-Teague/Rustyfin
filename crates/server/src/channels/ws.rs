@@ -701,7 +701,7 @@ async fn build_hello(state: &AppState) -> ChannelEvent {
     let voice_presence = state.channel_manager.voice_snapshot().await;
     let voice_active_since_ts = state.channel_manager.voice_active_since_snapshot().await;
     let voice_transcriptions =
-        rustfin_db::repo::channel_transcripts::list_running_sessions(&state.db)
+        rustfin_db::repo::channel_transcripts::list_active_sessions(&state.db)
             .await
             .unwrap_or_default()
             .into_iter()
