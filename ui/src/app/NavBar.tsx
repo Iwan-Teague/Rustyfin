@@ -170,7 +170,7 @@ export default function NavBar() {
   const desktopRail = (
     <aside
       className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
-        railOpen ? 'w-[12.4rem]' : 'w-[4.05rem]'
+        railOpen ? 'w-[11.35rem]' : 'w-[4.05rem]'
       }`}
       data-expanded={railOpen ? 'true' : 'false'}
       data-collapsed={railOpen ? 'false' : 'true'}
@@ -181,7 +181,7 @@ export default function NavBar() {
         {railOpen ? (
           <Link
             href="/"
-            className="accent-logo flex h-11 w-full items-center justify-center rounded-2xl px-2 text-center text-[1.9rem] font-semibold transition hover:opacity-90"
+            className="accent-logo flex h-11 w-full items-center justify-center rounded-2xl px-2 text-center text-[2rem] font-semibold leading-none transition hover:opacity-90"
             aria-label="Go to Rustyfin home"
           >
             <span className="shrink-0">Rustyfin</span>
@@ -193,7 +193,7 @@ export default function NavBar() {
             className="grid h-full w-full place-items-center rounded-[1.35rem] text-center font-semibold transition hover:bg-white/5"
             aria-label="Open Rustyfin navigation"
           >
-            <span className="accent-logo inline-flex items-center justify-center text-[2.15rem] leading-none">R</span>
+            <span className="accent-logo inline-flex items-center justify-center text-[2rem] leading-none">R</span>
           </button>
         )}
       </div>
