@@ -56,6 +56,7 @@ type VideoPlayerSurfaceProps = {
   playbackDisabledReason?: string | null;
   statusText?: string | null;
   maxViewportHeightClassName?: string;
+  enableSpacebarToggle?: boolean;
 };
 
 function formatClock(totalSeconds?: number): string {
@@ -294,6 +295,7 @@ export default function VideoPlayerSurface({
   playbackDisabledReason,
   statusText,
   maxViewportHeightClassName = 'max-h-[80vh]',
+  enableSpacebarToggle = false,
 }: VideoPlayerSurfaceProps) {
   const localShellRef = useRef<HTMLDivElement>(null);
   const activeShellRef = shellRef ?? localShellRef;
@@ -458,6 +460,34 @@ export default function VideoPlayerSurface({
       video.pause();
     }
   }, [onPlaybackToggleRequest, playbackEnabled, videoRef]);
+
+  useEffect(() => {
+    if (!enableSpacebarToggle) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return;
+      if (event.defaultPrevented) return;
+      if (!canStartPlayback || !playbackEnabled) return;
+
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const activeElement =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const interactiveSelector =
+        'input, textarea, select, button, [contenteditable="true"], [role="textbox"]';
+      if (
+        target?.closest(interactiveSelector) ||
+        activeElement?.closest(interactiveSelector)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      void togglePlayback();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canStartPlayback, enableSpacebarToggle, playbackEnabled, togglePlayback]);
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
