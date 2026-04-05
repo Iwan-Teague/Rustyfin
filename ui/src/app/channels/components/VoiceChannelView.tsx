@@ -623,11 +623,15 @@ export default function VoiceChannelView({
                       Discard Transcript
                     </button>
                   </div>
+                ) : transcriptionState?.status === 'finalizing' ? (
+                  <span className="text-xs muted">
+                    Finalizing transcript…
+                  </span>
                 ) : (
                   <button
                     type="button"
                     onClick={handleStartTranscription}
-                    disabled={transcriptionBusy}
+                    disabled={transcriptionBusy || transcriptionState?.status === 'finalizing'}
                     className="rf-text-action text-sm"
                     aria-busy={transcriptionStarting}
                   >
@@ -732,11 +736,15 @@ export default function VoiceChannelView({
                       Discard Transcript
                     </button>
                   </div>
+                ) : transcriptionState?.status === 'finalizing' ? (
+                  <span className="text-xs muted">
+                    Finalizing transcript…
+                  </span>
                 ) : (
                   <button
                     type="button"
                     onClick={handleStartTranscription}
-                    disabled={transcriptionBusy}
+                    disabled={transcriptionBusy || transcriptionState?.status === 'finalizing'}
                     className="rf-text-action text-sm"
                     aria-busy={transcriptionStarting}
                   >
