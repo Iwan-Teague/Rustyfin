@@ -149,10 +149,8 @@ export default function NavBar() {
       isRootGroupSelected(href) ? 'text-[var(--text-main)]' : ''
     }`;
 
-  const railUtilityClass = (href: string) =>
-    `rf-nav-link rf-nav-utility btn-ghost flex min-h-[3.25rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-sm font-medium transition ${
-      isActivePath(href) ? 'text-[var(--text-main)]' : ''
-    }`;
+  const railUtilityClass = () =>
+    'rf-nav-link rf-nav-utility btn-ghost flex min-h-[3.25rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-sm font-medium transition';
 
   const openGroupHref = railOpen ? expandedGroupHref : null;
 
@@ -248,8 +246,7 @@ export default function NavBar() {
           {!loading && me?.role === 'admin' ? (
             <Link
               href="/admin"
-              className={railUtilityClass('/admin')}
-              aria-current={isActivePath('/admin') ? 'page' : undefined}
+              className={railUtilityClass()}
               onClick={() => setExpandedGroupHref(null)}
             >
               <span className="shrink-0">
@@ -262,8 +259,7 @@ export default function NavBar() {
           {!loading && me ? (
             <Link
               href="/account"
-              className={railUtilityClass('/account')}
-              aria-current={isActivePath('/account') ? 'page' : undefined}
+              className={railUtilityClass()}
               onClick={() => setExpandedGroupHref(null)}
             >
               <span className="shrink-0">
@@ -357,7 +353,7 @@ export default function NavBar() {
           ) : null}
 
           {!loading && !me ? (
-            <Link href="/login" className={railUtilityClass('/login')}>
+            <Link href="/login" className={railUtilityClass()}>
               <span className="shrink-0">
                 <UserIcon />
               </span>
