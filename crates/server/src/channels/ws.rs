@@ -17,6 +17,7 @@ use crate::setup::rate_limit::RateLimiter;
 use crate::state::AppState;
 use crate::user_activity;
 
+use super::handlers::finalizing_transcription_session_id;
 use super::protocol::{ChannelEvent, ClientMsg, MessageInfo, VoiceTranscriptionStateInfo};
 
 const MAX_WS_FRAME_BYTES: usize = 32 * 1024;
@@ -701,21 +702,40 @@ async fn build_hello(state: &AppState) -> ChannelEvent {
     let voice_presence = state.channel_manager.voice_snapshot().await;
     let voice_active_since_ts = state.channel_manager.voice_active_since_snapshot().await;
     let voice_transcriptions =
-        rustfin_db::repo::channel_transcripts::list_active_sessions(&state.db)
+        rustfin_db::repo::channel_transcripts::list_running_sessions(&state.db)
             .await
             .unwrap_or_default()
             .into_iter()
             .map(|session| {
+                let is_finalizing = finalizing_transcription_session_id(&session.channel_id)
+                    .as_deref()
+                    == Some(session.id.as_str());
                 (
                     session.channel_id.clone(),
                     VoiceTranscriptionStateInfo {
-                        status: session.status,
+                        status: if is_finalizing {
+                            "finalizing".to_string()
+                        } else {
+                            session.status
+                        },
                         session_id: Some(session.id),
                         started_by_username: Some(session.started_by_username),
                         started_ts: Some(session.started_ts),
-                        ended_ts: session.ended_ts,
-                        output_available: session.output_path.is_some(),
-                        message: session.failure_reason,
+                        ended_ts: if is_finalizing {
+                            None
+                        } else {
+                            session.ended_ts
+                        },
+                        output_available: if is_finalizing {
+                            false
+                        } else {
+                            session.output_path.is_some()
+                        },
+                        message: if is_finalizing {
+                            Some("finalizing transcript".to_string())
+                        } else {
+                            session.failure_reason
+                        },
                     },
                 )
             })
