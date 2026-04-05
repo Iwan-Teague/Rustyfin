@@ -57,6 +57,7 @@ type VideoPlayerSurfaceProps = {
   statusText?: string | null;
   maxViewportHeightClassName?: string;
   enableSpacebarToggle?: boolean;
+  surfaceStyle?: 'panel' | 'immersive';
 };
 
 function formatClock(totalSeconds?: number): string {
@@ -296,6 +297,7 @@ export default function VideoPlayerSurface({
   statusText,
   maxViewportHeightClassName = 'max-h-[80vh]',
   enableSpacebarToggle = false,
+  surfaceStyle = 'panel',
 }: VideoPlayerSurfaceProps) {
   const localShellRef = useRef<HTMLDivElement>(null);
   const activeShellRef = shellRef ?? localShellRef;
@@ -585,6 +587,7 @@ export default function VideoPlayerSurface({
 
   const showArtworkOverlay = Boolean(artworkUrl && canStartPlayback && !hasEverPlayed);
   const controlsActive = controlsVisible || showSettings;
+  const showArtworkBackdrop = Boolean(artworkUrl && !isFullscreen && surfaceStyle === 'immersive');
 
   return (
     <div
@@ -592,14 +595,18 @@ export default function VideoPlayerSurface({
       className={
         isFullscreen
           ? 'flex h-screen w-screen flex-col overflow-hidden bg-black'
-          : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
+          : surfaceStyle === 'immersive'
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent'
+            : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
       }
     >
       <div
         className={
           isFullscreen
             ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
-            : 'relative cursor-pointer'
+            : surfaceStyle === 'immersive'
+              ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden bg-black'
+              : 'relative cursor-pointer overflow-hidden'
         }
         onMouseEnter={revealControls}
         onMouseMove={revealControls}
@@ -614,6 +621,19 @@ export default function VideoPlayerSurface({
           handleVideoDoubleClick();
         }}
       >
+        {showArtworkBackdrop ? (
+          <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+            <img
+              src={artworkUrl ?? undefined}
+              alt=""
+              aria-hidden="true"
+              className="h-full w-full scale-110 object-cover blur-3xl opacity-55"
+              loading="eager"
+              decoding="async"
+            />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(10,12,18,0.06),rgba(10,12,18,0.72))]" />
+          </div>
+        ) : null}
         <video
           ref={videoRef}
           {...videoElementProps}
@@ -624,16 +644,22 @@ export default function VideoPlayerSurface({
             `${
               isFullscreen
                 ? 'h-full w-full max-h-full object-contain'
-                : `w-full cursor-pointer ${maxViewportHeightClassName}`
+                : surfaceStyle === 'immersive'
+                  ? 'h-full w-full max-h-full object-contain'
+                  : `w-full cursor-pointer ${maxViewportHeightClassName}`
             } ${(videoElementProps?.className ?? '').trim()}`.trim()
           }
         />
         {showArtworkOverlay ? (
-          <div className="pointer-events-none absolute inset-0 z-10">
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <img
               src={artworkUrl ?? undefined}
               alt={artworkAlt}
-              className="h-full w-full object-cover"
+              className={
+                surfaceStyle === 'immersive'
+                  ? 'h-full w-full object-contain'
+                  : 'h-full w-full object-cover'
+              }
               loading="eager"
               decoding="async"
             />
