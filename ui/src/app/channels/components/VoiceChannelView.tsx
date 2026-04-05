@@ -458,12 +458,18 @@ export default function VoiceChannelView({
         window.setTimeout(resolve, DELETE_AFTER_CONFIRM_DELAY_MS);
       });
       const target = findDataDeleteTarget('data-transcript-session-id', sessionId);
-      await playTelegramDeleteAnimation(target);
+      await playTelegramDeleteAnimation(target, 540, {
+        keepHiddenAtEnd: true,
+        collapse: true,
+      });
+      setTranscriptSessions((prev) =>
+        prev.filter((session) => session.session_id !== sessionId),
+      );
       await deleteVoiceTranscriptionSession(channel.id, sessionId);
       const status = await getVoiceTranscriptionStatus(channel.id);
       setVoiceTranscriptionState(channel.id, mapStatusToState(status));
-      await loadTranscriptSessions(false);
     } catch (err) {
+      await loadTranscriptSessions(false);
       setTranscriptionError(err instanceof Error ? err.message : 'Failed to delete transcript');
     } finally {
       setTranscriptionBusy(false);
