@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useDeferredValue, useEffect, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
+import RfSwitch from '@/app/components/RfSwitch';
 import SurfaceTabsBar from '@/app/components/SurfaceTabsBar';
 import { useAuth } from '@/lib/auth';
 import { clientErrorMessage } from '@/lib/errors';
@@ -79,13 +80,6 @@ type EditorState = {
 };
 
 type VaultWorkspaceTab = 'vault' | 'generator' | 'extension';
-
-type VaultSwitchProps = {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  className?: string;
-};
 
 function nowTs() {
   return Math.floor(Date.now() / 1000);
@@ -205,25 +199,6 @@ function parseBitwardenImport(text: string): RustyVaultLoginItem[] {
     });
   }
   return imported;
-}
-
-function VaultSwitch({ label, checked, onChange, className }: VaultSwitchProps) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      data-checked={checked}
-      className={['rf-vault-switch', className].filter(Boolean).join(' ')}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="rf-vault-switch-track" aria-hidden="true">
-        <span className="rf-vault-switch-state">{checked ? 'ON' : 'OFF'}</span>
-        <span className="rf-vault-switch-thumb" />
-      </span>
-      <span className="rf-vault-switch-label">{label}</span>
-    </button>
-  );
 }
 
 function downloadJson(filename: string, value: unknown) {
@@ -1225,7 +1200,7 @@ export default function RustyVaultPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                          <VaultSwitch
+                          <RfSwitch
                             label="Favorite item"
                             checked={editor.favorite}
                             onChange={(checked) =>
@@ -1378,7 +1353,7 @@ export default function RustyVaultPage() {
                         ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
                         ['allow_manual_http_fill', 'Allow manual HTTP fill'],
                       ] as const).map(([key, label]) => (
-                        <VaultSwitch
+                        <RfSwitch
                           key={key}
                           label={label}
                           checked={prefs[key]}
@@ -1450,7 +1425,7 @@ export default function RustyVaultPage() {
                         Export decrypted JSON
                       </button>
                     </div>
-                    <VaultSwitch
+                    <RfSwitch
                       label="Clear current items before importing"
                       checked={importClearExisting}
                       onChange={setImportClearExisting}
@@ -1539,7 +1514,7 @@ export default function RustyVaultPage() {
                     ['include_numbers', 'Numbers'],
                     ['include_symbols', 'Symbols'],
                   ] as const).map(([key, label]) => (
-                    <VaultSwitch
+                    <RfSwitch
                       key={key}
                       label={label}
                       checked={generatorOptions[key]}
@@ -1553,7 +1528,7 @@ export default function RustyVaultPage() {
                   ))}
                 </div>
 
-                <VaultSwitch
+                <RfSwitch
                   label="Exclude ambiguous characters"
                   checked={generatorOptions.exclude_ambiguous}
                   onChange={(checked) =>

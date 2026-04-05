@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import SurfaceTabsBar from '@/app/components/SurfaceTabsBar';
 import {
   WsBattleshipState,
   WsConnectFourState,
@@ -1491,7 +1492,7 @@ export default function PlayTogetherChess({
 }: Props) {
   if (!playState) {
     return (
-      <section className="panel space-y-3 p-5 sm:p-6">
+      <section className="rf-flat-empty space-y-3 p-5 sm:p-6 text-left">
         <h2 className="text-xl font-semibold">Play Together</h2>
         <p className="text-sm muted">Connecting to shared game state…</p>
       </section>
@@ -1531,44 +1532,19 @@ export default function PlayTogetherChess({
   }
 
   return (
-    <section className="panel relative mt-[55px] p-5 pt-[60px] sm:p-6 sm:pt-[64px]">
+    <section className="relative mt-[55px] pt-[60px] sm:pt-[64px]">
       <div className="absolute left-4 right-4 top-[-17px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
-        <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
-          <div className="flex flex-wrap items-end gap-2 self-start">
-            <button
-              type="button"
-              className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
-              onClick={() => sendWs({ type: 'play_set_game', game: 'chess' })}
-              disabled={activeGame === 'chess'}
-            >
-              Chess
-            </button>
-            <button
-              type="button"
-              className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
-              onClick={() => sendWs({ type: 'play_set_game', game: 'connect_four' })}
-              disabled={activeGame === 'connect_four'}
-            >
-              Connect Four
-            </button>
-            <button
-              type="button"
-              className="rounded-t-lg border border-b-0 border-[var(--border)] bg-[var(--surface)] px-5 py-2.5 text-sm font-medium"
-              onClick={() => sendWs({ type: 'play_set_game', game: 'battleship' })}
-              disabled={activeGame === 'battleship'}
-            >
-              Battleship
-            </button>
-          </div>
-
-          <div className="min-w-0 flex flex-wrap items-center justify-end gap-2 self-start">
-            {badges.map((badge) => (
-              <span key={badge} className="chip">
-                {badge}
-              </span>
-            ))}
-          </div>
-        </div>
+        <SurfaceTabsBar<PlayGameKey>
+          variant="vault"
+          activeKey={activeGame}
+          onSelect={(game) => sendWs({ type: 'play_set_game', game })}
+          options={[
+            { key: 'chess', label: 'Chess' },
+            { key: 'connect_four', label: 'Connect Four' },
+            { key: 'battleship', label: 'Battleship' },
+          ]}
+          badges={badges}
+        />
       </div>
 
       <div className="relative space-y-4">
