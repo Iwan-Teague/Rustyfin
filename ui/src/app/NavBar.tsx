@@ -156,12 +156,12 @@ export default function NavBar() {
   };
 
   const railLinkClass = (href: string) =>
-    `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] w-full items-center justify-start gap-3 rounded-[1.1rem] px-3.5 text-base font-semibold transition ${
+    `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-base font-semibold transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     }`;
 
   const railUtilityClass = (href: string) =>
-    `rf-nav-link btn-ghost flex min-h-[3.25rem] w-full items-center justify-start gap-3 rounded-[1.1rem] px-3.5 text-sm font-medium transition ${
+    `rf-nav-link btn-ghost flex min-h-[3.25rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-sm font-medium transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     }`;
 
@@ -170,7 +170,7 @@ export default function NavBar() {
   const desktopRail = (
     <aside
       className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
-        railOpen ? 'w-[13.9rem]' : 'w-[3.8rem]'
+        railOpen ? 'w-[12.4rem]' : 'w-[4.05rem]'
       }`}
       data-expanded={railOpen ? 'true' : 'false'}
       data-collapsed={railOpen ? 'false' : 'true'}
@@ -180,7 +180,7 @@ export default function NavBar() {
         {railOpen ? (
           <Link
             href="/"
-            className="accent-logo flex h-11 w-full items-center justify-start rounded-2xl px-2 text-left text-2xl font-semibold transition hover:opacity-90"
+            className="accent-logo flex h-11 w-full items-center justify-center rounded-2xl px-2 text-center text-[1.9rem] font-semibold transition hover:opacity-90"
             aria-label="Go to Rustyfin home"
           >
             <span className="shrink-0">Rustyfin</span>
@@ -189,10 +189,10 @@ export default function NavBar() {
           <button
             type="button"
             onClick={() => setRailOpen(true)}
-            className="accent-logo flex h-full w-full items-center justify-center rounded-[1.25rem] text-center text-xl font-semibold transition hover:bg-white/5"
+            className="accent-logo flex h-full w-full items-center justify-center rounded-[1.35rem] text-center text-[2.15rem] font-semibold transition hover:bg-white/5"
             aria-label="Open Rustyfin navigation"
           >
-            <span className="shrink-0">R</span>
+            <span className="inline-flex translate-y-px items-center justify-center leading-none">R</span>
           </button>
         )}
       </div>
@@ -233,7 +233,7 @@ export default function NavBar() {
                 )}
                 {item.items.length ? (
                   <div
-                    className="rf-nav-children ml-3"
+                    className="rf-nav-children"
                     data-open={showChildren ? 'true' : 'false'}
                     aria-hidden={!showChildren}
                   >
@@ -242,7 +242,7 @@ export default function NavBar() {
                         <Link
                           key={subItem.href}
                           href={subItem.href}
-                          className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-left text-[0.95rem] font-medium ${
+                          className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-center text-[0.95rem] font-medium ${
                             isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
                           }`}
                           aria-current={isActivePath(subItem.href) ? 'page' : undefined}

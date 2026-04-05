@@ -177,9 +177,9 @@ button:focus-visible {
   }
 
   .app-nav.app-nav-rail[data-collapsed="true"] {
-    height: 3.8rem;
-    padding: 0.28rem;
-    border-radius: 1.15rem;
+    height: 4.05rem;
+    padding: 0.24rem;
+    border-radius: 1.3rem;
   }
 }
 
@@ -1589,6 +1589,16 @@ input[type="checkbox"]:disabled {
   overflow: hidden;
 }
 
+.app-nav-rail .rf-nav-root,
+.app-nav-rail .rf-nav-subpage,
+.app-nav-rail .rf-notify-root.w-full .rf-notify-trigger,
+.app-nav-rail .rf-nav-link[href="/admin"],
+.app-nav-rail .rf-nav-link[href="/account"],
+.app-nav-rail .rf-nav-link[href="/login"] {
+  justify-content: center;
+  text-align: center;
+}
+
 .app-nav-rail .rf-nav-root[aria-current="page"],
 .app-nav-rail .rf-nav-root[aria-expanded="true"] {
   border-color: transparent !important;
@@ -1736,8 +1746,12 @@ input[type="checkbox"]:disabled {
 
 .app-nav-rail .rf-notify-root.w-full .rf-notify-trigger {
   width: 100%;
-  justify-content: flex-start;
+  min-height: 3.35rem;
+  flex-direction: column-reverse;
+  justify-content: center;
+  gap: 0.24rem;
   padding-inline: 0.75rem;
+  padding-block: 0.45rem;
 }
 
 .rf-notify-bell {
@@ -1748,11 +1762,20 @@ input[type="checkbox"]:disabled {
 
 .rf-notify-badge {
   border: 1px solid rgba(36, 21, 7, 0.22);
-  color: #281a0d;
-  background: linear-gradient(130deg, #ffd083 0%, #ff9c63 42%, #ff7a92 100%);
+  color: rgba(255, 248, 252, 0.98);
+  background: linear-gradient(135deg, var(--orange) 0%, var(--accent-pink) 52%, var(--purple) 100%);
   box-shadow:
-    0 8px 18px rgba(255, 132, 88, 0.44),
+    0 8px 18px rgba(183, 112, 255, 0.24),
     0 0 0 1px rgba(255, 255, 255, 0.2) inset;
+}
+
+.app-nav-rail .rf-notify-root.w-full .rf-notify-badge {
+  position: static;
+  height: 1.15rem;
+  min-width: 1.15rem;
+  padding-inline: 0.26rem;
+  font-size: 0.6rem;
+  line-height: 1;
 }
 
 .rf-notify-popover {
