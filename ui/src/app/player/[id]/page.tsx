@@ -973,6 +973,7 @@ export default function PlayerPage() {
         playbackKey={id}
         artworkUrl={loadingArtworkUrl}
         artworkAlt={playerTitle}
+        enableSpacebarToggle
         canStartPlayback={canStartPlayback}
         knownDurationSecs={knownDurationSecs}
         bufferedWindowEndSecs={
