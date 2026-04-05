@@ -596,7 +596,7 @@ export default function VideoPlayerSurface({
         isFullscreen
           ? 'flex h-screen w-screen flex-col overflow-hidden bg-black'
           : surfaceStyle === 'immersive'
-            ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent'
+            ? 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.75rem] bg-transparent'
             : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
       }
     >
@@ -605,7 +605,7 @@ export default function VideoPlayerSurface({
           isFullscreen
             ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
             : surfaceStyle === 'immersive'
-              ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden bg-black'
+              ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-[1.75rem] bg-black'
               : 'relative cursor-pointer overflow-hidden'
         }
         onMouseEnter={revealControls}
