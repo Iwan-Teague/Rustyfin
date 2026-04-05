@@ -5,6 +5,7 @@ import type {
   ChannelEvent,
   UserInfo,
   VoiceTranscriptionRecordingUpload,
+  VoiceTranscriptionTextUpload,
   VoiceTranscriptionState,
 } from '@/lib/channelsApi';
 
@@ -25,7 +26,42 @@ interface Props {
     channelId: string,
     payload: VoiceTranscriptionRecordingUpload,
   ) => Promise<void>;
+  onTranscriptionTextUpload: (
+    channelId: string,
+    payload: VoiceTranscriptionTextUpload,
+  ) => Promise<void>;
 }
+
+type ChannelSpeechRecognitionResult = {
+  isFinal: boolean;
+  0: {
+    transcript: string;
+  };
+  length: number;
+};
+
+type ChannelSpeechRecognitionEvent = {
+  results: ArrayLike<ChannelSpeechRecognitionResult>;
+};
+
+type ChannelSpeechRecognitionErrorEvent = {
+  error: string;
+};
+
+type ChannelSpeechRecognition = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: ChannelSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: ChannelSpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type ChannelSpeechRecognitionConstructor = new () => ChannelSpeechRecognition;
 
 const STUN_URL =
   process.env.NEXT_PUBLIC_STUN_URL ?? 'stun:stun.l.google.com:19302';
@@ -33,6 +69,18 @@ const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
 const SYNTHETIC_OUTPUT_PREFIX = 'synthetic-audiooutput-';
+
+function collectBrowserTranscript(event: ChannelSpeechRecognitionEvent): string {
+  const transcripts: string[] = [];
+  for (let index = 0; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const transcript = result?.[0]?.transcript?.trim();
+    if (transcript) {
+      transcripts.push(transcript);
+    }
+  }
+  return transcripts.join(' ').trim();
+}
 
 type SpeakingMonitor = {
   source: MediaStreamAudioSourceNode;
@@ -74,6 +122,7 @@ export default function VoiceEngine({
   onSpeakingChange,
   transcriptionState,
   onTranscriptionRecordingUpload,
+  onTranscriptionTextUpload,
 }: Props) {
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -91,6 +140,12 @@ export default function VoiceEngine({
   const transcriptionCaptureStartedAtRef = useRef<number>(0);
   const activeTranscriptionSessionRef = useRef<string | null>(null);
   const transcriptionStopRequestedRef = useRef(false);
+  const recognitionRef = useRef<ChannelSpeechRecognition | null>(null);
+  const browserSpeechShouldContinueRef = useRef(false);
+  const browserSpeechStartedAtRef = useRef<number>(0);
+  const browserSpeechAccumulatedRef = useRef('');
+  const browserSpeechCurrentRef = useRef('');
+  const browserSpeechUploadedRef = useRef(false);
 
   function getAudioContext(): AudioContext | null {
     if (audioContextRef.current) {
@@ -125,6 +180,11 @@ export default function VoiceEngine({
   }
 
   function teardownTranscriptionCapture() {
+    if (recognitionRef.current) {
+      browserSpeechShouldContinueRef.current = false;
+      recognitionRef.current.stop();
+      return;
+    }
     const recorder = transcriptionRecorderRef.current;
     if (recorder) {
       if (recorder.state !== 'inactive' && !transcriptionStopRequestedRef.current) {
@@ -138,6 +198,11 @@ export default function VoiceEngine({
     transcriptionCaptureStartedAtRef.current = 0;
     activeTranscriptionSessionRef.current = null;
     transcriptionStopRequestedRef.current = false;
+    browserSpeechShouldContinueRef.current = false;
+    browserSpeechStartedAtRef.current = 0;
+    browserSpeechAccumulatedRef.current = '';
+    browserSpeechCurrentRef.current = '';
+    browserSpeechUploadedRef.current = false;
   }
 
   function stopSpeakingMonitor(userId: string) {
@@ -592,6 +657,113 @@ export default function VoiceEngine({
     teardownTranscriptionCapture();
 
     try {
+      const SpeechRecognitionCtor =
+        typeof window !== 'undefined'
+          ? (
+              window as Window & {
+                SpeechRecognition?: ChannelSpeechRecognitionConstructor;
+                webkitSpeechRecognition?: ChannelSpeechRecognitionConstructor;
+              }
+            ).SpeechRecognition ??
+            (
+              window as Window & {
+                SpeechRecognition?: ChannelSpeechRecognitionConstructor;
+                webkitSpeechRecognition?: ChannelSpeechRecognitionConstructor;
+              }
+            ).webkitSpeechRecognition
+          : undefined;
+      if (SpeechRecognitionCtor && !recognitionRef.current) {
+        const startRecognition = () => {
+          const recognition = new SpeechRecognitionCtor();
+          recognitionRef.current = recognition;
+          recognition.lang = 'en-US';
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.maxAlternatives = 1;
+          recognition.onresult = (event) => {
+            const transcript = collectBrowserTranscript(event);
+            if (transcript) {
+              browserSpeechCurrentRef.current = transcript;
+            }
+          };
+          recognition.onerror = (event) => {
+            if (event.error === 'no-speech' && browserSpeechShouldContinueRef.current) {
+              return;
+            }
+            if (!browserSpeechShouldContinueRef.current && event.error === 'aborted') {
+              return;
+            }
+            browserSpeechShouldContinueRef.current = false;
+            recognitionRef.current = null;
+            browserSpeechCurrentRef.current = '';
+          };
+          recognition.onend = () => {
+            recognitionRef.current = null;
+            const currentTranscript = browserSpeechCurrentRef.current.trim();
+            if (browserSpeechShouldContinueRef.current) {
+              if (currentTranscript) {
+                browserSpeechAccumulatedRef.current = [
+                  browserSpeechAccumulatedRef.current,
+                  currentTranscript,
+                ]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
+                browserSpeechCurrentRef.current = '';
+              }
+              startRecognition();
+              return;
+            }
+            void (async () => {
+              const finalTranscript = [
+                browserSpeechAccumulatedRef.current,
+                currentTranscript,
+              ]
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+              if (finalTranscript) {
+                try {
+                  const startedAt =
+                    browserSpeechStartedAtRef.current || transcriptionCaptureStartedAtRef.current || Date.now();
+                  const endedAt = Date.now();
+                  await onTranscriptionTextUpload(channelId, {
+                    sessionId,
+                    startedTsMs: startedAt,
+                    endedTsMs: Math.max(endedAt, startedAt + 1),
+                    text: finalTranscript,
+                  });
+                  browserSpeechUploadedRef.current = true;
+                } catch (error) {
+                  console.warn('VoiceEngine: browser speech transcript upload failed', error);
+                }
+              }
+              browserSpeechStartedAtRef.current = 0;
+              browserSpeechAccumulatedRef.current = '';
+              browserSpeechCurrentRef.current = '';
+              const recorder = transcriptionRecorderRef.current;
+              if (recorder && recorder.state !== 'inactive' && !transcriptionStopRequestedRef.current) {
+                transcriptionStopRequestedRef.current = true;
+                recorder.stop();
+                return;
+              }
+              transcriptionRecorderRef.current = null;
+              transcriptionChunksRef.current = [];
+              transcriptionCaptureStartedAtRef.current = 0;
+              activeTranscriptionSessionRef.current = null;
+              transcriptionStopRequestedRef.current = false;
+              browserSpeechUploadedRef.current = false;
+            })();
+          };
+          recognition.start();
+        };
+        browserSpeechShouldContinueRef.current = true;
+        browserSpeechStartedAtRef.current = Date.now();
+        browserSpeechAccumulatedRef.current = '';
+        browserSpeechCurrentRef.current = '';
+        browserSpeechUploadedRef.current = false;
+        startRecognition();
+      }
       if (typeof MediaRecorder === 'undefined') {
         return;
       }
@@ -600,9 +772,9 @@ export default function VoiceEngine({
         ? new MediaRecorder(transcriptionStream, { mimeType })
         : new MediaRecorder(transcriptionStream);
       const sessionIdForUpload = sessionId;
-      const startedAt = Date.now();
+      const captureStartedAt = Date.now();
       transcriptionChunksRef.current = [];
-      transcriptionCaptureStartedAtRef.current = startedAt;
+      transcriptionCaptureStartedAtRef.current = captureStartedAt;
       transcriptionStopRequestedRef.current = false;
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -619,6 +791,10 @@ export default function VoiceEngine({
         transcriptionCaptureStartedAtRef.current = 0;
         activeTranscriptionSessionRef.current = null;
         transcriptionStopRequestedRef.current = false;
+        if (browserSpeechUploadedRef.current) {
+          browserSpeechUploadedRef.current = false;
+          return;
+        }
         if (!sessionIdForUpload || chunks.length === 0) {
           return;
         }
@@ -628,8 +804,8 @@ export default function VoiceEngine({
         });
         const uploadPayload: VoiceTranscriptionRecordingUpload = {
           sessionId: sessionIdForUpload,
-          captureStartedTsMs: startedAt,
-          captureEndedTsMs: Math.max(endedAt, startedAt + 1),
+          captureStartedTsMs: captureStartedAt,
+          captureEndedTsMs: Math.max(endedAt, captureStartedAt + 1),
           blob,
           fileName: `voice-transcript-${sessionIdForUpload}.webm`,
         };

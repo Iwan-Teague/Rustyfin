@@ -163,6 +163,18 @@ export type VoiceTranscriptionRecordingUploadResponse = {
   persisted_segments: number;
 };
 
+export type VoiceTranscriptionTextUpload = {
+  sessionId: string;
+  startedTsMs: number;
+  endedTsMs: number;
+  text: string;
+};
+
+export type VoiceTranscriptionTextUploadResponse = {
+  accepted: boolean;
+  persisted_segments: number;
+};
+
 // ── REST API ─────────────────────────────────────────────────────────────────
 
 export async function listChannels(): Promise<Channel[]> {
@@ -320,4 +332,19 @@ export async function uploadVoiceTranscriptionRecording(
     throw new Error('Transcript upload response was empty');
   }
   return parsed as VoiceTranscriptionRecordingUploadResponse;
+}
+
+export async function uploadVoiceTranscriptionText(
+  channelId: string,
+  payload: VoiceTranscriptionTextUpload,
+): Promise<VoiceTranscriptionTextUploadResponse> {
+  return apiJson<VoiceTranscriptionTextUploadResponse>(`/channels/${channelId}/transcription/text`, {
+    method: 'POST',
+    body: JSON.stringify({
+      session_id: payload.sessionId,
+      started_ts_ms: payload.startedTsMs,
+      ended_ts_ms: payload.endedTsMs,
+      text: payload.text,
+    }),
+  });
 }
