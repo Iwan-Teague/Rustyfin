@@ -84,6 +84,7 @@ type VaultSwitchProps = {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  className?: string;
 };
 
 function nowTs() {
@@ -206,14 +207,14 @@ function parseBitwardenImport(text: string): RustyVaultLoginItem[] {
   return imported;
 }
 
-function VaultSwitch({ label, checked, onChange }: VaultSwitchProps) {
+function VaultSwitch({ label, checked, onChange, className }: VaultSwitchProps) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       data-checked={checked}
-      className="rf-vault-switch"
+      className={['rf-vault-switch', className].filter(Boolean).join(' ')}
       onClick={() => onChange(!checked)}
     >
       <span className="rf-vault-switch-track" aria-hidden="true">
@@ -291,6 +292,7 @@ export default function RustyVaultPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<VaultWorkspaceTab>('vault');
+  const [vaultView, setVaultView] = useState<'index' | 'prompt' | 'workspace'>('index');
 
   const filteredRows = rows.filter((row) => {
     const needle = deferredSearch.trim().toLowerCase();
@@ -381,9 +383,11 @@ export default function RustyVaultPage() {
     }
     setConfig(persistedConfig);
     setUnlocked(unlockedContext);
+    setVaultView('workspace');
     setRows([]);
     setSelectedItem(null);
     setEditor(defaultEditorState());
+    setMasterPassword('');
     setConfirmMasterPassword('');
     setMessage('Vault created and unlocked on this device.');
   }
@@ -399,6 +403,9 @@ export default function RustyVaultPage() {
       unlockRustyVault(masterPassword, me.id, config.active_wrapped_key!),
     );
     setUnlocked(unlockedContext);
+    setVaultView('workspace');
+    setMasterPassword('');
+    setConfirmMasterPassword('');
     await loadItems(unlockedContext);
     setMessage('Vault unlocked.');
   }
@@ -420,6 +427,7 @@ export default function RustyVaultPage() {
     window.clearTimeout(rustyVaultWindow.__rustyVaultAutoLock);
     rustyVaultWindow.__rustyVaultAutoLock = window.setTimeout(() => {
       setUnlocked(null);
+      setVaultView('index');
       setRows([]);
       setSelectedItem(null);
       setShowPassword(false);
@@ -479,6 +487,14 @@ export default function RustyVaultPage() {
   useEffect(() => {
     setGeneratorOptions(presetOptions(generatorPreset));
   }, [generatorPreset]);
+
+  useEffect(() => {
+    if (unlocked) {
+      setVaultView('workspace');
+    } else if (vaultView === 'workspace') {
+      setVaultView('index');
+    }
+  }, [unlocked, vaultView]);
 
   useEffect(() => {
     if (!selectedItem && !editingExisting) {
@@ -741,6 +757,8 @@ export default function RustyVaultPage() {
     clearRustyVaultSession();
     setVaultSession(null);
     setUnlocked(null);
+    setVaultView('index');
+    setActiveWorkspaceTab('vault');
     setRows([]);
     setSelectedItem(null);
     setEditor(defaultEditorState());
@@ -765,6 +783,10 @@ export default function RustyVaultPage() {
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
   const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
   const vaultSubsectionClassName = 'space-y-3 border-t border-white/8 pt-4';
+  const currentVaultLabel = config?.enabled ? 'Personal Vault' : 'Set up Vault';
+  const currentVaultDescription = config?.enabled
+    ? 'Client-side encrypted logins for this Rustyfin account.'
+    : 'Create an encrypted vault before saving passwords.';
 
   if (authLoading || loadingState) {
     return (
@@ -786,6 +808,162 @@ export default function RustyVaultPage() {
     return (
       <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">{error}</p>
+      </div>
+    );
+  }
+
+  if (vaultView !== 'workspace') {
+    return (
+      <div className="rf-flat-page rf-flat-scope animate-rise">
+        <header className="rf-flat-header pb-3">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-2">
+              <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
+              <p className="max-w-3xl text-sm muted sm:text-base">
+                Client-side encrypted password storage, password generation, and browser-extension pairing in the existing Rustyfin security model.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Items</p>
+                <p className="text-lg font-semibold">{config?.item_count ?? 0}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">KDF</p>
+                <p className="text-sm font-medium">Argon2id 64 MiB</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
+                <p className="text-lg font-semibold">{prefs.auto_lock_minutes}m</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Session</p>
+                <p className="text-sm font-medium">
+                  {rustyVaultSession ? formatTimestamp(rustyVaultSession.access_expires_ts) : 'Unavailable'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {error && (
+          <div className="notice-error rounded-xl px-4 py-3 text-sm">{error}</div>
+        )}
+
+        {message && (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+            {message}
+          </div>
+        )}
+
+        <section className="rf-flat-section pt-3 sm:pt-4">
+          {vaultView === 'index' ? (
+            <div className="space-y-4 border-t border-white/8 pt-5">
+              <button
+                type="button"
+                className="w-full border-l border-white/10 px-4 py-5 text-left transition hover:bg-white/[0.02]"
+                onClick={() => {
+                  setError(null);
+                  setMessage(null);
+                  setMasterPassword('');
+                  setConfirmMasterPassword('');
+                  setVaultView('prompt');
+                }}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-1">
+                    <h2 className="text-2xl font-semibold">{currentVaultLabel}</h2>
+                    <p className="text-sm muted">{currentVaultDescription}</p>
+                  </div>
+                  <div className="rf-inline-meta justify-start sm:justify-end">
+                    <span>{config?.enabled ? 'Locked' : 'Not set up'}</span>
+                    <span>{config?.item_count ?? 0} items</span>
+                    <span>{rustyVaultSession ? 'Web session active' : 'No web session'}</span>
+                  </div>
+                </div>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-5 border-t border-white/8 pt-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-1">
+                  <h2 className="text-2xl font-semibold">
+                    {config?.enabled ? 'Unlock Personal Vault' : 'Create Personal Vault'}
+                  </h2>
+                  <p className="text-sm muted">
+                    {config?.enabled
+                      ? 'Enter the vault password to open your saved logins.'
+                      : 'Create a vault password to enable encrypted password storage for this account.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="rf-text-action rf-text-action-muted text-sm"
+                  onClick={() => {
+                    setMasterPassword('');
+                    setConfirmMasterPassword('');
+                    setVaultView('index');
+                  }}
+                >
+                  Back to vaults
+                </button>
+              </div>
+
+              <div className="space-y-4 border-l border-white/10 pl-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <label className="space-y-2">
+                    <span className="text-sm font-medium">Vault password</span>
+                    <input
+                      type="password"
+                      value={masterPassword}
+                      onChange={(event) => setMasterPassword(event.target.value)}
+                      className={vaultFieldClassName}
+                      placeholder={config?.enabled ? 'Enter vault password' : 'Create vault password'}
+                    />
+                  </label>
+                  {!config?.enabled ? (
+                    <label className="space-y-2">
+                      <span className="text-sm font-medium">Confirm vault password</span>
+                      <input
+                        type="password"
+                        value={confirmMasterPassword}
+                        onChange={(event) => setConfirmMasterPassword(event.target.value)}
+                        className={vaultFieldClassName}
+                        placeholder="Confirm vault password"
+                      />
+                    </label>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-wrap gap-x-5 gap-y-2">
+                  <button
+                    type="button"
+                    className="rf-text-action text-sm disabled:opacity-50"
+                    disabled={saving || cryptoSupported !== true}
+                    onClick={() =>
+                      runAction(
+                        config?.enabled ? 'Vault unlocked.' : 'Vault created.',
+                        config?.enabled ? unlockExistingVault : bootstrapFreshVault,
+                      )
+                    }
+                  >
+                    {config?.enabled ? 'Unlock vault' : 'Create vault'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rf-text-action rf-text-action-muted text-sm"
+                    onClick={() => {
+                      setMasterPassword('');
+                      setConfirmMasterPassword('');
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
     );
   }
@@ -834,6 +1012,24 @@ export default function RustyVaultPage() {
       )}
 
       <section className="rf-flat-section pt-2 sm:pt-3">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="rf-text-action rf-text-action-muted text-sm"
+            onClick={() => {
+              setUnlocked(null);
+              setVaultView('index');
+              setActiveWorkspaceTab('vault');
+              setRows([]);
+              setSelectedItem(null);
+              setShowPassword(false);
+              setMasterPassword('');
+              setConfirmMasterPassword('');
+            }}
+          >
+            Lock vault
+          </button>
+        </div>
         <SurfaceTabsBar
           variant="vault"
           className=""
@@ -852,80 +1048,6 @@ export default function RustyVaultPage() {
           {activeWorkspaceTab === 'vault' && (
             <div className={workspaceContentClassName}>
               <div className="space-y-7">
-                <div className={vaultSectionClassName}>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <h2 className="text-xl font-semibold">Unlock</h2>
-                      <p className="mt-1 text-sm muted">
-                        The vault master password is separate from the Rustyfin account password and never leaves the browser.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm"
-                      onClick={() => {
-                        setUnlocked(null);
-                        setRows([]);
-                        setSelectedItem(null);
-                        setShowPassword(false);
-                      }}
-                    >
-                      Lock now
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <label className="space-y-2">
-                      <span className="text-sm font-medium">Vault master password</span>
-                      <input
-                        type="password"
-                        value={masterPassword}
-                        onChange={(event) => setMasterPassword(event.target.value)}
-                        className={vaultFieldClassName}
-                        placeholder={config?.enabled ? 'Enter vault password' : 'Create vault password'}
-                      />
-                    </label>
-                    {!config?.enabled && (
-                      <label className="space-y-2">
-                        <span className="text-sm font-medium">Confirm vault password</span>
-                        <input
-                          type="password"
-                          value={confirmMasterPassword}
-                          onChange={(event) => setConfirmMasterPassword(event.target.value)}
-                          className={vaultFieldClassName}
-                          placeholder="Confirm vault password"
-                        />
-                      </label>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap gap-x-5 gap-y-2">
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm disabled:opacity-50"
-                      disabled={saving || cryptoSupported !== true}
-                      onClick={() =>
-                        runAction(
-                          config?.enabled ? 'Vault unlocked.' : 'Vault created.',
-                          config?.enabled ? unlockExistingVault : bootstrapFreshVault,
-                        )
-                      }
-                    >
-                      {config?.enabled ? 'Unlock vault' : 'Create vault'}
-                    </button>
-                    <button
-                      type="button"
-                      className="rf-text-action rf-text-action-muted text-sm"
-                      onClick={() => {
-                        setMasterPassword('');
-                        setConfirmMasterPassword('');
-                      }}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-
                 <div className={vaultSectionClassName}>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
@@ -1098,16 +1220,13 @@ export default function RustyVaultPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                          <label className="rf-text-action rf-text-action-muted cursor-pointer text-sm">
-                            <input
-                              type="checkbox"
-                              checked={editor.favorite}
-                              onChange={(event) =>
-                                setEditor((current) => ({ ...current, favorite: event.target.checked }))
-                              }
-                            />
-                            Favorite
-                          </label>
+                          <VaultSwitch
+                            label="Favorite item"
+                            checked={editor.favorite}
+                            onChange={(checked) =>
+                              setEditor((current) => ({ ...current, favorite: checked }))
+                            }
+                          />
                           <button
                             type="button"
                             className="rf-text-action text-sm disabled:opacity-50"
@@ -1326,14 +1445,11 @@ export default function RustyVaultPage() {
                         Export decrypted JSON
                       </button>
                     </div>
-                    <label className="rf-text-action rf-text-action-muted cursor-pointer text-sm">
-                      <input
-                        type="checkbox"
-                        checked={importClearExisting}
-                        onChange={(event) => setImportClearExisting(event.target.checked)}
-                      />
-                      Clear current items before importing
-                    </label>
+                    <VaultSwitch
+                      label="Clear current items before importing"
+                      checked={importClearExisting}
+                      onChange={setImportClearExisting}
+                    />
                     <input
                       type="file"
                       accept="application/json,.json"
@@ -1394,7 +1510,7 @@ export default function RustyVaultPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   <label className="space-y-2">
                     <span className="text-sm font-medium">Length</span>
                     <input
@@ -1418,35 +1534,30 @@ export default function RustyVaultPage() {
                     ['include_numbers', 'Numbers'],
                     ['include_symbols', 'Symbols'],
                   ] as const).map(([key, label]) => (
-                    <label key={key} className="rf-text-action rf-text-action-muted cursor-pointer justify-start gap-2 border-l border-white/10 px-4 py-3">
-                      <input
-                        type="checkbox"
-                        checked={generatorOptions[key]}
-                        onChange={(event) =>
-                          setGeneratorOptions((current) => ({
-                            ...current,
-                            [key]: event.target.checked,
-                          }))
-                        }
-                      />
-                      {label}
-                    </label>
+                    <VaultSwitch
+                      key={key}
+                      label={label}
+                      checked={generatorOptions[key]}
+                      onChange={(checked) =>
+                        setGeneratorOptions((current) => ({
+                          ...current,
+                          [key]: checked,
+                        }))
+                      }
+                    />
                   ))}
                 </div>
 
-                <label className="rf-text-action rf-text-action-muted cursor-pointer gap-2 border-l border-white/10 px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={generatorOptions.exclude_ambiguous}
-                    onChange={(event) =>
-                      setGeneratorOptions((current) => ({
-                        ...current,
-                        exclude_ambiguous: event.target.checked,
-                      }))
-                    }
-                  />
-                  Exclude ambiguous characters
-                </label>
+                <VaultSwitch
+                  label="Exclude ambiguous characters"
+                  checked={generatorOptions.exclude_ambiguous}
+                  onChange={(checked) =>
+                    setGeneratorOptions((current) => ({
+                      ...current,
+                      exclude_ambiguous: checked,
+                    }))
+                  }
+                />
 
                 <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                   <input
