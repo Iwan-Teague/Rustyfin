@@ -513,6 +513,8 @@ button:focus-visible {
 
 .rf-top-tab[data-active="true"] {
   color: #fff;
+  font-weight: 700;
+  opacity: 1;
 }
 
 .rf-top-tab[data-active="true"]::after {
@@ -520,6 +522,10 @@ button:focus-visible {
   box-shadow:
     0 0 12px rgba(255, 145, 77, 0.2),
     0 0 20px rgba(177, 140, 255, 0.14);
+}
+
+.rf-top-tab[data-active="true"]:disabled {
+  opacity: 1;
 }
 
 .rf-server-top-tabs {
