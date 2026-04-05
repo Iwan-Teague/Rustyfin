@@ -3016,7 +3016,11 @@ export default function AiPage() {
             <div className="flex min-w-0 flex-1 basis-0 flex-col md:min-h-0 md:overflow-hidden">
               <section className="flex min-h-0 min-w-0 flex-1 flex-col md:h-full md:overflow-hidden">
                 <div className="shrink-0 border-b border-[var(--border)] bg-transparent">
-                  <div className="flex items-start justify-between gap-3 px-3 py-3 sm:px-5 sm:py-4 md:items-center">
+                  <div
+                    className={`flex items-start justify-between gap-3 py-3 pr-3 sm:py-4 sm:pr-5 md:items-center ${
+                      desktopRailOpen ? 'pl-3 sm:pl-5 md:pl-5' : 'pl-3 sm:pl-5 md:pl-20'
+                    }`}
+                  >
                     <div className="flex min-w-0 items-center gap-3">
                       <button
                         type="button"
