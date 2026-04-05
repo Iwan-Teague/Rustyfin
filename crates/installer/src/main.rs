@@ -1234,6 +1234,12 @@ fn write_native_runtime_defaults(
 : \"${{RUSTFIN_UI_PORT:=3000}}\"\n\
 : \"${{RUSTFIN_MEDIA_PATH:={media_path}}}\"\n\
 : \"${{RUSTFIN_PUBLIC_HOST:={public_host}}}\"\n\
+: \"${{RUSTFIN_WEBRTC_ICE_SERVERS_JSON:=}}\"\n\
+: \"${{RUSTFIN_WEBRTC_STUN_URL:=}}\"\n\
+: \"${{RUSTFIN_WEBRTC_TURN_URL:=}}\"\n\
+: \"${{RUSTFIN_WEBRTC_TURN_URLS:=}}\"\n\
+: \"${{RUSTFIN_WEBRTC_TURN_USERNAME:=}}\"\n\
+: \"${{RUSTFIN_WEBRTC_TURN_CREDENTIAL:=}}\"\n\
 : \"${{RUSTFIN_AI_GPU_BACKEND:={ai_backend}}}\"\n\
 : \"${{RUSTFIN_TRANSCODER_HW_ACCEL:=auto}}\"\n\
 : \"${{RUSTFIN_TRANSCRIPTION_GPU_MODE:=opencl}}\"\n\
@@ -1968,6 +1974,30 @@ fn plan_native_runtime(
         ("RUSTFIN_PUBLIC_HOST", public_host.clone()),
         ("RUSTYFIN_BROWSER_BACKEND_ORIGIN", browser_backend_origin),
         ("RUSTFIN_WS_ALLOWED_ORIGINS", ws_allowed_origins),
+        (
+            "RUSTFIN_WEBRTC_ICE_SERVERS_JSON",
+            env::var("RUSTFIN_WEBRTC_ICE_SERVERS_JSON").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_STUN_URL",
+            env::var("RUSTFIN_WEBRTC_STUN_URL").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_URL",
+            env::var("RUSTFIN_WEBRTC_TURN_URL").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_URLS",
+            env::var("RUSTFIN_WEBRTC_TURN_URLS").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_USERNAME",
+            env::var("RUSTFIN_WEBRTC_TURN_USERNAME").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_CREDENTIAL",
+            env::var("RUSTFIN_WEBRTC_TURN_CREDENTIAL").unwrap_or_default(),
+        ),
         ("RUSTFIN_MEDIA_PATH", media_path.display().to_string()),
         ("RUSTFIN_EDGE_TLS_CERT", edge_tls_cert),
         ("RUSTFIN_EDGE_TLS_KEY", edge_tls_key),
@@ -2234,6 +2264,30 @@ fn write_runtime_snapshot_to_path(output: &Path) -> anyhow::Result<()> {
         (
             "RUSTFIN_WS_ALLOWED_ORIGINS",
             env::var("RUSTFIN_WS_ALLOWED_ORIGINS").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_ICE_SERVERS_JSON",
+            env::var("RUSTFIN_WEBRTC_ICE_SERVERS_JSON").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_STUN_URL",
+            env::var("RUSTFIN_WEBRTC_STUN_URL").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_URL",
+            env::var("RUSTFIN_WEBRTC_TURN_URL").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_URLS",
+            env::var("RUSTFIN_WEBRTC_TURN_URLS").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_USERNAME",
+            env::var("RUSTFIN_WEBRTC_TURN_USERNAME").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_WEBRTC_TURN_CREDENTIAL",
+            env::var("RUSTFIN_WEBRTC_TURN_CREDENTIAL").unwrap_or_default(),
         ),
         (
             "RUSTFIN_DIRECTORY_PICKER_HELPER_URL",

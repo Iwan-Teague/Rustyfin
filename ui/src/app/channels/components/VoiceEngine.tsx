@@ -19,6 +19,7 @@ interface Props {
     event: ChannelEvent;
   }>;
   sendWs: (msg: object) => void;
+  iceServers: RTCIceServer[];
   deafened: boolean;
   remoteVolumes: Record<string, number>;
   localMicGain: number;
@@ -66,8 +67,6 @@ type ChannelSpeechRecognition = {
 
 type ChannelSpeechRecognitionConstructor = new () => ChannelSpeechRecognition;
 
-const STUN_URL =
-  process.env.NEXT_PUBLIC_STUN_URL ?? 'stun:stun.l.google.com:19302';
 const SPEAKING_SAMPLE_INTERVAL_MS = 120;
 const SPEAKING_RMS_THRESHOLD = 0.03;
 const SPEAKING_HANG_MS = 300;
@@ -101,9 +100,9 @@ type RemoteAudioPipeline = {
   destination: MediaStreamAudioDestinationNode;
 };
 
-function createPeerConfig(): RTCConfiguration {
+function createPeerConfig(iceServers: RTCIceServer[]): RTCConfiguration {
   return {
-    iceServers: [{ urls: STUN_URL }],
+    iceServers,
   };
 }
 
@@ -118,6 +117,7 @@ export default function VoiceEngine({
   existingMembers,
   wsEvents,
   sendWs,
+  iceServers,
   deafened,
   remoteVolumes,
   localMicGain,
@@ -556,7 +556,7 @@ export default function VoiceEngine({
       existing.close();
     }
 
-    const pc = new RTCPeerConnection(createPeerConfig());
+    const pc = new RTCPeerConnection(createPeerConfig(iceServers));
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -608,7 +608,7 @@ export default function VoiceEngine({
       void initiatePeerConnection(member.user_id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existingMembers, currentUserId, channelId]);
+  }, [existingMembers, currentUserId, channelId, iceServers]);
 
   useEffect(() => {
     processedEventSeqRef.current = 0;
