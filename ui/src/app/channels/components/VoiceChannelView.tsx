@@ -473,7 +473,11 @@ export default function VoiceChannelView({
   return (
     <div className="flex flex-col flex-1 h-full overflow-hidden">
       {/* Header — channel name, member count, and controls all inline */}
-      <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0 overflow-x-auto whitespace-nowrap">
+      <div
+        className={`h-14 border-b border-[var(--border)] flex items-center gap-2 shrink-0 overflow-x-auto whitespace-nowrap pr-4 ${
+          sidebarVisible ? 'pl-4 md:pl-4' : 'pl-4 md:pl-20'
+        }`}
+      >
         <button
           type="button"
           className="rf-inline-icon-btn h-9 w-9 text-lg leading-none"

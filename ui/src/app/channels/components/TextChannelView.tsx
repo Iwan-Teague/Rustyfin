@@ -370,7 +370,11 @@ export default function TextChannelView({
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
-      <div className="h-14 px-4 border-b border-[var(--border)] flex items-center gap-2 shrink-0">
+      <div
+        className={`h-14 border-b border-[var(--border)] flex items-center gap-2 shrink-0 pr-4 ${
+          sidebarVisible ? 'pl-4 md:pl-4' : 'pl-4 md:pl-20'
+        }`}
+      >
         <button
           type="button"
           className="rf-inline-icon-btn h-9 w-9 text-lg leading-none"
