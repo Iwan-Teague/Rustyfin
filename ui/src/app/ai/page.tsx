@@ -2982,7 +2982,10 @@ export default function AiPage() {
               style={{ width: desktopRailWidth }}
             >
               <div className="ai-side-panel-inner flex h-full min-h-0 flex-col border-r border-[var(--border)]">
-                <div className="min-h-0 flex-1">
+                <div
+                  className="min-h-0 flex-1"
+                  style={{ paddingTop: 'calc(var(--rail-collapsed-width) - 0.35rem)' }}
+                >
                   <AiConversationRail
                     conversations={liveConversations}
                     archivedConversations={archivedConversations}
