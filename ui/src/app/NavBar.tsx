@@ -150,7 +150,7 @@ export default function NavBar() {
     }`;
 
   const railUtilityClass = (href: string) =>
-    `rf-nav-link btn-ghost flex min-h-[3.25rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-sm font-medium transition ${
+    `rf-nav-link rf-nav-utility btn-ghost flex min-h-[3.25rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-sm font-medium transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     }`;
 

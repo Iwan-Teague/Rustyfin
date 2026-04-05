@@ -2077,9 +2077,23 @@ input[type="checkbox"]:disabled {
   bottom: 0.55rem;
 }
 
+.app-nav-rail .rf-nav-utility::after {
+  display: block;
+  left: 1.05rem;
+  right: 1.05rem;
+  bottom: 0.55rem;
+}
+
 .app-nav-rail .rf-nav-root:hover::after,
 .app-nav-rail .rf-nav-root:focus-visible::after,
 .app-nav-rail .rf-nav-root[aria-expanded="true"]::after {
+  opacity: 0.95;
+  transform: scaleX(1);
+}
+
+.app-nav-rail .rf-nav-utility:hover::after,
+.app-nav-rail .rf-nav-utility:focus-visible::after,
+.app-nav-rail .rf-nav-utility[aria-current="page"]::after {
   opacity: 0.95;
   transform: scaleX(1);
 }
@@ -2088,6 +2102,12 @@ input[type="checkbox"]:disabled {
 .app-nav-rail .rf-nav-root:focus-visible,
 .app-nav-rail .rf-nav-root[aria-current="page"],
 .app-nav-rail .rf-nav-root[aria-expanded="true"] {
+  color: var(--text-main);
+}
+
+.app-nav-rail .rf-nav-utility:hover,
+.app-nav-rail .rf-nav-utility:focus-visible,
+.app-nav-rail .rf-nav-utility[aria-current="page"] {
   color: var(--text-main);
 }
 
