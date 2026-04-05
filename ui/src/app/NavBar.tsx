@@ -100,7 +100,9 @@ export default function NavBar() {
   const [portalMounted, setPortalMounted] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  const [expandedGroupHrefs, setExpandedGroupHrefs] = useState<string[]>([]);
+  const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(
+    activeGroup?.href ?? null,
+  );
 
   useEffect(() => {
     setPortalMounted(true);
@@ -118,11 +120,7 @@ export default function NavBar() {
   }, [pathname]);
 
   useEffect(() => {
-    if (activeGroup?.href) {
-      setExpandedGroupHrefs((prev) =>
-        prev.includes(activeGroup.href) ? prev : [...prev, activeGroup.href],
-      );
-    }
+    setExpandedGroupHref(activeGroup?.href ?? null);
   }, [activeGroup?.href]);
 
   if (pathname.startsWith('/setup') || pathname.startsWith('/login')) {
@@ -149,15 +147,14 @@ export default function NavBar() {
     if (pathname === href || pathname.startsWith(`${href}/`)) {
       return true;
     }
-    if (activeGroup && href === activeGroup.href) {
-      return true;
-    }
     return false;
   };
 
+  const isRootGroupSelected = (href: string) => expandedGroupHref === href;
+
   const railLinkClass = (href: string) =>
     `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] w-full items-center justify-center gap-2.5 rounded-[1.1rem] px-3 text-center text-base font-semibold transition ${
-      isActivePath(href) ? 'text-[var(--text-main)]' : ''
+      isRootGroupSelected(href) ? 'text-[var(--text-main)]' : ''
     }`;
 
   const railUtilityClass = (href: string) =>
@@ -165,7 +162,7 @@ export default function NavBar() {
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
     }`;
 
-  const openGroupHrefs = railOpen ? new Set(expandedGroupHrefs) : new Set<string>();
+  const openGroupHref = railOpen ? expandedGroupHref : null;
 
   const desktopRail = (
     <aside
@@ -202,21 +199,17 @@ export default function NavBar() {
       <div className="mt-5 flex min-h-0 flex-1 flex-col gap-2">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
           {ROOT_NAV_ITEMS.map((item) => {
-            const showChildren = Boolean(item.items.length && openGroupHrefs.has(item.href));
+            const showChildren = Boolean(item.items.length && openGroupHref === item.href);
             return (
               <div key={item.href} className="flex flex-col gap-1">
                 {item.items.length ? (
                   <button
                     type="button"
                     className={railLinkClass(item.href)}
-                    aria-current={isActivePath(item.href) ? 'page' : undefined}
+                    aria-current={isRootGroupSelected(item.href) ? 'page' : undefined}
                     aria-expanded={showChildren}
                     onClick={() => {
-                      setExpandedGroupHrefs((prev) =>
-                        prev.includes(item.href)
-                          ? prev.filter((href) => href !== item.href)
-                          : [...prev, item.href],
-                      );
+                      setExpandedGroupHref((prev) => (prev === item.href ? null : item.href));
                     }}
                   >
                     <span className="shrink-0">{item.icon}</span>
