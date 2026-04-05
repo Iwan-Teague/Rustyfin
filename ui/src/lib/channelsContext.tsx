@@ -86,6 +86,11 @@ export interface ChannelsContextValue {
   ) => Promise<void>;
 }
 
+type VoiceEngineEventEnvelope = {
+  seq: number;
+  event: ChannelEvent;
+};
+
 // ── Context ───────────────────────────────────────────────────────────────────
 
 const ChannelsContext = createContext<ChannelsContextValue | null>(null);
@@ -198,6 +203,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [preferredOutputDeviceId, setPreferredOutputDeviceId] = useState<string | null>(null);
   const [newMessages, setNewMessages] = useState<ChannelMessage[]>([]);
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
+  const [voiceEngineEvents, setVoiceEngineEvents] = useState<VoiceEngineEventEnvelope[]>([]);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
   const hasLocalVoiceSession = voiceSession !== null;
   const connectedVoiceChannelId =
@@ -222,6 +228,30 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const voicePresenceRef = useRef<Record<string, UserInfo[]>>({});
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const voiceEngineEventSeqRef = useRef(0);
+
+  const clearVoiceEngineEvents = useCallback(() => {
+    voiceEngineEventSeqRef.current = 0;
+    setVoiceEngineEvents([]);
+  }, []);
+
+  const enqueueVoiceEngineEvent = useCallback((event: ChannelEvent) => {
+    if (
+      event.type !== 'voice_presence' &&
+      event.type !== 'rtc_offer' &&
+      event.type !== 'rtc_answer' &&
+      event.type !== 'rtc_ice'
+    ) {
+      return;
+    }
+
+    const seq = voiceEngineEventSeqRef.current + 1;
+    voiceEngineEventSeqRef.current = seq;
+    setVoiceEngineEvents((prev) => {
+      const next = [...prev, { seq, event }];
+      return next.length > 128 ? next.slice(next.length - 128) : next;
+    });
+  }, []);
 
   const resolvePreferredInputDeviceId = useCallback(
     async (selectedId: string | null): Promise<string | null> => {
@@ -297,6 +327,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setVoiceSpeaking({});
       setVoiceTranscriptions({});
       setRemoteVolumes({});
+      clearVoiceEngineEvents();
       clearPersistedVoiceSession();
       pendingVoiceRef.current = null;
       return;
@@ -332,8 +363,10 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         }
 
         setLastWsEvent(event);
+        enqueueVoiceEngineEvent(event);
 
         if (event.type === 'hello') {
+          clearVoiceEngineEvents();
           setChannels(event.channels);
           setVoicePresence(event.voice_presence);
           setVoiceActiveSince(event.voice_active_since_ts ?? {});
@@ -603,6 +636,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     async (channelId: string, channelName: string): Promise<string | null> => {
       // New join intent supersedes any persisted session.
       clearPersistedVoiceSession();
+      clearVoiceEngineEvents();
 
       const connectedChannelId = me?.id
         ? findUserVoiceChannelId(voicePresenceRef.current, me.id)
@@ -619,6 +653,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         voiceSession?.localStream?.getTracks().forEach((t) => t.stop());
         pendingVoiceRef.current?.stream?.getTracks().forEach((t) => t.stop());
         pendingVoiceRef.current = null;
+        clearVoiceEngineEvents();
         if (previousChannelId) {
           setVoiceSpeaking((prev) => {
             if (!(previousChannelId in prev)) return prev;
@@ -677,6 +712,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       }
 
       pendingVoiceRef.current = { channelId, channelName, stream };
+      clearVoiceEngineEvents();
       if (wsRef.current?.readyState === WebSocket.OPEN && wsReady) {
         sendWs({ type: 'join_voice', channel_id: channelId });
       }
@@ -703,15 +739,17 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
       setVoiceSession(null);
+      clearVoiceEngineEvents();
       clearPersistedVoiceSession();
     }
     if (pendingVoiceRef.current) {
       sendWs({ type: 'leave_voice', channel_id: pendingVoiceRef.current.channelId });
       pendingVoiceRef.current.stream?.getTracks().forEach((t) => t.stop());
       pendingVoiceRef.current = null;
+      clearVoiceEngineEvents();
       clearPersistedVoiceSession();
     }
-  }, [voiceSession, sendWs]);
+  }, [voiceSession, sendWs, clearVoiceEngineEvents]);
 
   const toggleMute = useCallback(() => {
     setVoiceSession((prev) => {
@@ -918,7 +956,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           channelId={voiceSession.channelId}
           currentUserId={me.id}
           existingMembers={voiceSession.existingMembers}
-          wsEvents={lastWsEvent}
+          wsEvents={voiceEngineEvents}
           sendWs={sendWs}
           deafened={voiceSession.deafened}
           remoteVolumes={remoteVolumes}
