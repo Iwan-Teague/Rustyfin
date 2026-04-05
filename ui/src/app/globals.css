@@ -565,7 +565,8 @@ body[data-rf-page="channels"] .app-main {
 
 @media (min-width: 768px) {
   body[data-rf-page="channels"] .app-shell,
-  body[data-rf-page="ai"] .app-shell {
+  body[data-rf-page="ai"] .app-shell,
+  body[data-rf-page="player"] .app-shell {
     padding-inline-start: var(--page-pad-inline);
   }
 
@@ -589,6 +590,31 @@ body[data-rf-page="channels"] .app-main {
     min-height: 0;
     overflow: hidden;
     padding-top: clamp(0.5rem, 1vw, 0.95rem);
+    padding-bottom: 0;
+  }
+
+  html[data-rf-page="player"],
+  body[data-rf-page="player"] {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  body[data-rf-page="player"] .app-shell {
+    display: flex;
+    min-height: 100dvh;
+    height: 100dvh;
+    flex-direction: column;
+    padding-bottom: 0;
+  }
+
+  body[data-rf-page="player"] .app-main {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    max-width: none;
+    overflow: hidden;
+    padding-top: clamp(0.35rem, 0.8vw, 0.7rem);
     padding-bottom: 0;
   }
 }

@@ -931,6 +931,15 @@ export default function PlayerPage() {
   }, [sendProgressSnapshot]);
 
   useEffect(() => {
+    document.documentElement.dataset.rfPage = 'player';
+    document.body.dataset.rfPage = 'player';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
+  useEffect(() => {
     const flushProgress = () => {
       void sendProgressSnapshot(true);
     };
@@ -951,18 +960,18 @@ export default function PlayerPage() {
   const loadingArtworkUrl = item?.thumb_url ?? item?.poster_url ?? item?.backdrop_url ?? null;
 
   return (
-    <div className="rf-flat-page animate-rise h-full min-h-0 gap-4">
-      <header className="rf-flat-header">
+    <div className="rf-flat-page animate-rise h-full min-h-0 gap-3 overflow-hidden">
+      <header className="rf-flat-header shrink-0">
         <h1 className="text-3xl font-semibold">{playerTitle}</h1>
         {showTitle && <p className="text-sm muted">{showTitle}</p>}
       </header>
 
-      {error && <p className="notice-error rounded-xl px-4 py-2 text-sm">{error}</p>}
+      {error && <p className="notice-error shrink-0 rounded-xl px-4 py-2 text-sm">{error}</p>}
       {loadingDescriptor && (
-        <p className="rf-flat-empty px-4 py-2 text-sm muted">Preparing playback descriptor…</p>
+        <p className="rf-flat-empty shrink-0 px-4 py-2 text-sm muted">Preparing playback descriptor…</p>
       )}
       {!loadingDescriptor && !canStartPlayback && (
-        <p className="notice-error rounded-xl px-4 py-2 text-sm">
+        <p className="notice-error shrink-0 rounded-xl px-4 py-2 text-sm">
           This item does not currently map to a playable media file. Rescan the library and retry.
         </p>
       )}
