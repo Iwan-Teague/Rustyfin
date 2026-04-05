@@ -298,6 +298,7 @@ export default function VideoPlayerSurface({
   const localShellRef = useRef<HTMLDivElement>(null);
   const activeShellRef = shellRef ?? localShellRef;
   const clickTimerRef = useRef<number | null>(null);
+  const controlsHideTimerRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -398,6 +399,10 @@ export default function VideoPlayerSurface({
       if (clickTimerRef.current !== null) {
         window.clearTimeout(clickTimerRef.current);
         clickTimerRef.current = null;
+      }
+      if (controlsHideTimerRef.current !== null) {
+        window.clearTimeout(controlsHideTimerRef.current);
+        controlsHideTimerRef.current = null;
       }
     };
   }, []);
@@ -518,6 +523,36 @@ export default function VideoPlayerSurface({
     void toggleFullscreen();
   }, [toggleFullscreen]);
 
+  const clearControlsHideTimer = useCallback(() => {
+    if (controlsHideTimerRef.current !== null) {
+      window.clearTimeout(controlsHideTimerRef.current);
+      controlsHideTimerRef.current = null;
+    }
+  }, []);
+
+  const armControlsHideTimer = useCallback(() => {
+    clearControlsHideTimer();
+    if (!isPlaying || showSettings) return;
+    controlsHideTimerRef.current = window.setTimeout(() => {
+      setControlsVisible(false);
+      controlsHideTimerRef.current = null;
+    }, 3000);
+  }, [clearControlsHideTimer, isPlaying, showSettings]);
+
+  const revealControls = useCallback(() => {
+    setControlsVisible(true);
+    armControlsHideTimer();
+  }, [armControlsHideTimer]);
+
+  useEffect(() => {
+    if (!controlsVisible) {
+      clearControlsHideTimer();
+      return;
+    }
+    armControlsHideTimer();
+    return () => clearControlsHideTimer();
+  }, [armControlsHideTimer, clearControlsHideTimer, controlsVisible]);
+
   const showArtworkOverlay = Boolean(artworkUrl && canStartPlayback && !hasEverPlayed);
   const controlsActive = controlsVisible || showSettings;
 
@@ -536,9 +571,12 @@ export default function VideoPlayerSurface({
             ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
             : 'relative cursor-pointer'
         }
-        onMouseEnter={() => setControlsVisible(true)}
-        onMouseMove={() => setControlsVisible(true)}
-        onMouseLeave={() => setControlsVisible(false)}
+        onMouseEnter={revealControls}
+        onMouseMove={revealControls}
+        onMouseLeave={() => {
+          clearControlsHideTimer();
+          setControlsVisible(false);
+        }}
         onClick={() => {
           handleVideoSingleClick();
         }}
