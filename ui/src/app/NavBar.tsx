@@ -177,7 +177,7 @@ export default function NavBar() {
       onMouseEnter={() => setRailOpen(true)}
       onMouseLeave={() => setRailOpen(false)}
     >
-      <div className="flex items-center justify-center">
+      <div className={`flex items-center justify-center ${railOpen ? '' : 'h-full'}`}>
         {railOpen ? (
           <Link
             href="/"
@@ -190,10 +190,10 @@ export default function NavBar() {
           <button
             type="button"
             onClick={() => setRailOpen(true)}
-            className="flex h-full w-full items-center justify-center rounded-[1.35rem] text-center font-semibold transition hover:bg-white/5"
+            className="grid h-full w-full place-items-center rounded-[1.35rem] text-center font-semibold transition hover:bg-white/5"
             aria-label="Open Rustyfin navigation"
           >
-            <span className="accent-logo inline-flex translate-y-px items-center justify-center text-[2.15rem] leading-none">R</span>
+            <span className="accent-logo inline-flex items-center justify-center text-[2.15rem] leading-none">R</span>
           </button>
         )}
       </div>
