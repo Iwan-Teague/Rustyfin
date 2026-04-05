@@ -41,6 +41,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
 - Voice channel transcript capture now prefers browser speech recognition when available and falls back to per-user browser audio uploads on stop/save; keep the final saved transcript server-authored and merged by timestamp instead of reviving fragile live chunk transcription as the primary saved path
 - Voice-channel WebRTC should stay runtime-configurable for ICE/TURN: direct STUN-only peer setup is not reliable enough for all user pairs, so preserve support for `RUSTFIN_WEBRTC_ICE_SERVERS_JSON` or the split `RUSTFIN_WEBRTC_STUN_URL` / `RUSTFIN_WEBRTC_TURN_URL(S)` envs when extending channels audio
+- When TURN credentials are configured, keep `/runtime-config` appending TURN URLs for the browser's current host as well as explicit configured hosts so remote/public access does not get stuck with private-only relay candidates
 - An `AI` product area for the `/ai` assistant surface backed by `crates/ai-agent`
   - native host builds must not assume CUDA is present; use a host-safe backend selection path and allow AI to be disabled when the host cannot support inference cleanly
   - use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
