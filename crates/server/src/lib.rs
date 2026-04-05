@@ -3,6 +3,7 @@
     clippy::ptr_arg,
     clippy::should_implement_trait
 )]
+pub mod account_backups;
 pub mod account_prefs;
 pub mod ai;
 pub mod ai_admin;

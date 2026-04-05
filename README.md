@@ -47,6 +47,12 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - The Downloads host route is the authoritative public package-delivery surface for first-party artifacts
   - Future first-party applications and companion downloads can land here without moving existing links
   - Planned first-party client artifacts now explicitly include Windows, macOS, Linux, Android APK, and iOS distribution paths
+- Backups
+  - Web `/backups` now focuses on user-scoped archive exports instead of host restore controls
+  - Current `Accounts` exports create a compressed archive of profile state, preferences, AI conversation history, playback progress, continue-watching data, and activity history
+  - `/backups` can also embed an optional RustyVault export snapshot captured through the protected vault export flow
+  - `Gallery` is reserved as the separate page section for future media/gallery-oriented backup flows
+  - Host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
 - AI
   - Web `/ai` assistant surface backed by the native Rust `crates/ai-agent` integration
   - End-user `/ai` is chat-focused; model downloads, deletion, and storage-folder management are admin-only through the Admin `AI` tab

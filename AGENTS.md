@@ -34,6 +34,11 @@ Rustyfin is a native-Debian-first local media platform with:
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages
+- A `Backups` product area for end-user archive exports and future gallery/media backup flows
+  - web `/backups` should stay user-scoped and archive-oriented, not a thin wrapper over destructive host restore controls
+  - current account archive exports include profile state, user preferences, AI conversation history, playback progress, continue-watching data, and activity history
+  - optional RustyVault material on `/backups` must flow through the existing protected export path; do not add weaker host-side shortcuts around RustyVault export safeguards
+  - host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
 - An `AI` product area for the `/ai` assistant surface backed by `crates/ai-agent`
   - native host builds must not assume CUDA is present; use a host-safe backend selection path and allow AI to be disabled when the host cannot support inference cleanly
   - use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds

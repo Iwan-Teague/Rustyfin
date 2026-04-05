@@ -2,70 +2,57 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { format } from 'date-fns';
 
 import { useAuth } from '@/lib/auth';
-import {
-  BackupJob,
-  BackupPolicy,
-  createBackupJob,
-  listJobs,
-  listPolicies,
-  restoreBackup,
-} from '@/lib/backupsApi';
+import { downloadAccountBackupArchive } from '@/lib/backupsApi';
 import { clientErrorMessage } from '@/lib/errors';
+import {
+  challengeRustyVaultProtectedAction,
+  exportRustyVault,
+  getRustyVaultConfig,
+} from '@/features/rustyvault/api';
+import { getMyRustyVaultPreferences } from '@/features/rustyvault/preferences';
+import {
+  ensureRustyVaultWebSession,
+  refreshStoredRustyVaultSession,
+} from '@/features/rustyvault/session';
 
-function JobStatusBadge({ status }: { status: string }) {
-  if (status === 'success') {
-    return (
-      <span className="chip border-[var(--ok)] bg-[var(--ok-dim)] text-[var(--ok)]">
-        Success
-      </span>
-    );
+type BackupTab = 'accounts' | 'gallery';
+
+async function withRustyVaultAccess<T>(
+  callback: (accessToken: string) => Promise<T>,
+): Promise<T> {
+  const current = await ensureRustyVaultWebSession();
+  try {
+    return await callback(current.access_token);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('401') || message.toLowerCase().includes('unauthorized')) {
+      const refreshed = await refreshStoredRustyVaultSession(current);
+      return callback(refreshed.access_token);
+    }
+    throw error;
   }
-  if (status === 'failed') {
-    return <span className="chip border-red-500/30 bg-red-900/20 text-red-300">Failed</span>;
-  }
-  if (status === 'running') {
-    return (
-      <span className="chip animate-pulse border-blue-500/30 bg-blue-900/20 text-blue-300">
-        Running
-      </span>
-    );
-  }
-  return <span className="chip">{status}</span>;
 }
 
-function formatBytes(bytes: number | null | undefined) {
-  if (bytes === undefined || bytes === null || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function BackupsPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
 
-  const [jobs, setJobs] = useState<BackupJob[]>([]);
-  const [policies, setPolicies] = useState<BackupPolicy[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<BackupTab>('accounts');
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'history' | 'policies'>('history');
-
-  const fetchLists = async () => {
-    try {
-      setLoading(true);
-      const [jobsData, policiesData] = await Promise.all([listJobs(), listPolicies()]);
-      setJobs(jobsData);
-      setPolicies(policiesData);
-    } catch (err) {
-      setError(clientErrorMessage(err, 'Failed to load backup data.'));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [status, setStatus] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [vaultPassword, setVaultPassword] = useState('');
 
   useEffect(() => {
     if (!authLoading && !me) {
@@ -73,37 +60,59 @@ export default function BackupsPage() {
     }
   }, [authLoading, me, router]);
 
-  useEffect(() => {
-    if (authLoading || !me) return;
-    void fetchLists();
-  }, [authLoading, me]);
+  async function handleDownloadAccountBackup() {
+    if (!me) return;
 
-  const handleCreateBackup = async () => {
     try {
-      await createBackupJob();
-      setTimeout(() => {
-        void fetchLists();
-      }, 1000);
-    } catch (err) {
-      setError(clientErrorMessage(err, 'Failed to start backup.'));
-    }
-  };
+      setDownloading(true);
+      setError(null);
+      setStatus('Building account archive...');
 
-  const handleRestore = async (jobId: string) => {
-    if (
-      !confirm(
-        'WARNING: Restore will overwrite current database and restart the server. Are you sure?',
-      )
-    ) {
-      return;
+      let vaultExportJson: unknown;
+      let vaultPreferencesJson: unknown;
+      let includedVault = false;
+
+      if (vaultPassword.trim()) {
+        setStatus('Including RustyVault snapshot...');
+        await withRustyVaultAccess(async (accessToken) => {
+          const config = await getRustyVaultConfig(accessToken);
+          if (!config.enabled) {
+            return;
+          }
+          const prefs = await getMyRustyVaultPreferences(accessToken);
+          const challenge = await challengeRustyVaultProtectedAction({
+            action_kind: 'export',
+            current_password: vaultPassword,
+            vaultAccessToken: accessToken,
+          });
+          const exportPayload = await exportRustyVault(accessToken, challenge.action_token);
+          vaultExportJson = exportPayload;
+          vaultPreferencesJson = prefs;
+          includedVault = true;
+        });
+      }
+
+      setStatus('Compressing archive...');
+      const archive = await downloadAccountBackupArchive({
+        vault_export_json: vaultExportJson,
+        vault_preferences_json: vaultPreferencesJson,
+      });
+      triggerDownload(
+        archive,
+        `rustyfin-account-backup-${me.username}-${new Date().toISOString().slice(0, 10)}.zip`,
+      );
+      setStatus(
+        includedVault
+          ? 'Account backup downloaded with RustyVault snapshot.'
+          : 'Account backup downloaded.',
+      );
+    } catch (error) {
+      setStatus(null);
+      setError(clientErrorMessage(error, 'Failed to create account backup.'));
+    } finally {
+      setDownloading(false);
     }
-    try {
-      await restoreBackup(jobId);
-      alert('Restore initiated. Server will restart shortly. Please refresh the page in a minute.');
-    } catch (err) {
-      alert(`Restore failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
+  }
 
   if (authLoading || !me) {
     return (
@@ -115,119 +124,100 @@ export default function BackupsPage() {
 
   return (
     <div className="animate-rise rf-flat-page">
-      <header className="rf-flat-header flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <header className="rf-flat-header flex flex-col gap-4">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold sm:text-3xl">Backups</h1>
           <p className="max-w-3xl text-sm muted">
-            Manage scheduled backups and manual snapshots.
+            Export your own account state as a compressed archive, with a separate gallery section
+            reserved for media-focused backup flows.
           </p>
-        </div>
-        <div className="shrink-0">
-          <button onClick={handleCreateBackup} className="btn-primary px-4 py-2 text-sm">
-            Back Up Now
-          </button>
         </div>
       </header>
 
       {error && <div className="notice-error rounded-xl px-4 py-2 text-sm">{error}</div>}
+      {status && <div className="text-sm muted">{status}</div>}
 
       <div className="rf-top-tabbar border-b border-[var(--border-subtle)] pb-0">
         <button
           className="rf-top-tab"
-          data-active={activeTab === 'history'}
-          onClick={() => setActiveTab('history')}
+          data-active={activeTab === 'accounts'}
+          onClick={() => setActiveTab('accounts')}
         >
-          History
+          Accounts
         </button>
         <button
           className="rf-top-tab"
-          data-active={activeTab === 'policies'}
-          onClick={() => setActiveTab('policies')}
+          data-active={activeTab === 'gallery'}
+          onClick={() => setActiveTab('gallery')}
         >
-          Policies
+          Gallery
         </button>
       </div>
 
-      {loading ? (
-        <div className="rf-flat-empty text-center muted">Loading...</div>
-      ) : activeTab === 'history' ? (
+      {activeTab === 'accounts' ? (
         <section className="rf-flat-section">
-          {jobs.length === 0 ? (
-            <div className="rf-flat-empty text-center muted">No backup jobs found.</div>
-          ) : (
-            <div className="rf-flat-list">
-              {jobs.map((job) => (
-                <article
-                  key={job.id}
-                  className="rf-flat-row flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+          <div className="rf-flat-list">
+            <article className="rf-flat-row space-y-5">
+              <div className="space-y-2">
+                <h2 className="text-xl font-semibold">Account Archive</h2>
+                <p className="max-w-3xl text-sm muted">
+                  Download a user-scoped backup that can be unzipped and loaded back into place
+                  later. The archive includes account profile data, preferences, AI chat history,
+                  watch history, continue-watching state, and playback progress.
+                </p>
+              </div>
+
+              <div className="grid gap-3 text-sm text-slate-200 sm:grid-cols-2">
+                <div className="rf-flat-row space-y-1">
+                  <h3 className="font-medium">Included</h3>
+                  <p className="muted">Profile and account preferences</p>
+                  <p className="muted">AI conversations and turn history</p>
+                  <p className="muted">Activity history, playback state, and continue watching</p>
+                </div>
+                <div className="rf-flat-row space-y-1">
+                  <h3 className="font-medium">Optional</h3>
+                  <p className="muted">RustyVault export snapshot</p>
+                  <p className="muted">
+                    Enter your Rustyfin password below if you want the protected RustyVault export
+                    payload bundled into the archive as well.
+                  </p>
+                </div>
+              </div>
+
+              <label className="flex max-w-xl flex-col gap-2 text-sm">
+                <span className="muted">Rustyfin password for RustyVault snapshot (optional)</span>
+                <input
+                  type="password"
+                  value={vaultPassword}
+                  onChange={(event) => setVaultPassword(event.target.value)}
+                  placeholder="Leave blank to export account data without vault snapshot"
+                  className="rounded-full border border-white/10 bg-black/10 px-4 py-3 text-white outline-none transition focus:border-white/25"
+                />
+              </label>
+
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  onClick={handleDownloadAccountBackup}
+                  className="btn-primary px-4 py-2 text-sm"
+                  disabled={downloading}
                 >
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <JobStatusBadge status={job.status} />
-                      <span className="font-mono text-sm text-slate-400">
-                        {job.id.substring(0, 8)}
-                      </span>
-                      <span className="text-sm capitalize muted">{job.trigger_type}</span>
-                    </div>
-                    <div className="text-sm">
-                      Started: {format(new Date(job.start_ts * 1000), 'PPpp')}
-                    </div>
-                    {job.end_ts && (
-                      <div className="text-xs muted">Duration: {job.end_ts - job.start_ts}s</div>
-                    )}
-                    {job.error_message && (
-                      <div className="mt-1 text-xs text-red-400">{job.error_message}</div>
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-1 text-left sm:items-end sm:text-right">
-                    <div className="text-lg font-light">{formatBytes(job.total_size_bytes)}</div>
-                    {job.status === 'success' && (
-                      <>
-                        <div className="text-xs text-[var(--ok)]">Verified</div>
-                        <button
-                          onClick={() => handleRestore(job.id)}
-                          className="text-xs text-red-400 underline hover:text-red-300"
-                        >
-                          Restore
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
+                  {downloading ? 'Preparing Backup...' : 'Download Account Backup'}
+                </button>
+                <p className="text-xs muted">
+                  The archive downloads as a `.zip` containing sectioned JSON snapshots.
+                </p>
+              </div>
+            </article>
+          </div>
         </section>
       ) : (
         <section className="rf-flat-section">
-          {policies.length === 0 ? (
-            <div className="rf-flat-empty text-center muted">No scheduled policies defined.</div>
-          ) : (
-            <div className="rf-flat-list">
-              {policies.map((policy) => (
-                <article key={policy.id} className="rf-flat-row space-y-2">
-                  <div className="flex items-start justify-between gap-4">
-                    <h3 className="font-semibold">{policy.name}</h3>
-                    <span className={`chip ${policy.enabled ? 'text-[var(--ok)]' : 'muted'}`}>
-                      {policy.enabled ? 'Enabled' : 'Disabled'}
-                    </span>
-                  </div>
-                  <div className="text-sm text-slate-300">
-                    {policy.schedule_cron ? `Schedule: ${policy.schedule_cron}` : 'Manual Only'}
-                  </div>
-                  <div className="text-sm muted">Retain: {policy.retention_count} snapshots</div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {policy.include_database && <span className="chip text-xs">DB</span>}
-                    {policy.include_server_config && <span className="chip text-xs">Config</span>}
-                    {policy.include_server_worlds && <span className="chip text-xs">Worlds</span>}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-
-          <div className="rf-flat-empty text-center text-sm muted">
-            To create a new policy, please use the configuration file or CLI for now.
+          <div className="rf-flat-empty text-left">
+            <h2 className="text-xl font-semibold">Gallery</h2>
+            <p className="mt-2 max-w-2xl text-sm muted">
+              Gallery backups are split out here so personal media and gallery-oriented exports can
+              evolve separately from account-state archives.
+            </p>
           </div>
         </section>
       )}
