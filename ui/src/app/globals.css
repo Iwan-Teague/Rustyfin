@@ -2092,10 +2092,7 @@ input[type="checkbox"]:disabled {
 }
 
 .app-nav-rail .rf-nav-subpage::after {
-  display: block;
-  left: 1.05rem;
-  right: 1.05rem;
-  bottom: 0.45rem;
+  display: none;
 }
 
 .app-nav-rail .rf-nav-subpage:focus-visible,
@@ -2113,13 +2110,6 @@ input[type="checkbox"]:disabled {
   background: transparent !important;
   box-shadow: none !important;
   color: var(--text-main);
-}
-
-.app-nav-rail .rf-nav-subpage:hover::after,
-.app-nav-rail .rf-nav-subpage:focus-visible::after,
-.app-nav-rail .rf-nav-subpage[aria-current="page"]::after {
-  opacity: 0.95;
-  transform: scaleX(1);
 }
 
 .app-nav-rail .rf-nav-children {
