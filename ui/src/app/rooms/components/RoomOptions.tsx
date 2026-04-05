@@ -70,16 +70,19 @@ export default function RoomOptions({
             label="Allow non-host play/pause"
             checked={allowPlayPause}
             onChange={onAllowPlayPauseChange}
+            className="rf-room-options-switch"
           />
           <RfSwitch
             label="Allow non-host seek"
             checked={allowSeek}
             onChange={onAllowSeekChange}
+            className="rf-room-options-switch"
           />
           <RfSwitch
             label="Invite-only room"
             checked={inviteOnly}
             onChange={onInviteOnlyChange}
+            className="rf-room-options-switch"
           />
         </div>
 
