@@ -126,8 +126,8 @@ export default function VoiceEngine({
 
   function teardownTranscriptionCapture() {
     const recorder = transcriptionRecorderRef.current;
-    if (recorder && recorder.state !== 'inactive') {
-      if (!transcriptionStopRequestedRef.current) {
+    if (recorder) {
+      if (recorder.state !== 'inactive' && !transcriptionStopRequestedRef.current) {
         transcriptionStopRequestedRef.current = true;
         recorder.stop();
       }
