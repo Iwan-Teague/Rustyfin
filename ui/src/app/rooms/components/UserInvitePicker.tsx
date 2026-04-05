@@ -20,6 +20,7 @@ type Props = {
   currentUserId: string;
   roomMode: WatchPartyRoomMode;
   selected: Record<string, SelectedInvite>;
+  embedded?: boolean;
   noShadow?: boolean;
   fillHeight?: boolean;
   onToggle: (userId: string, initialRole?: 'viewer' | 'controller') => void;
@@ -31,6 +32,7 @@ export default function UserInvitePicker({
   currentUserId,
   roomMode,
   selected,
+  embedded = false,
   noShadow = false,
   fillHeight = false,
   onToggle,
@@ -39,16 +41,16 @@ export default function UserInvitePicker({
   // Tracks chosen role for users not yet checked — preserved when they get selected
   const [pendingRoles, setPendingRoles] = useState<Record<string, 'viewer' | 'controller'>>({});
   const memberLabel = nonAdminRoleLabel(roomMode);
+  const containerClassName = fillHeight
+    ? embedded
+      ? 'flex h-full min-h-0 flex-col gap-4'
+      : 'rf-flat-section flex h-full min-h-0 flex-col gap-4'
+    : embedded
+      ? 'space-y-4'
+      : 'rf-flat-section space-y-4';
 
   return (
-    <section
-      className={
-        fillHeight
-          ? 'rf-flat-section flex h-full min-h-0 flex-col gap-4'
-          : 'rf-flat-section space-y-4'
-      }
-      style={noShadow ? { boxShadow: 'none' } : undefined}
-    >
+    <section className={containerClassName} style={noShadow ? { boxShadow: 'none' } : undefined}>
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">Invite Users</h2>
         <p className="text-sm muted">Set each user&apos;s access level, then check the box to invite them.</p>
