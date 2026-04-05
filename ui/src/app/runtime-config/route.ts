@@ -11,6 +11,8 @@ type RuntimeIceServerResponse = {
   credential?: string | null;
 };
 
+const DEFAULT_TURN_PORT = 3478;
+
 function normalizeHttpOrigin(raw: string | undefined): string | null {
   if (!raw) return null;
   const trimmed = raw.trim();
@@ -41,6 +43,52 @@ function normalizeIceUrls(raw: unknown): string[] {
       .filter((value) => value.length > 0);
   }
   return [];
+}
+
+function normalizeHostCandidate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw
+    .split(',')
+    .map((value) => value.trim())
+    .find((value) => value.length > 0);
+  if (!trimmed) return null;
+
+  try {
+    const url = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+    return url.hostname;
+  } catch {
+    return null;
+  }
+}
+
+function shouldExposeTurnHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized !== 'localhost' &&
+    normalized !== '127.0.0.1' &&
+    normalized !== '0.0.0.0' &&
+    normalized !== '::1' &&
+    normalized !== '[::1]'
+  );
+}
+
+function dedupeUrls(urls: string[]): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of urls) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    deduped.push(value);
+  }
+  return deduped;
+}
+
+function buildDerivedTurnUrls(host: string): string[] {
+  return [
+    `turn:${host}:${DEFAULT_TURN_PORT}?transport=udp`,
+    `turn:${host}:${DEFAULT_TURN_PORT}?transport=tcp`,
+  ];
 }
 
 function sanitizeIceServer(raw: unknown): RuntimeIceServerResponse | null {
@@ -110,7 +158,56 @@ function parseConfiguredIceServers(): RuntimeIceServerResponse[] {
   return servers;
 }
 
-export async function GET() {
+function withDerivedTurnHosts(
+  servers: RuntimeIceServerResponse[],
+  request: Request,
+): RuntimeIceServerResponse[] {
+  const turnUsername = process.env.RUSTFIN_WEBRTC_TURN_USERNAME?.trim() || null;
+  const turnCredential = process.env.RUSTFIN_WEBRTC_TURN_CREDENTIAL?.trim() || null;
+  if (!turnUsername || !turnCredential) {
+    return servers;
+  }
+
+  const hostCandidates = [
+    normalizeHostCandidate(request.headers.get('x-forwarded-host')),
+    normalizeHostCandidate(request.headers.get('host')),
+    normalizeHostCandidate(process.env.RUSTFIN_PUBLIC_HOST),
+  ].filter((value): value is string => Boolean(value && shouldExposeTurnHost(value)));
+
+  if (hostCandidates.length === 0) {
+    return servers;
+  }
+
+  const derivedUrls = dedupeUrls(hostCandidates.flatMap((host) => buildDerivedTurnUrls(host)));
+  if (derivedUrls.length === 0) {
+    return servers;
+  }
+
+  const nextServers = [...servers];
+  const existingTurnIndex = nextServers.findIndex(
+    (server) =>
+      server.username === turnUsername &&
+      server.credential === turnCredential &&
+      server.urls.some((value) => value.startsWith('turn:')),
+  );
+
+  if (existingTurnIndex >= 0) {
+    nextServers[existingTurnIndex] = {
+      ...nextServers[existingTurnIndex],
+      urls: dedupeUrls([...nextServers[existingTurnIndex].urls, ...derivedUrls]),
+    };
+    return nextServers;
+  }
+
+  nextServers.push({
+    urls: derivedUrls,
+    username: turnUsername,
+    credential: turnCredential,
+  });
+  return nextServers;
+}
+
+export async function GET(request: Request) {
   const backendOrigin =
     normalizeHttpOrigin(process.env.RUSTYFIN_BROWSER_BACKEND_ORIGIN) ||
     normalizeHttpOrigin(process.env.RUSTYFIN_API_BASE_URL) ||
@@ -118,7 +215,7 @@ export async function GET() {
 
   const payload: RuntimeConfigResponse = {
     backend_origin: backendOrigin,
-    ice_servers: parseConfiguredIceServers(),
+    ice_servers: withDerivedTurnHosts(parseConfiguredIceServers(), request),
   };
 
   return NextResponse.json(payload, {
