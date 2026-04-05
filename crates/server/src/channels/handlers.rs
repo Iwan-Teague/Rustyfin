@@ -1177,6 +1177,20 @@ pub struct TranscriptionRecordingUploadResponse {
     pub persisted_segments: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TranscriptionTextUploadRequest {
+    pub session_id: String,
+    pub started_ts_ms: i64,
+    pub ended_ts_ms: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TranscriptionTextUploadResponse {
+    pub accepted: bool,
+    pub persisted_segments: i64,
+}
+
 fn status_info_from_session(
     session: Option<&rustfin_db::repo::channel_transcripts::TranscriptSessionRow>,
     message: Option<String>,
@@ -1249,6 +1263,42 @@ fn parse_required_i64_field(value: Option<&str>, field_name: &str) -> Result<i64
         .ok_or_else(|| ApiError::BadRequest(format!("{field_name} is required")))?;
     raw.parse::<i64>()
         .map_err(|_| ApiError::BadRequest(format!("{field_name} must be an integer")).into())
+}
+
+async fn resolve_upload_session(
+    state: &AppState,
+    channel_id: &str,
+    session_id: &str,
+) -> Result<rustfin_db::repo::channel_transcripts::TranscriptSessionRow, AppError> {
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db, channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let finalizing_session_id = finalizing_transcription_session_id(channel_id);
+    let accepted_session = if let Some(running_session) = running {
+        if running_session.id == session_id {
+            Some(running_session)
+        } else if finalizing_session_id.as_deref() == Some(session_id) {
+            rustfin_db::repo::channel_transcripts::get_session(&state.db, session_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .filter(|session| session.channel_id == channel_id)
+        } else {
+            None
+        }
+    } else if finalizing_session_id.as_deref() == Some(session_id) {
+        rustfin_db::repo::channel_transcripts::get_session(&state.db, session_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .filter(|session| session.channel_id == channel_id)
+    } else {
+        None
+    };
+
+    accepted_session.ok_or_else(|| {
+        ApiError::BadRequest("upload does not match the active transcription session".into()).into()
+    })
 }
 
 fn build_transcript_markdown(
@@ -1962,35 +2012,29 @@ pub async fn upload_transcription_recording(
         "received transcript recording upload"
     );
 
-    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
-        &state.db,
-        &channel_id,
+    let accepted_session = resolve_upload_session(&state, &channel_id, &session_id).await?;
+    let existing_user_entry_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::BIGINT FROM channel_transcript_entry WHERE session_id = $1 AND user_id = $2",
     )
+    .bind(&accepted_session.id)
+    .bind(&auth.user_id)
+    .fetch_one(&state.db)
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
-    let finalizing_session_id = finalizing_transcription_session_id(&channel_id);
-    let accepted_session = if let Some(running_session) = running {
-        if running_session.id == session_id {
-            Some(running_session)
-        } else if finalizing_session_id.as_deref() == Some(session_id.as_str()) {
-            rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
-                .await
-                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-                .filter(|session| session.channel_id == channel_id)
-        } else {
-            None
-        }
-    } else if finalizing_session_id.as_deref() == Some(session_id.as_str()) {
-        rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
-            .filter(|session| session.channel_id == channel_id)
-    } else {
-        None
+    if existing_user_entry_count > 0 {
+        info!(
+            channel_id = %channel_id,
+            session_id = %accepted_session.id,
+            user_id = %auth.user_id,
+            existing_user_entry_count,
+            "skipping audio transcript append because browser transcript text already exists"
+        );
+        mark_transcription_upload_finished(&accepted_session.id, &auth.user_id);
+        return Ok(Json(TranscriptionRecordingUploadResponse {
+            accepted: true,
+            persisted_segments: 0,
+        }));
     }
-    .ok_or_else(|| {
-        ApiError::BadRequest("recording does not match the active transcription session".into())
-    })?;
 
     let _in_flight_guard = TranscriptionChunkInFlightGuard::new(&accepted_session.id);
     let decoded = decode_audio_upload(
@@ -2051,6 +2095,56 @@ pub async fn upload_transcription_recording(
     Ok(Json(TranscriptionRecordingUploadResponse {
         accepted: true,
         persisted_segments,
+    }))
+}
+
+pub async fn upload_transcription_text(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Json(body): Json<TranscriptionTextUploadRequest>,
+) -> Result<Json<TranscriptionTextUploadResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+    if body.session_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("session_id is required".into()).into());
+    }
+    let text = body.text.trim();
+    if text.is_empty() {
+        return Ok(Json(TranscriptionTextUploadResponse {
+            accepted: true,
+            persisted_segments: 0,
+        }));
+    }
+    if body.started_ts_ms <= 0 || body.ended_ts_ms <= body.started_ts_ms {
+        return Err(ApiError::BadRequest("invalid transcript text timestamps".into()).into());
+    }
+
+    let accepted_session = resolve_upload_session(&state, &channel_id, &body.session_id).await?;
+    rustfin_db::repo::channel_transcripts::append_entry(
+        &state.db,
+        rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
+            session_id: &accepted_session.id,
+            channel_id: &channel_id,
+            user_id: &auth.user_id,
+            username: &auth.username,
+            started_ts_ms: body.started_ts_ms,
+            ended_ts_ms: body.ended_ts_ms,
+            text,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    mark_transcription_upload_finished(&accepted_session.id, &auth.user_id);
+
+    Ok(Json(TranscriptionTextUploadResponse {
+        accepted: true,
+        persisted_segments: 1,
     }))
 }
 

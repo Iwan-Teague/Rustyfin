@@ -60,6 +60,10 @@ pub fn channels_router() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route(
+            "/{id}/transcription/text",
+            post(super::handlers::upload_transcription_text),
+        )
+        .route(
             "/{id}/transcription/sessions/{session_id}/download",
             get(super::handlers::download_transcription),
         )

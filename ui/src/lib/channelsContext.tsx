@@ -10,13 +10,17 @@ import {
 } from 'react';
 import { useAuth } from './auth';
 import { readBrowserToken } from './browserAuth';
-import { uploadVoiceTranscriptionRecording } from './channelsApi';
+import {
+  uploadVoiceTranscriptionRecording,
+  uploadVoiceTranscriptionText,
+} from './channelsApi';
 import type {
   ChannelEvent,
   ChannelInfo,
   ChannelMessage,
   UserInfo,
   VoiceTranscriptionRecordingUpload,
+  VoiceTranscriptionTextUpload,
   VoiceTranscriptionState,
 } from './channelsApi';
 import VoiceEngine from '@/app/channels/components/VoiceEngine';
@@ -75,6 +79,10 @@ export interface ChannelsContextValue {
   uploadTranscriptionRecording: (
     channelId: string,
     payload: VoiceTranscriptionRecordingUpload,
+  ) => Promise<void>;
+  uploadTranscriptionText: (
+    channelId: string,
+    payload: VoiceTranscriptionTextUpload,
   ) => Promise<void>;
 }
 
@@ -804,6 +812,44 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const uploadTranscriptionTextForSession = useCallback(
+    async (channelId: string, payload: VoiceTranscriptionTextUpload) => {
+      const maxAttempts = 5;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          await uploadVoiceTranscriptionText(channelId, payload);
+          return;
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message.toLowerCase() : '';
+          const retryableCapacityError =
+            message.includes('too many requests') ||
+            message.includes('capacity') ||
+            message.includes('retry');
+          const shouldRetry =
+            attempt < maxAttempts && (retryableCapacityError || attempt <= 2);
+          if (shouldRetry) {
+            const backoffMs = 200 * attempt;
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            continue;
+          }
+          console.warn(
+            'Voice transcription text upload failed',
+            {
+              channelId,
+              sessionId: payload.sessionId,
+              startedTsMs: payload.startedTsMs,
+              endedTsMs: payload.endedTsMs,
+              textLength: payload.text.length,
+            },
+            err,
+          );
+        }
+      }
+    },
+    [],
+  );
+
   const handleSpeakingChange = useCallback(
     (channelId: string, userId: string, speaking: boolean) => {
       setVoiceSpeaking((prev) => {
@@ -858,6 +904,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     setPreferredAudioDevices,
     setVoiceTranscriptionState,
     uploadTranscriptionRecording: uploadTranscriptionRecordingForSession,
+    uploadTranscriptionText: uploadTranscriptionTextForSession,
   };
 
   return (
@@ -880,6 +927,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           onSpeakingChange={handleSpeakingChange}
           transcriptionState={voiceTranscriptions[voiceSession.channelId] ?? null}
           onTranscriptionRecordingUpload={uploadTranscriptionRecordingForSession}
+          onTranscriptionTextUpload={uploadTranscriptionTextForSession}
         />
       )}
     </ChannelsContext.Provider>
