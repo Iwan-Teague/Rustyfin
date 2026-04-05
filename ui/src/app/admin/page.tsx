@@ -441,6 +441,35 @@ function DiagnosticsTrend({
   );
 }
 
+function AdminToggleButton({
+  checked,
+  label,
+  disabled = false,
+  className = '',
+  onToggle,
+}: {
+  checked: boolean;
+  label: string;
+  disabled?: boolean;
+  className?: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-active={checked ? 'true' : 'false'}
+      aria-pressed={checked}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`rf-room-mode-btn inline-flex items-center justify-center gap-2 px-4 py-2 text-sm ${
+        checked ? 'btn-primary' : 'btn-secondary'
+      } ${className}`.trim()}
+    >
+      {label}
+    </button>
+  );
+}
+
 export default function AdminPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -1979,20 +2008,18 @@ export default function AdminPage() {
                   ) : (
                     <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                       {libraries.map((lib) => (
-                        <label key={lib.id} className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={newUser.library_ids.includes(lib.id)}
-                            onChange={() =>
-                              setNewUser({
-                                ...newUser,
-                                library_ids: toggleIds(newUser.library_ids, lib.id),
-                              })
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>{lib.name}</span>
-                        </label>
+                        <AdminToggleButton
+                          key={lib.id}
+                          checked={newUser.library_ids.includes(lib.id)}
+                          label={lib.name}
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setNewUser({
+                              ...newUser,
+                              library_ids: toggleIds(newUser.library_ids, lib.id),
+                            })
+                          }
+                        />
                       ))}
                     </div>
                   )}
@@ -2095,18 +2122,13 @@ export default function AdminPage() {
                                 <p className="text-xs uppercase tracking-[0.18em] muted">Libraries</p>
                                 <div className="space-y-1">
                                   {libraries.map((lib) => (
-                                    <label
+                                    <AdminToggleButton
                                       key={lib.id}
-                                      className="panel-soft flex items-center gap-2 px-3 py-2 text-sm"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={edit.library_ids.includes(lib.id)}
-                                        onChange={() => toggleEditLibrary(user.id, lib.id)}
-                                        className="h-4 w-4 [accent-color:var(--purple)]"
-                                      />
-                                      <span>{lib.name}</span>
-                                    </label>
+                                      checked={edit.library_ids.includes(lib.id)}
+                                      label={lib.name}
+                                      className="w-full justify-start"
+                                      onToggle={() => toggleEditLibrary(user.id, lib.id)}
+                                    />
                                   ))}
                                 </div>
                               </div>
@@ -2189,103 +2211,82 @@ export default function AdminPage() {
               </div>
 
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.show_images}
-                    onChange={(e) => setNewLib({ ...newLib, show_images: e.target.checked })}
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Enable artwork thumbnails</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.prefer_local_artwork}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, prefer_local_artwork: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Prefer local artwork files</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.fetch_online_artwork}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, fetch_online_artwork: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Fetch missing artwork online</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_store_in_media_dir}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_store_in_media_dir: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Store TMDB images in media folders</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_sync_on_new_media}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_sync_on_new_media: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Auto TMDB sync when scan finds new media</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_fetch_metadata}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_fetch_metadata: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Fetch metadata fields (title, overview, rating)</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_fetch_posters}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_fetch_posters: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Fetch poster images</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_fetch_backdrops}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_fetch_backdrops: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Fetch backdrop/banner images</span>
-                </label>
-                <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={newLib.tmdb_fetch_reviews}
-                    onChange={(e) =>
-                      setNewLib({ ...newLib, tmdb_fetch_reviews: e.target.checked })
-                    }
-                    className="h-4 w-4 [accent-color:var(--purple)]"
-                  />
-                  <span>Fetch TMDB reviews</span>
-                </label>
+                <AdminToggleButton
+                  checked={newLib.show_images}
+                  label="Enable artwork thumbnails"
+                  className="w-full justify-start"
+                  onToggle={() => setNewLib({ ...newLib, show_images: !newLib.show_images })}
+                />
+                <AdminToggleButton
+                  checked={newLib.prefer_local_artwork}
+                  label="Prefer local artwork files"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, prefer_local_artwork: !newLib.prefer_local_artwork })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.fetch_online_artwork}
+                  label="Fetch missing artwork online"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, fetch_online_artwork: !newLib.fetch_online_artwork })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_store_in_media_dir}
+                  label="Store TMDB images in media folders"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({
+                      ...newLib,
+                      tmdb_store_in_media_dir: !newLib.tmdb_store_in_media_dir,
+                    })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_sync_on_new_media}
+                  label="Auto TMDB sync when scan finds new media"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({
+                      ...newLib,
+                      tmdb_sync_on_new_media: !newLib.tmdb_sync_on_new_media,
+                    })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_fetch_metadata}
+                  label="Fetch metadata fields (title, overview, rating)"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, tmdb_fetch_metadata: !newLib.tmdb_fetch_metadata })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_fetch_posters}
+                  label="Fetch poster images"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, tmdb_fetch_posters: !newLib.tmdb_fetch_posters })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_fetch_backdrops}
+                  label="Fetch backdrop/banner images"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, tmdb_fetch_backdrops: !newLib.tmdb_fetch_backdrops })
+                  }
+                />
+                <AdminToggleButton
+                  checked={newLib.tmdb_fetch_reviews}
+                  label="Fetch TMDB reviews"
+                  className="w-full justify-start"
+                  onToggle={() =>
+                    setNewLib({ ...newLib, tmdb_fetch_reviews: !newLib.tmdb_fetch_reviews })
+                  }
+                />
                 <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm md:col-span-2 xl:col-span-3">
                   <span className="w-40 shrink-0">Scheduled TMDB sync</span>
                   <select
@@ -2379,129 +2380,162 @@ export default function AdminPage() {
                         </button>
                       </div>
                       <div className="space-y-1">
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={libraryEdits[lib.id]?.show_images ?? lib.settings.show_images}
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'show_images', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Enable artwork thumbnails</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.prefer_local_artwork ??
-                              lib.settings.prefer_local_artwork
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'prefer_local_artwork', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Prefer local artwork files</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.fetch_online_artwork ??
-                              lib.settings.fetch_online_artwork
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'fetch_online_artwork', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Fetch missing artwork online</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_store_in_media_dir ??
-                              lib.settings.tmdb_store_in_media_dir
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_store_in_media_dir', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Store TMDB images in media folders</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_sync_on_new_media ??
-                              lib.settings.tmdb_sync_on_new_media
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_sync_on_new_media', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Auto TMDB sync when scan finds new media</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_fetch_metadata ??
-                              lib.settings.tmdb_fetch_metadata
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_fetch_metadata', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Fetch metadata fields (title, overview, rating)</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_fetch_posters ??
-                              lib.settings.tmdb_fetch_posters
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_fetch_posters', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Fetch poster images</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_fetch_backdrops ??
-                              lib.settings.tmdb_fetch_backdrops
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_fetch_backdrops', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Fetch backdrop/banner images</span>
-                        </label>
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={
-                              libraryEdits[lib.id]?.tmdb_fetch_reviews ??
-                              lib.settings.tmdb_fetch_reviews
-                            }
-                            onChange={(e) =>
-                              setLibraryEdit(lib.id, 'tmdb_fetch_reviews', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Fetch TMDB reviews</span>
-                        </label>
+                        <AdminToggleButton
+                          checked={libraryEdits[lib.id]?.show_images ?? lib.settings.show_images}
+                          label="Enable artwork thumbnails"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'show_images',
+                              !(libraryEdits[lib.id]?.show_images ?? lib.settings.show_images),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.prefer_local_artwork ??
+                            lib.settings.prefer_local_artwork
+                          }
+                          label="Prefer local artwork files"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'prefer_local_artwork',
+                              !(
+                                libraryEdits[lib.id]?.prefer_local_artwork ??
+                                lib.settings.prefer_local_artwork
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.fetch_online_artwork ??
+                            lib.settings.fetch_online_artwork
+                          }
+                          label="Fetch missing artwork online"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'fetch_online_artwork',
+                              !(
+                                libraryEdits[lib.id]?.fetch_online_artwork ??
+                                lib.settings.fetch_online_artwork
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_store_in_media_dir ??
+                            lib.settings.tmdb_store_in_media_dir
+                          }
+                          label="Store TMDB images in media folders"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_store_in_media_dir',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_store_in_media_dir ??
+                                lib.settings.tmdb_store_in_media_dir
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_sync_on_new_media ??
+                            lib.settings.tmdb_sync_on_new_media
+                          }
+                          label="Auto TMDB sync when scan finds new media"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_sync_on_new_media',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_sync_on_new_media ??
+                                lib.settings.tmdb_sync_on_new_media
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_fetch_metadata ??
+                            lib.settings.tmdb_fetch_metadata
+                          }
+                          label="Fetch metadata fields (title, overview, rating)"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_fetch_metadata',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_fetch_metadata ??
+                                lib.settings.tmdb_fetch_metadata
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_fetch_posters ??
+                            lib.settings.tmdb_fetch_posters
+                          }
+                          label="Fetch poster images"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_fetch_posters',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_fetch_posters ??
+                                lib.settings.tmdb_fetch_posters
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_fetch_backdrops ??
+                            lib.settings.tmdb_fetch_backdrops
+                          }
+                          label="Fetch backdrop/banner images"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_fetch_backdrops',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_fetch_backdrops ??
+                                lib.settings.tmdb_fetch_backdrops
+                              ),
+                            )
+                          }
+                        />
+                        <AdminToggleButton
+                          checked={
+                            libraryEdits[lib.id]?.tmdb_fetch_reviews ??
+                            lib.settings.tmdb_fetch_reviews
+                          }
+                          label="Fetch TMDB reviews"
+                          className="w-full justify-start"
+                          onToggle={() =>
+                            setLibraryEdit(
+                              lib.id,
+                              'tmdb_fetch_reviews',
+                              !(
+                                libraryEdits[lib.id]?.tmdb_fetch_reviews ??
+                                lib.settings.tmdb_fetch_reviews
+                              ),
+                            )
+                          }
+                        />
                         <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
                           <span className="w-36 shrink-0">Scheduled TMDB sync</span>
                           <select
@@ -2640,15 +2674,12 @@ export default function AdminPage() {
                   Create
                 </button>
               </div>
-              <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm max-w-sm">
-                <input
-                  type="checkbox"
-                  checked={newChannel.is_private}
-                  onChange={(e) => setNewChannel({ ...newChannel, is_private: e.target.checked })}
-                  className="h-4 w-4 [accent-color:var(--purple)]"
-                />
-                <span>Private channel (admins only)</span>
-              </label>
+              <AdminToggleButton
+                checked={newChannel.is_private}
+                label="Private channel (admins only)"
+                className="w-fit justify-start"
+                onToggle={() => setNewChannel({ ...newChannel, is_private: !newChannel.is_private })}
+              />
             </form>
           </section>
 
@@ -2682,17 +2713,14 @@ export default function AdminPage() {
                           onChange={(e) => setChannelEdit(channel.id, 'name', e.target.value)}
                           className="input w-full px-3 py-2 text-sm"
                         />
-                        <label className="panel-soft flex items-center gap-2 px-3 py-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={edit.is_private}
-                            onChange={(e) =>
-                              setChannelEdit(channel.id, 'is_private', e.target.checked)
-                            }
-                            className="h-4 w-4 [accent-color:var(--purple)]"
-                          />
-                          <span>Private</span>
-                        </label>
+                        <AdminToggleButton
+                          checked={edit.is_private}
+                          label="Private"
+                          className="w-fit justify-start"
+                          onToggle={() =>
+                            setChannelEdit(channel.id, 'is_private', !edit.is_private)
+                          }
+                        />
                         <div className="flex gap-2">
                           <button
                             onClick={() => saveChannel(channel.id)}
@@ -3079,58 +3107,46 @@ export default function AdminPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-2 text-sm">
-                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={aiRemoteBackendInput.enabled}
-                          onChange={(event) =>
-                            setAiRemoteBackendInput((current) => ({
-                              ...current,
-                              enabled: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>Enabled</span>
-                      </label>
-                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={aiRemoteBackendInput.supports_prompt_cache}
-                          onChange={(event) =>
-                            setAiRemoteBackendInput((current) => ({
-                              ...current,
-                              supports_prompt_cache: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>Prompt cache</span>
-                      </label>
-                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={aiRemoteBackendInput.supports_structured_output}
-                          onChange={(event) =>
-                            setAiRemoteBackendInput((current) => ({
-                              ...current,
-                              supports_structured_output: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>Structured output</span>
-                      </label>
-                      <label className="flex items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--panel)]/65 px-3 py-2">
-                        <input
-                          type="checkbox"
-                          checked={aiRemoteBackendInput.overload_fallback}
-                          onChange={(event) =>
-                            setAiRemoteBackendInput((current) => ({
-                              ...current,
-                              overload_fallback: event.target.checked,
-                            }))
-                          }
-                        />
-                        <span>Overload fallback</span>
-                      </label>
+                      <AdminToggleButton
+                        checked={aiRemoteBackendInput.enabled}
+                        label="Enabled"
+                        onToggle={() =>
+                          setAiRemoteBackendInput((current) => ({
+                            ...current,
+                            enabled: !current.enabled,
+                          }))
+                        }
+                      />
+                      <AdminToggleButton
+                        checked={aiRemoteBackendInput.supports_prompt_cache}
+                        label="Prompt cache"
+                        onToggle={() =>
+                          setAiRemoteBackendInput((current) => ({
+                            ...current,
+                            supports_prompt_cache: !current.supports_prompt_cache,
+                          }))
+                        }
+                      />
+                      <AdminToggleButton
+                        checked={aiRemoteBackendInput.supports_structured_output}
+                        label="Structured output"
+                        onToggle={() =>
+                          setAiRemoteBackendInput((current) => ({
+                            ...current,
+                            supports_structured_output: !current.supports_structured_output,
+                          }))
+                        }
+                      />
+                      <AdminToggleButton
+                        checked={aiRemoteBackendInput.overload_fallback}
+                        label="Overload fallback"
+                        onToggle={() =>
+                          setAiRemoteBackendInput((current) => ({
+                            ...current,
+                            overload_fallback: !current.overload_fallback,
+                          }))
+                        }
+                      />
                     </div>
 
                     <div className="flex flex-wrap gap-2">
