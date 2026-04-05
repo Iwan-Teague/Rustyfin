@@ -860,22 +860,20 @@ export default function ServersPage() {
 
       <section className="rf-flat-section relative mt-[17px] border-t border-[var(--border)]/70 pt-[20px] sm:pt-[24px]">
         <div className="absolute left-4 right-4 top-[-16px] z-10 -translate-y-[62%] sm:left-6 sm:right-6">
-          <div className="flex flex-wrap items-end gap-2">
+          <div className="rf-server-top-tabs">
             <button
               type="button"
               disabled
-              className={`rounded-t-lg border border-b-0 px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-100 ${
-                activeGameTab === 'minecraft'
-                  ? 'border-[var(--border)] bg-[var(--surface)]'
-                  : 'border-[var(--border)]/50 bg-[var(--surface)]/40 opacity-60'
-              }`}
+              data-active={activeGameTab === 'minecraft'}
+              className="rf-server-top-tab disabled:opacity-100"
             >
               Minecraft
             </button>
             <button
               type="button"
               disabled
-              className="rounded-t-lg border border-b-0 border-[var(--border)]/50 bg-[var(--surface)]/40 px-5 py-2.5 text-sm font-medium opacity-60"
+              data-active="false"
+              className="rf-server-top-tab disabled:opacity-100"
             >
               More soon
             </button>
@@ -887,15 +885,15 @@ export default function ServersPage() {
             <h2 className="text-xl font-semibold">Known servers</h2>
             <p className="text-sm muted">Visible instances for your account.</p>
           </div>
-          <span className="chip">{servers.length}</span>
+          <div className="rf-server-count">
+            <strong>{servers.length}</strong>
+          </div>
         </div>
 
         {loading ? (
-          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">Loading server records…</div>
+          <div className="rf-flat-row px-0 py-3 text-sm muted">Loading server records…</div>
         ) : servers.length === 0 ? (
-          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
-            No Minecraft servers exist yet.
-          </div>
+          <div className="rf-flat-row px-0 py-3 text-sm muted">No Minecraft servers exist yet.</div>
         ) : (
           <div className="space-y-4">
             {servers.map((server) => {
@@ -1226,7 +1224,7 @@ export default function ServersPage() {
         )}
       </section>
 
-      <section className="panel-soft flex min-h-[34rem] flex-col gap-4 p-5 sm:p-6">
+      <section className="rf-flat-section rf-flat-section-divider flex min-h-[34rem] flex-col gap-4 pt-4">
         <div>
           <h2 className="text-xl font-semibold">Create Minecraft server</h2>
           <p className="text-sm muted">
@@ -1235,12 +1233,12 @@ export default function ServersPage() {
         </div>
 
         {me.role !== 'admin' ? (
-          <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+          <div className="rf-flat-row px-0 py-3 text-sm muted">
             Only admins can create or import server records. Users can still start, stop, and restart visible servers from the known servers list.
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-            <div className="panel-soft space-y-3 p-4 sm:p-5">
+            <div className="space-y-3 border-y border-white/8 py-4 sm:py-5">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs muted">
                   {normalizedCreateStepIndex + 1}/{createSteps.length}
@@ -1252,21 +1250,32 @@ export default function ServersPage() {
                   style={{ width: `${Math.max(createProgressPercent, 8)}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-                {createSteps.map((stepId, index) => (
-                  <div
-                    key={stepId}
-                    className={`chip justify-center text-center ${
-                      index === normalizedCreateStepIndex ? 'chip-accent' : ''
-                    }`}
-                  >
-                    {CREATE_WIZARD_STEP_META[stepId].title}
-                  </div>
-                ))}
+              <div className="rf-server-stage-strip">
+                {createSteps.flatMap((stepId, index) => {
+                  const items = [
+                    <div
+                      key={stepId}
+                      data-active={index === normalizedCreateStepIndex}
+                      className="rf-server-stage-item"
+                    >
+                      {CREATE_WIZARD_STEP_META[stepId].title}
+                    </div>,
+                  ];
+                  if (index < createSteps.length - 1) {
+                    items.push(
+                      <span
+                        key={`${stepId}-divider`}
+                        aria-hidden="true"
+                        className="rf-server-stage-divider"
+                      />,
+                    );
+                  }
+                  return items;
+                })}
               </div>
             </div>
 
-            <section className="panel-soft space-y-6 p-6 sm:p-7">
+            <section className="rf-flat-section rf-flat-section-divider space-y-6 pt-5 sm:pt-6">
               <div>
                 <h3 className="text-2xl font-semibold sm:text-3xl">{activeCreateStep.title}</h3>
                 <p className="mt-2 text-sm muted">{activeCreateStep.description}</p>
@@ -1286,46 +1295,28 @@ export default function ServersPage() {
                 <div className="grid gap-4 sm:grid-cols-2">
                   <button
                     type="button"
-                    className={`w-full rounded-2xl p-[1px] text-left transition ${
-                      createMode === 'create'
-                        ? 'bg-[linear-gradient(90deg,var(--orange),var(--danger),var(--purple))]'
-                        : 'border border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
-                    }`}
+                    data-active={createMode === 'create'}
+                    className="rf-server-choice"
                     onClick={() => {
                       setCreateMode('create');
                       setPendingImportServerId(null);
                     }}
                   >
-                    <div
-                      className={`h-full rounded-[calc(1rem-1px)] px-5 py-5 ${
-                        createMode === 'create' ? 'bg-[var(--surface)]/95' : ''
-                      }`}
-                    >
-                      <div className="text-base font-semibold text-white">Create new managed server</div>
-                      <p className="mt-2 text-sm muted">
-                        Rustyfin generates the server files, installs the native service, and launches it when you click Start.
-                      </p>
-                    </div>
+                    <div className="rf-server-choice-title">Create new managed server</div>
+                    <p className="rf-server-choice-copy">
+                      Rustyfin generates the server files, installs the native service, and launches it when you click Start.
+                    </p>
                   </button>
                   <button
                     type="button"
-                    className={`w-full rounded-2xl p-[1px] text-left transition ${
-                      createMode === 'import'
-                        ? 'bg-[linear-gradient(90deg,var(--orange),var(--danger),var(--purple))]'
-                        : 'border border-[var(--border)] bg-[var(--panel)]/55 hover:bg-[var(--surface)]/70'
-                    }`}
+                    data-active={createMode === 'import'}
+                    className="rf-server-choice"
                     onClick={() => setCreateMode('import')}
                   >
-                    <div
-                      className={`h-full rounded-[calc(1rem-1px)] px-5 py-5 ${
-                        createMode === 'import' ? 'bg-[var(--surface)]/95' : ''
-                      }`}
-                    >
-                      <div className="text-base font-semibold text-white">Import existing server</div>
-                      <p className="mt-2 text-sm muted">
-                        Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
-                      </p>
-                    </div>
+                    <div className="rf-server-choice-title">Import existing server</div>
+                    <p className="rf-server-choice-copy">
+                      Rustyfin creates the managed record, then imports a prepared Minecraft server directory from the Debian host.
+                    </p>
                   </button>
                 </div>
               ) : null}
@@ -1436,7 +1427,7 @@ export default function ServersPage() {
                       placeholder="Defaults to the display name if left blank."
                     />
                   </label>
-                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                  <label className="flex items-center gap-3 border-l border-white/12 px-4 py-3 text-sm">
                     <input
                       type="checkbox"
                       checked={form.hardcore}
@@ -1444,7 +1435,7 @@ export default function ServersPage() {
                     />
                     <span>Hardcore mode</span>
                   </label>
-                  <label className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                  <label className="flex items-center gap-3 border-l border-white/12 px-4 py-3 text-sm">
                     <input
                       type="checkbox"
                       checked={form.pvp}
@@ -1484,7 +1475,7 @@ export default function ServersPage() {
                       onChange={(event) => updateForm('max_player_count', event.target.value)}
                     />
                   </label>
-                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted sm:col-span-2">
+                  <div className="rf-server-flat-note sm:col-span-2">
                     Rustyfin will use these limits to generate the managed server runtime on the Debian host.
                   </div>
                 </div>
@@ -1493,14 +1484,14 @@ export default function ServersPage() {
               {activeCreateStepId === 'source' ? (
                 <div className="flex flex-col gap-4">
                   {pendingImportServerId ? (
-                    <div className="panel-soft rounded-xl px-4 py-3 text-sm">
+                    <div className="rf-server-flat-note pt-0 text-sm">
                       <div className="font-medium text-white">Retrying import into the existing draft</div>
                       <div className="mt-1 text-xs muted">
                         Rustyfin already created the managed record. Fix the path below and retry the import without creating another draft.
                       </div>
                     </div>
                   ) : (
-                    <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                    <div className="rf-server-flat-note pt-0 text-sm muted">
                       Rustyfin will create the managed server record first, then import this host path into it.
                     </div>
                   )}
@@ -1530,7 +1521,7 @@ export default function ServersPage() {
               {activeCreateStepId === 'review' ? (
                 <div className="flex flex-col gap-4">
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="panel-soft rounded-2xl p-4">
+                    <div className="border-l border-white/12 pl-4">
                       <div className="text-xs uppercase tracking-[0.24em] muted">Server</div>
                       <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex items-center justify-between gap-4">
@@ -1568,7 +1559,7 @@ export default function ServersPage() {
                       </dl>
                     </div>
 
-                    <div className="panel-soft rounded-2xl p-4">
+                    <div className="border-l border-white/12 pl-4">
                       <div className="text-xs uppercase tracking-[0.24em] muted">Gameplay and resources</div>
                       <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex items-center justify-between gap-4">
@@ -1599,7 +1590,7 @@ export default function ServersPage() {
 
                   <div className="grid gap-3 sm:grid-cols-2">
                     {TOGGLE_FIELDS.map(({ key, label }) => (
-                      <label key={key} className="panel-soft flex items-center gap-3 rounded-xl px-4 py-3 text-sm">
+                      <label key={key} className="flex items-center gap-3 border-l border-white/12 px-4 py-3 text-sm">
                         <input
                           type="checkbox"
                           checked={form[key]}
@@ -1608,7 +1599,7 @@ export default function ServersPage() {
                         <span>{label}</span>
                       </label>
                     ))}
-                    <label className="panel-soft flex items-center gap-3 rounded-xl border border-[var(--orange-soft)]/40 px-4 py-3 text-sm sm:col-span-2">
+                    <label className="flex items-center gap-3 border-l border-[var(--orange-soft)]/60 px-4 py-3 text-sm sm:col-span-2">
                       <input
                         type="checkbox"
                         checked={form.eula_accepted}
@@ -1618,7 +1609,7 @@ export default function ServersPage() {
                     </label>
                   </div>
 
-                  <div className="panel-soft rounded-xl px-4 py-3 text-sm muted">
+                  <div className="rf-server-flat-note text-sm muted">
                     {createMode === 'import'
                       ? 'Rustyfin will create the managed server record, then import the host directory into it and install the native unit.'
                       : 'Creating the server adds a draft record to known servers immediately. Clicking Start provisions and launches the managed server automatically.'}
@@ -1629,7 +1620,7 @@ export default function ServersPage() {
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-2">
                 <button
                   type="button"
-                  className="btn-secondary px-4 py-2 text-sm disabled:opacity-50"
+                  className="rf-text-action rf-text-action-muted text-sm disabled:opacity-50"
                   disabled={normalizedCreateStepIndex === 0}
                   onClick={goToPreviousCreateStep}
                 >
@@ -1639,7 +1630,7 @@ export default function ServersPage() {
                   {activeCreateStepId !== 'review' ? (
                     <button
                       type="button"
-                      className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                      className="rf-server-primary-action px-5 py-2.5 text-sm disabled:opacity-60"
                       disabled={!canAdvanceCreateStep}
                       onClick={goToNextCreateStep}
                     >
@@ -1648,7 +1639,7 @@ export default function ServersPage() {
                   ) : (
                     <button
                       type="button"
-                      className="btn-primary px-5 py-2.5 text-sm disabled:opacity-60"
+                      className="rf-server-primary-action px-5 py-2.5 text-sm disabled:opacity-60"
                       disabled={
                         creating ||
                         importing ||
