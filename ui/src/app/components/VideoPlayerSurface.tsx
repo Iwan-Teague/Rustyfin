@@ -587,7 +587,6 @@ export default function VideoPlayerSurface({
 
   const showArtworkOverlay = Boolean(artworkUrl && canStartPlayback && !hasEverPlayed);
   const controlsActive = controlsVisible || showSettings;
-  const showArtworkBackdrop = Boolean(artworkUrl && !isFullscreen && surfaceStyle === 'immersive');
 
   return (
     <div
@@ -596,7 +595,7 @@ export default function VideoPlayerSurface({
         isFullscreen
           ? 'flex h-screen w-screen flex-col overflow-hidden bg-black'
           : surfaceStyle === 'immersive'
-            ? 'flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.75rem] bg-transparent'
+            ? 'mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[1.75rem] bg-transparent'
             : 'tile overflow-hidden rounded-2xl border border-white/10 bg-black'
       }
     >
@@ -605,7 +604,7 @@ export default function VideoPlayerSurface({
           isFullscreen
             ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
             : surfaceStyle === 'immersive'
-              ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-[1.75rem] bg-black'
+              ? 'relative flex min-h-[min(62vh,32rem)] flex-1 cursor-pointer items-center justify-center overflow-hidden rounded-[1.75rem] bg-black'
               : 'relative cursor-pointer overflow-hidden'
         }
         onMouseEnter={revealControls}
@@ -621,19 +620,6 @@ export default function VideoPlayerSurface({
           handleVideoDoubleClick();
         }}
       >
-        {showArtworkBackdrop ? (
-          <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-            <img
-              src={artworkUrl ?? undefined}
-              alt=""
-              aria-hidden="true"
-              className="h-full w-full scale-110 object-cover blur-3xl opacity-55"
-              loading="eager"
-              decoding="async"
-            />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(10,12,18,0.06),rgba(10,12,18,0.72))]" />
-          </div>
-        ) : null}
         <video
           ref={videoRef}
           {...videoElementProps}
