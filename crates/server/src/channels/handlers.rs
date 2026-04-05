@@ -6,7 +6,7 @@ use axum::response::Response;
 use chrono::{DateTime, Utc};
 use rustfin_core::error::ApiError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -56,6 +56,11 @@ fn transcription_finalizing_sessions() -> &'static Mutex<HashMap<String, String>
     FINALIZING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn transcription_pending_uploads() -> &'static Mutex<HashMap<String, HashSet<String>>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn mark_transcription_chunk_started(session_id: &str) {
     if let Ok(mut guard) = transcription_in_flight_chunks().lock() {
         let counter = guard.entry(session_id.to_string()).or_insert(0);
@@ -83,6 +88,39 @@ fn transcription_in_flight_count(session_id: &str) -> usize {
         .unwrap_or(0)
 }
 
+fn set_transcription_pending_uploads(session_id: &str, user_ids: impl IntoIterator<Item = String>) {
+    if let Ok(mut pending) = transcription_pending_uploads().lock() {
+        let users = user_ids
+            .into_iter()
+            .filter(|user_id| !user_id.trim().is_empty())
+            .collect::<HashSet<_>>();
+        if users.is_empty() {
+            pending.remove(session_id);
+        } else {
+            pending.insert(session_id.to_string(), users);
+        }
+    }
+}
+
+fn mark_transcription_upload_finished(session_id: &str, user_id: &str) {
+    if let Ok(mut pending) = transcription_pending_uploads().lock()
+        && let Some(users) = pending.get_mut(session_id)
+    {
+        users.remove(user_id);
+        if users.is_empty() {
+            pending.remove(session_id);
+        }
+    }
+}
+
+fn transcription_pending_upload_count(session_id: &str) -> usize {
+    transcription_pending_uploads()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(session_id).map(HashSet::len))
+        .unwrap_or(0)
+}
+
 fn mark_transcription_session_finalizing(channel_id: &str, session_id: &str) {
     if let Ok(mut guard) = transcription_finalizing_sessions().lock() {
         guard.insert(channel_id.to_string(), session_id.to_string());
@@ -95,6 +133,9 @@ fn clear_transcription_session_finalizing(channel_id: &str, session_id: &str) {
         && active_session_id == session_id
     {
         guard.remove(channel_id);
+    }
+    if let Ok(mut pending) = transcription_pending_uploads().lock() {
+        pending.remove(session_id);
     }
 }
 
@@ -133,7 +174,8 @@ async fn wait_for_transcription_chunks_to_settle(session_id: &str) {
 
     loop {
         let in_flight = transcription_in_flight_count(session_id);
-        if in_flight > 0 {
+        let pending_uploads = transcription_pending_upload_count(session_id);
+        if in_flight > 0 || pending_uploads > 0 {
             last_non_zero_at = Some(Instant::now());
         }
 
@@ -141,7 +183,7 @@ async fn wait_for_transcription_chunks_to_settle(session_id: &str) {
         let quiet_elapsed = last_non_zero_at
             .map(|at| at.elapsed() >= quiet_window)
             .unwrap_or(grace_elapsed);
-        if grace_elapsed && in_flight == 0 && quiet_elapsed {
+        if grace_elapsed && in_flight == 0 && pending_uploads == 0 && quiet_elapsed {
             break;
         }
 
@@ -149,8 +191,9 @@ async fn wait_for_transcription_chunks_to_settle(session_id: &str) {
             warn!(
                 session_id = %session_id,
                 in_flight,
+                pending_uploads,
                 waited_ms = started_at.elapsed().as_millis() as u64,
-                "timed out waiting for in-flight transcription chunks; finalizing transcript anyway"
+                "timed out waiting for pending transcript uploads; finalizing transcript anyway"
             );
             break;
         }
@@ -1976,6 +2019,7 @@ pub async fn upload_transcription_recording(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
         persisted_segments += 1;
     }
+    mark_transcription_upload_finished(&accepted_session.id, &auth.user_id);
 
     Ok(Json(TranscriptionRecordingUploadResponse {
         accepted: true,
@@ -2027,6 +2071,17 @@ pub async fn stop_transcription(
         }));
     }
     mark_transcription_session_finalizing(&channel_id, &running.id);
+    let expected_upload_users = state
+        .channel_manager
+        .voice_snapshot()
+        .await
+        .get(&channel_id)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|user| user.user_id)
+        .collect::<Vec<_>>();
+    set_transcription_pending_uploads(&running.id, expected_upload_users);
 
     state
         .channel_manager
