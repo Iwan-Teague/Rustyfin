@@ -80,6 +80,19 @@ pub struct ContinueWatchingRow {
     pub last_played_ts: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct UserPlayStateExportRow {
+    pub item_id: String,
+    pub library_id: String,
+    pub kind: String,
+    pub title: String,
+    pub year: Option<i64>,
+    pub progress_ms: i64,
+    pub last_played_ts: Option<i64>,
+    pub played: bool,
+    pub favorite: bool,
+}
+
 pub async fn list_continue_watching(
     pool: &DbPool,
     user_id: &str,
@@ -166,6 +179,60 @@ pub async fn list_continue_watching(
                 progress_ms,
                 duration_ms,
                 last_played_ts,
+            },
+        )
+        .collect())
+}
+
+pub async fn list_play_states_for_user(
+    pool: &DbPool,
+    user_id: &str,
+) -> Result<Vec<UserPlayStateExportRow>, sqlx::Error> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+        i64,
+        Option<i64>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT i.id, i.library_id, i.kind, i.title, i.year, CAST(uis.progress_ms AS BIGINT),
+                    CAST(uis.last_played_ts AS BIGINT), uis.played, uis.favorite
+             FROM user_item_state uis
+             JOIN item i ON i.id = uis.item_id
+             WHERE uis.user_id = $1
+             ORDER BY COALESCE(uis.last_played_ts, 0) DESC, i.title ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                item_id,
+                library_id,
+                kind,
+                title,
+                year,
+                progress_ms,
+                last_played_ts,
+                played,
+                favorite,
+            )| UserPlayStateExportRow {
+                item_id,
+                library_id,
+                kind,
+                title,
+                year,
+                progress_ms,
+                last_played_ts,
+                played: db_int_to_bool(played),
+                favorite: db_int_to_bool(favorite),
             },
         )
         .collect())

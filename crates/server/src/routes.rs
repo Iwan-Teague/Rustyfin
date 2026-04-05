@@ -321,6 +321,10 @@ fn api_router(state: AppState) -> Router<AppState> {
         )
         .route("/users/me/activity/browser", post(post_browser_activity))
         .route(
+            "/backups/account/archive",
+            post(crate::account_backups::create_account_archive),
+        )
+        .route(
             "/downloads/catalog",
             get(crate::downloads::get_download_catalog),
         )
