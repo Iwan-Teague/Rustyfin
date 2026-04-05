@@ -1,5 +1,6 @@
 'use client';
 
+import RfSwitch from '@/app/components/RfSwitch';
 import { nonAdminRoleLabel, type WatchPartyRoomMode } from '@/lib/watchPartyRoles';
 
 type Props = {
@@ -64,33 +65,22 @@ export default function RoomOptions({
           />
         </label>
 
-        <div className="space-y-2 rounded-xl border border-[var(--border-subtle)] px-3 py-3">
-          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
-            <input
-              type="checkbox"
-              checked={allowPlayPause}
-              onChange={(e) => onAllowPlayPauseChange(e.target.checked)}
-            />
-            Allow non-host play/pause
-          </label>
-
-          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
-            <input
-              type="checkbox"
-              checked={allowSeek}
-              onChange={(e) => onAllowSeekChange(e.target.checked)}
-            />
-            Allow non-host seek
-          </label>
-
-          <label className="flex items-center gap-3 rounded-md px-2 py-2 text-sm">
-            <input
-              type="checkbox"
-              checked={inviteOnly}
-              onChange={(e) => onInviteOnlyChange(e.target.checked)}
-            />
-            Invite-only room
-          </label>
+        <div className="space-y-3">
+          <RfSwitch
+            label="Allow non-host play/pause"
+            checked={allowPlayPause}
+            onChange={onAllowPlayPauseChange}
+          />
+          <RfSwitch
+            label="Allow non-host seek"
+            checked={allowSeek}
+            onChange={onAllowSeekChange}
+          />
+          <RfSwitch
+            label="Invite-only room"
+            checked={inviteOnly}
+            onChange={onInviteOnlyChange}
+          />
         </div>
 
         <label className="block text-sm">
