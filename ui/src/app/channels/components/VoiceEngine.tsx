@@ -86,12 +86,8 @@ export default function VoiceEngine({
   const localMicDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const localMicProcessedStreamRef = useRef<MediaStream | null>(null);
   const localMicInputTrackIdRef = useRef<string | null>(null);
-  const transcriptionCaptureContextRef = useRef<AudioContext | null>(null);
-  const transcriptionCaptureSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const transcriptionCaptureProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const transcriptionCaptureSilenceRef = useRef<GainNode | null>(null);
-  const transcriptionCaptureChunksRef = useRef<Float32Array[]>([]);
-  const transcriptionCaptureSampleRateRef = useRef<number>(48_000);
+  const transcriptionRecorderRef = useRef<MediaRecorder | null>(null);
+  const transcriptionChunksRef = useRef<Blob[]>([]);
   const transcriptionCaptureStartedAtRef = useRef<number>(0);
   const activeTranscriptionSessionRef = useRef<string | null>(null);
 
@@ -109,98 +105,34 @@ export default function VoiceEngine({
     return audioContextRef.current;
   }
 
-  function encodeWavFromFloat32(chunks: Float32Array[], sampleRate: number): Blob | null {
-    const totalSamples = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    if (totalSamples <= 0 || !Number.isFinite(sampleRate) || sampleRate <= 0) {
-      return null;
+  function preferredRecorderMimeType(): string {
+    if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+      return '';
     }
-
-    const pcmBytes = totalSamples * 2;
-    const buffer = new ArrayBuffer(44 + pcmBytes);
-    const view = new DataView(buffer);
-
-    const writeAscii = (offset: number, value: string) => {
-      for (let i = 0; i < value.length; i += 1) {
-        view.setUint8(offset + i, value.charCodeAt(i));
-      }
-    };
-
-    writeAscii(0, 'RIFF');
-    view.setUint32(4, 36 + pcmBytes, true);
-    writeAscii(8, 'WAVE');
-    writeAscii(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, Math.round(sampleRate), true);
-    view.setUint32(28, Math.round(sampleRate) * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeAscii(36, 'data');
-    view.setUint32(40, pcmBytes, true);
-
-    let offset = 44;
-    for (const chunk of chunks) {
-      for (let i = 0; i < chunk.length; i += 1) {
-        const sample = Math.max(-1, Math.min(1, chunk[i]));
-        const pcm = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        view.setInt16(offset, Math.round(pcm), true);
-        offset += 2;
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+    ];
+    for (const mimeType of candidates) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        return mimeType;
       }
     }
-
-    return new Blob([buffer], { type: 'audio/wav' });
+    return '';
   }
 
   function teardownTranscriptionCapture() {
-    try {
-      transcriptionCaptureSourceRef.current?.disconnect();
-    } catch {
-      // no-op
-    }
-    try {
-      transcriptionCaptureProcessorRef.current?.disconnect();
-    } catch {
-      // no-op
-    }
-    try {
-      transcriptionCaptureSilenceRef.current?.disconnect();
-    } catch {
-      // no-op
-    }
-
-    if (transcriptionCaptureContextRef.current) {
-      void transcriptionCaptureContextRef.current.close().catch(() => {});
-    }
-
-    const sessionId = activeTranscriptionSessionRef.current;
-    const startedAt = transcriptionCaptureStartedAtRef.current;
-    const sampleRate = transcriptionCaptureSampleRateRef.current;
-    const chunks = transcriptionCaptureChunksRef.current.slice();
-
-    transcriptionCaptureSourceRef.current = null;
-    transcriptionCaptureProcessorRef.current = null;
-    transcriptionCaptureSilenceRef.current = null;
-    transcriptionCaptureContextRef.current = null;
-    transcriptionCaptureChunksRef.current = [];
-    transcriptionCaptureSampleRateRef.current = 48_000;
-    transcriptionCaptureStartedAtRef.current = 0;
-    activeTranscriptionSessionRef.current = null;
-
-    const blob = encodeWavFromFloat32(chunks, sampleRate);
-    if (!blob || !sessionId) {
+    const recorder = transcriptionRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
       return;
     }
-
-    const endedAt = Date.now();
-    const uploadPayload: VoiceTranscriptionRecordingUpload = {
-      sessionId,
-      captureStartedTsMs: startedAt,
-      captureEndedTsMs: Math.max(endedAt, startedAt + 1),
-      blob,
-      fileName: `voice-transcript-${sessionId}.wav`,
-    };
-    void onTranscriptionRecordingUpload(channelId, uploadPayload);
+    transcriptionRecorderRef.current = null;
+    transcriptionChunksRef.current = [];
+    transcriptionCaptureStartedAtRef.current = 0;
+    activeTranscriptionSessionRef.current = null;
   }
 
   function stopSpeakingMonitor(userId: string) {
@@ -648,46 +580,57 @@ export default function VoiceEngine({
       return;
     }
 
-    if (transcriptionCaptureContextRef.current && activeTranscriptionSessionRef.current === sessionId) {
+    if (transcriptionRecorderRef.current && activeTranscriptionSessionRef.current === sessionId) {
       return;
     }
 
     teardownTranscriptionCapture();
 
     try {
-      const audioContextCtor =
-        window.AudioContext ||
-        (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!audioContextCtor) {
+      if (typeof MediaRecorder === 'undefined') {
         return;
       }
-      const context = new audioContextCtor();
-      const source = context.createMediaStreamSource(transcriptionStream);
-      const processor = context.createScriptProcessor(4096, 1, 1);
-      const silence = context.createGain();
-      silence.gain.value = 0;
-
-      transcriptionCaptureChunksRef.current = [];
-      transcriptionCaptureSampleRateRef.current = context.sampleRate;
+      const mimeType = preferredRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(transcriptionStream, { mimeType })
+        : new MediaRecorder(transcriptionStream);
+      transcriptionChunksRef.current = [];
       transcriptionCaptureStartedAtRef.current = Date.now();
-      processor.onaudioprocess = (event) => {
-        const channelData = event.inputBuffer.getChannelData(0);
-        if (!channelData || channelData.length === 0) {
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          transcriptionChunksRef.current.push(event.data);
+        }
+      };
+      recorder.onerror = (event) => {
+        console.warn('VoiceEngine: transcript recorder error', event);
+      };
+      recorder.onstop = () => {
+        const sessionIdForUpload = activeTranscriptionSessionRef.current;
+        const startedAt = transcriptionCaptureStartedAtRef.current;
+        const chunks = [...transcriptionChunksRef.current];
+        transcriptionRecorderRef.current = null;
+        transcriptionChunksRef.current = [];
+        transcriptionCaptureStartedAtRef.current = 0;
+        activeTranscriptionSessionRef.current = null;
+        if (!sessionIdForUpload || chunks.length === 0) {
           return;
         }
-        transcriptionCaptureChunksRef.current.push(new Float32Array(channelData));
+        const endedAt = Date.now();
+        const blob = new Blob(chunks, {
+          type: recorder.mimeType || mimeType || 'audio/webm',
+        });
+        const uploadPayload: VoiceTranscriptionRecordingUpload = {
+          sessionId: sessionIdForUpload,
+          captureStartedTsMs: startedAt,
+          captureEndedTsMs: Math.max(endedAt, startedAt + 1),
+          blob,
+          fileName: `voice-transcript-${sessionIdForUpload}.webm`,
+        };
+        void onTranscriptionRecordingUpload(channelId, uploadPayload);
       };
-
-      source.connect(processor);
-      processor.connect(silence);
-      silence.connect(context.destination);
-
-      transcriptionCaptureContextRef.current = context;
-      transcriptionCaptureSourceRef.current = source;
-      transcriptionCaptureProcessorRef.current = processor;
-      transcriptionCaptureSilenceRef.current = silence;
+      recorder.start(1000);
+      transcriptionRecorderRef.current = recorder;
       activeTranscriptionSessionRef.current = sessionId;
-      void context.resume().catch(() => {});
     } catch (err) {
       console.warn('VoiceEngine: failed to start transcription recording pipeline', err);
       teardownTranscriptionCapture();

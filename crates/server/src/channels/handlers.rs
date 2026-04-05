@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::ai_transcribe::{decode_audio_upload, transcribe_pcm_chunks_to_segments};
 use crate::auth::{AdminUser, AuthUser};
@@ -1950,6 +1950,18 @@ pub async fn upload_transcription_recording(
         return Err(ApiError::BadRequest("invalid recording timestamps".into()).into());
     }
 
+    info!(
+        channel_id = %channel_id,
+        session_id = %session_id,
+        user_id = %auth.user_id,
+        size_bytes = payload.len(),
+        content_type = ?content_type,
+        file_name = ?file_name,
+        capture_started_ts_ms,
+        capture_ended_ts_ms = _capture_ended_ts_ms,
+        "received transcript recording upload"
+    );
+
     let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
         &state.db,
         &channel_id,
@@ -1988,6 +2000,14 @@ pub async fn upload_transcription_recording(
         content_type.as_deref(),
     )
     .await?;
+    info!(
+        channel_id = %channel_id,
+        session_id = %accepted_session.id,
+        user_id = %auth.user_id,
+        decoded_sample_rate_hz = decoded.sample_rate_hz,
+        decoded_pcm_bytes = decoded.pcm_s16le.len(),
+        "decoded transcript recording upload"
+    );
     let segments = transcribe_pcm_chunks_to_segments(
         &state,
         &auth,
@@ -2019,6 +2039,13 @@ pub async fn upload_transcription_recording(
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
         persisted_segments += 1;
     }
+    info!(
+        channel_id = %channel_id,
+        session_id = %accepted_session.id,
+        user_id = %auth.user_id,
+        persisted_segments,
+        "finished transcript recording upload"
+    );
     mark_transcription_upload_finished(&accepted_session.id, &auth.user_id);
 
     Ok(Json(TranscriptionRecordingUploadResponse {
@@ -2082,6 +2109,12 @@ pub async fn stop_transcription(
         .map(|user| user.user_id)
         .collect::<Vec<_>>();
     set_transcription_pending_uploads(&running.id, expected_upload_users);
+    info!(
+        channel_id = %channel_id,
+        session_id = %running.id,
+        pending_uploads = transcription_pending_upload_count(&running.id),
+        "finalizing transcript and waiting for browser recording uploads"
+    );
 
     state
         .channel_manager
