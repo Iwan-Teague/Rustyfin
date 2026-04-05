@@ -404,7 +404,7 @@ export default function WatchPartyPage() {
             )}
           </div>
 
-          <div className="border-t border-[var(--border-subtle)] pt-5">
+          <div className="pt-3">
             <button
               type="button"
               className="btn-primary w-full px-5 py-3 text-sm disabled:opacity-50"
@@ -446,7 +446,7 @@ export default function WatchPartyPage() {
           <div className="min-h-0 flex-1 overflow-y-auto pr-1">
             {sidebarTab === 'open_rooms' ? (
               publicRooms.length === 0 ? (
-                <div className="rf-flat-empty text-sm muted">No open rooms right now.</div>
+                <p className="text-sm muted">No open rooms right now.</p>
               ) : (
                 <div className="rf-flat-list">
                   {publicRooms.map((room) => (
@@ -472,7 +472,7 @@ export default function WatchPartyPage() {
                 </div>
               )
             ) : invites.length === 0 ? (
-              <div className="rf-flat-empty text-sm muted">No pending invites.</div>
+              <p className="text-sm muted">No pending invites.</p>
             ) : (
               <ul className="rf-flat-list">
                 {invites.map((invite) => (
