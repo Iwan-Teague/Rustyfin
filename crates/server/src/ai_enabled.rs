@@ -43,7 +43,7 @@ use crate::ai_assistant::{
     deterministic_multi_step_reply, deterministic_network_reply,
     deterministic_tool_inventory_reply, immediate_response_for_message, plan_execution_candidates,
     plan_tool_calls_with_model_assist, status_label_for_tool_call,
-    unsupported_write_response_for_message,
+    unsafe_action_response_for_message, unsupported_write_response_for_message,
 };
 use crate::ai_audit::{
     AiAssistantAuditResponseKind, persist_chat_audit_event, persist_chat_audit_event_with_planner,
@@ -616,6 +616,87 @@ fn stream_chat_response(
                     &activity_trace,
                     stats.as_ref(),
                     pending_action.as_ref(),
+                    Some(&trace_id),
+                )
+                .await;
+                persist_turn_grounding_artifacts(
+                    &state,
+                    &assistant_context,
+                    &persistence.conversation_id,
+                    turn_result,
+                    &grounding_chunks,
+                    &follow_up_contexts,
+                )
+                .await;
+            }
+            chat_metrics.mark_success();
+            set_engine_phase(&state, AssistantRuntimePhase::Idle).await;
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .event("token")
+                    .data(json!({ "text": assistant_content }).to_string()),
+            );
+            yield Ok::<Event, Infallible>(sse_json_event("stats", &stats));
+            yield Ok::<Event, Infallible>(Event::default().event("done").data("{}"));
+            return;
+        }
+
+        if let Some(message) = unsafe_action_response_for_message(&req.message) {
+            let planning_finished_ts_ms = now_ts_ms();
+            finish_phase(
+                &mut activity_trace,
+                AssistantPhase::Planning,
+                planning_finished_ts_ms,
+            );
+            yield Ok::<Event, Infallible>(sse_json_event(
+                "phase",
+                &AssistantPhaseEvent {
+                    phase: AssistantPhase::Planning,
+                    label: "Thinking...".to_string(),
+                    started_ts_ms: planning_started_ts_ms,
+                    finished_ts_ms: Some(planning_finished_ts_ms),
+                },
+            ));
+            assistant_content = message;
+            stats = Some(build_server_authored_turn_stats(
+                &req,
+                &assistant_content,
+                &grounding_chunks,
+                0,
+                0,
+                turn_started.elapsed().as_millis() as u64,
+                0,
+                0,
+                None,
+                None,
+            ));
+            persist_chat_audit_event(
+                &state,
+                &user,
+                &req,
+                &trace_id,
+                AiAssistantAuditResponseKind::UnsupportedWriteRefusal,
+                &[],
+                &[],
+                &grounding_chunks,
+                &[],
+                None,
+            )
+            .await;
+            if let Some(persistence) = &persistence {
+                let turn_result = crate::ai_conversations::persist_assistant_turn(
+                    &state,
+                    &user.user_id,
+                    &persistence.conversation_id,
+                    &assistant_content,
+                    &model_name,
+                    &[],
+                    &[],
+                    &grounding_chunks,
+                    &grounding_sources,
+                    &activity_trace,
+                    stats.as_ref(),
+                    None,
                     Some(&trace_id),
                 )
                 .await;
