@@ -1349,6 +1349,91 @@ fn build_transcript_markdown(
     out
 }
 
+fn split_transcript_text_into_entries(
+    text: &str,
+    started_ts_ms: i64,
+    ended_ts_ms: i64,
+) -> Vec<(i64, i64, String)> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = trimmed.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !normalized.is_empty() {
+                segments.push(normalized);
+            }
+            current.clear();
+            while matches!(chars.peek(), Some('\n' | ' ' | '\t')) {
+                chars.next();
+            }
+            continue;
+        }
+
+        current.push(ch);
+        let is_sentence_punctuation = matches!(ch, '.' | '!' | '?');
+        let next_is_boundary = chars
+            .peek()
+            .is_none_or(|next| next.is_whitespace() || matches!(next, '"' | '\'' | ')' | ']'));
+        if is_sentence_punctuation && next_is_boundary {
+            let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !normalized.is_empty() {
+                segments.push(normalized);
+            }
+            current.clear();
+        }
+    }
+
+    let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !normalized.is_empty() {
+        segments.push(normalized);
+    }
+
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    if segments.len() == 1 {
+        return vec![(
+            started_ts_ms,
+            ended_ts_ms.max(started_ts_ms + 1),
+            segments.remove(0),
+        )];
+    }
+
+    let total_duration = (ended_ts_ms - started_ts_ms).max(segments.len() as i64);
+    let weights: Vec<i64> = segments
+        .iter()
+        .map(|segment| segment.chars().count().max(1) as i64)
+        .collect();
+    let total_weight: i64 = weights.iter().sum();
+    let mut cumulative_weight: i64 = 0;
+    let mut previous_end = started_ts_ms;
+    let mut entries = Vec::with_capacity(segments.len());
+
+    for (index, segment) in segments.into_iter().enumerate() {
+        cumulative_weight += weights[index];
+        let next_end = if index + 1 == weights.len() {
+            ended_ts_ms.max(previous_end + 1)
+        } else {
+            let proportional_end = started_ts_ms
+                + ((total_duration as i128 * cumulative_weight as i128) / total_weight as i128)
+                    as i64;
+            proportional_end
+                .max(previous_end + 1)
+                .min(ended_ts_ms.max(previous_end + 1))
+        };
+        entries.push((previous_end, next_end, segment));
+        previous_end = next_end;
+    }
+
+    entries
+}
+
 async fn finalize_transcription_session(
     state: AppState,
     channel: rustfin_db::repo::channels::ChannelRow,
@@ -2126,20 +2211,24 @@ pub async fn upload_transcription_text(
     }
 
     let accepted_session = resolve_upload_session(&state, &channel_id, &body.session_id).await?;
-    rustfin_db::repo::channel_transcripts::append_entry(
-        &state.db,
-        rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
-            session_id: &accepted_session.id,
-            channel_id: &channel_id,
-            user_id: &auth.user_id,
-            username: &auth.username,
-            started_ts_ms: body.started_ts_ms,
-            ended_ts_ms: body.ended_ts_ms,
-            text,
-        },
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    for (segment_started_ts_ms, segment_ended_ts_ms, segment_text) in
+        split_transcript_text_into_entries(text, body.started_ts_ms, body.ended_ts_ms)
+    {
+        rustfin_db::repo::channel_transcripts::append_entry(
+            &state.db,
+            rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
+                session_id: &accepted_session.id,
+                channel_id: &channel_id,
+                user_id: &auth.user_id,
+                username: &auth.username,
+                started_ts_ms: segment_started_ts_ms,
+                ended_ts_ms: segment_ended_ts_ms,
+                text: &segment_text,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    }
     mark_transcription_upload_finished(&accepted_session.id, &auth.user_id);
 
     Ok(Json(TranscriptionTextUploadResponse {
@@ -2446,5 +2535,22 @@ mod tests {
 
         let markdown = build_transcript_markdown(&channel, &session, &entries);
         assert!(markdown.contains("[00:00:01.500 - 00:00:02.000] alice: hello there"));
+    }
+
+    #[test]
+    fn split_transcript_text_breaks_sentences_into_multiple_entries() {
+        let entries = split_transcript_text_into_entries(
+            "Hello there. This is a second sentence! Final one?",
+            1_000,
+            4_000,
+        );
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].2, "Hello there.");
+        assert_eq!(entries[1].2, "This is a second sentence!");
+        assert_eq!(entries[2].2, "Final one?");
+        assert_eq!(entries.first().map(|entry| entry.0), Some(1_000));
+        assert_eq!(entries.last().map(|entry| entry.1), Some(4_000));
+        assert!(entries.windows(2).all(|pair| pair[0].1 <= pair[1].0));
     }
 }
