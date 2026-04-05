@@ -44,17 +44,6 @@ const ROOT_NAV_ITEMS: RootNavItem[] = [
     ),
   },
   {
-    href: '/ai',
-    label: 'AI',
-    items: [],
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-        <path d="M8 6.5 12 4l4 2.5v5L12 14l-4-2.5v-5Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-        <path d="M8.5 15.5 12 18l3.5-2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
     href: '/server',
     label: 'Server',
     items: PRIMARY_NAV_GROUPS[2]?.items ?? [],
@@ -94,16 +83,6 @@ function AdminIcon() {
   );
 }
 
-function VoiceIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
-      <path d="M4 12a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="2.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-      <rect x="17.5" y="12" width="4" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
-  );
-}
-
 export default function NavBar() {
   const { me, loading } = useAuth();
   const {
@@ -120,7 +99,7 @@ export default function NavBar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
-  const [railHovered, setRailHovered] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
   const [expandedGroupHrefs, setExpandedGroupHrefs] = useState<string[]>([]);
 
   useEffect(() => {
@@ -157,11 +136,10 @@ export default function NavBar() {
   const deafened = hasLocalVoiceSession ? (voiceSession?.deafened ?? false) : false;
   const baseVoiceActionClass =
     'inline-flex h-9 w-9 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
-  const railExpanded = railHovered;
-
   const navLinks = useMemo(
     () => [
       ...ROOT_NAV_ITEMS.map(({ href, label }) => ({ href, label })),
+      { href: '/ai', label: 'AI' },
       ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
     ],
     [loading, me?.role],
@@ -178,42 +156,48 @@ export default function NavBar() {
   };
 
   const railLinkClass = (href: string) =>
-    `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] items-center rounded-[1.1rem] text-base font-semibold transition ${
+    `rf-nav-link rf-nav-root btn-ghost flex min-h-[3.35rem] w-full items-center justify-start gap-3 rounded-[1.1rem] px-3.5 text-base font-semibold transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
-    } ${
-      railExpanded ? 'w-full justify-start gap-3 px-3.5' : 'w-full justify-center px-0'
     }`;
 
   const railUtilityClass = (href: string) =>
-    `rf-nav-link btn-ghost flex min-h-[3.25rem] items-center rounded-[1.1rem] text-sm font-medium transition ${
+    `rf-nav-link btn-ghost flex min-h-[3.25rem] w-full items-center justify-start gap-3 rounded-[1.1rem] px-3.5 text-sm font-medium transition ${
       isActivePath(href) ? 'text-[var(--text-main)]' : ''
-    } ${
-      railExpanded ? 'w-full justify-start gap-3 px-3.5' : 'w-full justify-center px-0'
     }`;
 
-  const openGroupHrefs = railExpanded ? new Set(expandedGroupHrefs) : new Set<string>();
+  const openGroupHrefs = railOpen ? new Set(expandedGroupHrefs) : new Set<string>();
 
   const desktopRail = (
     <aside
       className={`app-nav app-nav-rail animate-rise hidden md:flex md:flex-col ${
-        railExpanded ? 'w-[15.75rem]' : 'w-[5.75rem]'
+        railOpen ? 'w-[13.9rem]' : 'w-[3.8rem]'
       }`}
-      data-expanded={railExpanded ? 'true' : 'false'}
-      onMouseEnter={() => setRailHovered(true)}
-      onMouseLeave={() => setRailHovered(false)}
+      data-expanded={railOpen ? 'true' : 'false'}
+      data-collapsed={railOpen ? 'false' : 'true'}
+      onMouseLeave={() => setRailOpen(false)}
     >
       <div className="flex items-center justify-center">
-        <Link
-          href="/"
-          className={`accent-logo flex h-11 items-center rounded-2xl px-2 text-center font-semibold transition hover:opacity-90 ${
-            railExpanded ? 'w-full justify-start text-2xl' : 'w-11 justify-center text-xl'
-          }`}
-          aria-label="Go to Rustyfin home"
-        >
-          <span className="shrink-0">{railExpanded ? 'Rustyfin' : 'R'}</span>
-        </Link>
+        {railOpen ? (
+          <Link
+            href="/"
+            className="accent-logo flex h-11 w-full items-center justify-start rounded-2xl px-2 text-left text-2xl font-semibold transition hover:opacity-90"
+            aria-label="Go to Rustyfin home"
+          >
+            <span className="shrink-0">Rustyfin</span>
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setRailOpen(true)}
+            className="accent-logo flex h-full w-full items-center justify-center rounded-[1.25rem] text-center text-xl font-semibold transition hover:bg-white/5"
+            aria-label="Open Rustyfin navigation"
+          >
+            <span className="shrink-0">R</span>
+          </button>
+        )}
       </div>
 
+      {railOpen ? (
       <div className="mt-5 flex min-h-0 flex-1 flex-col gap-2">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
           {ROOT_NAV_ITEMS.map((item) => {
@@ -235,7 +219,7 @@ export default function NavBar() {
                     }}
                   >
                     <span className="shrink-0">{item.icon}</span>
-                    {railExpanded ? <span className="truncate">{item.label}</span> : null}
+                    <span className="truncate">{item.label}</span>
                   </button>
                 ) : (
                   <Link
@@ -244,7 +228,7 @@ export default function NavBar() {
                     aria-current={isActivePath(item.href) ? 'page' : undefined}
                   >
                     <span className="shrink-0">{item.icon}</span>
-                    {railExpanded ? <span className="truncate">{item.label}</span> : null}
+                    <span className="truncate">{item.label}</span>
                   </Link>
                 )}
                 {item.items.length ? (
@@ -279,23 +263,21 @@ export default function NavBar() {
           <div className="mt-3 rounded-2xl border border-green-500/35 bg-black/30 p-2">
             <Link
               href="/channels"
-              className={`flex items-center text-green-300 ${railExpanded ? 'gap-3' : 'justify-center'}`}
+              className="flex items-center gap-3 text-green-300"
               title={`Open channel: ${activeVoiceChannelName}`}
             >
               <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green-500/12">
                 <span className="h-2.5 w-2.5 rounded-full bg-green-400" />
               </span>
-              {railExpanded ? (
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium">{activeVoiceChannelName}</span>
-                  <span className="block text-xs text-green-200/80">
-                    {hasLocalVoiceSession ? 'Connected' : 'In another tab'}
-                  </span>
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium">{activeVoiceChannelName}</span>
+                <span className="block text-xs text-green-200/80">
+                  {hasLocalVoiceSession ? 'Connected' : 'In another tab'}
                 </span>
-              ) : null}
+              </span>
             </Link>
 
-            {railExpanded && hasLocalVoiceSession ? (
+            {hasLocalVoiceSession ? (
               <div className="mt-2 flex items-center gap-2">
                 <button
                   type="button"
@@ -350,14 +332,6 @@ export default function NavBar() {
                 </button>
               </div>
             ) : null}
-
-            {!railExpanded ? (
-              <div className="mt-2 flex justify-center text-green-300/90">
-                <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-green-500/10">
-                  <VoiceIcon />
-                </span>
-              </div>
-            ) : null}
           </div>
         ) : null}
 
@@ -371,7 +345,7 @@ export default function NavBar() {
               <span className="shrink-0">
                 <AdminIcon />
               </span>
-              {railExpanded ? <span className="truncate">Admin</span> : null}
+              <span className="truncate">Admin</span>
             </Link>
           ) : null}
 
@@ -384,14 +358,14 @@ export default function NavBar() {
               <span className="shrink-0">
                 <UserIcon />
               </span>
-              {railExpanded ? <span className="truncate">{me.username}</span> : null}
+              <span className="truncate">{me.username}</span>
             </Link>
           ) : null}
 
           {!loading && me ? (
             <NotificationsPopover
               isAdmin={me.role === 'admin'}
-              className={railExpanded ? 'w-full' : ''}
+              className="w-full"
             />
           ) : null}
 
@@ -400,11 +374,12 @@ export default function NavBar() {
               <span className="shrink-0">
                 <UserIcon />
               </span>
-              {railExpanded ? <span className="truncate">Login</span> : null}
+              <span className="truncate">Login</span>
             </Link>
           ) : null}
         </div>
       </div>
+      ) : null}
     </aside>
   );
 

@@ -168,9 +168,18 @@ button:focus-visible {
     border-radius: 2rem;
     transition:
       width 240ms var(--ease-out-quart),
+      height 240ms var(--ease-out-quart),
+      padding 240ms var(--ease-out-quart),
+      border-radius 240ms var(--ease-out-quart),
       left var(--motion-base) var(--ease-out-quart),
       border-color var(--motion-base) var(--ease-out-quart),
       box-shadow var(--motion-base) var(--ease-out-quart);
+  }
+
+  .app-nav.app-nav-rail[data-collapsed="true"] {
+    height: 3.8rem;
+    padding: 0.28rem;
+    border-radius: 1.15rem;
   }
 }
 

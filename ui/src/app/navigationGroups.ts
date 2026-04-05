@@ -67,6 +67,11 @@ export const SERVER_GROUP: NavigationGroup = {
   description: 'Operational host surfaces for game servers, networking, and package delivery.',
   items: [
     {
+      href: '/ai',
+      label: 'AI',
+      description: 'Open the Rustyfin assistant and grounded runtime tools.',
+    },
+    {
       href: '/servers',
       label: 'Servers',
       description: 'Manage Minecraft servers, status, lifecycle, and provisioning.',
