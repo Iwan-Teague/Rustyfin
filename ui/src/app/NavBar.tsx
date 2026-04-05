@@ -8,7 +8,6 @@ import { createPortal } from 'react-dom';
 import NotificationsPopover from '@/app/components/NotificationsPopover';
 import {
   PRIMARY_NAV_GROUPS,
-  navigationGroupForPath,
   type NavigationGroupItem,
 } from '@/app/navigationGroups';
 import { useAuth } from '@/lib/auth';
@@ -95,14 +94,11 @@ export default function NavBar() {
     leaveVoice,
   } = useChannels();
   const pathname = usePathname();
-  const activeGroup = navigationGroupForPath(pathname);
   const [menuOpen, setMenuOpen] = useState(false);
   const [portalMounted, setPortalMounted] = useState(false);
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(
-    activeGroup?.href ?? null,
-  );
+  const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(null);
 
   useEffect(() => {
     setPortalMounted(true);
@@ -118,10 +114,6 @@ export default function NavBar() {
   useEffect(() => {
     setMenuOpen(false);
   }, [pathname]);
-
-  useEffect(() => {
-    setExpandedGroupHref(activeGroup?.href ?? null);
-  }, [activeGroup?.href]);
 
   if (pathname.startsWith('/setup') || pathname.startsWith('/login')) {
     return null;
@@ -239,7 +231,6 @@ export default function NavBar() {
                           className={`rf-nav-link rf-nav-subpage btn-ghost min-h-10 rounded-[0.95rem] px-3 py-2 text-center text-[0.95rem] font-medium ${
                             isActivePath(subItem.href) ? 'text-[var(--text-main)]' : 'text-white/70'
                           }`}
-                          aria-current={isActivePath(subItem.href) ? 'page' : undefined}
                           tabIndex={showChildren ? 0 : -1}
                         >
                           {subItem.label}
@@ -335,6 +326,7 @@ export default function NavBar() {
               href="/admin"
               className={railUtilityClass('/admin')}
               aria-current={isActivePath('/admin') ? 'page' : undefined}
+              onClick={() => setExpandedGroupHref(null)}
             >
               <span className="shrink-0">
                 <AdminIcon />
@@ -348,6 +340,7 @@ export default function NavBar() {
               href="/account"
               className={railUtilityClass('/account')}
               aria-current={isActivePath('/account') ? 'page' : undefined}
+              onClick={() => setExpandedGroupHref(null)}
             >
               <span className="shrink-0">
                 <UserIcon />
