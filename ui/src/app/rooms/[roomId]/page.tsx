@@ -1049,7 +1049,7 @@ export default function WatchPartyRoomPage() {
                 ]}
               />
             )}
-            <div className="relative min-h-[min(72vh,44rem)]">
+            <div className="relative min-h-[min(78vh,48rem)]">
               {hostCanChooseLocalMedia && (
                 <button
                   type="button"
@@ -1061,7 +1061,7 @@ export default function WatchPartyRoomPage() {
               )}
 
               {!roomItemId || roomItemId.trim().length === 0 ? (
-                <div className="flex min-h-[min(72vh,44rem)] items-center justify-center rounded-[2rem] bg-white/[0.02] px-6 py-8 text-center">
+                <div className="flex min-h-[min(78vh,48rem)] items-center justify-center rounded-[2.25rem] bg-white/[0.02] px-6 py-8 text-center">
                   <div className="mx-auto max-w-xl space-y-4">
                     <h2 className="text-2xl font-semibold sm:text-3xl">Local Media</h2>
                     <p className="text-sm muted sm:text-base">
@@ -1083,7 +1083,7 @@ export default function WatchPartyRoomPage() {
                   </div>
                 </div>
               ) : (
-                <div className="min-h-[min(72vh,44rem)] flex-1">
+                <div className="min-h-[min(78vh,48rem)] flex-1">
                   <VideoPlayerSurface
                     shellRef={roomVideoShellRef}
                     videoRef={playback.videoRef}
@@ -1272,7 +1272,7 @@ export default function WatchPartyRoomPage() {
           <section className="rf-flat-section flex h-[22rem] min-h-0 flex-col gap-4 border-t border-[var(--border-subtle)] pt-5">
             <h2 className="text-xl font-semibold">Invite to Room</h2>
             {invitableUsers.length === 0 ? (
-              <div className="rf-flat-empty text-sm muted">
+              <div className="text-sm muted">
                 All eligible users are already in this room.
               </div>
             ) : (
