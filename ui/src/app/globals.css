@@ -564,6 +564,11 @@ body[data-rf-page="channels"] .app-main {
 }
 
 @media (min-width: 768px) {
+  body[data-rf-page="channels"] .app-shell,
+  body[data-rf-page="ai"] .app-shell {
+    padding-inline-start: var(--page-pad-inline);
+  }
+
   html[data-rf-page="ai"],
   body[data-rf-page="ai"] {
     height: 100dvh;
@@ -664,6 +669,12 @@ body[data-rf-page="calendar"] .app-main {
 .ai-side-panel-shell[data-side="left"][data-open="false"] .ai-side-panel-inner {
   transform: translateX(-0.9rem);
   border-color: transparent;
+}
+
+@media (min-width: 768px) {
+  .ai-side-panel-shell[data-side="left"] {
+    padding-top: calc(var(--rail-collapsed-width) + 0.45rem);
+  }
 }
 
 .ai-side-panel-shell[data-side="right"][data-open="false"] .ai-side-panel-inner {
