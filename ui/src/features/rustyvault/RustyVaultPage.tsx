@@ -310,6 +310,11 @@ export default function RustyVaultPage() {
   });
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
+  const canSubmitVaultPrompt = config?.enabled
+    ? masterPassword.trim().length > 0
+    : masterPassword.length > 0 &&
+      confirmMasterPassword.length > 0 &&
+      masterPassword === confirmMasterPassword;
 
   async function withRustyVaultAccess<T>(
     callback: (accessToken: string) => Promise<T>,
@@ -939,7 +944,7 @@ export default function RustyVaultPage() {
                   <button
                     type="button"
                     className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={saving || cryptoSupported !== true}
+                    disabled={saving || !me || !canSubmitVaultPrompt}
                     onClick={() =>
                       runAction(
                         config?.enabled ? 'Vault unlocked.' : 'Vault created.',
