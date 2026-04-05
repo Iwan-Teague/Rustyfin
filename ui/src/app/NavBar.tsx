@@ -125,7 +125,7 @@ export default function NavBar() {
     }
   }, [activeGroup?.href]);
 
-  if (pathname.startsWith('/setup')) {
+  if (pathname.startsWith('/setup') || pathname.startsWith('/login')) {
     return null;
   }
 
