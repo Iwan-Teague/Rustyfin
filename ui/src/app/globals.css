@@ -33,7 +33,7 @@
   --rail-left-offset: clamp(0.35rem, 0.85vw, 0.75rem);
   --rail-collapsed-width: 4.05rem;
   --rail-collapsed-clearance: calc(
-    var(--rail-left-offset) + var(--rail-collapsed-width) + 0.45rem
+    var(--rail-left-offset) + var(--rail-collapsed-width) + 0.2rem
   );
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
@@ -252,7 +252,7 @@ button:focus-visible {
 @media (min-width: 768px) {
   .app-shell {
     display: block;
-    padding-inline-start: calc(var(--page-pad-inline) + var(--rail-collapsed-clearance));
+    padding-inline-start: max(var(--page-pad-inline), var(--rail-collapsed-clearance));
   }
 
   .app-main {
