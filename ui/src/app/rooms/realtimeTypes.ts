@@ -88,6 +88,7 @@ export type StartPlaybackOptions = {
   silent?: boolean;
   targetHeightOverride?: number | null;
   seekTimeOverrideSecs?: number;
+  syncRoomStateOnReady?: boolean;
 };
 
 export type RuntimeConfig = {
