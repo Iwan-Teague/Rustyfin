@@ -735,14 +735,14 @@ Behavior:
   --skip-prereqs    Skip host prerequisite installation
   --skip-systemd    Start Rustyfin directly instead of installing systemd services
   install-native-systemd
-                    Install or refresh the native Debian systemd units
+                    Install or refresh the native Linux systemd units
   build-native-binaries
                     Build and copy Linux binaries using Rust-owned target/toolchain policy
   build-native-runtime-artifacts
                     Build native Rust services plus the Next standalone UI using Rust-owned build policy
   plan-native-runtime
                     Resolve runtime ports, paths, URLs, and DB/network env for start-native.sh
-  deploy-native     Stop, update, rebuild, and restart the native Debian runtime
+  deploy-native     Stop, update, rebuild, and restart the native Linux runtime
   write-native-runtime-snapshot
                     Persist the current native runtime snapshot from env to disk
   launch-native-runtime
@@ -752,10 +752,14 @@ Behavior:
   clean-native-runtime
                     Stop services, reset native runtime state, and wipe PostgreSQL contents
 
+Public first-time Linux install entrypoint:
+  ./scripts/install_linux.sh
+
 Current support:
-  Full native install is currently implemented for Debian 12 and Debian 13.
-  The installer now owns Debian prerequisite installation, native runtime defaults,
-  systemd env/unit rendering, and install-manifest output.
+  Full native Linux install is currently implemented for Debian 12, Debian 13,
+  Ubuntu 22.04, and Ubuntu 24.04.
+  rustfin-installer is the internal Rust installer surface behind that wrapper and
+  owns native runtime defaults, systemd env/unit rendering, and install-manifest output.
 "
     );
 }
@@ -902,7 +906,7 @@ fn install(
     let adapter = crate::distro::resolve_adapter(host);
     if adapter.name() == "unsupported" {
         bail!(
-            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            "rustfin-installer currently supports Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04. Detected: {} {}.",
             host.id.as_deref().unwrap_or("unknown"),
             host.version_id.as_deref().unwrap_or("unknown")
         );
@@ -982,7 +986,7 @@ fn install_native_systemd_command(
     let adapter = crate::distro::resolve_adapter(host);
     if adapter.name() == "unsupported" {
         bail!(
-            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            "rustfin-installer currently supports Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04. Detected: {} {}.",
             host.id.as_deref().unwrap_or("unknown"),
             host.version_id.as_deref().unwrap_or("unknown")
         );
@@ -1916,7 +1920,7 @@ fn plan_native_runtime(
             .context("failed to execute pg_isready")?;
         if !status.success() {
             bail!(
-                "PostgreSQL is not ready at {}. Run ./scripts/install_native_debian.sh first, or start PostgreSQL.",
+                "PostgreSQL is not ready at {}. Run ./scripts/install_linux.sh first, or start PostgreSQL.",
                 database_target_log
             );
         }
@@ -2045,7 +2049,7 @@ fn deploy_native(
     let adapter = crate::distro::resolve_adapter(host);
     if adapter.name() == "unsupported" {
         bail!(
-            "rustfin-installer currently supports Debian 12/13 and Ubuntu LTS. Detected: {} {}.",
+            "rustfin-installer currently supports Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04. Detected: {} {}.",
             host.id.as_deref().unwrap_or("unknown"),
             host.version_id.as_deref().unwrap_or("unknown")
         );

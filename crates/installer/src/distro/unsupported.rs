@@ -23,7 +23,7 @@ impl DistroAdapter for UnsupportedAdapter {
 
     fn install_packages(&self, _user_context: &NativeUserContext) -> Result<()> {
         bail!(
-            "Unsupported distribution: {} {}. Currently only Debian 12/13 and Ubuntu 22.04/24.04 LTS are supported.",
+            "Unsupported distribution: {} {}. Currently only Debian 12, Debian 13, Ubuntu 22.04, and Ubuntu 24.04 are supported.",
             self.id,
             self.version
         );

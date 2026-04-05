@@ -6,6 +6,8 @@ This is the current operational runtime model for Rustyfin.
 
 - Debian 12 (Bookworm)
 - Debian 13 (Trixie)
+- Ubuntu 22.04 (Jammy) for the first-time Linux installer/bootstrap path
+- Ubuntu 24.04 (Noble) for the first-time Linux installer/bootstrap path
 - headless or minimal install
 - `systemd`
 - PostgreSQL installed on the host
@@ -40,18 +42,15 @@ From the repository root:
 ./scripts/install_linux.sh
 ```
 
-This is the preferred one-shot entrypoint. It bootstraps Rust if needed and then hands off to the Rust installer (`cargo run -p rustfin-installer`), which currently drives the supported Debian native install flow.
-At this stage, the Rust installer owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if the stack fails to come up.
+This is the preferred one-shot entrypoint. It bootstraps Rust if needed and then hands off to the Rust installer (`cargo run -p rustfin-installer`), which currently drives the supported Linux install flow.
+At this stage, the Rust installer owns Linux prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if the stack fails to come up.
 The public native shell scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
 
-Manual Debian-native path:
-
-```bash
-./scripts/install_native_debian.sh
-./scripts/start-native.sh
-```
-
-That path now loads the native env/default layers in shell and hands artifact build plus launch/health orchestration to the Rust installer.
+Compatibility note:
+- `./scripts/install_native_debian.sh` is a deprecated shim that delegates to `./scripts/install_linux.sh`.
+- If you invoke the installer directly as `root`, set `RUSTFIN_NATIVE_USER=<user>` unless root-owned repo/build artifacts are intentional.
+- Debian CUDA installs still require the appropriate `non-free` / `non-free-firmware` repository components to be enabled.
+- The Whisper transcription model is downloaded lazily on first transcription use rather than during install.
 
 ## Boot Persistence
 

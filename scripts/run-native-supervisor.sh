@@ -15,14 +15,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 SAFE_TMP_DIR="${RUSTFIN_TMPDIR:-$REPO_ROOT/.tmp}"
-RUNTIME_ROOT="${RUSTFIN_NATIVE_RUNTIME_DIR:-$SAFE_TMP_DIR/native-runtime}"
-PID_DIR="$RUNTIME_ROOT/pids"
 RUNTIME_ENV_FILE="$REPO_ROOT/.rustyfin.runtime.env"
+
+recompute_runtime_dirs() {
+  RUNTIME_ROOT="${RUSTFIN_NATIVE_RUNTIME_DIR:-$SAFE_TMP_DIR/native-runtime}"
+  PID_DIR="$RUNTIME_ROOT/pids"
+}
+
+recompute_runtime_dirs
 
 if [[ -f "$RUNTIME_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$RUNTIME_ENV_FILE" || true
 fi
+
+recompute_runtime_dirs
 
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-8096}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-3000}"
@@ -121,6 +128,7 @@ if [[ -f "$RUNTIME_ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$RUNTIME_ENV_FILE" || true
 fi
+recompute_runtime_dirs
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-$BACKEND_PORT}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-$UI_EDGE_PORT}"
 

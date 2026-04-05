@@ -29,7 +29,7 @@ Supported hosts:
 Environment:
   REPO_ROOT            Path to the Rustyfin checkout (default: current directory)
   RUSTFIN_NATIVE_USER  Native runtime/build user (default: current non-root user,
-                       or SUDO_USER when invoked as root via sudo)
+                       or SUDO_USER/repo owner when invoked as root)
   RUSTFIN_PG_USER      PostgreSQL role to create/update (default: rustfin)
   RUSTFIN_PG_PASSWORD  PostgreSQL password (default: rustfin)
   RUSTFIN_PG_DB        PostgreSQL database to create (default: rustfin)
@@ -47,6 +47,8 @@ REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 [[ -d "$REPO_ROOT/crates" ]] || die "REPO_ROOT does not look like the Rustyfin repository: $REPO_ROOT"
 
 cd "$REPO_ROOT"
+
+REPO_OWNER_USER="$(stat -c %U "$REPO_ROOT" 2>/dev/null || true)"
 
 [[ -f /etc/os-release ]] || die "/etc/os-release not found"
 # shellcheck disable=SC1091
@@ -86,7 +88,15 @@ run_root() {
 if [[ -n "${RUSTFIN_NATIVE_USER:-}" ]]; then
   NATIVE_USER="$RUSTFIN_NATIVE_USER"
 elif [[ "$(id -u)" -eq 0 ]]; then
-  NATIVE_USER="${SUDO_USER:-root}"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    NATIVE_USER="$SUDO_USER"
+  elif [[ -n "$REPO_OWNER_USER" && "$REPO_OWNER_USER" != "root" ]]; then
+    NATIVE_USER="$REPO_OWNER_USER"
+    warn "Running install as root without RUSTFIN_NATIVE_USER; using repo owner $NATIVE_USER to avoid root-owned build artifacts."
+  else
+    NATIVE_USER="root"
+    warn "Running install as root with native user root will create root-owned build artifacts. Set RUSTFIN_NATIVE_USER=<user> if that is not intended."
+  fi
 else
   NATIVE_USER="${USER:-$(id -un)}"
 fi
