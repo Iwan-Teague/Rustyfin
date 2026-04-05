@@ -348,6 +348,7 @@ export function useRoomPlayback({
           options.seekTimeOverrideSecs >= 0
             ? options.seekTimeOverrideSecs
             : undefined;
+        const syncRoomStateOnReady = options.syncRoomStateOnReady ?? true;
         destroyHls();
         if (sessionIdRef.current) {
           await stopSession(sessionIdRef.current);
@@ -370,7 +371,7 @@ export function useRoomPlayback({
         const Hls = (await import('hls.js')).default;
         const canNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
         const shouldAutoplay =
-          roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
+          syncRoomStateOnReady && roomState ? roomState.playing : (options.autoplayWhenNoState ?? true);
         video.preload = 'auto';
         video.autoplay = shouldAutoplay;
 
@@ -428,7 +429,7 @@ export function useRoomPlayback({
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             reinforceKnownDuration();
             applyVideoAudioState(video, preservedAudioState);
-            if (roomState) {
+            if (syncRoomStateOnReady && roomState) {
               void applyRemoteStateRef.current(roomState);
             } else if (shouldAutoplay) {
               if (!playbackKickPending) return;
@@ -483,7 +484,7 @@ export function useRoomPlayback({
           video.load();
           applyVideoAudioState(video, preservedAudioState);
           await waitForVideoMetadata(video);
-          if (roomState) {
+          if (syncRoomStateOnReady && roomState) {
             await applyRemoteStateRef.current(roomState);
           } else if (options.autoplayWhenNoState ?? true) {
             await attemptPlayWithWarmup(video);
@@ -513,6 +514,66 @@ export function useRoomPlayback({
       setInfo,
       hlsTargetHeight,
       mediaInfo,
+    ],
+  );
+
+  const handleSeek = useCallback(
+    async (targetSeconds: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const shouldResumeAfterSeek =
+        roomState ? roomState.playing : (!video.paused && !video.ended);
+
+      try {
+        video.pause();
+      } catch {
+        // no-op
+      }
+
+      const knownDurationSeconds = Math.max(
+        descriptor?.duration_ms && descriptor.duration_ms > 0 ? descriptor.duration_ms / 1000 : 0,
+        mediaInfo?.duration_secs && mediaInfo.duration_secs > 0 ? mediaInfo.duration_secs : 0,
+      );
+      const effectiveDurationSeconds = Math.max(knownDurationSeconds, video.duration || 0);
+      const safeTarget = Math.max(0, Math.min(targetSeconds, effectiveDurationSeconds || targetSeconds));
+      if (!Number.isFinite(safeTarget)) return;
+
+      const currentWindowDuration = Math.max(
+        hlsAvailableWindowDurationSecs,
+        readBufferedWindowDuration(video),
+      );
+      const bufferedWindowEndSecs = hlsSessionStartOffsetSecs + currentWindowDuration;
+      const requiresSessionRestart =
+        safeTarget < Math.max(0, hlsSessionStartOffsetSecs - 1) ||
+        safeTarget > bufferedWindowEndSecs + 1;
+
+      if (requiresSessionRestart) {
+        await startHls({
+          autoplayWhenNoState: shouldResumeAfterSeek,
+          silent: true,
+          targetHeightOverride: hlsTargetHeight,
+          seekTimeOverrideSecs: safeTarget,
+          syncRoomStateOnReady: false,
+        });
+        return;
+      }
+
+      video.currentTime = Math.max(0, safeTarget - hlsSessionStartOffsetSecs);
+      await waitForVideoFrameData(video).catch(() => {});
+      if (shouldResumeAfterSeek) {
+        applyVideoAudioState(video, audioStateRef.current);
+        await attemptPlayWithWarmup(video);
+      }
+    },
+    [
+      descriptor?.duration_ms,
+      hlsAvailableWindowDurationSecs,
+      hlsSessionStartOffsetSecs,
+      hlsTargetHeight,
+      mediaInfo?.duration_secs,
+      roomState,
+      startHls,
     ],
   );
 
@@ -731,6 +792,7 @@ export function useRoomPlayback({
     applyingRemoteRef,
     applyRemoteState,
     startHls,
+    handleSeek,
     resetPlaybackState,
   };
 }

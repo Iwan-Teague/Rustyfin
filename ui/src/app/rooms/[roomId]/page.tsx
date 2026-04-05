@@ -117,6 +117,7 @@ export default function WatchPartyRoomPage() {
   const { me, loading: authLoading } = useAuth();
 
   const roomId = params.roomId as string;
+  const roomVideoShellRef = useRef<HTMLDivElement>(null);
 
   const appendDebug = useCallback((message: string) => {
     if (typeof window !== 'undefined') {
@@ -1020,7 +1021,7 @@ export default function WatchPartyRoomPage() {
       {joinedRole && isVideoRoom && (
         <>
           <section
-            className={`rf-flat-section relative space-y-4 ${watchWindowShiftClass}`}
+            className={`rf-flat-section relative flex flex-col gap-4 ${watchWindowShiftClass}`}
           >
             {isWatchRoom && (
               <WatchSourceTabsBar
@@ -1075,11 +1076,14 @@ export default function WatchPartyRoomPage() {
               )
             ) : (
               <>
+                <div className="min-h-[min(72vh,44rem)] flex-1">
                 <VideoPlayerSurface
+                  shellRef={roomVideoShellRef}
                   videoRef={playback.videoRef}
                   playbackKey={roomItemId}
                   artworkUrl={roomLoadingArtworkUrl}
                   artworkAlt={roomLoadingArtworkAlt}
+                  surfaceStyle="immersive"
                   canStartPlayback={Boolean(playback.descriptor)}
                   knownDurationSecs={playback.knownDurationMs > 0 ? playback.knownDurationMs / 1000 : 0}
                   bufferedWindowEndSecs={
@@ -1106,6 +1110,7 @@ export default function WatchPartyRoomPage() {
                           currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
                             ? currentAbsoluteSeconds
                             : undefined,
+                        syncRoomStateOnReady: false,
                       });
                       if (!started) {
                         playback.setHlsTargetHeight(previousTargetHeight ?? null);
@@ -1113,33 +1118,8 @@ export default function WatchPartyRoomPage() {
                     })();
                   }}
                   onSeekRequest={async (targetSeconds) => {
-                    const video = playback.videoRef.current;
-                    if (!video || !canSeek) return;
-                    const currentWindowDuration = Math.max(
-                      playback.hlsAvailableWindowDurationSecs,
-                      Number.isFinite(video.currentTime) && video.currentTime > 0
-                        ? video.currentTime
-                        : 0,
-                    );
-                    const bufferedWindowEndSecs =
-                      playback.hlsSessionStartOffsetSecs + currentWindowDuration;
-                    const requiresSessionRestart =
-                      targetSeconds < Math.max(0, playback.hlsSessionStartOffsetSecs - 1) ||
-                      targetSeconds > bufferedWindowEndSecs + 1;
-
-                    if (requiresSessionRestart) {
-                      await playback.startHls({
-                        silent: true,
-                        targetHeightOverride: playback.hlsTargetHeight,
-                        seekTimeOverrideSecs: targetSeconds,
-                        autoplayWhenNoState: realtime.roomState?.playing ?? false,
-                      });
-                    } else {
-                      video.currentTime = Math.max(
-                        0,
-                        targetSeconds - playback.hlsSessionStartOffsetSecs,
-                      );
-                    }
+                    if (!canSeek) return;
+                    await playback.handleSeek(targetSeconds);
 
                     if (playback.applyingRemoteRef.current) return;
                     sendWs({
@@ -1156,7 +1136,7 @@ export default function WatchPartyRoomPage() {
                     !controlsEnabled ? 'Playback controls are host-only in this room.' : null
                   }
                   statusText={!controlsEnabled ? 'Playback controls are host-only in this room.' : null}
-                  maxViewportHeightClassName="max-h-[70vh]"
+                  maxViewportHeightClassName="h-full max-h-full"
                   videoElementProps={{
                     preload: 'auto',
                     onPlay: (event) => {
@@ -1182,6 +1162,7 @@ export default function WatchPartyRoomPage() {
                     },
                   }}
                 />
+                </div>
                 {joinedRole === 'host' && reconfigure.reconfigureVideoLibraries.length > 0 ? (
                   <div className="border-t border-[var(--border-subtle)] pt-4">
                     <MediaPicker
