@@ -47,6 +47,12 @@ interface PersistedAudioDevicePrefs {
   outputDeviceId: string | null;
 }
 
+type RuntimeIceServer = {
+  urls: string[];
+  username?: string;
+  credential?: string;
+};
+
 export interface ChannelsContextValue {
   wsReady: boolean;
   sendWs: (msg: object) => void;
@@ -205,6 +211,9 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   const [lastWsEvent, setLastWsEvent] = useState<ChannelEvent | null>(null);
   const [voiceEngineEvents, setVoiceEngineEvents] = useState<VoiceEngineEventEnvelope[]>([]);
   const [voiceSession, setVoiceSession] = useState<VoiceSession | null>(null);
+  const [voiceIceServers, setVoiceIceServers] = useState<RuntimeIceServer[]>([
+    { urls: ['stun:stun.l.google.com:19302'] },
+  ]);
   const hasLocalVoiceSession = voiceSession !== null;
   const connectedVoiceChannelId =
     voiceSession?.channelId ??
@@ -287,6 +296,51 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
     const prefs = loadAudioDevicePrefs();
     setPreferredInputDeviceId(prefs.inputDeviceId);
     setPreferredOutputDeviceId(prefs.outputDeviceId);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await fetch('/runtime-config', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const payload = (await response.json()) as {
+          ice_servers?: RuntimeIceServer[];
+        };
+        if (cancelled) {
+          return;
+        }
+        const nextIceServers = Array.isArray(payload.ice_servers)
+          ? payload.ice_servers
+              .map((server) => ({
+                urls: Array.isArray(server?.urls)
+                  ? server.urls.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+                  : [],
+                username:
+                  typeof server?.username === 'string' && server.username.trim().length > 0
+                    ? server.username.trim()
+                    : undefined,
+                credential:
+                  typeof server?.credential === 'string' && server.credential.trim().length > 0
+                    ? server.credential.trim()
+                    : undefined,
+              }))
+              .filter((server) => server.urls.length > 0)
+          : [];
+        if (nextIceServers.length > 0) {
+          setVoiceIceServers(nextIceServers);
+        }
+      } catch {
+        // Keep default STUN-only fallback if runtime-config lookup fails.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Keep voiceSessionRef in sync so WS callbacks always see the latest session
@@ -958,6 +1012,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
           existingMembers={voiceSession.existingMembers}
           wsEvents={voiceEngineEvents}
           sendWs={sendWs}
+          iceServers={voiceIceServers}
           deafened={voiceSession.deafened}
           remoteVolumes={remoteVolumes}
           localMicGain={localMicGain}

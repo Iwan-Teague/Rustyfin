@@ -116,6 +116,7 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
 - Channels
   - Text channels with attachments
   - Voice channels with WebRTC audio
+  - Voice channels can use runtime-configured ICE/TURN servers via `RUSTFIN_WEBRTC_ICE_SERVERS_JSON` or the `RUSTFIN_WEBRTC_STUN_URL` / `RUSTFIN_WEBRTC_TURN_URL(S)` envs when direct peer connectivity is not enough
   - Whisper-based transcription
   - Saved voice-call transcripts now prefer browser speech recognition when available, fall back to per-user browser audio uploads on stop/save, and merge the resulting transcript entries by timestamp into the final markdown document
 - Calendar
