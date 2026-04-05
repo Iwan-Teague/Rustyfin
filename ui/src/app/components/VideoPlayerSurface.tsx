@@ -309,6 +309,7 @@ export default function VideoPlayerSurface({
   const [showSettings, setShowSettings] = useState(false);
   const [pendingSeekSecs, setPendingSeekSecs] = useState<number | null>(null);
   const [hasEverPlayed, setHasEverPlayed] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(false);
 
   const syncFromVideo = useCallback(() => {
     const video = videoRef.current;
@@ -385,6 +386,12 @@ export default function VideoPlayerSurface({
   useEffect(() => {
     setHasEverPlayed(false);
   }, [playbackKey]);
+
+  useEffect(() => {
+    if (!controlsVisible && showSettings) {
+      setShowSettings(false);
+    }
+  }, [controlsVisible, showSettings]);
 
   useEffect(() => {
     return () => {
@@ -512,6 +519,7 @@ export default function VideoPlayerSurface({
   }, [toggleFullscreen]);
 
   const showArtworkOverlay = Boolean(artworkUrl && canStartPlayback && !hasEverPlayed);
+  const controlsActive = controlsVisible || showSettings;
 
   return (
     <div
@@ -528,6 +536,9 @@ export default function VideoPlayerSurface({
             ? 'relative flex min-h-0 flex-1 cursor-pointer items-center justify-center bg-black'
             : 'relative cursor-pointer'
         }
+        onMouseEnter={() => setControlsVisible(true)}
+        onMouseMove={() => setControlsVisible(true)}
+        onMouseLeave={() => setControlsVisible(false)}
         onClick={() => {
           handleVideoSingleClick();
         }}
@@ -561,9 +572,17 @@ export default function VideoPlayerSurface({
             <div className="absolute inset-0 bg-gradient-to-t from-black/45 via-black/10 to-black/20" />
           </div>
         ) : null}
-      </div>
-      <div className="shrink-0 border-t border-white/10 bg-[linear-gradient(180deg,rgba(24,28,40,0.96),rgba(17,20,28,0.98))] px-3 py-3">
-        <div className="flex flex-wrap items-center gap-3">
+        <div
+          className={`absolute inset-x-0 bottom-0 z-20 transition duration-200 ${
+            controlsActive
+              ? 'translate-y-0 opacity-100'
+              : 'pointer-events-none translate-y-3 opacity-0'
+          }`}
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+        >
+          <div className="bg-gradient-to-t from-black/90 via-[rgba(14,16,24,0.72)] to-transparent px-3 pb-3 pt-8">
+            <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={() => void togglePlayback()}
@@ -703,12 +722,14 @@ export default function VideoPlayerSurface({
               {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
             </button>
           </div>
-        </div>
-        {statusText && (
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs muted">
-            <span>{statusText}</span>
+            </div>
+            {statusText && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs muted">
+                <span>{statusText}</span>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );
