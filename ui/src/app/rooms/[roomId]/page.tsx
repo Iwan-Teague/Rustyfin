@@ -1201,7 +1201,7 @@ export default function WatchPartyRoomPage() {
               {activeMembers.map((member) => (
                 <li
                   key={member.user_id}
-                  className={`rf-flat-row transition ${
+                  className={`rf-flat-row room-panel-row transition ${
                     member.connected ? 'room-member-online' : 'room-member-offline'
                   }`}
                 >
@@ -1237,7 +1237,12 @@ export default function WatchPartyRoomPage() {
                       const checked = user.id in inviteSelections;
                       const role = inviteSelections[user.id] ?? 'viewer';
                       return (
-                        <li key={user.id} className="rf-flat-row">
+                        <li
+                          key={user.id}
+                          className={`rf-flat-row room-panel-row room-invite-row ${
+                            checked ? 'room-invite-row-active' : ''
+                          }`}
+                        >
                           <div className="flex items-center justify-between gap-3">
                             <div className="flex min-w-0 items-center gap-3">
                               <input
