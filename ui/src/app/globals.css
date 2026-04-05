@@ -299,6 +299,10 @@ button:focus-visible {
   animation: calendar-surface-enter-reset 220ms var(--ease-out-quart) both;
 }
 
+.vault-workspace-panel {
+  animation: vault-workspace-panel-enter 180ms var(--ease-out-quart) both;
+}
+
 .rf-flat-list {
   display: flex;
   min-width: 0;
@@ -2103,6 +2107,18 @@ body:not([data-rf-page="ai"]) .rf-notify-item .chip {
   from {
     opacity: 0;
     transform: translate3d(0, 10px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes vault-workspace-panel-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
   }
 
   to {

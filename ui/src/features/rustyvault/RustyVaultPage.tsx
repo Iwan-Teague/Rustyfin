@@ -731,6 +731,13 @@ export default function RustyVaultPage() {
     rustyVaultSession ? 'Web session active' : 'No web session',
   ];
 
+  const workspaceContentClassName =
+    activeWorkspaceTab === 'vault'
+      ? 'grid grid-cols-1 gap-7 xl:grid-cols-[1.15fr_0.85fr]'
+      : activeWorkspaceTab === 'generator'
+        ? 'mx-auto max-w-5xl'
+        : 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]';
+
   if (authLoading || loadingState) {
     return (
       <div className="rf-flat-empty animate-rise px-5 py-4">
@@ -800,8 +807,8 @@ export default function RustyVaultPage() {
 
       <section className="rf-flat-section border-t border-[var(--border)]/70 pt-5 sm:pt-6">
         <SurfaceTabsBar
-          variant="flat"
-          className="border-b border-[var(--border)] pb-0"
+          variant="vault"
+          className="border-b border-[var(--border)]/70 pb-0"
           activeKey={activeWorkspaceTab}
           onSelect={setActiveWorkspaceTab}
           options={[
@@ -813,9 +820,9 @@ export default function RustyVaultPage() {
           badgesClassName="-translate-y-[2px]"
         />
 
-        <div className="pt-6">
+        <div key={activeWorkspaceTab} className="vault-workspace-panel pt-5 sm:pt-6">
           {activeWorkspaceTab === 'vault' && (
-            <div className="grid grid-cols-1 gap-7 xl:grid-cols-[1.15fr_0.85fr]">
+            <div className={workspaceContentClassName}>
               <div className="space-y-7">
                 <div className="panel space-y-5 p-6">
                   <div className="flex items-center justify-between gap-4">
@@ -1334,7 +1341,7 @@ export default function RustyVaultPage() {
           )}
 
           {activeWorkspaceTab === 'generator' && (
-            <div className="mx-auto max-w-5xl">
+            <div className={workspaceContentClassName}>
               <div className="panel space-y-5 p-6">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
@@ -1470,7 +1477,7 @@ export default function RustyVaultPage() {
           )}
 
           {activeWorkspaceTab === 'extension' && (
-            <div className="grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]">
+            <div className={workspaceContentClassName}>
               <div className="space-y-7">
                 <div className="panel space-y-5 p-6">
                   <div>
