@@ -29,6 +29,7 @@ export function findDataDeleteTarget(
 export async function playTelegramDeleteAnimation(
   element: HTMLElement | null | undefined,
   durationMs = 540,
+  options?: { keepHiddenAtEnd?: boolean },
 ): Promise<void> {
   if (!element) return;
   if (isReducedMotionPreferred()) return;
@@ -45,8 +46,13 @@ export async function playTelegramDeleteAnimation(
       if (resolved) return;
       resolved = true;
       element.removeEventListener('animationend', onAnimationEnd);
-      element.classList.remove(DELETE_ANIM_CLASS);
-      element.classList.remove(DELETE_TARGET_CLASS);
+      if (options?.keepHiddenAtEnd) {
+        element.style.opacity = '0';
+        element.style.pointerEvents = 'none';
+      } else {
+        element.classList.remove(DELETE_ANIM_CLASS);
+        element.classList.remove(DELETE_TARGET_CLASS);
+      }
       resolve();
     };
     const onAnimationEnd = (event: AnimationEvent) => {

@@ -287,6 +287,18 @@ button:focus-visible {
   padding-top: 1.1rem;
 }
 
+.calendar-surface-enter-forward {
+  animation: calendar-surface-enter-forward 220ms var(--ease-out-quart) both;
+}
+
+.calendar-surface-enter-backward {
+  animation: calendar-surface-enter-backward 220ms var(--ease-out-quart) both;
+}
+
+.calendar-surface-enter-reset {
+  animation: calendar-surface-enter-reset 220ms var(--ease-out-quart) both;
+}
+
 .rf-flat-list {
   display: flex;
   min-width: 0;
@@ -2013,6 +2025,42 @@ body:not([data-rf-page="ai"]) .rf-notify-item .chip {
 
   to {
     opacity: 0;
+  }
+}
+
+@keyframes calendar-surface-enter-forward {
+  from {
+    opacity: 0;
+    transform: translate3d(18px, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes calendar-surface-enter-backward {
+  from {
+    opacity: 0;
+    transform: translate3d(-18px, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes calendar-surface-enter-reset {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
   }
 }
 
