@@ -46,6 +46,10 @@ export async function playTelegramDeleteAnimation(
     const originalHeight = element.style.height;
     const originalMarginTop = element.style.marginTop;
     const originalMarginBottom = element.style.marginBottom;
+    const originalPaddingTop = element.style.paddingTop;
+    const originalPaddingBottom = element.style.paddingBottom;
+    const originalBorderTopWidth = element.style.borderTopWidth;
+    const originalBorderBottomWidth = element.style.borderBottomWidth;
     const originalOverflow = element.style.overflow;
     const originalWillChange = element.style.willChange;
     const originalOpacity = element.style.opacity;
@@ -54,6 +58,10 @@ export async function playTelegramDeleteAnimation(
     element.style.height = `${rect.height}px`;
     element.style.marginTop = computed.marginTop;
     element.style.marginBottom = computed.marginBottom;
+    element.style.paddingTop = computed.paddingTop;
+    element.style.paddingBottom = computed.paddingBottom;
+    element.style.borderTopWidth = computed.borderTopWidth;
+    element.style.borderBottomWidth = computed.borderBottomWidth;
     void element.offsetHeight;
 
     element.style.transition = [
@@ -61,11 +69,19 @@ export async function playTelegramDeleteAnimation(
       `height ${durationMs}ms var(--ease-out-quart)`,
       `margin-top ${durationMs}ms var(--ease-out-quart)`,
       `margin-bottom ${durationMs}ms var(--ease-out-quart)`,
+      `padding-top ${durationMs}ms var(--ease-out-quart)`,
+      `padding-bottom ${durationMs}ms var(--ease-out-quart)`,
+      `border-top-width ${durationMs}ms var(--ease-out-quart)`,
+      `border-bottom-width ${durationMs}ms var(--ease-out-quart)`,
     ].join(', ');
     element.style.opacity = '0';
     element.style.height = '0px';
     element.style.marginTop = '0px';
     element.style.marginBottom = '0px';
+    element.style.paddingTop = '0px';
+    element.style.paddingBottom = '0px';
+    element.style.borderTopWidth = '0px';
+    element.style.borderBottomWidth = '0px';
 
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, durationMs + 120);
@@ -82,6 +98,10 @@ export async function playTelegramDeleteAnimation(
     element.style.height = originalHeight;
     element.style.marginTop = originalMarginTop;
     element.style.marginBottom = originalMarginBottom;
+    element.style.paddingTop = originalPaddingTop;
+    element.style.paddingBottom = originalPaddingBottom;
+    element.style.borderTopWidth = originalBorderTopWidth;
+    element.style.borderBottomWidth = originalBorderBottomWidth;
     element.style.overflow = originalOverflow;
     element.style.willChange = originalWillChange;
     element.style.opacity = originalOpacity;
