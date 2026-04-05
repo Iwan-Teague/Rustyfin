@@ -960,7 +960,7 @@ export default function PlayerPage() {
   const loadingArtworkUrl = item?.thumb_url ?? item?.poster_url ?? item?.backdrop_url ?? null;
 
   return (
-    <div className="rf-flat-page animate-rise h-full min-h-0 gap-3 overflow-hidden">
+    <div className="rf-flat-page animate-rise h-full min-h-0 w-full gap-3 overflow-hidden">
       <header className="rf-flat-header shrink-0">
         <h1 className="text-3xl font-semibold">{playerTitle}</h1>
         {showTitle && <p className="text-sm muted">{showTitle}</p>}
@@ -976,54 +976,56 @@ export default function PlayerPage() {
         </p>
       )}
 
-      <VideoPlayerSurface
-        shellRef={playerShellRef}
-        videoRef={videoRef}
-        playbackKey={id}
-        artworkUrl={loadingArtworkUrl}
-        artworkAlt={playerTitle}
-        enableSpacebarToggle
-        surfaceStyle="immersive"
-        canStartPlayback={canStartPlayback}
-        knownDurationSecs={knownDurationSecs}
-        bufferedWindowEndSecs={
-          hlsSessionStartOffsetSecs + Math.max(hlsAvailableWindowDurationSecs, readBufferedWindowDuration(videoRef.current))
-        }
-        sessionStartOffsetSecs={hlsSessionStartOffsetSecs}
-        qualityValue={selectedQualityValue}
-        qualityOptions={qualityOptions}
-        qualityDisabled={startingHls}
-        onPlaybackToggleRequest={handlePlaybackToggleRequest}
-        onQualityChange={(value) => {
-          const nextTargetHeight = value === 'auto' ? null : value;
-          const video = videoRef.current;
-          const currentAbsoluteSeconds =
-            video && Number.isFinite(video.currentTime) && video.currentTime >= 0
-              ? hlsSessionStartOffsetSecs + video.currentTime
-              : undefined;
-          setHlsTargetHeight(nextTargetHeight);
-          void startHls({
-            targetHeightOverride: nextTargetHeight,
-            seekTimeOverrideSecs:
-              currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
-                ? currentAbsoluteSeconds
-                : undefined,
-          });
-        }}
-        onSeekRequest={handleSeek}
-        onDownload={handleDownload}
-        downloading={downloading}
-        downloadDisabled={startingHls || !descriptor?.file_id}
-        playbackEnabled={canStartPlayback}
-        seekEnabled={canStartPlayback}
-        maxViewportHeightClassName="h-full max-h-full"
-        videoElementProps={{
-          preload: 'metadata',
-          onError: () => {
-            setError('HLS playback failed. Refresh the page and retry.');
-          },
-        }}
-      />
+      <div className="flex min-h-0 flex-1 items-stretch justify-center pb-3 md:pb-4 md:pl-[calc(var(--rail-collapsed-width)*0.28)]">
+        <VideoPlayerSurface
+          shellRef={playerShellRef}
+          videoRef={videoRef}
+          playbackKey={id}
+          artworkUrl={loadingArtworkUrl}
+          artworkAlt={playerTitle}
+          enableSpacebarToggle
+          surfaceStyle="immersive"
+          canStartPlayback={canStartPlayback}
+          knownDurationSecs={knownDurationSecs}
+          bufferedWindowEndSecs={
+            hlsSessionStartOffsetSecs + Math.max(hlsAvailableWindowDurationSecs, readBufferedWindowDuration(videoRef.current))
+          }
+          sessionStartOffsetSecs={hlsSessionStartOffsetSecs}
+          qualityValue={selectedQualityValue}
+          qualityOptions={qualityOptions}
+          qualityDisabled={startingHls}
+          onPlaybackToggleRequest={handlePlaybackToggleRequest}
+          onQualityChange={(value) => {
+            const nextTargetHeight = value === 'auto' ? null : value;
+            const video = videoRef.current;
+            const currentAbsoluteSeconds =
+              video && Number.isFinite(video.currentTime) && video.currentTime >= 0
+                ? hlsSessionStartOffsetSecs + video.currentTime
+                : undefined;
+            setHlsTargetHeight(nextTargetHeight);
+            void startHls({
+              targetHeightOverride: nextTargetHeight,
+              seekTimeOverrideSecs:
+                currentAbsoluteSeconds !== undefined && currentAbsoluteSeconds > 0.25
+                  ? currentAbsoluteSeconds
+                  : undefined,
+            });
+          }}
+          onSeekRequest={handleSeek}
+          onDownload={handleDownload}
+          downloading={downloading}
+          downloadDisabled={startingHls || !descriptor?.file_id}
+          playbackEnabled={canStartPlayback}
+          seekEnabled={canStartPlayback}
+          maxViewportHeightClassName="h-full max-h-full"
+          videoElementProps={{
+            preload: 'metadata',
+            onError: () => {
+              setError('HLS playback failed. Refresh the page and retry.');
+            },
+          }}
+        />
+      </div>
     </div>
   );
 }
