@@ -21,6 +21,7 @@ import { clientErrorMessage } from '@/lib/errors';
 
 type CalendarView = 'month' | 'week' | 'next_7_days' | 'agenda_30' | 'events_30';
 type CalendarSidePanelMode = 'closed' | 'editor' | 'day';
+type CalendarNavMotion = 'idle' | 'forward' | 'backward' | 'reset';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const YMD_PREFIX_RE = /^(\d{4}-\d{2}-\d{2})/;
@@ -183,6 +184,7 @@ export default function CalendarPage() {
   const [selectedDayYmd, setSelectedDayYmd] = useState<string | null>(null);
   const [monthViewCondensed, setMonthViewCondensed] = useState(false);
   const [removingEventIds, setRemovingEventIds] = useState<string[]>([]);
+  const [navMotion, setNavMotion] = useState<CalendarNavMotion>('idle');
   const monthGridRef = useRef<HTMLDivElement | null>(null);
 
   const [title, setTitle] = useState('');
@@ -239,6 +241,14 @@ export default function CalendarPage() {
   const panelOpen = sidePanelMode !== 'closed';
   const eventPanelButtonLabel =
     sidePanelMode === 'closed' ? 'Show Event Panel' : 'Hide Event Panel';
+  const calendarSurfaceMotionClass =
+    navMotion === 'forward'
+      ? 'calendar-surface-enter-forward'
+      : navMotion === 'backward'
+        ? 'calendar-surface-enter-backward'
+        : navMotion === 'reset'
+          ? 'calendar-surface-enter-reset'
+          : '';
 
   useEffect(() => {
     document.documentElement.dataset.rfPage = 'calendar';
@@ -248,6 +258,14 @@ export default function CalendarPage() {
       delete document.body.dataset.rfPage;
     };
   }, []);
+
+  useEffect(() => {
+    if (navMotion === 'idle') {
+      return;
+    }
+    const timer = window.setTimeout(() => setNavMotion('idle'), 240);
+    return () => window.clearTimeout(timer);
+  }, [navMotion]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -380,7 +398,7 @@ export default function CalendarPage() {
   const onDelete = async (eventId: string, target?: HTMLElement | null) => {
     setError(null);
     try {
-      await playTelegramDeleteAnimation(target);
+      await playTelegramDeleteAnimation(target, 540, { keepHiddenAtEnd: true });
       setRemovingEventIds((prev) => (prev.includes(eventId) ? prev : [...prev, eventId]));
       setEvents((prev) => prev.filter((event) => event.id !== eventId));
       setAdminPersonalEvents((prev) => prev.filter((event) => event.id !== eventId));
@@ -429,6 +447,23 @@ export default function CalendarPage() {
     setSidePanelMode('day');
   }, []);
 
+  const shiftAnchor = useCallback(
+    (direction: -1 | 1) => {
+      setNavMotion(direction > 0 ? 'forward' : 'backward');
+      setAnchorDate((prev) => nextAnchor(view, prev, direction));
+    },
+    [view],
+  );
+
+  const jumpToToday = useCallback(() => {
+    const todayAnchor = withNoon(new Date());
+    if (sameCalendarDay(anchorDate, todayAnchor)) {
+      return;
+    }
+    setNavMotion('reset');
+    setAnchorDate(todayAnchor);
+  }, [anchorDate]);
+
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise h-full min-h-0 w-full overflow-hidden">
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:h-full lg:grid-cols-[minmax(0,1fr)_auto]">
@@ -455,21 +490,21 @@ export default function CalendarPage() {
               <button
                 type="button"
                 className="rf-text-action rf-text-action-soft text-sm"
-                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, -1))}
+                onClick={() => shiftAnchor(-1)}
               >
                 Previous
               </button>
               <button
                 type="button"
                 className="rf-text-action rf-text-action-soft text-sm"
-                onClick={() => setAnchorDate(withNoon(new Date()))}
+                onClick={jumpToToday}
               >
                 Today
               </button>
               <button
                 type="button"
                 className="rf-text-action rf-text-action-soft text-sm"
-                onClick={() => setAnchorDate((prev) => nextAnchor(view, prev, 1))}
+                onClick={() => shiftAnchor(1)}
               >
                 Next
               </button>
@@ -485,7 +520,10 @@ export default function CalendarPage() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0">
+          <div
+            key={`${view}:${fromYmd}:${toYmd}`}
+            className={`flex-1 min-h-0 ${calendarSurfaceMotionClass}`}
+          >
             {loading ? (
               <div
                 className="rf-flat-empty h-full px-4 py-10 text-sm muted text-center flex items-center justify-center"
