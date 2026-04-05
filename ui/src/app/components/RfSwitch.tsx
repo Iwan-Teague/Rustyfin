@@ -5,16 +5,26 @@ type Props = {
   checked: boolean;
   onChange: (checked: boolean) => void;
   className?: string;
+  disabled?: boolean;
 };
 
-export default function RfSwitch({ label, checked, onChange, className }: Props) {
+export default function RfSwitch({
+  label,
+  checked,
+  onChange,
+  className,
+  disabled = false,
+}: Props) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       data-checked={checked}
-      className={['rf-vault-switch', className].filter(Boolean).join(' ')}
+      disabled={disabled}
+      className={['rf-vault-switch disabled:cursor-not-allowed disabled:opacity-60', className]
+        .filter(Boolean)
+        .join(' ')}
       onClick={() => onChange(!checked)}
     >
       <span className="rf-vault-switch-track" aria-hidden="true">

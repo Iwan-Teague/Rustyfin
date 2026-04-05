@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiJson } from '@/lib/api';
+import RfSwitch from '@/app/components/RfSwitch';
 import {
   deleteAiModel,
   fetchAiAuditEvents,
@@ -455,18 +456,18 @@ function AdminToggleButton({
   onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
-      data-active={checked ? 'true' : 'false'}
-      aria-pressed={checked}
+    <RfSwitch
+      label={label}
+      checked={checked}
       disabled={disabled}
-      onClick={onToggle}
-      className={`rf-room-mode-btn inline-flex items-center justify-center gap-2 px-4 py-2 text-sm ${
-        checked ? 'btn-primary' : 'btn-secondary'
-      } ${className}`.trim()}
-    >
-      {label}
-    </button>
+      onChange={() => {
+        if (disabled) {
+          return;
+        }
+        onToggle();
+      }}
+      className={`rf-room-options-switch ${className}`.trim()}
+    />
   );
 }
 
@@ -3106,7 +3107,7 @@ export default function AdminPage() {
                       </label>
                     </div>
 
-                    <div className="flex flex-wrap gap-2 text-sm">
+                    <div className="grid gap-2 text-sm sm:grid-cols-2">
                       <AdminToggleButton
                         checked={aiRemoteBackendInput.enabled}
                         label="Enabled"
