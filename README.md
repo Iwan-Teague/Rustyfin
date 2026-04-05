@@ -115,6 +115,7 @@ The supported runtime target is native Debian 12 and Debian 13. The repository n
   - Text channels with attachments
   - Voice channels with WebRTC audio
   - Whisper-based transcription
+  - Saved voice-call transcripts now record each speaker locally in the browser, upload per-user audio on stop/save, and merge the resulting transcript entries by timestamp into the final markdown document
 - Calendar
   - Shared and personal event planning
 - Servers
