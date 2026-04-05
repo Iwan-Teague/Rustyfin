@@ -90,6 +90,7 @@ export default function VoiceEngine({
   const transcriptionChunksRef = useRef<Blob[]>([]);
   const transcriptionCaptureStartedAtRef = useRef<number>(0);
   const activeTranscriptionSessionRef = useRef<string | null>(null);
+  const transcriptionStopRequestedRef = useRef(false);
 
   function getAudioContext(): AudioContext | null {
     if (audioContextRef.current) {
@@ -126,13 +127,17 @@ export default function VoiceEngine({
   function teardownTranscriptionCapture() {
     const recorder = transcriptionRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
-      recorder.stop();
+      if (!transcriptionStopRequestedRef.current) {
+        transcriptionStopRequestedRef.current = true;
+        recorder.stop();
+      }
       return;
     }
     transcriptionRecorderRef.current = null;
     transcriptionChunksRef.current = [];
     transcriptionCaptureStartedAtRef.current = 0;
     activeTranscriptionSessionRef.current = null;
+    transcriptionStopRequestedRef.current = false;
   }
 
   function stopSpeakingMonitor(userId: string) {
@@ -594,8 +599,11 @@ export default function VoiceEngine({
       const recorder = mimeType
         ? new MediaRecorder(transcriptionStream, { mimeType })
         : new MediaRecorder(transcriptionStream);
+      const sessionIdForUpload = sessionId;
+      const startedAt = Date.now();
       transcriptionChunksRef.current = [];
-      transcriptionCaptureStartedAtRef.current = Date.now();
+      transcriptionCaptureStartedAtRef.current = startedAt;
+      transcriptionStopRequestedRef.current = false;
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           transcriptionChunksRef.current.push(event.data);
@@ -605,13 +613,12 @@ export default function VoiceEngine({
         console.warn('VoiceEngine: transcript recorder error', event);
       };
       recorder.onstop = () => {
-        const sessionIdForUpload = activeTranscriptionSessionRef.current;
-        const startedAt = transcriptionCaptureStartedAtRef.current;
         const chunks = [...transcriptionChunksRef.current];
         transcriptionRecorderRef.current = null;
         transcriptionChunksRef.current = [];
         transcriptionCaptureStartedAtRef.current = 0;
         activeTranscriptionSessionRef.current = null;
+        transcriptionStopRequestedRef.current = false;
         if (!sessionIdForUpload || chunks.length === 0) {
           return;
         }
