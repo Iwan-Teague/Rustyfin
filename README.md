@@ -172,9 +172,9 @@ Preferred one-shot Linux installer:
 ./scripts/install_linux.sh
 ```
 
-This bootstraps Rust if needed and then hands off to `cargo run -p rustfin-installer`.
-The current full native install flow behind that installer is implemented for Debian 12 and Debian 13.
-The Rust installer now owns Debian prerequisite installation, native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, first-install starter AI model seeding into the active AI model directory when AI is enabled, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if startup fails.
+This bootstraps the host for Rustyfin, including sudo preflight, Ubuntu repository components, official Caddy setup, and Node.js 20 bootstrap where needed, then hands off to `cargo run --locked -p rustfin-installer -- install --skip-prereqs`.
+The current full native install flow is implemented for Debian 12 and Debian 13, plus Ubuntu 22.04 and Ubuntu 24.04.
+The Rust installer now owns native-user detection, Rust toolchain provisioning for the native runtime user, `yt-dlp`, PostgreSQL bootstrap, managed Java 21 provisioning, installer-written native runtime defaults at `/etc/rustyfin/native-runtime.defaults.sh`, first-install starter AI model seeding into the active AI model directory when AI is enabled, native runtime planning for ports/media/DB/origins, runtime TLS/token/snapshot persistence, native Linux binary build orchestration, native runtime artifact builds for Rust services plus the Next standalone UI, native runtime launch/stop orchestration, native clean-reset behavior, native deploy orchestration, direct `systemd` install/refresh, install-manifest output, and post-install `systemd` runtime validation with captured diagnostics if startup fails.
 The public native scripts now act as compatibility wrappers around `rustfin-installer` subcommands.
 
 Install host dependencies:

@@ -192,7 +192,7 @@ command -v cargo >/dev/null 2>&1 || die "cargo was not installed successfully"
 command -v rustc >/dev/null 2>&1 || die "rustc was not installed successfully"
 
 info "Installing yt-dlp runtime..."
-python3 -m pip install --break-system-packages --upgrade yt-dlp
+"${RUN_ROOT[@]}" python3 -m pip install --break-system-packages --upgrade yt-dlp
 
 info "Ensuring PostgreSQL is running..."
 "${RUN_ROOT[@]}" systemctl enable --now postgresql
