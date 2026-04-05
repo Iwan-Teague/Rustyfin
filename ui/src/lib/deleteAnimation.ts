@@ -29,10 +29,65 @@ export function findDataDeleteTarget(
 export async function playTelegramDeleteAnimation(
   element: HTMLElement | null | undefined,
   durationMs = 540,
-  options?: { keepHiddenAtEnd?: boolean },
+  options?: { keepHiddenAtEnd?: boolean; collapse?: boolean },
 ): Promise<void> {
   if (!element) return;
   if (isReducedMotionPreferred()) return;
+
+  if (options?.collapse) {
+    element.classList.add(DELETE_TARGET_CLASS);
+    element.style.pointerEvents = 'none';
+    element.style.overflow = 'hidden';
+    element.style.willChange = 'opacity, height, margin';
+
+    const rect = element.getBoundingClientRect();
+    const computed = window.getComputedStyle(element);
+    const originalTransition = element.style.transition;
+    const originalHeight = element.style.height;
+    const originalMarginTop = element.style.marginTop;
+    const originalMarginBottom = element.style.marginBottom;
+    const originalOverflow = element.style.overflow;
+    const originalWillChange = element.style.willChange;
+    const originalOpacity = element.style.opacity;
+    const originalPointerEvents = element.style.pointerEvents;
+
+    element.style.height = `${rect.height}px`;
+    element.style.marginTop = computed.marginTop;
+    element.style.marginBottom = computed.marginBottom;
+    void element.offsetHeight;
+
+    element.style.transition = [
+      `opacity ${durationMs}ms var(--ease-out-quart)`,
+      `height ${durationMs}ms var(--ease-out-quart)`,
+      `margin-top ${durationMs}ms var(--ease-out-quart)`,
+      `margin-bottom ${durationMs}ms var(--ease-out-quart)`,
+    ].join(', ');
+    element.style.opacity = '0';
+    element.style.height = '0px';
+    element.style.marginTop = '0px';
+    element.style.marginBottom = '0px';
+
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, durationMs + 120);
+    });
+
+    if (options.keepHiddenAtEnd) {
+      element.style.opacity = '0';
+      element.style.pointerEvents = 'none';
+      return;
+    }
+
+    element.classList.remove(DELETE_TARGET_CLASS);
+    element.style.transition = originalTransition;
+    element.style.height = originalHeight;
+    element.style.marginTop = originalMarginTop;
+    element.style.marginBottom = originalMarginBottom;
+    element.style.overflow = originalOverflow;
+    element.style.willChange = originalWillChange;
+    element.style.opacity = originalOpacity;
+    element.style.pointerEvents = originalPointerEvents;
+    return;
+  }
 
   element.classList.add(DELETE_TARGET_CLASS);
   if (element.classList.contains(DELETE_ANIM_CLASS)) {

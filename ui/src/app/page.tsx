@@ -158,7 +158,7 @@ export default function HomePage() {
         }),
       });
       const target = findDataDeleteTarget('data-home-continue-id', itemId);
-      await playTelegramDeleteAnimation(target);
+      await playTelegramDeleteAnimation(target, 540, { keepHiddenAtEnd: true, collapse: true });
       setContinueWatching((prev) => prev.filter((item) => item.id !== itemId));
     } catch (err: unknown) {
       setError(clientErrorMessage(err, 'Failed to remove from Continue Watching'));
