@@ -913,10 +913,10 @@ export default function CalendarPage() {
         </section>
 
         <aside
-          className={`rf-flat-section border-t border-[var(--border)]/70 pt-4 transition-[width,opacity] duration-200 ease-out sm:pt-5 ${
+          className={`rf-flat-section pt-4 transition-[width,opacity] duration-200 ease-out sm:pt-5 ${
             panelOpen
               ? 'block lg:w-[15rem] lg:opacity-100'
-              : 'hidden lg:block lg:w-0 lg:overflow-hidden lg:border-transparent lg:opacity-0'
+              : 'hidden lg:block lg:w-0 lg:overflow-hidden lg:opacity-0'
           } lg:h-full lg:min-h-0 lg:pt-0 lg:overflow-y-auto`}
         >
             {sidePanelMode === 'day' ? (
