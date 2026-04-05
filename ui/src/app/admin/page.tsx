@@ -1916,17 +1916,14 @@ export default function AdminPage() {
         </p>
       )}
 
-      <div className="flex flex-wrap gap-2 border-b border-[var(--border)]/70 pb-0">
+      <div className="rf-top-tabbar border-b border-[var(--border)]/70 pb-0">
         {ADMIN_TABS.map((tab) => (
           <button
             key={tab.key}
             type="button"
             onClick={() => setActiveTab(tab.key)}
-            className={`border-b-2 px-1 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === tab.key
-                ? 'border-[var(--orange-soft)] text-white'
-                : 'border-transparent text-white/55 hover:border-white/14 hover:text-white/80'
-            }`}
+            className="rf-top-tab"
+            data-active={activeTab === tab.key}
           >
             {tab.label}
           </button>

@@ -57,17 +57,14 @@ export default function SurfaceTabsBar<T extends string>({
                         : 'border-transparent text-white/62 hover:border-white/16 hover:text-white'
                     }`
                   : variant === 'vault'
-                    ? `relative rounded-none px-0 py-1.5 text-sm font-medium transition-colors disabled:opacity-60 ${
-                        activeKey === key
-                          ? 'text-white after:absolute after:bottom-0 after:left-0 after:right-0 after:h-px after:bg-[rgba(255,255,255,0.55)]'
-                          : 'text-white/58 hover:text-white'
-                      }`
+                    ? `rf-top-tab disabled:opacity-60`
                   : `rounded-t-lg px-5 py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
                       activeKey === key
                         ? 'border border-[var(--border)] border-b-0 bg-[var(--surface)]'
                         : 'opacity-60 hover:border hover:border-[var(--border)] hover:border-b-0 hover:border-opacity-50 hover:bg-[var(--surface)] hover:bg-opacity-50 hover:opacity-100'
                     }`
               }
+              data-active={variant === 'vault' ? activeKey === key : undefined}
             >
               {label}
             </button>
