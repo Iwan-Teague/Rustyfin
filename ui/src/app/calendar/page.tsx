@@ -162,15 +162,11 @@ function shouldIgnoreDaySurfaceActivation(
   return Boolean(interactive && interactive !== currentTarget);
 }
 
-function eventBadgeClass(event: CalendarEvent): string {
-  if (event.event_type === 'birthday') {
-    return 'border-pink-400/45 bg-pink-500/10';
-  }
-  if (event.scope === 'global') {
-    return 'border-amber-300/45 bg-amber-500/10';
-  }
-  return 'border-[var(--border)] bg-white/5';
-}
+const CALENDAR_EVENT_ITEM_CLASS = 'space-y-1 px-0 py-1 text-white';
+const CALENDAR_EVENT_TITLE_CLASS = 'font-semibold leading-tight text-white';
+const CALENDAR_EVENT_META_CLASS = 'mt-0.5 leading-tight text-white/65';
+const CALENDAR_EVENT_ACTION_CLASS =
+  'rf-text-action rf-text-action-soft px-0 py-0 text-[10px] sm:text-xs';
 
 export default function CalendarPage() {
   const { me } = useAuth();
@@ -186,6 +182,7 @@ export default function CalendarPage() {
   const [sidePanelMode, setSidePanelMode] = useState<CalendarSidePanelMode>('closed');
   const [selectedDayYmd, setSelectedDayYmd] = useState<string | null>(null);
   const [monthViewCondensed, setMonthViewCondensed] = useState(false);
+  const [removingEventIds, setRemovingEventIds] = useState<string[]>([]);
   const monthGridRef = useRef<HTMLDivElement | null>(null);
 
   const [title, setTitle] = useState('');
@@ -384,12 +381,16 @@ export default function CalendarPage() {
     setError(null);
     try {
       await playTelegramDeleteAnimation(target);
+      setRemovingEventIds((prev) => (prev.includes(eventId) ? prev : [...prev, eventId]));
+      setEvents((prev) => prev.filter((event) => event.id !== eventId));
+      setAdminPersonalEvents((prev) => prev.filter((event) => event.id !== eventId));
       await deleteCalendarEvent(eventId);
       if (editingEventId === eventId) {
         resetForm();
       }
-      await reload();
     } catch (err: unknown) {
+      setRemovingEventIds((prev) => prev.filter((id) => id !== eventId));
+      await reload();
       setError(clientErrorMessage(err, 'Failed to delete event'));
     }
   };
@@ -538,32 +539,34 @@ export default function CalendarPage() {
                       }}
                     >
                       <p className="text-sm font-semibold">{day.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</p>
-                      {dayEvents.length === 0 ? (
+                      {dayEvents.filter((event) => !removingEventIds.includes(event.id)).length === 0 ? (
                         <p className="text-xs muted">No events</p>
                       ) : (
                         <div className="space-y-1">
-                          {dayEvents.map((event) => (
+                          {dayEvents
+                            .filter((event) => !removingEventIds.includes(event.id))
+                            .map((event) => (
                             <div
                               key={event.occurrence_id}
                               data-calendar-event-id={event.id}
-                              className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}
+                              className={`${CALENDAR_EVENT_ITEM_CLASS} text-xs`}
                             >
-                              <p className="font-medium">{event.title}</p>
-                              {event.display_description && <p className="muted">{event.display_description}</p>}
+                              <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
+                              {event.display_description && <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>}
                               {event.owner_username && event.scope === 'personal' && (
-                                <p className="muted">Owner: {event.owner_username}</p>
+                                <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
                               )}
                               {(event.can_edit || event.can_delete) && (
                                 <div className="mt-1 flex gap-2">
                                   {event.can_edit && (
-                                    <button type="button" className="btn-ghost px-2 py-0.5 text-xs" onClick={() => onEdit(event)}>
+                                    <button type="button" className={CALENDAR_EVENT_ACTION_CLASS} onClick={() => onEdit(event)}>
                                       Edit
                                     </button>
                                   )}
                                   {event.can_delete && (
                                     <button
                                       type="button"
-                                      className="btn-ghost px-2 py-0.5 text-xs text-red-300"
+                                      className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
                                       onClick={(e) =>
                                         void onDelete(
                                           event.id,
@@ -626,32 +629,34 @@ export default function CalendarPage() {
                             </div>
                             <span className="text-xs muted">{dayEvents.length} events</span>
                           </div>
-                          {dayEvents.length === 0 ? (
+                          {dayEvents.filter((event) => !removingEventIds.includes(event.id)).length === 0 ? (
                             <p className="text-xs muted">No events</p>
                           ) : (
                             <div className="space-y-1">
-                              {dayEvents.map((event) => (
+                              {dayEvents
+                                .filter((event) => !removingEventIds.includes(event.id))
+                                .map((event) => (
                                 <div
                                   key={event.occurrence_id}
                                   data-calendar-event-id={event.id}
-                                  className={`rounded-lg border px-2 py-1.5 text-xs ${eventBadgeClass(event)}`}
+                                  className={`${CALENDAR_EVENT_ITEM_CLASS} text-xs`}
                                 >
-                                  <p className="font-medium">{event.title}</p>
-                                  {event.display_description && <p className="muted">{event.display_description}</p>}
+                                  <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
+                                  {event.display_description && <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>}
                                   {event.owner_username && event.scope === 'personal' && (
-                                    <p className="muted">Owner: {event.owner_username}</p>
+                                    <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
                                   )}
                                   {(event.can_edit || event.can_delete) && (
                                     <div className="mt-1 flex gap-2">
                                       {event.can_edit && (
-                                        <button type="button" className="btn-ghost px-2 py-0.5 text-xs" onClick={() => onEdit(event)}>
+                                        <button type="button" className={CALENDAR_EVENT_ACTION_CLASS} onClick={() => onEdit(event)}>
                                           Edit
                                         </button>
                                       )}
                                       {event.can_delete && (
                                         <button
                                           type="button"
-                                          className="btn-ghost px-2 py-0.5 text-xs text-red-300"
+                                          className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
                                           onClick={(e) =>
                                             void onDelete(
                                               event.id,
@@ -719,25 +724,27 @@ export default function CalendarPage() {
                             <span className="text-[11px] muted">{dayEvents.length}</span>
                           </div>
                           <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
-                            {dayEvents.map((event) => (
+                            {dayEvents
+                              .filter((event) => !removingEventIds.includes(event.id))
+                              .map((event) => (
                               <div
                                 key={event.occurrence_id}
                                 data-calendar-event-id={event.id}
-                                className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
+                                className={`${CALENDAR_EVENT_ITEM_CLASS} text-[11px]`}
                               >
-                                <p className="font-semibold leading-tight">{event.title}</p>
+                                <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
                                 {event.display_description && (
-                                  <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
+                                  <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>
                                 )}
                                 {event.owner_username && event.scope === 'personal' && (
-                                  <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
+                                  <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
                                 )}
                                 {(event.can_edit || event.can_delete) && (
                                   <div className="mt-1 flex gap-1">
                                     {event.can_edit && (
                                       <button
                                         type="button"
-                                        className="btn-ghost px-1.5 py-0.5 text-[10px]"
+                                        className={CALENDAR_EVENT_ACTION_CLASS}
                                         onClick={() => onEdit(event)}
                                       >
                                         Edit
@@ -746,7 +753,7 @@ export default function CalendarPage() {
                                     {event.can_delete && (
                                       <button
                                         type="button"
-                                        className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
+                                        className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
                                         onClick={(e) =>
                                           void onDelete(
                                             event.id,
@@ -850,25 +857,27 @@ export default function CalendarPage() {
                           <p className="mt-auto text-[11px] muted">{condensedCountLabel}</p>
                         ) : (
                           <div className="space-y-1 overflow-y-auto pr-1 min-h-0">
-                            {dayEvents.map((event) => (
+                            {dayEvents
+                              .filter((event) => !removingEventIds.includes(event.id))
+                              .map((event) => (
                               <div
                                 key={event.occurrence_id}
                                 data-calendar-event-id={event.id}
-                                className={`rounded-lg border px-2 py-1.5 text-[11px] ${eventBadgeClass(event)}`}
+                                className={`${CALENDAR_EVENT_ITEM_CLASS} text-[11px]`}
                               >
-                                <p className="font-semibold leading-tight">{event.title}</p>
+                                <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
                                 {event.display_description && (
-                                  <p className="mt-0.5 muted leading-tight">{event.display_description}</p>
+                                  <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>
                                 )}
                                 {event.owner_username && event.scope === 'personal' && (
-                                  <p className="mt-0.5 muted leading-tight">Owner: {event.owner_username}</p>
+                                  <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
                                 )}
                                 {(event.can_edit || event.can_delete) && (
                                   <div className="mt-1 flex gap-1">
                                     {event.can_edit && (
                                       <button
                                         type="button"
-                                        className="btn-ghost px-1.5 py-0.5 text-[10px]"
+                                        className={CALENDAR_EVENT_ACTION_CLASS}
                                         onClick={() => onEdit(event)}
                                       >
                                         Edit
@@ -877,7 +886,7 @@ export default function CalendarPage() {
                                     {event.can_delete && (
                                       <button
                                         type="button"
-                                        className="btn-ghost px-1.5 py-0.5 text-[10px] text-red-300"
+                                        className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
                                         onClick={(e) =>
                                           void onDelete(
                                             event.id,
@@ -953,22 +962,24 @@ export default function CalendarPage() {
                       This day is clear.
                     </div>
                   ) : (
-                    selectedDayEvents.map((event) => (
+                    selectedDayEvents
+                      .filter((event) => !removingEventIds.includes(event.id))
+                      .map((event) => (
                       <div
                         key={event.occurrence_id}
                         data-calendar-event-id={event.id}
-                        className={`rounded-xl border px-3 py-3 text-sm ${eventBadgeClass(event)}`}
+                        className={`${CALENDAR_EVENT_ITEM_CLASS} px-0 py-2 text-sm`}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1">
-                            <p className="font-semibold">{event.title}</p>
+                            <p className={CALENDAR_EVENT_TITLE_CLASS}>{event.title}</p>
                             {event.display_description && (
-                              <p className="muted">{event.display_description}</p>
+                              <p className={CALENDAR_EVENT_META_CLASS}>{event.display_description}</p>
                             )}
                             {event.owner_username && event.scope === 'personal' && (
-                              <p className="muted">Owner: {event.owner_username}</p>
+                              <p className={CALENDAR_EVENT_META_CLASS}>Owner: {event.owner_username}</p>
                             )}
-                            <p className="text-xs muted">
+                            <p className="text-xs text-white/65">
                               {event.event_type === 'birthday'
                                 ? 'Birthday'
                                 : event.scope === 'global'
@@ -982,7 +993,7 @@ export default function CalendarPage() {
                             {event.can_edit && (
                               <button
                                 type="button"
-                                className="btn-ghost px-3 py-1 text-xs"
+                                className={CALENDAR_EVENT_ACTION_CLASS}
                                 onClick={() => onEdit(event)}
                               >
                                 Edit
@@ -991,7 +1002,7 @@ export default function CalendarPage() {
                             {event.can_delete && (
                               <button
                                 type="button"
-                                className="btn-ghost px-3 py-1 text-xs text-red-300"
+                                className={`${CALENDAR_EVENT_ACTION_CLASS} text-red-300`}
                                 onClick={(e) =>
                                   void onDelete(
                                     event.id,
