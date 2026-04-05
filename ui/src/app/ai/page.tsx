@@ -1540,6 +1540,8 @@ export default function AiPage() {
   const browserSpeechShouldContinueRef = useRef(false);
   const browserSpeechTranscriptRef = useRef('');
   const browserSpeechBaseInputRef = useRef('');
+  const browserSpeechSuppressFinalizeRef = useRef(false);
+  const discardPendingVoiceTranscriptRef = useRef(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<Blob[]>([]);
@@ -1881,6 +1883,8 @@ export default function AiPage() {
       browserSpeechShouldContinueRef.current = false;
       browserSpeechTranscriptRef.current = '';
       browserSpeechBaseInputRef.current = '';
+      browserSpeechSuppressFinalizeRef.current = false;
+      discardPendingVoiceTranscriptRef.current = false;
       recognitionRef.current?.abort();
       if (mediaRecorderRef.current?.state && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
@@ -1924,6 +1928,12 @@ export default function AiPage() {
 
   const applyVoiceTranscript = useCallback(
     (transcript: string) => {
+      if (discardPendingVoiceTranscriptRef.current) {
+        discardPendingVoiceTranscriptRef.current = false;
+        setVoiceState('idle');
+        setVoiceError(null);
+        return;
+      }
       const next = transcript.trim();
       if (!next) {
         setVoiceState('error');
@@ -2002,6 +2012,36 @@ export default function AiPage() {
     mediaStreamRef.current = null;
   }, []);
 
+  const cancelVoiceInputForSend = useCallback(() => {
+    if (
+      voiceState !== 'recording' &&
+      voiceState !== 'stopping' &&
+      voiceState !== 'transcribing'
+    ) {
+      return;
+    }
+
+    browserSpeechShouldContinueRef.current = false;
+    setVoiceError(null);
+
+    if (recognitionRef.current) {
+      browserSpeechSuppressFinalizeRef.current = true;
+      browserSpeechTranscriptRef.current = '';
+      browserSpeechBaseInputRef.current = '';
+      const recognition = recognitionRef.current;
+      recognitionRef.current = null;
+      recognition.stop();
+      setVoiceState('idle');
+      return;
+    }
+
+    discardPendingVoiceTranscriptRef.current = true;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    setVoiceState('idle');
+  }, [voiceState]);
+
   const startBrowserSpeechRecognition = useCallback(
     (SpeechRecognitionCtor: BrowserSpeechRecognitionConstructor) => {
       const recognition = new SpeechRecognitionCtor();
@@ -2017,6 +2057,14 @@ export default function AiPage() {
       };
       recognition.onerror = (event) => {
         if (event.error === 'no-speech' && browserSpeechShouldContinueRef.current) {
+          return;
+        }
+        if (browserSpeechSuppressFinalizeRef.current) {
+          browserSpeechSuppressFinalizeRef.current = false;
+          browserSpeechTranscriptRef.current = '';
+          browserSpeechBaseInputRef.current = '';
+          setVoiceState('idle');
+          setVoiceError(null);
           return;
         }
         if (!browserSpeechShouldContinueRef.current && event.error === 'aborted') {
@@ -2045,6 +2093,14 @@ export default function AiPage() {
             browserSpeechTranscriptRef.current = '';
           }
           startBrowserSpeechRecognition(SpeechRecognitionCtor);
+          return;
+        }
+        if (browserSpeechSuppressFinalizeRef.current) {
+          browserSpeechSuppressFinalizeRef.current = false;
+          browserSpeechTranscriptRef.current = '';
+          browserSpeechBaseInputRef.current = '';
+          setVoiceState('idle');
+          setVoiceError(null);
           return;
         }
         finishBrowserSpeechInput();
@@ -2356,6 +2412,8 @@ export default function AiPage() {
       browserSpeechShouldContinueRef.current = true;
       browserSpeechTranscriptRef.current = '';
       browserSpeechBaseInputRef.current = input;
+      browserSpeechSuppressFinalizeRef.current = false;
+      discardPendingVoiceTranscriptRef.current = false;
       setVoiceState('recording');
       startBrowserSpeechRecognition(SpeechRecognitionCtor);
       return;
@@ -2374,6 +2432,7 @@ export default function AiPage() {
       mediaStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
       mediaChunksRef.current = [];
+      discardPendingVoiceTranscriptRef.current = false;
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -2382,12 +2441,19 @@ export default function AiPage() {
       };
       recorder.onerror = () => {
         releaseVoiceCapture();
+        discardPendingVoiceTranscriptRef.current = false;
         setVoiceState('error');
         setVoiceError('Audio recording failed.');
       };
       recorder.onstop = () => {
         const chunks = [...mediaChunksRef.current];
         releaseVoiceCapture();
+        if (discardPendingVoiceTranscriptRef.current) {
+          discardPendingVoiceTranscriptRef.current = false;
+          setVoiceState('idle');
+          setVoiceError(null);
+          return;
+        }
         void (async () => {
           try {
             setVoiceState('transcribing');
@@ -2397,6 +2463,12 @@ export default function AiPage() {
             const response = await transcribeAiInput(blob);
             applyVoiceTranscript(response.text);
           } catch (error) {
+            if (discardPendingVoiceTranscriptRef.current) {
+              discardPendingVoiceTranscriptRef.current = false;
+              setVoiceState('idle');
+              setVoiceError(null);
+              return;
+            }
             setVoiceState('error');
             setVoiceError(
               clientErrorMessage(error, 'Rustyfin could not transcribe that recording.'),
@@ -2417,8 +2489,10 @@ export default function AiPage() {
   const stopVoiceInput = useCallback(() => {
     if (voiceState !== 'recording') return;
     setVoiceState('stopping');
+    discardPendingVoiceTranscriptRef.current = false;
     if (recognitionRef.current) {
       browserSpeechShouldContinueRef.current = false;
+      browserSpeechSuppressFinalizeRef.current = false;
       recognitionRef.current.stop();
       return;
     }
@@ -2449,6 +2523,7 @@ export default function AiPage() {
 
     if (!text || !selectedModel) return;
     if (inferenceAvailable !== true || !modelStorageAvailable) return;
+    cancelVoiceInputForSend();
     if (canQueueFollowUp && conversationIdOverride) {
       setConversationError('');
       upsertQueuedPrompt(conversationIdOverride, text);
@@ -2730,6 +2805,7 @@ export default function AiPage() {
     loadRuntime,
     modelStorageAvailable,
     clearQueuedPrompt,
+    cancelVoiceInputForSend,
     resetComposerHeight,
     selectedModel,
     streamingConversationId,
