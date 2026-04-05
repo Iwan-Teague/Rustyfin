@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '@/lib/api';
 import { clientErrorMessage } from '@/lib/errors';
+import SurfaceTabsBar from '@/app/components/SurfaceTabsBar';
 
 export type MediaLibrary = {
   id: string;
@@ -38,6 +39,7 @@ type Props = {
   applyActionDisabled?: boolean;
   applyActionLoading?: boolean;
   showHeading?: boolean;
+  librarySelectorMode?: 'select' | 'tabs';
   onApplyAction?: () => void;
   onLibraryChange: (libraryId: string) => void;
   onSelectItem: (item: MediaItemNode | null) => void;
@@ -56,6 +58,7 @@ export default function MediaPicker({
   applyActionDisabled = false,
   applyActionLoading = false,
   showHeading = true,
+  librarySelectorMode = 'select',
   onApplyAction,
   onLibraryChange,
   onSelectItem,
@@ -143,26 +146,48 @@ export default function MediaPicker({
 
       <div className={layout === 'stacked' ? 'space-y-3' : 'grid gap-3 md:grid-cols-[1fr_2fr]'}>
         <div className="space-y-2">
-          <label htmlFor="watch-party-library" className="block text-xs uppercase tracking-wide muted">
+          <label
+            htmlFor={librarySelectorMode === 'select' ? 'watch-party-library' : undefined}
+            className="block text-xs uppercase tracking-wide muted"
+          >
             Library
           </label>
-          <select
-            id="watch-party-library"
-            value={selectedLibraryId}
-            onChange={(e) => {
-              onLibraryChange(e.target.value);
-              onSelectItem(null);
-            }}
-            className="rf-flat-input px-3 py-2 text-sm"
-            aria-label="Library"
-          >
-            {visibleLibraries.length === 0 && <option value="">No shared libraries</option>}
-            {visibleLibraries.map((library) => (
-              <option key={library.id} value={library.id}>
-                {library.name} ({library.kind === 'tv_shows' ? 'TV' : 'Movies'})
-              </option>
-            ))}
-          </select>
+          {librarySelectorMode === 'tabs' ? (
+            visibleLibraries.length === 0 ? (
+              <div className="rf-flat-empty px-0 py-0 text-sm muted">No shared libraries</div>
+            ) : (
+              <SurfaceTabsBar
+                variant="vault"
+                activeKey={selectedLibraryId as string}
+                onSelect={(libraryId) => {
+                  onLibraryChange(libraryId);
+                  onSelectItem(null);
+                }}
+                options={visibleLibraries.map((library) => ({
+                  key: library.id,
+                  label: library.name,
+                }))}
+              />
+            )
+          ) : (
+            <select
+              id="watch-party-library"
+              value={selectedLibraryId}
+              onChange={(e) => {
+                onLibraryChange(e.target.value);
+                onSelectItem(null);
+              }}
+              className="rf-flat-input px-3 py-2 text-sm"
+              aria-label="Library"
+            >
+              {visibleLibraries.length === 0 && <option value="">No shared libraries</option>}
+              {visibleLibraries.map((library) => (
+                <option key={library.id} value={library.id}>
+                  {library.name} ({library.kind === 'tv_shows' ? 'TV' : 'Movies'})
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="space-y-3">
