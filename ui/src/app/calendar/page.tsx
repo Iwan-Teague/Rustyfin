@@ -164,7 +164,7 @@ function shouldIgnoreDaySurfaceActivation(
 }
 
 const CALENDAR_EVENT_ITEM_CLASS = 'space-y-1 px-0 py-1 text-white';
-const CALENDAR_EVENT_TITLE_CLASS = 'font-semibold leading-tight text-white';
+const CALENDAR_EVENT_TITLE_CLASS = 'font-semibold leading-tight text-[12px] sm:text-[13px] text-white';
 const CALENDAR_EVENT_META_CLASS = 'mt-0.5 leading-tight text-white/65';
 const CALENDAR_EVENT_ACTION_CLASS =
   'rf-text-action rf-text-action-soft px-0 py-0 text-[10px] sm:text-xs';
