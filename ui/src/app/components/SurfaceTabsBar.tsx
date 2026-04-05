@@ -24,10 +24,25 @@ export default function SurfaceTabsBar<T extends string>({
   className,
   variant = 'surface',
 }: Props<T>) {
+  const wrapperClassName =
+    variant === 'vault'
+      ? 'flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between'
+      : 'grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2';
+
+  const optionsClassName =
+    variant === 'vault'
+      ? 'flex flex-wrap items-center gap-x-3 gap-y-2 self-start'
+      : 'flex flex-wrap items-end gap-2 self-start';
+
+  const badgesWrapperClassName =
+    variant === 'vault'
+      ? `min-w-0 flex flex-wrap items-center gap-x-3 gap-y-1 self-start text-left lg:justify-end ${badgesClassName}`.trim()
+      : `min-w-0 flex flex-wrap items-center justify-end gap-2 self-start ${badgesClassName}`.trim();
+
   return (
     <div className={className}>
-      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-2">
-        <div className="flex flex-wrap items-end gap-2 self-start">
+      <div className={wrapperClassName}>
+        <div className={optionsClassName}>
           {options.map(({ key, label }) => (
             <button
               key={key}
@@ -58,9 +73,7 @@ export default function SurfaceTabsBar<T extends string>({
             </button>
           ))}
         </div>
-        <div
-          className={`min-w-0 flex flex-wrap items-center justify-end gap-2 self-start ${badgesClassName}`.trim()}
-        >
+        <div className={badgesWrapperClassName}>
           {badges.map((badge) => (
             <span
               key={badge}
