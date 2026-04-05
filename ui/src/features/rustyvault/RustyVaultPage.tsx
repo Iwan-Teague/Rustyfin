@@ -80,6 +80,12 @@ type EditorState = {
 
 type VaultWorkspaceTab = 'vault' | 'generator' | 'extension';
 
+type VaultSwitchProps = {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+};
+
 function nowTs() {
   return Math.floor(Date.now() / 1000);
 }
@@ -198,6 +204,25 @@ function parseBitwardenImport(text: string): RustyVaultLoginItem[] {
     });
   }
   return imported;
+}
+
+function VaultSwitch({ label, checked, onChange }: VaultSwitchProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      data-checked={checked}
+      className="rf-vault-switch"
+      onClick={() => onChange(!checked)}
+    >
+      <span className="rf-vault-switch-track" aria-hidden="true">
+        <span className="rf-vault-switch-state">{checked ? 'ON' : 'OFF'}</span>
+        <span className="rf-vault-switch-thumb" />
+      </span>
+      <span className="rf-vault-switch-label">{label}</span>
+    </button>
+  );
 }
 
 function downloadJson(filename: string, value: unknown) {
@@ -737,6 +762,9 @@ export default function RustyVaultPage() {
       : activeWorkspaceTab === 'generator'
         ? 'mx-auto max-w-5xl'
         : 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]';
+  const vaultFieldClassName = 'rf-flat-input px-4 py-3';
+  const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
+  const vaultSubsectionClassName = 'space-y-3 border-t border-white/8 pt-4';
 
   if (authLoading || loadingState) {
     return (
@@ -764,7 +792,7 @@ export default function RustyVaultPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header border-b border-[var(--border)]/70 pb-5">
+      <header className="rf-flat-header pb-3">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -772,7 +800,7 @@ export default function RustyVaultPage() {
               Client-side encrypted password storage, password generation, and browser-extension pairing in the existing Rustyfin security model.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-[var(--border)]/70 pt-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-sm sm:grid-cols-4 lg:min-w-[34rem]">
             <div className="space-y-1">
               <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Items</p>
               <p className="text-lg font-semibold">{config?.item_count ?? 0}</p>
@@ -805,10 +833,10 @@ export default function RustyVaultPage() {
         </div>
       )}
 
-      <section className="rf-flat-section border-t border-[var(--border)]/70 pt-5 sm:pt-6">
+      <section className="rf-flat-section pt-2 sm:pt-3">
         <SurfaceTabsBar
           variant="vault"
-          className="border-b border-[var(--border)]/70 pb-0"
+          className=""
           activeKey={activeWorkspaceTab}
           onSelect={setActiveWorkspaceTab}
           options={[
@@ -824,7 +852,7 @@ export default function RustyVaultPage() {
           {activeWorkspaceTab === 'vault' && (
             <div className={workspaceContentClassName}>
               <div className="space-y-7">
-                <div className="panel space-y-5 p-6">
+                <div className={vaultSectionClassName}>
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <h2 className="text-xl font-semibold">Unlock</h2>
@@ -853,7 +881,7 @@ export default function RustyVaultPage() {
                         type="password"
                         value={masterPassword}
                         onChange={(event) => setMasterPassword(event.target.value)}
-                        className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                        className={vaultFieldClassName}
                         placeholder={config?.enabled ? 'Enter vault password' : 'Create vault password'}
                       />
                     </label>
@@ -864,7 +892,7 @@ export default function RustyVaultPage() {
                           type="password"
                           value={confirmMasterPassword}
                           onChange={(event) => setConfirmMasterPassword(event.target.value)}
-                          className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                          className={vaultFieldClassName}
                           placeholder="Confirm vault password"
                         />
                       </label>
@@ -898,7 +926,7 @@ export default function RustyVaultPage() {
                   </div>
                 </div>
 
-                <div className="panel space-y-5 p-6">
+                <div className={vaultSectionClassName}>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h2 className="text-xl font-semibold">My Vault</h2>
@@ -932,14 +960,14 @@ export default function RustyVaultPage() {
                   </div>
 
                   {!unlocked ? (
-                    <div className="panel-soft px-4 py-3 text-sm muted">
+                    <div className="rf-flat-empty px-4 py-3 text-sm muted">
                       Unlock the vault to browse and edit entries.
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[0.9fr_1.1fr]">
                       <div className="space-y-3">
                         {filteredRows.length === 0 ? (
-                          <div className="panel-soft px-4 py-4 text-sm muted">
+                          <div className="rf-flat-empty px-4 py-4 text-sm muted">
                             No matching logins yet. Create one or import a Bitwarden export below.
                           </div>
                         ) : (
@@ -951,8 +979,10 @@ export default function RustyVaultPage() {
                               onClick={() =>
                                 runAction('Vault item loaded.', () => loadItem(row.encrypted.id))
                               }
-                              className={`tile w-full px-4 py-4 text-left transition hover:border-[var(--border-strong)] ${
-                                selectedItem?.id === row.encrypted.id ? 'border-[var(--orange-soft)]' : ''
+                              className={`w-full border-l px-4 py-4 text-left transition ${
+                                selectedItem?.id === row.encrypted.id
+                                  ? 'border-[var(--orange-soft)] bg-white/[0.03]'
+                                  : 'border-white/10 hover:bg-white/[0.02]'
                               }`}
                             >
                               <div className="flex items-start justify-between gap-3">
@@ -985,7 +1015,7 @@ export default function RustyVaultPage() {
                               onChange={(event) =>
                                 setEditor((current) => ({ ...current, title: event.target.value }))
                               }
-                              className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                              className={vaultFieldClassName}
                               placeholder="Instagram, GitHub, bank portal"
                             />
                           </label>
@@ -996,7 +1026,7 @@ export default function RustyVaultPage() {
                               onChange={(event) =>
                                 setEditor((current) => ({ ...current, username: event.target.value }))
                               }
-                              className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                              className={vaultFieldClassName}
                             />
                           </label>
                           <label className="space-y-2">
@@ -1006,7 +1036,7 @@ export default function RustyVaultPage() {
                               onChange={(event) =>
                                 setEditor((current) => ({ ...current, login_email: event.target.value }))
                               }
-                              className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                              className={vaultFieldClassName}
                             />
                           </label>
                           <label className="space-y-2 md:col-span-2">
@@ -1018,7 +1048,7 @@ export default function RustyVaultPage() {
                                 onChange={(event) =>
                                   setEditor((current) => ({ ...current, password: event.target.value }))
                                 }
-                                className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                                className={vaultFieldClassName}
                               />
                               <button
                                 type="button"
@@ -1049,7 +1079,7 @@ export default function RustyVaultPage() {
                                 setEditor((current) => ({ ...current, website_urls: event.target.value }))
                               }
                               rows={4}
-                              className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                              className="rf-flat-input min-h-[6rem] px-4 py-3"
                               placeholder={'https://instagram.com\nhttps://www.instagram.com'}
                             />
                           </label>
@@ -1061,7 +1091,7 @@ export default function RustyVaultPage() {
                                 setEditor((current) => ({ ...current, notes: event.target.value }))
                               }
                               rows={4}
-                              className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                              className="rf-flat-input min-h-[6rem] px-4 py-3"
                               placeholder="Recovery hints, support numbers, or login caveats."
                             />
                           </label>
@@ -1105,7 +1135,7 @@ export default function RustyVaultPage() {
                         </div>
 
                         {selectedItem && (
-                          <div className="panel-soft space-y-2 px-4 py-4 text-sm">
+                          <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-medium">Selected password</span>
                               <span className="text-xs text-white/55">
@@ -1130,7 +1160,7 @@ export default function RustyVaultPage() {
               </div>
 
               <div className="space-y-7">
-                <div className="panel space-y-5 p-6">
+                <div className={vaultSectionClassName}>
                   <div>
                     <h2 className="text-xl font-semibold">Security</h2>
                     <p className="mt-1 text-sm muted">
@@ -1145,12 +1175,12 @@ export default function RustyVaultPage() {
                       type="password"
                       value={securityPassword}
                       onChange={(event) => setSecurityPassword(event.target.value)}
-                      className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                      className={vaultFieldClassName}
                       placeholder="Only used to request short-lived protected action tokens"
                     />
                   </label>
 
-                  <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-black/10 p-4">
+                  <div className={vaultSubsectionClassName}>
                     <p className="font-medium">Vault preferences</p>
                     <div className="grid grid-cols-2 gap-3">
                       <label className="space-y-2">
@@ -1167,7 +1197,7 @@ export default function RustyVaultPage() {
                                 Number.parseInt(event.target.value || '15', 10) || 15,
                             }))
                           }
-                          className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                          className={vaultFieldClassName}
                         />
                       </label>
                       <label className="space-y-2">
@@ -1184,7 +1214,7 @@ export default function RustyVaultPage() {
                                 Number.parseInt(event.target.value || '30', 10) || 0,
                             }))
                           }
-                          className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                          className={vaultFieldClassName}
                         />
                       </label>
                       <label className="space-y-2">
@@ -1197,7 +1227,7 @@ export default function RustyVaultPage() {
                               default_match_mode: normalizeMode(event.target.value),
                             }))
                           }
-                          className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                          className={vaultFieldClassName}
                         >
                           <option value="exact">Exact</option>
                           <option value="host">Host</option>
@@ -1211,12 +1241,12 @@ export default function RustyVaultPage() {
                           value={excludedDomainsInput}
                           onChange={(event) => setExcludedDomainsInput(event.target.value)}
                           rows={4}
-                          className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                          className="rf-flat-input min-h-[6rem] px-4 py-3"
                           placeholder={'example.com\nbank.example'}
                         />
                       </label>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                       {([
                         ['inline_save_prompt_enabled', 'Automatic save prompts'],
                         ['inline_autofill_enabled', 'Inline autofill affordances'],
@@ -1224,19 +1254,17 @@ export default function RustyVaultPage() {
                         ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
                         ['allow_manual_http_fill', 'Allow manual HTTP fill'],
                       ] as const).map(([key, label]) => (
-                        <label key={key} className="chip cursor-pointer justify-start px-4 py-3">
-                          <input
-                            type="checkbox"
-                            checked={prefs[key]}
-                            onChange={(event) =>
-                              setPrefs((current) => ({
-                                ...current,
-                                [key]: event.target.checked,
-                              }))
-                            }
-                          />
-                          {label}
-                        </label>
+                        <VaultSwitch
+                          key={key}
+                          label={label}
+                          checked={prefs[key]}
+                          onChange={(checked) =>
+                            setPrefs((current) => ({
+                              ...current,
+                              [key]: checked,
+                            }))
+                          }
+                        />
                       ))}
                     </div>
                     <button
@@ -1248,7 +1276,7 @@ export default function RustyVaultPage() {
                     </button>
                   </div>
 
-                  <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-black/10 p-4">
+                  <div className={vaultSubsectionClassName}>
                     <p className="font-medium">Change vault master password</p>
                     <p className="text-sm muted">
                       Re-enter the current vault master password here. The Rustyfin account password above is still required for the protected action challenge.
@@ -1258,21 +1286,21 @@ export default function RustyVaultPage() {
                         type="password"
                         value={currentRustyVaultPassword}
                         onChange={(event) => setCurrentVaultPassword(event.target.value)}
-                        className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                        className={vaultFieldClassName}
                         placeholder="Current vault master password"
                       />
                       <input
                         type="password"
                         value={newMasterPassword}
                         onChange={(event) => setNewMasterPassword(event.target.value)}
-                        className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                        className={vaultFieldClassName}
                         placeholder="New vault master password"
                       />
                       <input
                         type="password"
                         value={newMasterPasswordConfirm}
                         onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
-                        className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                        className={vaultFieldClassName}
                         placeholder="Confirm new vault master password"
                       />
                     </div>
@@ -1286,7 +1314,7 @@ export default function RustyVaultPage() {
                     </button>
                   </div>
 
-                  <div className="space-y-3 rounded-2xl border border-[var(--border)] bg-black/10 p-4">
+                  <div className={vaultSubsectionClassName}>
                     <p className="font-medium">Import and export</p>
                     <div className="flex flex-wrap gap-x-5 gap-y-2">
                       <button
@@ -1298,7 +1326,7 @@ export default function RustyVaultPage() {
                         Export decrypted JSON
                       </button>
                     </div>
-                    <label className="chip cursor-pointer justify-start px-4 py-3">
+                    <label className="rf-text-action rf-text-action-muted cursor-pointer text-sm">
                       <input
                         type="checkbox"
                         checked={importClearExisting}
@@ -1322,7 +1350,7 @@ export default function RustyVaultPage() {
                     </button>
                   </div>
 
-                  <div className="space-y-3 rounded-2xl border border-[var(--danger)]/35 bg-[rgba(255,117,136,0.08)] p-4">
+                  <div className="space-y-3 border-t border-[var(--danger)]/35 pt-4">
                     <p className="font-medium text-[var(--danger)]">Danger zone</p>
                     <p className="text-sm muted">
                       Destroying the vault deletes wrapped keys, item ciphertext, audit history, and vault device sessions. The main Rustyfin account stays intact.
@@ -1342,7 +1370,7 @@ export default function RustyVaultPage() {
 
           {activeWorkspaceTab === 'generator' && (
             <div className={workspaceContentClassName}>
-              <div className="panel space-y-5 p-6">
+              <div className={vaultSectionClassName}>
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
                     <h2 className="text-xl font-semibold">Password Generator</h2>
@@ -1356,7 +1384,7 @@ export default function RustyVaultPage() {
                         <button
                           key={preset}
                           type="button"
-                          className={`chip ${generatorPreset === preset ? 'chip-accent' : ''}`}
+                          className={`rf-text-action text-sm ${generatorPreset === preset ? '' : 'rf-text-action-muted'}`}
                           onClick={() => setGeneratorPreset(preset)}
                         >
                           {preset}
@@ -1381,7 +1409,7 @@ export default function RustyVaultPage() {
                             Number.parseInt(event.target.value || '0', 10) || current.length,
                         }))
                       }
-                      className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                      className={vaultFieldClassName}
                     />
                   </label>
                   {([
@@ -1390,7 +1418,7 @@ export default function RustyVaultPage() {
                     ['include_numbers', 'Numbers'],
                     ['include_symbols', 'Symbols'],
                   ] as const).map(([key, label]) => (
-                    <label key={key} className="chip cursor-pointer justify-center px-4 py-3">
+                    <label key={key} className="rf-text-action rf-text-action-muted cursor-pointer justify-start gap-2 border-l border-white/10 px-4 py-3">
                       <input
                         type="checkbox"
                         checked={generatorOptions[key]}
@@ -1406,7 +1434,7 @@ export default function RustyVaultPage() {
                   ))}
                 </div>
 
-                <label className="chip cursor-pointer">
+                <label className="rf-text-action rf-text-action-muted cursor-pointer gap-2 border-l border-white/10 px-4 py-3">
                   <input
                     type="checkbox"
                     checked={generatorOptions.exclude_ambiguous}
@@ -1420,11 +1448,11 @@ export default function RustyVaultPage() {
                   Exclude ambiguous characters
                 </label>
 
-                  <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                   <input
                     readOnly
                     value={generatedPassword}
-                    className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 font-mono text-sm outline-none"
+                    className="rf-flat-input w-full px-4 py-3 font-mono text-sm"
                     placeholder="Generate a password to stage it here"
                   />
                   <button
@@ -1479,7 +1507,7 @@ export default function RustyVaultPage() {
           {activeWorkspaceTab === 'extension' && (
             <div className={workspaceContentClassName}>
               <div className="space-y-7">
-                <div className="panel space-y-5 p-6">
+                <div className={vaultSectionClassName}>
                   <div>
                     <h2 className="text-xl font-semibold">Extension Setup</h2>
                     <p className="mt-1 text-sm muted">
@@ -1494,11 +1522,11 @@ export default function RustyVaultPage() {
                       type="password"
                       value={securityPassword}
                       onChange={(event) => setSecurityPassword(event.target.value)}
-                      className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                      className={vaultFieldClassName}
                       placeholder="Needed for pairing and session revocation"
                     />
                   </label>
-                  <div className="panel-soft space-y-4 px-4 py-4">
+                  <div className={vaultSubsectionClassName}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="font-medium">Browser extension package</p>
@@ -1540,7 +1568,7 @@ export default function RustyVaultPage() {
                   </div>
                 </div>
 
-                <div className="panel space-y-5 p-6">
+                <div className={vaultSectionClassName}>
                   <div>
                     <h2 className="text-xl font-semibold">Lookup Test</h2>
                     <p className="mt-1 text-sm muted">
@@ -1550,7 +1578,7 @@ export default function RustyVaultPage() {
                   <input
                     value={lookupUrl}
                     onChange={(event) => setLookupUrl(event.target.value)}
-                    className="w-full rounded-2xl border border-[var(--border)] bg-black/20 px-4 py-3 outline-none focus:border-[var(--orange-soft)]"
+                    className={vaultFieldClassName}
                     placeholder="https://accounts.example.com/login"
                   />
                   <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -1567,13 +1595,13 @@ export default function RustyVaultPage() {
                   {lookupResultIds.length > 0 ? (
                     <div className="space-y-2 text-sm">
                       {lookupResultIds.map((itemId) => (
-                        <div key={itemId} className="chip w-full justify-start">
+                        <div key={itemId} className="border-l border-white/10 pl-4">
                           {rows.find((row) => row.encrypted.id === itemId)?.summary.title || itemId}
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="panel-soft px-4 py-3 text-sm muted">
+                    <div className="rf-flat-empty px-4 py-3 text-sm muted">
                       No matches yet, or the vault is still locked.
                     </div>
                   )}
@@ -1581,7 +1609,7 @@ export default function RustyVaultPage() {
               </div>
 
               <div className="space-y-7">
-                <div id="vault-devices" className="panel space-y-5 p-6">
+                <div id="vault-devices" className={vaultSectionClassName}>
                   <div>
                     <h2 className="text-xl font-semibold">Vault Devices</h2>
                     <p className="mt-1 text-sm muted">
@@ -1590,12 +1618,12 @@ export default function RustyVaultPage() {
                   </div>
                   <div className="space-y-3">
                     {deviceSessions.length === 0 ? (
-                      <div className="panel-soft px-4 py-3 text-sm muted">
+                      <div className="rf-flat-empty px-4 py-3 text-sm muted">
                         No paired vault devices yet.
                       </div>
                     ) : (
                       deviceSessions.map((session) => (
-                        <div key={session.id} className="tile space-y-2 px-4 py-4">
+                        <div key={session.id} className="space-y-2 border-l border-white/10 pl-4">
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <p className="font-medium">{session.device_name}</p>
@@ -1635,7 +1663,7 @@ export default function RustyVaultPage() {
                     )}
                   </div>
                   {extensionPairing && (
-                    <div className="panel-soft space-y-2 px-4 py-4">
+                    <div className="space-y-2 border-l border-white/10 pl-4">
                       <p className="text-sm font-semibold">Pairing code</p>
                       <p className="font-mono text-lg tracking-[0.2em] text-white/90">
                         {extensionPairing.pairing_code}
