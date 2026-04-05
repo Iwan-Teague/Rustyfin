@@ -116,6 +116,13 @@ function readBufferedWindowDuration(video: HTMLVideoElement | null): number {
   return Number.isFinite(video.currentTime) && video.currentTime > 0 ? video.currentTime : 0;
 }
 
+function projectStatePositionSeconds(stateMessage: WsStateMessage): number {
+  const baseSeconds = stateMessage.position_ms / 1000;
+  if (!stateMessage.playing) return baseSeconds;
+  const elapsedMs = Math.max(0, Date.now() - stateMessage.server_ts_ms);
+  return baseSeconds + elapsedMs / 1000;
+}
+
 function forceKnownDurationInLevelDetails(levelData: unknown, durationSeconds: number): void {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return;
   const details = (levelData as { details?: Record<string, unknown> } | null)?.details;
@@ -600,7 +607,7 @@ export function useRoomPlayback({
 
     applyingRemoteRef.current = true;
 
-    const targetSeconds = stateMessage.position_ms / 1000;
+    const targetSeconds = projectStatePositionSeconds(stateMessage);
     const pendingTarget = pendingLocalSeekTargetRef.current;
     const pendingStillActive =
       pendingTarget !== null && Date.now() <= pendingLocalSeekUntilRef.current;
