@@ -1119,13 +1119,26 @@ export default function WatchPartyRoomPage() {
                   }}
                   onSeekRequest={async (targetSeconds) => {
                     if (!canSeek) return;
-                    await playback.handleSeek(targetSeconds);
+                    playback.notePendingSeek(targetSeconds);
+
+                    realtime.setRoomState((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            position_ms: Math.floor(targetSeconds * 1000),
+                            updated_ts_ms: Math.max(prev.updated_ts_ms + 1, Date.now()),
+                            server_ts_ms: Date.now(),
+                          }
+                        : prev,
+                    );
 
                     if (playback.applyingRemoteRef.current) return;
                     sendWs({
                       type: 'seek',
                       position_ms: Math.floor(targetSeconds * 1000),
                     });
+
+                    await playback.handleSeek(targetSeconds);
                   }}
                   onDownload={handleDownloadCurrentVideo}
                   downloading={downloadingVideo}
