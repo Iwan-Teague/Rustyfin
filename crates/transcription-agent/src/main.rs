@@ -62,6 +62,7 @@ struct AppState {
     gpu_mode: TranscriptionGpuMode,
     gpu_required: bool,
     gpu_ready: bool,
+    worker_use_gpu: bool,
     gpu_error_message: Option<String>,
     workers: WorkerRegistry,
     inference_permits: Arc<tokio::sync::Semaphore>,
@@ -176,6 +177,7 @@ impl WorkerRegistry {
         session_id: &str,
         user_id: &str,
         model_path: &Path,
+        use_gpu: bool,
     ) -> Result<WorkerHandle, AppError> {
         let key = Self::key(session_id, user_id);
         let mut guard = self
@@ -211,7 +213,7 @@ impl WorkerRegistry {
         let worker_name = format!("whisper-{session_id}-{user_id}");
         std::thread::Builder::new()
             .name(worker_name)
-            .spawn(move || worker_loop(worker_model_path, rx, max_threads_per_worker))
+            .spawn(move || worker_loop(worker_model_path, rx, max_threads_per_worker, use_gpu))
             .map_err(|e| ApiError::Internal(format!("failed to spawn whisper worker: {e}")))?;
 
         let handle = WorkerHandle { tx };
@@ -240,7 +242,12 @@ impl WorkerRegistry {
     }
 }
 
-fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>, max_threads: i32) {
+fn worker_loop(
+    model_path: PathBuf,
+    rx: mpsc::Receiver<WorkerCommand>,
+    max_threads: i32,
+    use_gpu: bool,
+) {
     let Some(model_path_str) = model_path.to_str() else {
         while let Ok(cmd) = rx.recv() {
             match cmd {
@@ -254,7 +261,7 @@ fn worker_loop(model_path: PathBuf, rx: mpsc::Receiver<WorkerCommand>, max_threa
     };
 
     let mut context_params = WhisperContextParameters::default();
-    context_params.use_gpu(true);
+    context_params.use_gpu(use_gpu);
     let context = match WhisperContext::new_with_params(model_path_str, context_params) {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -695,9 +702,12 @@ async fn transcribe_chunk(
     })?
     .map_err(|_| ApiError::Internal("transcription capacity limiter is unavailable".into()))?;
 
-    let worker = state
-        .workers
-        .get_or_spawn(&session_id, &user_id, &state.model_path)?;
+    let worker = state.workers.get_or_spawn(
+        &session_id,
+        &user_id,
+        &state.model_path,
+        state.worker_use_gpu,
+    )?;
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     worker
         .tx
@@ -761,7 +771,7 @@ async fn main() -> anyhow::Result<()> {
     let requested_gpu_mode_raw =
         std::env::var("RUSTFIN_TRANSCRIPTION_GPU_MODE").unwrap_or_else(|_| "opencl".into());
     let gpu_mode = parse_gpu_mode(&requested_gpu_mode_raw)?;
-    let gpu_required = parse_env_bool("RUSTFIN_TRANSCRIPTION_REQUIRE_GPU", true);
+    let gpu_required = parse_env_bool("RUSTFIN_TRANSCRIPTION_REQUIRE_GPU", false);
     let compiled_gpu_backends = format!(
         "opencl={},cuda={},hip={}",
         cfg!(feature = "gpu-opencl"),
@@ -770,6 +780,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let gpu_probe = detect_gpu_backend_ready(gpu_mode);
     let gpu_ready = gpu_probe.is_ok();
+    let worker_use_gpu = gpu_ready;
     let gpu_error_message = gpu_probe.err();
     let cpu_count = num_cpus::get().max(1);
     let default_parallel_inferences = (cpu_count / 2).clamp(1, 4);
@@ -827,6 +838,7 @@ async fn main() -> anyhow::Result<()> {
         requested_gpu_mode = gpu_mode.as_str(),
         gpu_required,
         gpu_ready,
+        worker_use_gpu,
         compiled_gpu_backends,
         "transcription-agent resource limits configured"
     );
@@ -858,6 +870,7 @@ async fn main() -> anyhow::Result<()> {
         gpu_mode,
         gpu_required,
         gpu_ready,
+        worker_use_gpu,
         gpu_error_message,
         workers: WorkerRegistry::new(max_workers, max_workers_per_session, max_threads_per_worker),
         inference_permits: Arc::new(tokio::sync::Semaphore::new(max_parallel_inferences)),

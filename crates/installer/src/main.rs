@@ -1233,7 +1233,7 @@ fn write_native_runtime_defaults(
 : \"${{RUSTFIN_AI_GPU_BACKEND:={ai_backend}}}\"\n\
 : \"${{RUSTFIN_TRANSCODER_HW_ACCEL:=auto}}\"\n\
 : \"${{RUSTFIN_TRANSCRIPTION_GPU_MODE:=opencl}}\"\n\
-: \"${{RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:=1}}\"\n\
+: \"${{RUSTFIN_TRANSCRIPTION_REQUIRE_GPU:=0}}\"\n\
 : \"${{RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES:=gpu-opencl}}\"\n\
 : \"${{RUSTFIN_SERVERS_DEFAULT_JAVA:={SERVERS_DEFAULT_JAVA}}}\"\n\
 : \"${{RUSTFIN_NATIVE_LINUX_TARGET:={native_target}}}\"\n\
@@ -2132,6 +2132,9 @@ fn deploy_native(
     } else {
         println!("[rustfin-installer] Skipping git pull.");
     }
+
+    println!("[rustfin-installer] Refreshing native runtime defaults...");
+    write_native_runtime_defaults(repo_root, host, user_context)?;
 
     println!("[rustfin-installer] Rebuilding native artifacts...");
     repair_build_artifact_ownership(repo_root, &repo_owner_user, &repo_owner_group, user_context)?;

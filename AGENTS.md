@@ -170,7 +170,7 @@ Runtime behavior:
 - On Linux hosts, use `RUSTFIN_AI_GPU_DEVICES` to pin a comma-separated llama backend GPU device index list; empty or `all` means use every visible GPU backend device
 - Transcription GPU path:
   - `RUSTFIN_TRANSCRIPTION_GPU_MODE=opencl|cuda|hip|auto` (default `opencl`)
-  - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=1` by default
+  - `RUSTFIN_TRANSCRIPTION_REQUIRE_GPU=0` by default so transcription can fall back to CPU when GPU probing or runtime support is unavailable
   - `RUSTFIN_TRANSCRIPTION_AGENT_CARGO_FEATURES` controls compiled GPU backends
 
 Primary native services:
