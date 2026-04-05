@@ -174,6 +174,7 @@ export default function NavBar() {
       }`}
       data-expanded={railOpen ? 'true' : 'false'}
       data-collapsed={railOpen ? 'false' : 'true'}
+      onMouseEnter={() => setRailOpen(true)}
       onMouseLeave={() => setRailOpen(false)}
     >
       <div className="flex items-center justify-center">
