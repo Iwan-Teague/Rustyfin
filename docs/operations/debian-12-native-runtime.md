@@ -248,6 +248,8 @@ Primary variables:
 
 Selected media/library paths are validated as host paths. There is no container path translation layer.
 
+When `RUSTFIN_MEDIA_PATH` points at a network filesystem declared in `/etc/fstab` such as NFS or CIFS, the installer-managed `rustyfin-post-healthcheck.service` now retries that mount after boot if the first automount attempt failed because the NAS was not yet reachable.
+
 On GUI-enabled Debian hosts, the optional native folder picker can still be used.
 On headless Debian hosts, Rustyfin falls back to:
 

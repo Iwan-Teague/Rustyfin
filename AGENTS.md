@@ -154,6 +154,7 @@ Runtime behavior:
   - if a core child process dies, the service exits and `systemd` restarts the stack
 - `rustyfin-post-healthcheck.service` is installed alongside the native runtime
   - it verifies backend/UI/agent readiness after startup
+  - it also retries a configured network-backed `RUSTFIN_MEDIA_PATH` mount after boot when the NAS endpoint becomes reachable later
   - it performs one native-service restart if the host boots half-ready
 - installer-driven `systemd` setup must also prove that the backend, agents, and HTTPS UI come up before reporting success
 - if installer validation fails, keep the captured `systemctl status` output and native log tails; do not replace this with a silent or best-effort success path
