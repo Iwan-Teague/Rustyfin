@@ -16,6 +16,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use tracing::warn;
 
+use crate::ai_transcribe::{decode_audio_upload, transcribe_pcm_chunks_to_segments};
 use crate::auth::{AdminUser, AuthUser};
 use crate::error::AppError;
 use crate::runtime_metrics::JobFamily;
@@ -29,10 +30,11 @@ use super::protocol::{
 
 const MAX_MESSAGE_CHARS: usize = 2000;
 const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+const MAX_TRANSCRIPTION_RECORDING_BYTES: usize = 64 * 1024 * 1024;
 const CHANNEL_UPLOADS_DIR: &str = "channel_uploads";
-const TRANSCRIPTION_FINALIZE_MIN_GRACE_MS: u64 = 900;
-const TRANSCRIPTION_FINALIZE_QUIET_WINDOW_MS: u64 = 250;
-const TRANSCRIPTION_FINALIZE_MAX_WAIT_MS: u64 = 25_000;
+const TRANSCRIPTION_FINALIZE_MIN_GRACE_MS: u64 = 5_000;
+const TRANSCRIPTION_FINALIZE_QUIET_WINDOW_MS: u64 = 500;
+const TRANSCRIPTION_FINALIZE_MAX_WAIT_MS: u64 = 40_000;
 
 fn text_message_rate_limiter() -> &'static RateLimiter {
     static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
@@ -1126,6 +1128,12 @@ pub struct TranscribeChunkResponse {
     pub persisted_segments: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct TranscriptionRecordingUploadResponse {
+    pub accepted: bool,
+    pub persisted_segments: i64,
+}
+
 fn status_info_from_session(
     session: Option<&rustfin_db::repo::channel_transcripts::TranscriptSessionRow>,
     message: Option<String>,
@@ -1189,6 +1197,15 @@ fn format_ms(ms: i64) -> String {
     let seconds = (total_ms % 60_000) / 1000;
     let millis = total_ms % 1000;
     format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+fn parse_required_i64_field(value: Option<&str>, field_name: &str) -> Result<i64, AppError> {
+    let raw = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::BadRequest(format!("{field_name} is required")))?;
+    raw.parse::<i64>()
+        .map_err(|_| ApiError::BadRequest(format!("{field_name} must be an integer")).into())
 }
 
 fn build_transcript_markdown(
@@ -1791,6 +1808,176 @@ pub async fn transcribe_chunk(
     }
 
     Ok(Json(TranscribeChunkResponse {
+        accepted: true,
+        persisted_segments,
+    }))
+}
+
+pub async fn upload_transcription_recording(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<TranscriptionRecordingUploadResponse>, AppError> {
+    let channel = get_accessible_channel(&state, &auth, &channel_id).await?;
+    if channel.kind != "voice" {
+        return Err(ApiError::BadRequest(
+            "transcription is only available for voice channels".into(),
+        )
+        .into());
+    }
+
+    let mut session_id: Option<String> = None;
+    let mut capture_started_ts_ms: Option<i64> = None;
+    let mut capture_ended_ts_ms: Option<i64> = None;
+    let mut payload: Option<Vec<u8>> = None;
+    let mut file_name: Option<String> = None;
+    let mut content_type: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("invalid multipart form: {e}")))?
+    {
+        let field_name = field.name().unwrap_or_default().to_string();
+        match field_name.as_str() {
+            "file" if payload.is_none() => {
+                file_name = field.file_name().map(|value| value.to_string());
+                content_type = field.content_type().map(|value| value.to_string());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("invalid transcript upload: {e}")))?;
+                if bytes.is_empty() {
+                    return Ok(Json(TranscriptionRecordingUploadResponse {
+                        accepted: true,
+                        persisted_segments: 0,
+                    }));
+                }
+                if bytes.len() > MAX_TRANSCRIPTION_RECORDING_BYTES {
+                    return Err(ApiError::BadRequest(
+                        "transcript recording exceeds the 64MB upload limit".into(),
+                    )
+                    .into());
+                }
+                payload = Some(bytes.to_vec());
+            }
+            "session_id" if session_id.is_none() => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("invalid session_id field: {e}")))?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(ApiError::BadRequest("session_id is required".into()).into());
+                }
+                session_id = Some(trimmed.to_string());
+            }
+            "capture_started_ts_ms" if capture_started_ts_ms.is_none() => {
+                let value = field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("invalid capture_started_ts_ms field: {e}"))
+                })?;
+                capture_started_ts_ms = Some(parse_required_i64_field(
+                    Some(&value),
+                    "capture_started_ts_ms",
+                )?);
+            }
+            "capture_ended_ts_ms" if capture_ended_ts_ms.is_none() => {
+                let value = field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("invalid capture_ended_ts_ms field: {e}"))
+                })?;
+                capture_ended_ts_ms = Some(parse_required_i64_field(
+                    Some(&value),
+                    "capture_ended_ts_ms",
+                )?);
+            }
+            _ => {}
+        }
+    }
+
+    let session_id =
+        session_id.ok_or_else(|| ApiError::BadRequest("session_id is required".into()))?;
+    let capture_started_ts_ms = capture_started_ts_ms
+        .ok_or_else(|| ApiError::BadRequest("capture_started_ts_ms is required".into()))?;
+    let _capture_ended_ts_ms = capture_ended_ts_ms
+        .ok_or_else(|| ApiError::BadRequest("capture_ended_ts_ms is required".into()))?;
+    let payload = payload.ok_or_else(|| ApiError::BadRequest("file is required".into()))?;
+
+    if capture_started_ts_ms <= 0 || _capture_ended_ts_ms <= capture_started_ts_ms {
+        return Err(ApiError::BadRequest("invalid recording timestamps".into()).into());
+    }
+
+    let running = rustfin_db::repo::channel_transcripts::get_running_session_for_channel(
+        &state.db,
+        &channel_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let finalizing_session_id = finalizing_transcription_session_id(&channel_id);
+    let accepted_session = if let Some(running_session) = running {
+        if running_session.id == session_id {
+            Some(running_session)
+        } else if finalizing_session_id.as_deref() == Some(session_id.as_str()) {
+            rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+                .filter(|session| session.channel_id == channel_id)
+        } else {
+            None
+        }
+    } else if finalizing_session_id.as_deref() == Some(session_id.as_str()) {
+        rustfin_db::repo::channel_transcripts::get_session(&state.db, &session_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?
+            .filter(|session| session.channel_id == channel_id)
+    } else {
+        None
+    }
+    .ok_or_else(|| {
+        ApiError::BadRequest("recording does not match the active transcription session".into())
+    })?;
+
+    let _in_flight_guard = TranscriptionChunkInFlightGuard::new(&accepted_session.id);
+    let decoded = decode_audio_upload(
+        &state,
+        &payload,
+        file_name.as_deref(),
+        content_type.as_deref(),
+    )
+    .await?;
+    let segments = transcribe_pcm_chunks_to_segments(
+        &state,
+        &auth,
+        &accepted_session.id,
+        &decoded,
+        capture_started_ts_ms,
+    )
+    .await?;
+
+    let mut persisted_segments = 0_i64;
+    for segment in segments {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        rustfin_db::repo::channel_transcripts::append_entry(
+            &state.db,
+            rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
+                session_id: &accepted_session.id,
+                channel_id: &channel_id,
+                user_id: &auth.user_id,
+                username: &auth.username,
+                started_ts_ms: segment.started_ts_ms,
+                ended_ts_ms: segment.ended_ts_ms,
+                text,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        persisted_segments += 1;
+    }
+
+    Ok(Json(TranscriptionRecordingUploadResponse {
         accepted: true,
         persisted_segments,
     }))
