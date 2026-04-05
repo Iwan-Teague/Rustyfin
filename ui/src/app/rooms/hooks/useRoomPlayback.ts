@@ -264,6 +264,8 @@ export function useRoomPlayback({
   const applyingRemoteRef = useRef(false);
   const autoPreloadedItemRef = useRef<string | null>(null);
   const audioStateRef = useRef<VideoAudioState>({ muted: false, volume: 1 });
+  const pendingLocalSeekTargetRef = useRef<number | null>(null);
+  const pendingLocalSeekUntilRef = useRef(0);
 
   const isAudioRoom = room?.room_mode === 'audio';
   const isWebRoom = room?.room_mode === 'web';
@@ -298,6 +300,17 @@ export function useRoomPlayback({
 
   const stopSession = useCallback(async (sessionId: string) => {
     await apiFetch(`/playback/sessions/${sessionId}/stop`, { method: 'POST' }).catch(() => {});
+  }, []);
+
+  const notePendingSeek = useCallback((targetSeconds: number) => {
+    if (!Number.isFinite(targetSeconds) || targetSeconds < 0) return;
+    pendingLocalSeekTargetRef.current = targetSeconds;
+    pendingLocalSeekUntilRef.current = Date.now() + 20_000;
+  }, []);
+
+  const clearPendingSeek = useCallback(() => {
+    pendingLocalSeekTargetRef.current = null;
+    pendingLocalSeekUntilRef.current = 0;
   }, []);
 
   const resetPlaybackState = useCallback(async () => {
@@ -539,6 +552,8 @@ export function useRoomPlayback({
       const safeTarget = Math.max(0, Math.min(targetSeconds, effectiveDurationSeconds || targetSeconds));
       if (!Number.isFinite(safeTarget)) return;
 
+      notePendingSeek(safeTarget);
+
       const currentWindowDuration = Math.max(
         hlsAvailableWindowDurationSecs,
         readBufferedWindowDuration(video),
@@ -572,6 +587,7 @@ export function useRoomPlayback({
       hlsSessionStartOffsetSecs,
       hlsTargetHeight,
       mediaInfo?.duration_secs,
+      notePendingSeek,
       roomState,
       startHls,
     ],
@@ -585,6 +601,21 @@ export function useRoomPlayback({
     applyingRemoteRef.current = true;
 
     const targetSeconds = stateMessage.position_ms / 1000;
+    const pendingTarget = pendingLocalSeekTargetRef.current;
+    const pendingStillActive =
+      pendingTarget !== null && Date.now() <= pendingLocalSeekUntilRef.current;
+
+    if (pendingStillActive && targetSeconds < pendingTarget - 1.25) {
+      applyingRemoteRef.current = false;
+      return;
+    }
+
+    if (!pendingStillActive) {
+      clearPendingSeek();
+    } else if (pendingTarget !== null && Math.abs(targetSeconds - pendingTarget) <= 1.5) {
+      clearPendingSeek();
+    }
+
     const currentWindowDuration = Math.max(
       hlsAvailableWindowDurationSecs,
       readBufferedWindowDuration(video),
@@ -624,7 +655,13 @@ export function useRoomPlayback({
     window.setTimeout(() => {
       applyingRemoteRef.current = false;
     }, 60);
-  }, [hlsAvailableWindowDurationSecs, hlsSessionStartOffsetSecs, hlsTargetHeight, startHls]);
+  }, [
+    clearPendingSeek,
+    hlsAvailableWindowDurationSecs,
+    hlsSessionStartOffsetSecs,
+    hlsTargetHeight,
+    startHls,
+  ]);
 
   useEffect(() => {
     applyRemoteStateRef.current = applyRemoteState;
@@ -793,6 +830,7 @@ export function useRoomPlayback({
     applyRemoteState,
     startHls,
     handleSeek,
+    notePendingSeek,
     resetPlaybackState,
   };
 }
