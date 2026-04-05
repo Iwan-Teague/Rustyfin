@@ -14,7 +14,10 @@ interface Props {
   channelId: string;
   currentUserId: string;
   existingMembers: UserInfo[];
-  wsEvents: ChannelEvent | null;
+  wsEvents: Array<{
+    seq: number;
+    event: ChannelEvent;
+  }>;
   sendWs: (msg: object) => void;
   deafened: boolean;
   remoteVolumes: Record<string, number>;
@@ -128,6 +131,8 @@ export default function VoiceEngine({
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const remoteAudioPipelinesRef = useRef<Map<string, RemoteAudioPipeline>>(new Map());
   const speakingMonitorsRef = useRef<Map<string, SpeakingMonitor>>(new Map());
+  const pendingIceCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const processedEventSeqRef = useRef(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const localMicContextRef = useRef<AudioContext | null>(null);
   const localMicGainNodeRef = useRef<GainNode | null>(null);
@@ -521,6 +526,28 @@ export default function VoiceEngine({
     }
     teardownRemoteAudioPipeline(userId);
     stopSpeakingMonitor(userId);
+    pendingIceCandidatesRef.current.delete(userId);
+  }
+
+  function queueRemoteIceCandidate(userId: string, candidate: RTCIceCandidateInit) {
+    const existing = pendingIceCandidatesRef.current.get(userId) ?? [];
+    existing.push(candidate);
+    pendingIceCandidatesRef.current.set(userId, existing);
+  }
+
+  async function flushPendingIceCandidates(userId: string, pc: RTCPeerConnection) {
+    const queued = pendingIceCandidatesRef.current.get(userId);
+    if (!queued?.length || !pc.remoteDescription) {
+      return;
+    }
+    pendingIceCandidatesRef.current.delete(userId);
+    for (const candidate of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('VoiceEngine: failed to flush ICE candidate from', userId, err);
+      }
+    }
   }
 
   function createPeer(userId: string): RTCPeerConnection {
@@ -584,6 +611,8 @@ export default function VoiceEngine({
   }, [existingMembers, currentUserId, channelId]);
 
   useEffect(() => {
+    processedEventSeqRef.current = 0;
+    pendingIceCandidatesRef.current.clear();
     return () => {
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
@@ -873,68 +902,78 @@ export default function VoiceEngine({
 
   // Handle incoming WS events
   useEffect(() => {
-    if (!wsEvents) return;
-
-    const e = wsEvents;
-
     async function handle() {
-      if (e.type === 'voice_presence') {
-        if (e.channel_id !== channelId) return;
-        if (e.user_id === currentUserId) return;
+      const pendingEvents = wsEvents.filter(({ seq }) => seq > processedEventSeqRef.current);
+      if (pendingEvents.length === 0) {
+        return;
+      }
 
-        if (!e.joined) {
-          closePeer(e.user_id);
-        } else {
-          void initiatePeerConnection(e.user_id);
-        }
-      } else if (e.type === 'rtc_offer') {
-        if (e.channel_id !== channelId) return;
+      for (const { seq, event: e } of pendingEvents) {
+        processedEventSeqRef.current = seq;
 
-        const pc = createPeer(e.from_user_id);
-        addLocalTracks(pc);
+        if (e.type === 'voice_presence') {
+          if (e.channel_id !== channelId) continue;
+          if (e.user_id === currentUserId) continue;
 
-        try {
-          const remoteDesc = JSON.parse(e.sdp) as RTCSessionDescriptionInit;
-          await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          sendWs({
-            type: 'rtc_answer',
-            to_user_id: e.from_user_id,
-            channel_id: channelId,
-            sdp: JSON.stringify(pc.localDescription),
-          });
-        } catch (err) {
-          console.error('VoiceEngine: failed to handle offer from', e.from_user_id, err);
-        }
-      } else if (e.type === 'rtc_answer') {
-        if (e.channel_id !== channelId) return;
+          if (!e.joined) {
+            closePeer(e.user_id);
+          } else {
+            void initiatePeerConnection(e.user_id);
+          }
+        } else if (e.type === 'rtc_offer') {
+          if (e.channel_id !== channelId) continue;
 
-        const pc = peersRef.current.get(e.from_user_id);
-        if (!pc) return;
+          const pc = createPeer(e.from_user_id);
+          addLocalTracks(pc);
 
-        try {
-          const remoteDesc = JSON.parse(e.sdp) as RTCSessionDescriptionInit;
-          await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
-        } catch (err) {
-          console.error('VoiceEngine: failed to set answer from', e.from_user_id, err);
-        }
-      } else if (e.type === 'rtc_ice') {
-        if (e.channel_id !== channelId) return;
+          try {
+            const remoteDesc = JSON.parse(e.sdp) as RTCSessionDescriptionInit;
+            await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+            await flushPendingIceCandidates(e.from_user_id, pc);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sendWs({
+              type: 'rtc_answer',
+              to_user_id: e.from_user_id,
+              channel_id: channelId,
+              sdp: JSON.stringify(pc.localDescription),
+            });
+          } catch (err) {
+            console.error('VoiceEngine: failed to handle offer from', e.from_user_id, err);
+          }
+        } else if (e.type === 'rtc_answer') {
+          if (e.channel_id !== channelId) continue;
 
-        const pc = peersRef.current.get(e.from_user_id);
-        if (!pc) return;
+          const pc = peersRef.current.get(e.from_user_id);
+          if (!pc) continue;
 
-        try {
+          try {
+            const remoteDesc = JSON.parse(e.sdp) as RTCSessionDescriptionInit;
+            await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+            await flushPendingIceCandidates(e.from_user_id, pc);
+          } catch (err) {
+            console.error('VoiceEngine: failed to set answer from', e.from_user_id, err);
+          }
+        } else if (e.type === 'rtc_ice') {
+          if (e.channel_id !== channelId) continue;
+
+          const pc = peersRef.current.get(e.from_user_id);
           const candidate = JSON.parse(e.candidate) as RTCIceCandidateInit;
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('VoiceEngine: failed to add ICE candidate from', e.from_user_id, err);
+          if (!pc || !pc.remoteDescription) {
+            queueRemoteIceCandidate(e.from_user_id, candidate);
+            continue;
+          }
+
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (err) {
+            console.error('VoiceEngine: failed to add ICE candidate from', e.from_user_id, err);
+          }
         }
       }
     }
 
-    handle();
+    void handle();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsEvents]);
 
