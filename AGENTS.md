@@ -39,6 +39,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - current account archive exports include profile state, user preferences, AI conversation history, playback progress, continue-watching data, and activity history
   - optional RustyVault material on `/backups` must flow through the existing protected export path; do not add weaker host-side shortcuts around RustyVault export safeguards
   - host/system backup and restore routes remain operational surfaces under `/api/v1/system/backups`
+- Voice channel transcript capture now records each speaker locally in the browser and uploads per-user audio on stop/save; keep the final saved transcript server-authored and merged by timestamp instead of reviving fragile live chunk transcription as the primary saved path
 - An `AI` product area for the `/ai` assistant surface backed by `crates/ai-agent`
   - native host builds must not assume CUDA is present; use a host-safe backend selection path and allow AI to be disabled when the host cannot support inference cleanly
   - use `RUSTFIN_AI_GPU_BACKEND=auto|disabled|cpu|cuda|rocm|vulkan` to control native AI backend selection during host builds
