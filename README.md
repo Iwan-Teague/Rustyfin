@@ -254,6 +254,7 @@ Detailed native operations guide:
 - Supervisor child matching is exact-binary-aware, so `rustfin-servers-agent` cannot be mistaken for `rustfin-server`
 - The native supervisor also verifies backend and edge health continuously, so a dead API process cannot leave `/login` and `/ai` serving UI shells against a broken upstream
 - A separate `rustyfin-post-healthcheck.service` now runs after startup to verify backend/UI/agent readiness and recover from half-ready boots
+- The post-start healthcheck also retries a configured network-backed `RUSTFIN_MEDIA_PATH` mount after boot when the NAS becomes reachable later, so a boot-time `network is unreachable` mount failure does not remain stuck until manual intervention
 
 ## Access URLs
 

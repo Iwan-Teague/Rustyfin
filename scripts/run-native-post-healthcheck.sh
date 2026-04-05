@@ -31,6 +31,107 @@ YOUTUBE_PORT="${RUSTFIN_YOUTUBE_AGENT_PORT:-8101}"
 TRANSCRIPTION_PORT="${RUSTFIN_TRANSCRIPTION_AGENT_PORT:-8102}"
 SERVERS_AGENT_PORT="${RUSTFIN_SERVERS_AGENT_PORT:-8103}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-3000}"
+MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-}"
+
+trim_whitespace() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+media_mount_fstab_entry() {
+  local path="$1"
+  [[ -n "$path" ]] || return 1
+  awk -v target="$path" '
+    $0 !~ /^[[:space:]]*#/ && NF >= 3 && $2 == target { print; exit }
+  ' /etc/fstab 2>/dev/null
+}
+
+media_mount_remote_host() {
+  local source="$1"
+  local fstype="$2"
+  case "$fstype" in
+    nfs|nfs4)
+      printf '%s' "${source%%:*}"
+      ;;
+    cifs|smb3)
+      local without_slashes="${source#//}"
+      printf '%s' "${without_slashes%%/*}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+media_mount_port() {
+  local fstype="$1"
+  case "$fstype" in
+    nfs|nfs4) printf '2049' ;;
+    cifs|smb3) printf '445' ;;
+    *) return 1 ;;
+  esac
+}
+
+host_reachable() {
+  local host="$1"
+  local port="$2"
+  ping -c 1 -W 2 "$host" >/dev/null 2>&1 && return 0
+  timeout 3 bash -lc "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
+ensure_media_mount_ready() {
+  local path="$1"
+  [[ -n "$path" ]] || return 0
+
+  local fstab_entry
+  fstab_entry="$(media_mount_fstab_entry "$path" || true)"
+  [[ -n "$fstab_entry" ]] || return 0
+
+  local source fstype remote_host remote_port mount_unit current_source current_fstype
+  source="$(trim_whitespace "$(awk '{print $1}' <<<"$fstab_entry")")"
+  fstype="$(trim_whitespace "$(awk '{print $3}' <<<"$fstab_entry")")"
+  case "$fstype" in
+    nfs|nfs4|cifs|smb3) ;;
+    *) return 0 ;;
+  esac
+
+  current_source="$(findmnt -rn -T "$path" -o SOURCE 2>/dev/null || true)"
+  current_fstype="$(findmnt -rn -T "$path" -o FSTYPE 2>/dev/null || true)"
+  if [[ "$current_source" == "$source" && "$current_fstype" == "$fstype" ]]; then
+    info "Media mount ready at $path ($source)"
+    return 0
+  fi
+
+  remote_host="$(media_mount_remote_host "$source" "$fstype" || true)"
+  remote_port="$(media_mount_port "$fstype" || true)"
+  if [[ -z "$remote_host" || -z "$remote_port" ]]; then
+    warn "Media mount at $path is not active and could not determine remote endpoint for $source"
+    return 0
+  fi
+
+  if ! host_reachable "$remote_host" "$remote_port"; then
+    warn "Media endpoint $remote_host:$remote_port is not reachable yet; leaving $path unmounted for now"
+    return 0
+  fi
+
+  mount_unit="$(systemd-escape --path --suffix=mount "$path")"
+  info "Retrying media mount $path from $source after confirmed network reachability..."
+  systemctl reset-failed "$mount_unit" >/dev/null 2>&1 || true
+  if ! systemctl start "$mount_unit" >/dev/null 2>&1; then
+    warn "Retry mount failed for $path ($source)"
+    return 0
+  fi
+
+  current_source="$(findmnt -rn -T "$path" -o SOURCE 2>/dev/null || true)"
+  current_fstype="$(findmnt -rn -T "$path" -o FSTYPE 2>/dev/null || true)"
+  if [[ "$current_source" == "$source" && "$current_fstype" == "$fstype" ]]; then
+    success "Media mount recovered at $path ($source)"
+  else
+    warn "Media mount retry completed but $path is still not mounted from $source"
+  fi
+}
 
 wait_http_ok() {
   local name="$1"
@@ -90,6 +191,7 @@ run_checks() {
 }
 
 info "Running native post-start health checks..."
+ensure_media_mount_ready "$MEDIA_PATH"
 if run_checks; then
   success "Rustyfin native runtime passed post-start health checks."
   exit 0

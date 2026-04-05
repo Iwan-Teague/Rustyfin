@@ -3825,8 +3825,8 @@ fn render_post_healthcheck_unit(config: &SystemdInstallConfig) -> String {
     format!(
         "[Unit]\n\
 Description=Rustyfin Native Post-Start Healthcheck\n\
-Wants=network-online.target {main_service} {agent_service}\n\
-After=network-online.target {main_service} {agent_service}\n\
+Wants=network-online.target remote-fs.target {main_service} {agent_service}\n\
+After=network-online.target remote-fs.target {main_service} {agent_service}\n\
 \n\
 [Service]\n\
 Type=oneshot\n\
