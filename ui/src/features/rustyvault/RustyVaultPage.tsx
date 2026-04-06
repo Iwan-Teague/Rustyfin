@@ -1948,26 +1948,8 @@ export default function RustyVaultPage() {
 
                         {renderCredentialFields()}
 
-                        <div className="grid gap-3 border-t border-white/8 pt-4 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-                            <RfSwitch
-                              label="Favorite item"
-                              checked={editor.favorite}
-                              onChange={(checked) => updateEditorField('favorite', checked)}
-                            />
-                            {(editor.item_type === 'login' ||
-                              editor.item_type === 'credit_card' ||
-                              editor.item_type === 'passport') && (
-                              <button
-                                type="button"
-                                className="rf-text-action rf-text-action-muted text-sm"
-                                onClick={() => setShowSensitive((current) => !current)}
-                              >
-                                {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-x-5 gap-y-3 sm:justify-end">
+                        <div className="space-y-4 border-t border-white/8 pt-4 text-sm">
+                          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
                             <button
                               type="button"
                               className="rf-text-action text-sm disabled:opacity-50"
@@ -1979,7 +1961,7 @@ export default function RustyVaultPage() {
                                 )
                               }
                             >
-                              {editingExisting ? 'Save changes' : 'Save item'}
+                              Save
                             </button>
                             {selectedItem && itemPrimaryCopyValue(selectedItem) && (
                               <button
@@ -1989,7 +1971,9 @@ export default function RustyVaultPage() {
                                   runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
                                 }
                               >
-                                {itemPrimaryCopyLabel(selectedItem)}
+                                {selectedItem.item_type === 'login'
+                                  ? 'Copy Password'
+                                  : itemPrimaryCopyLabel(selectedItem)}
                               </button>
                             )}
                             {selectedItem && (
@@ -2001,6 +1985,14 @@ export default function RustyVaultPage() {
                                 Delete
                               </button>
                             )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                            <RfSwitch
+                              label="Favorite item"
+                              checked={editor.favorite}
+                              onChange={(checked) => updateEditorField('favorite', checked)}
+                            />
                           </div>
                         </div>
 
@@ -2027,10 +2019,10 @@ export default function RustyVaultPage() {
                                   : itemTypeLabel(selectedItem.item_type)}
                               </span>
                             </div>
-                            <p className="muted">
-                              Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
-                              {formatTimestamp(selectedItem.updated_ts)}
-                            </p>
+                            <div className="space-y-1 muted">
+                              <p>Created {formatTimestamp(selectedItem.created_ts)}</p>
+                              <p>Updated {formatTimestamp(selectedItem.updated_ts)}</p>
+                            </div>
                           </div>
                         )}
                       </div>
