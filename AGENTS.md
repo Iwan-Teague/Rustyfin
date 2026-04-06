@@ -35,7 +35,8 @@ Rustyfin is a native-Debian-first local media platform with:
   - when RustyVault is unavailable, the Vault surface should return `503` or render an unavailable state; the rest of Rustyfin should continue operating normally
   - secure browser publication of `/vault` must stay edge-only and HTTPS-only; do not expose backend/service ports directly for vault access
   - keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin, and use `RUSTFIN_EDGE_TLS_MODE=manual|auto` instead of ad-hoc edge rewrites when changing native browser access
-  - web `/vault` creation and unlock must not depend on the browser extension; preserve the native-browser Argon2id path plus the bundled portable Argon2id fallback, and keep trusted HTTPS enforcement explicit in the UI
+  - web `/vault` creation and unlock must not depend on the browser extension; preserve the native-browser Argon2id path plus the shipped portable Argon2id runtime fallback (`argon2.js` plus `argon2.wasm`), and keep trusted HTTPS enforcement explicit in the UI
+  - web Vault unlock must derive against the stored wrapped-key KDF parameters and fail fast with a user-visible error instead of leaving the unlock action pending indefinitely
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages

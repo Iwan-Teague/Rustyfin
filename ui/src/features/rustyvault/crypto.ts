@@ -31,6 +31,7 @@ const WRAP_INFO = encoder.encode('rustyvault-wrap-v1');
 const INDEX_INFO = encoder.encode('rustyvault-index-v1');
 const SUMMARY_VERSION = 1;
 const PAYLOAD_VERSION = 1;
+const ARGON2_NATIVE_DERIVE_TIMEOUT_MS = 12_000;
 const MULTIPART_SUFFIXES = new Set([
   'co.uk',
   'org.uk',
@@ -247,6 +248,33 @@ async function browserSupportsPortableArgon2(): Promise<boolean> {
   return portableArgon2SupportPromise;
 }
 
+async function tryNativeArgon2DeriveBits(
+  password: string,
+  salt: Uint8Array,
+  params: Argon2Params,
+): Promise<ArrayBuffer | null> {
+  try {
+    const passwordKey = await importArgon2PasswordKey(password);
+    return await resolveWithin<ArrayBuffer | null>(
+      crypto.subtle.deriveBits(
+        {
+          name: 'Argon2id',
+          nonce: toArrayBuffer(salt),
+          parallelism: params.parallelism,
+          memory: params.memory_kib,
+          passes: params.iterations,
+        } as AlgorithmIdentifier,
+        passwordKey,
+        256,
+      ),
+      null,
+      ARGON2_NATIVE_DERIVE_TIMEOUT_MS,
+    );
+  } catch {
+    return null;
+  }
+}
+
 function normalizeArgon2Params(
   value: Partial<Argon2Params> | null | undefined,
 ): Argon2Params {
@@ -277,21 +305,11 @@ async function deriveMasterMaterial(
   params: Partial<Argon2Params> | null | undefined = ARGON2_PARAMS,
 ): Promise<CryptoKey> {
   const normalizedParams = normalizeArgon2Params(params);
-  let bits: ArrayBuffer | Uint8Array;
+  let bits: ArrayBuffer | Uint8Array | null = null;
   if (await resolveWithin(browserSupportsNativeArgon2Id(), false)) {
-    const passwordKey = await importArgon2PasswordKey(password);
-    bits = await crypto.subtle.deriveBits(
-      {
-        name: 'Argon2id',
-        nonce: toArrayBuffer(salt),
-        parallelism: normalizedParams.parallelism,
-        memory: normalizedParams.memory_kib,
-        passes: normalizedParams.iterations,
-      } as AlgorithmIdentifier,
-      passwordKey,
-      256,
-    );
-  } else {
+    bits = await tryNativeArgon2DeriveBits(password, salt, normalizedParams);
+  }
+  if (!bits) {
     bits = await deriveArgon2IdHashBytes({
       pass: encoder.encode(password),
       salt,
