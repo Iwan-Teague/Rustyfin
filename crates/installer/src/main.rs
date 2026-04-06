@@ -1936,15 +1936,19 @@ fn plan_native_runtime(
     let public_host_name = normalize_public_host_name(&public_host);
     let edge_tls_mode = resolve_edge_tls_mode()?;
 
-    let browser_backend_origin = env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| build_public_browser_origin(&public_host, ui_port));
+    let browser_backend_origin = normalize_browser_backend_origin(
+        env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN").ok().as_deref(),
+        &public_host,
+        backend_port,
+        ui_port,
+    );
 
-    let ws_allowed_origins = env::var("RUSTFIN_WS_ALLOWED_ORIGINS")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| build_ws_allowed_origins(&browser_backend_origin, ui_port));
+    let ws_allowed_origins = normalize_ws_allowed_origins(
+        env::var("RUSTFIN_WS_ALLOWED_ORIGINS").ok().as_deref(),
+        &browser_backend_origin,
+        &public_host,
+        ui_port,
+    );
     let edge_health_resolve =
         build_edge_health_resolve(&browser_backend_origin).unwrap_or_default();
 
@@ -2987,6 +2991,70 @@ fn build_public_browser_origin(public_host: &str, ui_port: u16) -> String {
     format_http_origin("https", &host, explicit_port.unwrap_or(ui_port))
 }
 
+fn normalize_browser_backend_origin(
+    configured_origin: Option<&str>,
+    public_host: &str,
+    backend_port: u16,
+    ui_port: u16,
+) -> String {
+    let edge_origin = build_public_browser_origin(public_host, ui_port);
+    let Some(configured) = configured_origin
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return edge_origin;
+    };
+    let Some(parsed) = parse_http_origin(configured) else {
+        return edge_origin;
+    };
+
+    let public_host_name = normalize_public_host_name(public_host);
+    let looks_like_legacy_backend_origin = parsed.port == backend_port
+        && (parsed.host.eq_ignore_ascii_case(&public_host_name)
+            || parsed.host.eq_ignore_ascii_case("localhost")
+            || parsed.host == "127.0.0.1");
+
+    if looks_like_legacy_backend_origin {
+        edge_origin
+    } else {
+        format_http_origin(&parsed.scheme, &parsed.host, parsed.port)
+    }
+}
+
+fn build_legacy_ws_allowed_origins(public_host: &str, ui_port: u16) -> String {
+    let mut origins = vec![
+        format!("http://localhost:{ui_port}"),
+        format!("http://127.0.0.1:{ui_port}"),
+        format!("https://localhost:{ui_port}"),
+        format!("https://127.0.0.1:{ui_port}"),
+    ];
+    if public_host != "localhost" && public_host != "127.0.0.1" {
+        origins.push(format!("http://{public_host}:{ui_port}"));
+        origins.push(format!("https://{public_host}:{ui_port}"));
+    }
+    origins.join(",")
+}
+
+fn normalize_ws_allowed_origins(
+    configured_origins: Option<&str>,
+    browser_origin: &str,
+    public_host: &str,
+    ui_port: u16,
+) -> String {
+    let Some(configured) = configured_origins
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return build_ws_allowed_origins(browser_origin, ui_port);
+    };
+
+    if configured == build_legacy_ws_allowed_origins(public_host, ui_port) {
+        build_ws_allowed_origins(browser_origin, ui_port)
+    } else {
+        configured.to_string()
+    }
+}
+
 fn build_edge_health_resolve(origin: &str) -> Option<String> {
     let parsed = parse_http_origin(origin)?;
     if parsed.host.eq_ignore_ascii_case("localhost")
@@ -3667,6 +3735,7 @@ mod tests {
         BootstrapAiModelConfig, EdgeTlsMode, build_edge_health_resolve, build_edge_site_address,
         build_public_browser_origin, build_ws_allowed_origins, cmdline_matches_pidfile_name,
         derive_gguf_file_name_from_url, format_http_origin, merge_search_paths_into_rustflags,
+        normalize_browser_backend_origin, normalize_ws_allowed_origins,
         parse_ai_bootstrap_model_enabled, parse_http_origin,
         resolve_bootstrap_ai_model_config_with_overrides, resolve_installer_ai_model_dir_from_env,
     };
@@ -3823,6 +3892,46 @@ mod tests {
         assert!(origins.contains("https://localhost:3000"));
         assert!(origins.contains("http://127.0.0.1:3000"));
         assert!(!origins.contains("http://vault.example.com:3000"));
+    }
+
+    #[test]
+    fn normalize_browser_origin_rewrites_legacy_backend_snapshot() {
+        assert_eq!(
+            normalize_browser_backend_origin(
+                Some("http://192.168.0.36:8097"),
+                "192.168.0.36",
+                8097,
+                3008
+            ),
+            "https://192.168.0.36:3008"
+        );
+    }
+
+    #[test]
+    fn normalize_browser_origin_preserves_explicit_edge_origin() {
+        assert_eq!(
+            normalize_browser_backend_origin(
+                Some("https://vault.example.com:3443"),
+                "vault.example.com",
+                8097,
+                3008
+            ),
+            "https://vault.example.com:3443"
+        );
+    }
+
+    #[test]
+    fn normalize_ws_allowed_origins_rewrites_legacy_snapshot() {
+        let legacy = "http://localhost:3008,http://127.0.0.1:3008,https://localhost:3008,https://127.0.0.1:3008,http://192.168.0.36:3008,https://192.168.0.36:3008";
+        assert_eq!(
+            normalize_ws_allowed_origins(
+                Some(legacy),
+                "https://192.168.0.36:3008",
+                "192.168.0.36",
+                3008
+            ),
+            "http://localhost:3008,http://127.0.0.1:3008,https://localhost:3008,https://127.0.0.1:3008,https://192.168.0.36:3008"
+        );
     }
 
     #[test]
