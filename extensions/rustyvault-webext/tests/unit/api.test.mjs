@@ -62,3 +62,19 @@ test('rejects a non-Rustyfin server response during verification', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('explains trusted-https requirement when secure local server verification fetch fails', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError('fetch failed');
+  };
+
+  try {
+    await assert.rejects(
+      () => verifyRustyfinServerBaseUrl('https://192.168.0.36:3008'),
+      /self-signed|untrusted HTTPS certificate|trust that certificate/i,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

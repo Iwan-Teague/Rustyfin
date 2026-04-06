@@ -9,6 +9,13 @@ export function sanitizeServerBaseUrl(value) {
     url.pathname = url.pathname.replace(/\/+$/, '');
     return url.toString().replace(/\/+$/, '');
 }
+function rustyvaultServerReachabilityMessage(serverBaseUrl) {
+    const normalizedBaseUrl = sanitizeServerBaseUrl(serverBaseUrl);
+    if (normalizedBaseUrl.startsWith('https://')) {
+        return 'Could not reach that Rustyfin server address. If Rustyfin is using a self-signed or otherwise untrusted HTTPS certificate, trust that certificate in the browser first.';
+    }
+    return 'Could not reach that Rustyfin server address';
+}
 export async function verifyRustyfinServerBaseUrl(serverBaseUrl) {
     const normalizedBaseUrl = sanitizeServerBaseUrl(serverBaseUrl);
     let response;
@@ -23,7 +30,7 @@ export async function verifyRustyfinServerBaseUrl(serverBaseUrl) {
         });
     }
     catch {
-        throw new Error('Could not reach that Rustyfin server address');
+        throw new Error(rustyvaultServerReachabilityMessage(normalizedBaseUrl));
     }
     if (!response.ok) {
         throw new Error(`Rustyfin server check failed (${response.status})`);
@@ -86,10 +93,16 @@ export async function apiRequest(path, options = {}) {
     if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
     }
-    const response = await fetch(joinPath(settings.serverBaseUrl, path), {
-        ...options,
-        headers,
-    });
+    let response;
+    try {
+        response = await fetch(joinPath(settings.serverBaseUrl, path), {
+            ...options,
+            headers,
+        });
+    }
+    catch {
+        throw new Error(rustyvaultServerReachabilityMessage(settings.serverBaseUrl));
+    }
     const raw = await response.text();
     let body = null;
     if (raw.trim()) {
