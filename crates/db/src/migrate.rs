@@ -215,6 +215,10 @@ const POSTGRES_MIGRATIONS: &[(&str, &str)] = &[
         "052_ai_tasks",
         include_str!("../migrations_pg/052_ai_tasks.sql"),
     ),
+    (
+        "053_rustyvault_password_generator_defaults",
+        include_str!("../migrations_pg/053_rustyvault_password_generator_defaults.sql"),
+    ),
 ];
 
 const POSTGRES_MIGRATION_LOCK_ID: i64 = 0x7275737466696e;

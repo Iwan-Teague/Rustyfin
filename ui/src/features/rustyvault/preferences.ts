@@ -3,6 +3,10 @@
 import { apiJson } from '@/lib/api';
 
 import { RUSTYVAULT_ACCESS_HEADER, type RustyVaultUriMatchMode } from './api';
+import type {
+  PasswordGeneratorOptions,
+  PasswordGeneratorPreset,
+} from './passwordGenerator';
 
 export type RustyVaultPreferences = {
   auto_lock_minutes: number;
@@ -14,6 +18,13 @@ export type RustyVaultPreferences = {
   warn_on_untrusted_iframe: boolean;
   excluded_domains: string[];
   allow_manual_http_fill: boolean;
+  password_generator_default_preset: PasswordGeneratorPreset;
+  password_generator_default_length: number;
+  password_generator_include_uppercase: boolean;
+  password_generator_include_lowercase: boolean;
+  password_generator_include_numbers: boolean;
+  password_generator_include_symbols: boolean;
+  password_generator_exclude_ambiguous: boolean;
 };
 
 export function defaultRustyVaultPreferences(): RustyVaultPreferences {
@@ -27,11 +38,22 @@ export function defaultRustyVaultPreferences(): RustyVaultPreferences {
     warn_on_untrusted_iframe: true,
     excluded_domains: [],
     allow_manual_http_fill: false,
+    password_generator_default_preset: 'balanced',
+    password_generator_default_length: 22,
+    password_generator_include_uppercase: true,
+    password_generator_include_lowercase: true,
+    password_generator_include_numbers: true,
+    password_generator_include_symbols: true,
+    password_generator_exclude_ambiguous: true,
   };
 }
 
 function normalizeMatchMode(raw: unknown): RustyVaultUriMatchMode {
   return raw === 'exact' || raw === 'host' || raw === 'never' ? raw : 'base_domain';
+}
+
+function normalizePasswordGeneratorPreset(raw: unknown): PasswordGeneratorPreset {
+  return raw === 'memorable' || raw === 'maximum' ? raw : 'balanced';
 }
 
 function normalizeRustyVaultPreferences(
@@ -69,6 +91,49 @@ function normalizeRustyVaultPreferences(
       typeof raw?.allow_manual_http_fill === 'boolean'
         ? raw.allow_manual_http_fill
         : defaults.allow_manual_http_fill,
+    password_generator_default_preset: normalizePasswordGeneratorPreset(
+      raw?.password_generator_default_preset,
+    ),
+    password_generator_default_length:
+      typeof raw?.password_generator_default_length === 'number'
+        ? Math.max(12, Math.min(64, raw.password_generator_default_length))
+        : defaults.password_generator_default_length,
+    password_generator_include_uppercase:
+      typeof raw?.password_generator_include_uppercase === 'boolean'
+        ? raw.password_generator_include_uppercase
+        : defaults.password_generator_include_uppercase,
+    password_generator_include_lowercase:
+      typeof raw?.password_generator_include_lowercase === 'boolean'
+        ? raw.password_generator_include_lowercase
+        : defaults.password_generator_include_lowercase,
+    password_generator_include_numbers:
+      typeof raw?.password_generator_include_numbers === 'boolean'
+        ? raw.password_generator_include_numbers
+        : defaults.password_generator_include_numbers,
+    password_generator_include_symbols:
+      typeof raw?.password_generator_include_symbols === 'boolean'
+        ? raw.password_generator_include_symbols
+        : defaults.password_generator_include_symbols,
+    password_generator_exclude_ambiguous:
+      typeof raw?.password_generator_exclude_ambiguous === 'boolean'
+        ? raw.password_generator_exclude_ambiguous
+        : defaults.password_generator_exclude_ambiguous,
+  };
+}
+
+export function passwordGeneratorDefaultsFromPrefs(
+  prefs: RustyVaultPreferences,
+): { preset: PasswordGeneratorPreset; options: PasswordGeneratorOptions } {
+  return {
+    preset: prefs.password_generator_default_preset,
+    options: {
+      length: prefs.password_generator_default_length,
+      include_uppercase: prefs.password_generator_include_uppercase,
+      include_lowercase: prefs.password_generator_include_lowercase,
+      include_numbers: prefs.password_generator_include_numbers,
+      include_symbols: prefs.password_generator_include_symbols,
+      exclude_ambiguous: prefs.password_generator_exclude_ambiguous,
+    },
   };
 }
 

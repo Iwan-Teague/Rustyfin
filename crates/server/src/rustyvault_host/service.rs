@@ -215,6 +215,18 @@ pub async fn save_rustyvault_preferences(
             warn_on_untrusted_iframe: prefs.warn_on_untrusted_iframe,
             excluded_domains: prefs.excluded_domains,
             allow_manual_http_fill: prefs.allow_manual_http_fill,
+            password_generator_default_preset: prefs.password_generator_default_preset,
+            password_generator_default_length: i32::try_from(
+                prefs.password_generator_default_length,
+            )
+            .map_err(|_| {
+                ApiError::BadRequest("password_generator_default_length is too large".into())
+            })?,
+            password_generator_include_uppercase: prefs.password_generator_include_uppercase,
+            password_generator_include_lowercase: prefs.password_generator_include_lowercase,
+            password_generator_include_numbers: prefs.password_generator_include_numbers,
+            password_generator_include_symbols: prefs.password_generator_include_symbols,
+            password_generator_exclude_ambiguous: prefs.password_generator_exclude_ambiguous,
             updated_ts: now_ts(),
         },
     )
@@ -239,6 +251,14 @@ fn map_preferences_row(
         warn_on_untrusted_iframe: row.warn_on_untrusted_iframe,
         excluded_domains: row.excluded_domains,
         allow_manual_http_fill: row.allow_manual_http_fill,
+        password_generator_default_preset: row.password_generator_default_preset,
+        password_generator_default_length: u32::try_from(row.password_generator_default_length)
+            .unwrap_or(defaults.password_generator_default_length),
+        password_generator_include_uppercase: row.password_generator_include_uppercase,
+        password_generator_include_lowercase: row.password_generator_include_lowercase,
+        password_generator_include_numbers: row.password_generator_include_numbers,
+        password_generator_include_symbols: row.password_generator_include_symbols,
+        password_generator_exclude_ambiguous: row.password_generator_exclude_ambiguous,
     }
 }
 

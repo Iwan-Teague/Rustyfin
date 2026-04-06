@@ -24,6 +24,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - canonical persistence ownership is `crates/db/src/repo/rustyvault.rs`, including dedicated RustyVault preferences storage through `crates/db/migrations_pg/040_rustyvault_preferences.sql`
   - RustyVault session/auth internals use `x-rustyvault-*` headers, the `rustyvault_session` JWT audience, and host-scoped validation in `crates/server/src/rustyvault_host/auth.rs`
   - canonical RustyVault settings I/O is the host `/api/v1/vault/preferences` adapter backed by RustyVault-owned persistence; do not route RustyVault UI settings through generic account-profile API helpers or `/users/me/preferences`
+  - RustyVault password-generator defaults are part of those dedicated Vault preferences now; keep saved preset/toggle defaults durable across later web sessions
   - retained RustyVault reads and management views should prefer `RustyVaultSessionUser` over plain `AuthUser`; keep routes like `/api/v1/vault/config`, `/api/v1/vault/preferences`, `/api/v1/vault/device-sessions`, and `/api/v1/vault/audit` session-bound unless there is a strong documented reason not to
   - keep bootstrap, protected-action challenge, and revoke-other-session flows session-bound too unless there is a strong documented bootstrap/recovery reason not to
   - when a RustyVault route accepts both Rustyfin auth and a RustyVault session, explicitly reject cross-user token mixing instead of assuming the headers belong to the same user

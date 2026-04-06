@@ -1,5 +1,6 @@
 use crate::DbPool;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustyVaultAccountRow {
@@ -51,51 +52,42 @@ pub struct RustyVaultPreferenceRow {
     pub warn_on_untrusted_iframe: bool,
     pub excluded_domains: Vec<String>,
     pub allow_manual_http_fill: bool,
+    pub password_generator_default_preset: String,
+    pub password_generator_default_length: i32,
+    pub password_generator_include_uppercase: bool,
+    pub password_generator_include_lowercase: bool,
+    pub password_generator_include_numbers: bool,
+    pub password_generator_include_symbols: bool,
+    pub password_generator_exclude_ambiguous: bool,
     pub updated_ts: i64,
 }
 
-type RustyVaultPreferenceTuple = (
-    String,
-    i32,
-    i32,
-    bool,
-    bool,
-    String,
-    bool,
-    bool,
-    Vec<String>,
-    bool,
-    i64,
-);
-
-fn map_rustyvault_preference_row(
-    (
-        user_id,
-        auto_lock_minutes,
-        clipboard_clear_seconds,
-        inline_save_prompt_enabled,
-        inline_autofill_enabled,
-        default_match_mode,
-        warn_on_http,
-        warn_on_untrusted_iframe,
-        excluded_domains,
-        allow_manual_http_fill,
-        updated_ts,
-    ): RustyVaultPreferenceTuple,
-) -> RustyVaultPreferenceRow {
-    RustyVaultPreferenceRow {
-        user_id,
-        auto_lock_minutes,
-        clipboard_clear_seconds,
-        inline_save_prompt_enabled,
-        inline_autofill_enabled,
-        default_match_mode,
-        warn_on_http,
-        warn_on_untrusted_iframe,
-        excluded_domains,
-        allow_manual_http_fill,
-        updated_ts,
-    }
+fn rustyvault_preference_row_from_db(
+    row: sqlx::postgres::PgRow,
+) -> Result<RustyVaultPreferenceRow, sqlx::Error> {
+    Ok(RustyVaultPreferenceRow {
+        user_id: row.try_get("user_id")?,
+        auto_lock_minutes: row.try_get("auto_lock_minutes")?,
+        clipboard_clear_seconds: row.try_get("clipboard_clear_seconds")?,
+        inline_save_prompt_enabled: row.try_get("inline_save_prompt_enabled")?,
+        inline_autofill_enabled: row.try_get("inline_autofill_enabled")?,
+        default_match_mode: row.try_get("default_match_mode")?,
+        warn_on_http: row.try_get("warn_on_http")?,
+        warn_on_untrusted_iframe: row.try_get("warn_on_untrusted_iframe")?,
+        excluded_domains: row.try_get("excluded_domains")?,
+        allow_manual_http_fill: row.try_get("allow_manual_http_fill")?,
+        password_generator_default_preset: row.try_get("password_generator_default_preset")?,
+        password_generator_default_length: row.try_get("password_generator_default_length")?,
+        password_generator_include_uppercase: row
+            .try_get("password_generator_include_uppercase")?,
+        password_generator_include_lowercase: row
+            .try_get("password_generator_include_lowercase")?,
+        password_generator_include_numbers: row.try_get("password_generator_include_numbers")?,
+        password_generator_include_symbols: row.try_get("password_generator_include_symbols")?,
+        password_generator_exclude_ambiguous: row
+            .try_get("password_generator_exclude_ambiguous")?,
+        updated_ts: row.try_get("updated_ts")?,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +102,13 @@ pub struct UpsertRustyVaultPreferenceInput {
     pub warn_on_untrusted_iframe: bool,
     pub excluded_domains: Vec<String>,
     pub allow_manual_http_fill: bool,
+    pub password_generator_default_preset: String,
+    pub password_generator_default_length: i32,
+    pub password_generator_include_uppercase: bool,
+    pub password_generator_include_lowercase: bool,
+    pub password_generator_include_numbers: bool,
+    pub password_generator_include_symbols: bool,
+    pub password_generator_exclude_ambiguous: bool,
     pub updated_ts: i64,
 }
 
@@ -692,7 +691,7 @@ pub struct CreateRustyVaultAuditEventInput {
 }
 
 const RUSTYVAULT_ACCOUNT_COLUMNS: &str = "user_id, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts";
-const RUSTYVAULT_PREFERENCE_COLUMNS: &str = "user_id, auto_lock_minutes, clipboard_clear_seconds, inline_save_prompt_enabled, inline_autofill_enabled, default_match_mode, warn_on_http, warn_on_untrusted_iframe, excluded_domains, allow_manual_http_fill, updated_ts";
+const RUSTYVAULT_PREFERENCE_COLUMNS: &str = "user_id, auto_lock_minutes, clipboard_clear_seconds, inline_save_prompt_enabled, inline_autofill_enabled, default_match_mode, warn_on_http, warn_on_untrusted_iframe, excluded_domains, allow_manual_http_fill, password_generator_default_preset, password_generator_default_length, password_generator_include_uppercase, password_generator_include_lowercase, password_generator_include_numbers, password_generator_include_symbols, password_generator_exclude_ambiguous, updated_ts";
 const RUSTYVAULT_WRAPPED_KEY_COLUMNS: &str = "id, user_id, key_version, kdf_algorithm, kdf_memory_kib, kdf_iterations, kdf_parallelism, kdf_salt, hkdf_algorithm, wrap_algorithm, wrap_nonce, wrapped_vault_key, created_ts, superseded_ts";
 const RUSTYVAULT_ITEM_SUMMARY_COLUMNS: &str = "user_id, id, item_type, key_version, summary_ciphertext, summary_nonce, summary_version, favorite, revision, created_ts, updated_ts, deleted_ts";
 const RUSTYVAULT_ITEM_SUMMARY_COLUMNS_QUALIFIED: &str = "v.user_id, v.id, v.item_type, v.key_version, v.summary_ciphertext, v.summary_nonce, v.summary_version, v.favorite, v.revision, v.created_ts, v.updated_ts, v.deleted_ts";
@@ -724,11 +723,8 @@ pub async fn get_rustyvault_preferences(
     let sql = format!(
         "SELECT {RUSTYVAULT_PREFERENCE_COLUMNS} FROM rustyvault_preference WHERE user_id = $1"
     );
-    let row = sqlx::query_as::<_, RustyVaultPreferenceTuple>(&sql)
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row.map(map_rustyvault_preference_row))
+    let row = sqlx::query(&sql).bind(user_id).fetch_optional(pool).await?;
+    row.map(rustyvault_preference_row_from_db).transpose()
 }
 
 pub async fn upsert_rustyvault_preferences(
@@ -737,8 +733,8 @@ pub async fn upsert_rustyvault_preferences(
 ) -> Result<RustyVaultPreferenceRow, sqlx::Error> {
     let sql = format!(
         "INSERT INTO rustyvault_preference \
-         (user_id, auto_lock_minutes, clipboard_clear_seconds, inline_save_prompt_enabled, inline_autofill_enabled, default_match_mode, warn_on_http, warn_on_untrusted_iframe, excluded_domains, allow_manual_http_fill, updated_ts) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+         (user_id, auto_lock_minutes, clipboard_clear_seconds, inline_save_prompt_enabled, inline_autofill_enabled, default_match_mode, warn_on_http, warn_on_untrusted_iframe, excluded_domains, allow_manual_http_fill, password_generator_default_preset, password_generator_default_length, password_generator_include_uppercase, password_generator_include_lowercase, password_generator_include_numbers, password_generator_include_symbols, password_generator_exclude_ambiguous, updated_ts) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) \
          ON CONFLICT (user_id) DO UPDATE SET \
             auto_lock_minutes = EXCLUDED.auto_lock_minutes, \
             clipboard_clear_seconds = EXCLUDED.clipboard_clear_seconds, \
@@ -749,10 +745,17 @@ pub async fn upsert_rustyvault_preferences(
             warn_on_untrusted_iframe = EXCLUDED.warn_on_untrusted_iframe, \
             excluded_domains = EXCLUDED.excluded_domains, \
             allow_manual_http_fill = EXCLUDED.allow_manual_http_fill, \
+            password_generator_default_preset = EXCLUDED.password_generator_default_preset, \
+            password_generator_default_length = EXCLUDED.password_generator_default_length, \
+            password_generator_include_uppercase = EXCLUDED.password_generator_include_uppercase, \
+            password_generator_include_lowercase = EXCLUDED.password_generator_include_lowercase, \
+            password_generator_include_numbers = EXCLUDED.password_generator_include_numbers, \
+            password_generator_include_symbols = EXCLUDED.password_generator_include_symbols, \
+            password_generator_exclude_ambiguous = EXCLUDED.password_generator_exclude_ambiguous, \
             updated_ts = EXCLUDED.updated_ts \
          RETURNING {RUSTYVAULT_PREFERENCE_COLUMNS}"
     );
-    let row = sqlx::query_as::<_, RustyVaultPreferenceTuple>(&sql)
+    let row = sqlx::query(&sql)
         .bind(&input.user_id)
         .bind(input.auto_lock_minutes)
         .bind(input.clipboard_clear_seconds)
@@ -763,10 +766,17 @@ pub async fn upsert_rustyvault_preferences(
         .bind(input.warn_on_untrusted_iframe)
         .bind(&input.excluded_domains)
         .bind(input.allow_manual_http_fill)
+        .bind(&input.password_generator_default_preset)
+        .bind(input.password_generator_default_length)
+        .bind(input.password_generator_include_uppercase)
+        .bind(input.password_generator_include_lowercase)
+        .bind(input.password_generator_include_numbers)
+        .bind(input.password_generator_include_symbols)
+        .bind(input.password_generator_exclude_ambiguous)
         .bind(input.updated_ts)
         .fetch_one(pool)
         .await?;
-    Ok(map_rustyvault_preference_row(row))
+    rustyvault_preference_row_from_db(row)
 }
 
 pub async fn delete_rustyvault_preferences(

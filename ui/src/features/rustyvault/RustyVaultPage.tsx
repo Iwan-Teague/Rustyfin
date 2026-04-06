@@ -64,6 +64,7 @@ import {
 import {
   defaultRustyVaultPreferences,
   getMyRustyVaultPreferences,
+  passwordGeneratorDefaultsFromPrefs,
   updateMyRustyVaultPreferences,
   type RustyVaultPreferences,
 } from '@/features/rustyvault/preferences';
@@ -444,6 +445,10 @@ function toastClassName() {
   return 'bg-[rgba(34,38,55,0.92)] text-white/90';
 }
 
+function confirmVaultAction(message: string) {
+  return typeof window === 'undefined' ? true : window.confirm(message);
+}
+
 export default function RustyVaultPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -461,6 +466,7 @@ export default function RustyVaultPage() {
   const [selectedItem, setSelectedItem] = useState<RustyVaultItem | null>(null);
   const [editor, setEditor] = useState<EditorState>(defaultEditorState());
   const [newItemType, setNewItemType] = useState<RustyVaultItemType>('login');
+  const [showEditorPanel, setShowEditorPanel] = useState(false);
   const [showSensitive, setShowSensitive] = useState(false);
   const [editingExisting, setEditingExisting] = useState(false);
   const [search, setSearch] = useState('');
@@ -550,6 +556,9 @@ export default function RustyVaultPage() {
     ]);
     setConfig(nextConfig);
     setPrefs(nextPrefs);
+    const generatorDefaults = passwordGeneratorDefaultsFromPrefs(nextPrefs);
+    setGeneratorPreset(generatorDefaults.preset);
+    setGeneratorOptions(generatorDefaults.options);
     setExcludedDomainsInput(nextPrefs.excluded_domains.join('\n'));
     setDeviceSessions(nextDevices);
   }
@@ -578,6 +587,7 @@ export default function RustyVaultPage() {
     setSelectedItem(decrypted);
     setEditor(buildEditorFromItem(decrypted));
     setEditingExisting(true);
+    setShowEditorPanel(true);
     setShowSensitive(false);
   }
 
@@ -605,6 +615,7 @@ export default function RustyVaultPage() {
     setRows([]);
     setSelectedItem(null);
     setEditingExisting(false);
+    setShowEditorPanel(false);
     setEditor(defaultEditorState('login'));
     setMasterPassword('');
     setConfirmMasterPassword('');
@@ -630,6 +641,7 @@ export default function RustyVaultPage() {
     setActiveWorkspaceTab('credentials');
     setSelectedItem(null);
     setEditingExisting(false);
+    setShowEditorPanel(false);
     setEditor(defaultEditorState('login'));
     setShowSensitive(false);
     setMasterPassword('');
@@ -661,6 +673,7 @@ export default function RustyVaultPage() {
       setRows([]);
       setSelectedItem(null);
       setEditingExisting(false);
+      setShowEditorPanel(false);
       setEditor(defaultEditorState());
       setShowSensitive(false);
       setMessage('Vault locked after inactivity.');
@@ -717,10 +730,6 @@ export default function RustyVaultPage() {
   }, [prefs.auto_lock_minutes, resetAutoLock, unlocked]);
 
   useEffect(() => {
-    setGeneratorOptions(presetOptions(generatorPreset));
-  }, [generatorPreset]);
-
-  useEffect(() => {
     if (unlocked) {
       setVaultView('workspace');
     } else if (vaultView === 'workspace') {
@@ -760,16 +769,52 @@ export default function RustyVaultPage() {
     setEditor((current) => ({ ...current, [key]: value } as EditorState));
   }
 
+  function applyGeneratorPreset(preset: PasswordGeneratorPreset) {
+    setGeneratorPreset(preset);
+    setGeneratorOptions(presetOptions(preset));
+  }
+
+  function closeEditorPanel() {
+    setShowEditorPanel(false);
+    setSelectedItem(null);
+    setEditingExisting(false);
+    setEditor(defaultEditorState(newItemType));
+    setShowSensitive(false);
+  }
+
   function startNewDraft(itemType: RustyVaultItemType) {
     setSelectedItem(null);
     setEditingExisting(false);
     setNewItemType(itemType);
+    setShowEditorPanel(true);
     setEditor({
       ...defaultEditorState(itemType),
       password: itemType === 'login' ? generatedPassword : '',
     });
     setShowSensitive(itemType === 'login' && Boolean(generatedPassword));
     setActiveWorkspaceTab('credentials');
+  }
+
+  async function saveGeneratorDefaults() {
+    const updated = await withRustyVaultAccess((accessToken) =>
+      updateMyRustyVaultPreferences(
+        {
+          ...prefs,
+          password_generator_default_preset: generatorPreset,
+          password_generator_default_length: generatorOptions.length,
+          password_generator_include_uppercase: generatorOptions.include_uppercase,
+          password_generator_include_lowercase: generatorOptions.include_lowercase,
+          password_generator_include_numbers: generatorOptions.include_numbers,
+          password_generator_include_symbols: generatorOptions.include_symbols,
+          password_generator_exclude_ambiguous: generatorOptions.exclude_ambiguous,
+        },
+        accessToken,
+      ),
+    );
+    setPrefs(updated);
+    const generatorDefaults = passwordGeneratorDefaultsFromPrefs(updated);
+    setGeneratorPreset(generatorDefaults.preset);
+    setGeneratorOptions(generatorDefaults.options);
   }
 
   async function saveEditorItem() {
@@ -814,6 +859,7 @@ export default function RustyVaultPage() {
     setSelectedItem(item);
     setEditor(buildEditorFromItem(item));
     setEditingExisting(true);
+    setShowEditorPanel(true);
     resetAutoLock();
   }
 
@@ -832,6 +878,7 @@ export default function RustyVaultPage() {
     setSelectedItem(null);
     setEditor(defaultEditorState(newItemType));
     setEditingExisting(false);
+    setShowEditorPanel(false);
     await loadItems(unlocked);
   }
 
@@ -1054,6 +1101,7 @@ export default function RustyVaultPage() {
     setSelectedItem(null);
     setEditor(defaultEditorState());
     setEditingExisting(false);
+    setShowEditorPanel(false);
     const freshSession = await ensureRustyVaultWebSession();
     setVaultSession(freshSession);
     setConfig(await getRustyVaultConfig(freshSession.access_token));
@@ -1068,7 +1116,9 @@ export default function RustyVaultPage() {
 
   const workspaceContentClassName =
     activeWorkspaceTab === 'credentials'
-      ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.92fr_1.08fr]'
+      ? showEditorPanel
+        ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.92fr_1.08fr]'
+        : 'w-full'
       : activeWorkspaceTab === 'settings'
         ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.95fr_1.05fr]'
         : activeWorkspaceTab === 'generator'
@@ -1077,6 +1127,15 @@ export default function RustyVaultPage() {
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
   const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
   const vaultSubsectionClassName = 'space-y-3 border-t border-white/8 pt-4';
+  const settingsUnlocked = securityPassword.trim().length > 0;
+  const generatorMatchesSavedDefault =
+    generatorPreset === prefs.password_generator_default_preset &&
+    generatorOptions.length === prefs.password_generator_default_length &&
+    generatorOptions.include_uppercase === prefs.password_generator_include_uppercase &&
+    generatorOptions.include_lowercase === prefs.password_generator_include_lowercase &&
+    generatorOptions.include_numbers === prefs.password_generator_include_numbers &&
+    generatorOptions.include_symbols === prefs.password_generator_include_symbols &&
+    generatorOptions.exclude_ambiguous === prefs.password_generator_exclude_ambiguous;
   const currentVaultLabel = config?.enabled ? 'Personal Vault' : 'Set up Vault';
   const currentVaultDescription = config?.enabled
     ? 'Client-side encrypted credentials, cards, passports, and secure notes for this Rustyfin account.'
@@ -1478,7 +1537,19 @@ export default function RustyVaultPage() {
               </button>
             </div>
           ) : (
-            <div className="space-y-5 border-t border-white/8 pt-5">
+            <form
+              className="space-y-5 border-t border-white/8 pt-5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (saving || !me || !canSubmitVaultPrompt || !cryptoReady) {
+                  return;
+                }
+                void runAction(
+                  config?.enabled ? 'Vault unlocked.' : 'Vault created.',
+                  config?.enabled ? unlockExistingVault : bootstrapFreshVault,
+                );
+              }}
+            >
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="space-y-1">
                   <h2 className="text-2xl font-semibold">
@@ -1533,15 +1604,9 @@ export default function RustyVaultPage() {
 
                 <div className="flex flex-wrap gap-x-5 gap-y-2">
                   <button
-                    type="button"
+                    type="submit"
                     className="rf-text-action text-sm disabled:opacity-50"
                     disabled={saving || !me || !canSubmitVaultPrompt || !cryptoReady}
-                    onClick={() =>
-                      runAction(
-                        config?.enabled ? 'Vault unlocked.' : 'Vault created.',
-                        config?.enabled ? unlockExistingVault : bootstrapFreshVault,
-                      )
-                    }
                   >
                     {config?.enabled ? 'Unlock vault' : 'Create vault'}
                   </button>
@@ -1557,7 +1622,7 @@ export default function RustyVaultPage() {
                   </button>
                 </div>
               </div>
-            </div>
+            </form>
           )}
         </section>
         {toastStack}
@@ -1616,10 +1681,12 @@ export default function RustyVaultPage() {
               setRows([]);
               setSelectedItem(null);
               setEditingExisting(false);
+              setShowEditorPanel(false);
               setEditor(defaultEditorState());
               setShowSensitive(false);
               setMasterPassword('');
               setConfirmMasterPassword('');
+              setSecurityPassword('');
             }}
           >
             Lock vault
@@ -1660,37 +1727,33 @@ export default function RustyVaultPage() {
                         className="rf-flat-input min-w-[16rem] px-4 py-2 text-sm"
                         placeholder="Search title, site, person, or document"
                       />
-                      <select
-                        value={newItemType}
-                        onChange={(event) =>
-                          setNewItemType(parseVaultItemType(event.target.value))
-                        }
-                        className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
-                      >
-                        {ITEM_TYPE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
                       <button
                         type="button"
                         className="rf-text-action text-sm"
                         onClick={() => startNewDraft(newItemType)}
                       >
-                        Add new
+                        Create new
                       </button>
+                      {showEditorPanel && (
+                        <button
+                          type="button"
+                          className="rf-text-action rf-text-action-muted text-sm"
+                          onClick={closeEditorPanel}
+                        >
+                          Close editor
+                        </button>
+                      )}
                     </div>
                   </div>
 
                   {!unlocked ? (
-                    <div className="rf-flat-empty px-4 py-3 text-sm muted">
+                    <p className="px-1 py-2 text-sm muted">
                       Unlock the vault to browse and edit entries.
-                    </div>
+                    </p>
                   ) : filteredRows.length === 0 ? (
-                    <div className="rf-flat-empty px-4 py-4 text-sm muted">
+                    <p className="px-1 py-2 text-sm muted">
                       No matching items yet. Start with a login, card, passport, or secure note.
-                    </div>
+                    </p>
                   ) : (
                     <div className="space-y-1">
                       {filteredRows.map((row) => (
@@ -1705,7 +1768,7 @@ export default function RustyVaultPage() {
                             });
                           }}
                           className={`w-full rounded-2xl px-4 py-4 text-left transition ${
-                            selectedItem?.id === row.encrypted.id
+                            selectedItem?.id === row.encrypted.id && showEditorPanel
                               ? 'border border-[var(--orange-soft)]/45 bg-white/[0.035]'
                               : 'border border-transparent hover:border-white/10 hover:bg-white/[0.02]'
                           }`}
@@ -1741,37 +1804,48 @@ export default function RustyVaultPage() {
                 </div>
               </div>
 
-              <div className="space-y-7">
-                <div className={vaultSectionClassName}>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
-                        {editingExisting ? 'Editing saved item' : 'New draft'}
-                      </p>
-                      <h2 className="text-xl font-semibold">
-                        {editingExisting
-                          ? editor.title || itemTypeLabel(editor.item_type)
-                          : `New ${itemTypeLabel(editor.item_type)}`}
-                      </h2>
-                      <p className="mt-1 max-w-2xl text-sm muted">
-                        {itemTypeDescription(editor.item_type)}
-                      </p>
+              {showEditorPanel && (
+                <div className="space-y-7 animate-rise">
+                  <div className={vaultSectionClassName}>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
+                          {editingExisting ? 'Editing saved item' : 'Create new'}
+                        </p>
+                        <h2 className="text-xl font-semibold">
+                          {editingExisting
+                            ? editor.title || itemTypeLabel(editor.item_type)
+                            : `New ${itemTypeLabel(editor.item_type)}`}
+                        </h2>
+                        <p className="mt-1 max-w-2xl text-sm muted">
+                          {itemTypeDescription(editor.item_type)}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        {!editingExisting && (
+                          <select
+                            value={editor.item_type}
+                            onChange={(event) =>
+                              startNewDraft(parseVaultItemType(event.target.value))
+                            }
+                            className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
+                          >
+                            {ITEM_TYPE_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <button
+                          type="button"
+                          className="rf-text-action rf-text-action-muted text-sm"
+                          onClick={closeEditorPanel}
+                        >
+                          Close
+                        </button>
+                      </div>
                     </div>
-                    {!editingExisting && (
-                      <select
-                        value={editor.item_type}
-                        onChange={(event) =>
-                          startNewDraft(parseVaultItemType(event.target.value))
-                        }
-                        className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
-                      >
-                        {ITEM_TYPE_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
                   </div>
 
                   {renderCredentialFields()}
@@ -1852,7 +1926,7 @@ export default function RustyVaultPage() {
                     </div>
                   )}
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1869,10 +1943,10 @@ export default function RustyVaultPage() {
 
                   <div className="rounded-2xl bg-white/[0.035] px-4 py-4">
                     <p className="text-sm font-medium text-white/92">
-                      Rustyfin account password required for protected actions
+                      Rustyfin account password required before Vault settings unlock
                     </p>
                     <p className="mt-1 text-sm muted">
-                      Enter this before rotating the vault password, importing, exporting, pairing devices, revoking sessions, or deleting the vault.
+                      Enter it here before you can view or change Vault settings. Rustyfin will still verify this password again on the server before any sensitive action runs.
                     </p>
                     <label className="mt-4 block space-y-2">
                       <span className="text-sm font-medium">Rustyfin account password</span>
@@ -1884,213 +1958,261 @@ export default function RustyVaultPage() {
                         placeholder="Required before any protected action runs"
                       />
                     </label>
-                  </div>
-                </div>
-
-                <div className={vaultSectionClassName}>
-                  <div>
-                    <h2 className="text-xl font-semibold">Vault preferences</h2>
-                    <p className="mt-1 text-sm muted">
-                      Keep the daily vault behavior predictable without adding clutter to the main credentials view.
+                    <p className="mt-3 text-xs text-white/55">
+                      This protects vault preferences, password rotation, imports, exports, and delete flows behind an extra account-password checkpoint.
                     </p>
                   </div>
-
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <label className="space-y-2">
-                      <span className="text-sm">Auto-lock minutes</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={240}
-                        value={prefs.auto_lock_minutes}
-                        onChange={(event) =>
-                          setPrefs((current) => ({
-                            ...current,
-                            auto_lock_minutes:
-                              Number.parseInt(event.target.value || '15', 10) || 15,
-                          }))
-                        }
-                        className={vaultFieldClassName}
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-sm">Clipboard clear seconds</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={120}
-                        value={prefs.clipboard_clear_seconds}
-                        onChange={(event) =>
-                          setPrefs((current) => ({
-                            ...current,
-                            clipboard_clear_seconds:
-                              Number.parseInt(event.target.value || '30', 10) || 0,
-                          }))
-                        }
-                        className={vaultFieldClassName}
-                      />
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-sm">Default match mode</span>
-                      <select
-                        value={currentMatchMode}
-                        onChange={(event) =>
-                          setPrefs((current) => ({
-                            ...current,
-                            default_match_mode: normalizeMode(event.target.value),
-                          }))
-                        }
-                        className={vaultFieldClassName}
-                      >
-                        <option value="exact">Exact</option>
-                        <option value="host">Host</option>
-                        <option value="base_domain">Base domain</option>
-                        <option value="never">Never</option>
-                      </select>
-                    </label>
-                    <label className="space-y-2">
-                      <span className="text-sm">Excluded domains</span>
-                      <textarea
-                        value={excludedDomainsInput}
-                        onChange={(event) => setExcludedDomainsInput(event.target.value)}
-                        rows={4}
-                        className="rf-flat-input min-h-[6rem] px-4 py-3"
-                        placeholder={'example.com\nbank.example'}
-                      />
-                    </label>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {([
-                      ['inline_save_prompt_enabled', 'Automatic save prompts'],
-                      ['inline_autofill_enabled', 'Inline autofill affordances'],
-                      ['warn_on_http', 'Warn before HTTP fill'],
-                      ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
-                      ['allow_manual_http_fill', 'Allow manual HTTP fill'],
-                    ] as const).map(([key, label]) => (
-                      <RfSwitch
-                        key={key}
-                        label={label}
-                        checked={prefs[key]}
-                        onChange={(checked) =>
-                          setPrefs((current) => ({
-                            ...current,
-                            [key]: checked,
-                          }))
-                        }
-                      />
-                    ))}
-                  </div>
-
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm"
-                    onClick={() => runAction('Vault preferences saved.', savePreferences)}
-                  >
-                    Save preferences
-                  </button>
                 </div>
+
+                {settingsUnlocked ? (
+                  <div className={vaultSectionClassName}>
+                    <div>
+                      <h2 className="text-xl font-semibold">Vault preferences</h2>
+                      <p className="mt-1 text-sm muted">
+                        Keep the daily vault behavior predictable without adding clutter to the main credentials view.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-sm">Auto-lock minutes</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={240}
+                          value={prefs.auto_lock_minutes}
+                          onChange={(event) =>
+                            setPrefs((current) => ({
+                              ...current,
+                              auto_lock_minutes:
+                                Number.parseInt(event.target.value || '15', 10) || 15,
+                            }))
+                          }
+                          className={vaultFieldClassName}
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm">Clipboard clear seconds</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={120}
+                          value={prefs.clipboard_clear_seconds}
+                          onChange={(event) =>
+                            setPrefs((current) => ({
+                              ...current,
+                              clipboard_clear_seconds:
+                                Number.parseInt(event.target.value || '30', 10) || 0,
+                            }))
+                          }
+                          className={vaultFieldClassName}
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm">Default match mode</span>
+                        <select
+                          value={currentMatchMode}
+                          onChange={(event) =>
+                            setPrefs((current) => ({
+                              ...current,
+                              default_match_mode: normalizeMode(event.target.value),
+                            }))
+                          }
+                          className={vaultFieldClassName}
+                        >
+                          <option value="exact">Exact</option>
+                          <option value="host">Host</option>
+                          <option value="base_domain">Base domain</option>
+                          <option value="never">Never</option>
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-sm">Excluded domains</span>
+                        <textarea
+                          value={excludedDomainsInput}
+                          onChange={(event) => setExcludedDomainsInput(event.target.value)}
+                          rows={4}
+                          className="rf-flat-input min-h-[6rem] px-4 py-3"
+                          placeholder={'example.com\nbank.example'}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      {([
+                        ['inline_save_prompt_enabled', 'Automatic save prompts'],
+                        ['inline_autofill_enabled', 'Inline autofill affordances'],
+                        ['warn_on_http', 'Warn before HTTP fill'],
+                        ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
+                        ['allow_manual_http_fill', 'Allow manual HTTP fill'],
+                      ] as const).map(([key, label]) => (
+                        <RfSwitch
+                          key={key}
+                          label={label}
+                          checked={prefs[key]}
+                          onChange={(checked) =>
+                            setPrefs((current) => ({
+                              ...current,
+                              [key]: checked,
+                            }))
+                          }
+                        />
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm"
+                      onClick={() => runAction('Vault preferences saved.', savePreferences)}
+                    >
+                      Save preferences
+                    </button>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
+                    Enter your Rustyfin account password above to reveal vault preferences and protected Vault controls.
+                  </div>
+                )}
               </div>
 
               <div className="space-y-7">
-                <div className="space-y-5 pt-1">
-                  <div>
-                    <h2 className="text-xl font-semibold">Change vault master password</h2>
-                    <p className="mt-1 text-sm muted">
-                      Re-enter the current vault master password here. The Rustyfin account password above must already be filled in before the rotation can run.
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-1 gap-3">
-                    <input
-                      type="password"
-                      value={currentRustyVaultPassword}
-                      onChange={(event) => setCurrentVaultPassword(event.target.value)}
-                      className={vaultFieldClassName}
-                      placeholder="Current vault master password"
-                    />
-                    <input
-                      type="password"
-                      value={newMasterPassword}
-                      onChange={(event) => setNewMasterPassword(event.target.value)}
-                      className={vaultFieldClassName}
-                      placeholder="New vault master password"
-                    />
-                    <input
-                      type="password"
-                      value={newMasterPasswordConfirm}
-                      onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
-                      className={vaultFieldClassName}
-                      placeholder="Confirm new vault master password"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm"
-                    disabled={!unlocked}
-                    onClick={() =>
-                      runAction(
-                        'Vault master password changed successfully.',
-                        rekeyMasterPassword,
-                      )
-                    }
-                  >
-                    Rotate master password
-                  </button>
-                </div>
+                {settingsUnlocked ? (
+                  <>
+                    <div className="space-y-5 pt-1">
+                      <div>
+                        <h2 className="text-xl font-semibold">Change vault master password</h2>
+                        <p className="mt-1 text-sm muted">
+                          Re-enter the current vault master password here. This rotates the wrapped key and re-encrypts your saved items for this vault.
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
+                        Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        <input
+                          type="password"
+                          value={currentRustyVaultPassword}
+                          onChange={(event) => setCurrentVaultPassword(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="Current vault master password"
+                        />
+                        <input
+                          type="password"
+                          value={newMasterPassword}
+                          onChange={(event) => setNewMasterPassword(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="New vault master password"
+                        />
+                        <input
+                          type="password"
+                          value={newMasterPasswordConfirm}
+                          onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="Confirm new vault master password"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="rf-text-action text-sm"
+                        disabled={!unlocked}
+                        onClick={() => {
+                          if (
+                            !confirmVaultAction(
+                              'Rotate the vault master password now? Rustyfin will re-encrypt the saved vault items on this device.',
+                            )
+                          ) {
+                            return;
+                          }
+                          void runAction(
+                            'Vault master password changed successfully.',
+                            rekeyMasterPassword,
+                          );
+                        }}
+                      >
+                        Rotate master password
+                      </button>
+                    </div>
 
-                <div className={vaultSectionClassName}>
-                  <div>
-                    <h2 className="text-xl font-semibold">Import and export</h2>
-                    <p className="mt-1 text-sm muted">
-                      Export decrypted JSON locally or import Bitwarden logins into this vault.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-x-5 gap-y-2">
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm disabled:opacity-50"
-                      disabled={!unlocked}
-                      onClick={() => runAction('Vault export downloaded.', exportCurrentVault)}
-                    >
-                      Export decrypted JSON
-                    </button>
-                  </div>
-                  <RfSwitch
-                    label="Clear current items before importing"
-                    checked={importClearExisting}
-                    onChange={setImportClearExisting}
-                  />
-                  <input
-                    type="file"
-                    accept="application/json,.json"
-                    onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
-                    className="block w-full text-sm"
-                  />
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={!unlocked || !importFile}
-                    onClick={() =>
-                      runAction('Bitwarden import completed.', importBitwardenJson)
-                    }
-                  >
-                    Import Bitwarden JSON locally
-                  </button>
-                </div>
+                    <div className={vaultSectionClassName}>
+                      <div>
+                        <h2 className="text-xl font-semibold">Import and export</h2>
+                        <p className="mt-1 text-sm muted">
+                          Export decrypted JSON locally or import Bitwarden logins into this vault.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-x-5 gap-y-2">
+                        <button
+                          type="button"
+                          className="rf-text-action text-sm disabled:opacity-50"
+                          disabled={!unlocked}
+                          onClick={() => runAction('Vault export downloaded.', exportCurrentVault)}
+                        >
+                          Export decrypted JSON
+                        </button>
+                      </div>
+                      <RfSwitch
+                        label="Clear current items before importing"
+                        checked={importClearExisting}
+                        onChange={setImportClearExisting}
+                      />
+                      <p className="text-sm muted">
+                        Importing can add a large batch of credentials at once. If clearing is enabled, the current vault entries will be replaced.
+                      </p>
+                      <input
+                        type="file"
+                        accept="application/json,.json"
+                        onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+                        className="block w-full text-sm"
+                      />
+                      <button
+                        type="button"
+                        className="rf-text-action text-sm disabled:opacity-50"
+                        disabled={!unlocked || !importFile}
+                        onClick={() => {
+                          if (
+                            !confirmVaultAction(
+                              importClearExisting
+                                ? 'Import this Bitwarden JSON and replace the current vault contents? This cannot be undone.'
+                                : 'Import this Bitwarden JSON into the current vault now?',
+                            )
+                          ) {
+                            return;
+                          }
+                          void runAction('Bitwarden import completed.', importBitwardenJson);
+                        }}
+                      >
+                        Import Bitwarden JSON locally
+                      </button>
+                    </div>
 
-                <div className="space-y-3 border-t border-[var(--danger)]/35 pt-4">
-                  <p className="font-medium text-[var(--danger)]">Delete vault</p>
-                  <p className="text-sm muted">
-                    Destroying the vault deletes wrapped keys, item ciphertext, audit history, and vault device sessions. The main Rustyfin account stays intact.
-                  </p>
-                  <button
-                    type="button"
-                    className="rf-text-action rf-text-action-danger text-sm"
-                    onClick={() => runAction('Vault destroyed.', destroyCurrentVault)}
-                  >
-                    Destroy vault
-                  </button>
-                </div>
+                    <div className="space-y-3 border-t border-[var(--danger)]/35 pt-4">
+                      <p className="font-medium text-[var(--danger)]">Delete vault</p>
+                      <p className="text-sm muted">
+                        Destroying the vault deletes wrapped keys, item ciphertext, audit history, and vault device sessions. The main Rustyfin account stays intact.
+                      </p>
+                      <button
+                        type="button"
+                        className="rf-text-action rf-text-action-danger text-sm"
+                        onClick={() => {
+                          if (
+                            !confirmVaultAction(
+                              'Destroy this vault permanently? This removes the encrypted vault contents, wrapped keys, and vault sessions.',
+                            )
+                          ) {
+                            return;
+                          }
+                          void runAction('Vault destroyed.', destroyCurrentVault);
+                        }}
+                      >
+                        Destroy vault
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
+                    Protected settings stay hidden until you enter your Rustyfin account password in this session.
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -2114,7 +2236,7 @@ export default function RustyVaultPage() {
                           className={`rf-text-action text-sm ${
                             generatorPreset === preset ? '' : 'rf-text-action-muted'
                           }`}
-                          onClick={() => setGeneratorPreset(preset)}
+                          onClick={() => applyGeneratorPreset(preset)}
                         >
                           {preset}
                         </button>
@@ -2190,6 +2312,16 @@ export default function RustyVaultPage() {
                       }
                     >
                       Generate
+                    </button>
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm disabled:opacity-50"
+                      disabled={generatorMatchesSavedDefault}
+                      onClick={() =>
+                        runAction('Password generator defaults saved.', saveGeneratorDefaults)
+                      }
+                    >
+                      Save as default
                     </button>
                     <button
                       type="button"
@@ -2274,9 +2406,16 @@ export default function RustyVaultPage() {
                       <button
                         type="button"
                         className="rf-text-action text-sm"
-                        onClick={() =>
-                          runAction('Other vault sessions revoked.', revokeOtherSessions)
-                        }
+                        onClick={() => {
+                          if (
+                            !confirmVaultAction(
+                              'Revoke every other vault session now? Other browsers and extensions will need to pair or unlock again.',
+                            )
+                          ) {
+                            return;
+                          }
+                          void runAction('Other vault sessions revoked.', revokeOtherSessions);
+                        }}
                       >
                         Revoke other sessions
                       </button>
