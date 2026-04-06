@@ -1261,7 +1261,7 @@ export default function RustyVaultPage() {
     : 'Create an encrypted vault before saving credentials or personal records.';
 
   const toastSlot = (
-    <div className="flex h-[2.25rem] items-end">
+    <div className="flex min-h-[1.35rem] items-end">
       <div
         className={`w-full text-left text-sm transition-opacity duration-200 ${
           activeToast ? `opacity-100 ${toastClassName()}` : 'pointer-events-none opacity-0'
@@ -1733,7 +1733,7 @@ export default function RustyVaultPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header pb-2">
+      <header className="rf-flat-header pb-1">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -1772,7 +1772,7 @@ export default function RustyVaultPage() {
 
       {toastSlot}
 
-      <section className="rf-flat-section pt-1 sm:pt-2">
+      <section className="rf-flat-section pt-0 sm:pt-1">
         <div className="flex justify-end">
           <button
             type="button"
