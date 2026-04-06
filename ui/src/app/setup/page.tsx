@@ -31,7 +31,7 @@ export default function SetupWizard() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saving, setSaving] = useState(false);
-  const { refreshMe } = useAuth();
+  const { replaceMe } = useAuth();
 
   // Config state
   const [serverName, setServerName] = useState('Rustyfin');
@@ -202,9 +202,28 @@ export default function SetupWizard() {
       if (res.ok) {
         const body = await parseResponseBody(res);
         if (body && typeof body === 'object' && typeof (body as { token?: unknown }).token === 'string') {
-          writeBrowserToken((body as { token: string }).token);
+          const payload = body as {
+            token: string;
+            user_id?: unknown;
+            username?: unknown;
+            role?: unknown;
+          };
+          writeBrowserToken(payload.token);
+          if (
+            typeof payload.user_id === 'string' &&
+            typeof payload.username === 'string' &&
+            (payload.role === 'admin' || payload.role === 'user')
+          ) {
+            replaceMe({
+              id: payload.user_id,
+              username: payload.username,
+              login_username: payload.username,
+              role: payload.role,
+            });
+          }
         }
-        await refreshMe();
+        window.location.assign('/');
+        return;
       }
       router.replace('/');
       setStep('done');
