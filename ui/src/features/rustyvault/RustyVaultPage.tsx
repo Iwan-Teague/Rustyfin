@@ -1244,7 +1244,7 @@ export default function RustyVaultPage() {
           ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]'
           : 'w-full';
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
-  const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
+  const vaultSectionClassName = 'space-y-4 border-t border-white/8 pt-4';
   const vaultSubsectionClassName = 'space-y-3 border-t border-white/8 pt-4';
   const settingsUnlocked = settingsAccessGranted;
   const generatorMatchesSavedDefault =
@@ -1261,7 +1261,7 @@ export default function RustyVaultPage() {
     : 'Create an encrypted vault before saving credentials or personal records.';
 
   const toastSlot = (
-    <div className="flex min-h-[0.95rem] items-end">
+    <div className="flex min-h-[0.72rem] items-end">
       <div
         className={`w-full text-left text-sm transition-opacity duration-200 ${
           activeToast ? `opacity-100 ${toastClassName()}` : 'pointer-events-none opacity-0'
@@ -1724,8 +1724,8 @@ export default function RustyVaultPage() {
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
       <header className="rf-flat-header pb-0">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
-          <div className="space-y-2">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
+          <div className="space-y-1.5">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
             <p className="max-w-3xl text-sm muted sm:text-base">
               Your encrypted credentials open first, while settings, generator, and extension setup stay neatly separated.
@@ -1763,46 +1763,48 @@ export default function RustyVaultPage() {
       {toastSlot}
 
       <section className="rf-flat-section pt-0">
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="rf-text-action rf-text-action-muted text-sm"
-            onClick={() => {
-              setUnlocked(null);
-              setVaultView('index');
-              setActiveWorkspaceTab('credentials');
-              setSettingsAccessGranted(false);
-              setRows([]);
-              setSelectedItem(null);
-              setEditingExisting(false);
-              setShowEditorPanel(false);
-              setEditor(defaultEditorState());
-              setShowSensitive(false);
-              setMasterPassword('');
-              setConfirmMasterPassword('');
-              setSecurityPassword('');
-            }}
-          >
-            Lock vault
-          </button>
+        <div className="space-y-1">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="rf-text-action rf-text-action-muted text-sm"
+              onClick={() => {
+                setUnlocked(null);
+                setVaultView('index');
+                setActiveWorkspaceTab('credentials');
+                setSettingsAccessGranted(false);
+                setRows([]);
+                setSelectedItem(null);
+                setEditingExisting(false);
+                setShowEditorPanel(false);
+                setEditor(defaultEditorState());
+                setShowSensitive(false);
+                setMasterPassword('');
+                setConfirmMasterPassword('');
+                setSecurityPassword('');
+              }}
+            >
+              Lock vault
+            </button>
+          </div>
+
+          <SurfaceTabsBar
+            variant="vault"
+            className=""
+            activeKey={activeWorkspaceTab}
+            onSelect={(value) => setActiveWorkspaceTab(value as VaultWorkspaceTab)}
+            options={[
+              { key: 'credentials', label: 'Credentials' },
+              { key: 'settings', label: 'Settings' },
+              { key: 'generator', label: 'Password Generator' },
+              { key: 'extension', label: 'Extension' },
+            ]}
+            badges={workspaceBadges}
+            badgesClassName="-translate-y-[2px]"
+          />
         </div>
 
-        <SurfaceTabsBar
-          variant="vault"
-          className=""
-          activeKey={activeWorkspaceTab}
-          onSelect={(value) => setActiveWorkspaceTab(value as VaultWorkspaceTab)}
-          options={[
-            { key: 'credentials', label: 'Credentials' },
-            { key: 'settings', label: 'Settings' },
-            { key: 'generator', label: 'Password Generator' },
-            { key: 'extension', label: 'Extension' },
-          ]}
-          badges={workspaceBadges}
-          badgesClassName="-translate-y-[2px]"
-        />
-
-        <div key={activeWorkspaceTab} className="vault-workspace-panel pt-5 sm:pt-6">
+        <div key={activeWorkspaceTab} className="vault-workspace-panel pt-4 sm:pt-5">
           {activeWorkspaceTab === 'credentials' && (
             <div className={workspaceContentClassName}>
               <div className="flex min-h-[34rem] flex-col gap-6 xl:flex-row">
@@ -1946,79 +1948,85 @@ export default function RustyVaultPage() {
 
                         {renderCredentialFields()}
 
-                        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                          <RfSwitch
-                            label="Favorite item"
-                            checked={editor.favorite}
-                            onChange={(checked) => updateEditorField('favorite', checked)}
-                          />
-                          {(editor.item_type === 'login' ||
-                            editor.item_type === 'credit_card' ||
-                            editor.item_type === 'passport') && (
-                            <button
-                              type="button"
-                              className="rf-text-action rf-text-action-muted text-sm"
-                              onClick={() => setShowSensitive((current) => !current)}
-                            >
-                              {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="rf-text-action text-sm disabled:opacity-50"
-                            disabled={saving || !unlocked}
-                            onClick={() =>
-                              runAction(
-                                editingExisting ? 'Vault item saved.' : 'Vault item created.',
-                                saveEditorItem,
-                              )
-                            }
-                          >
-                            {editingExisting ? 'Save changes' : 'Save item'}
-                          </button>
-                          {selectedItem && itemPrimaryCopyValue(selectedItem) && (
+                        <div className="grid gap-3 border-t border-white/8 pt-4 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+                            <RfSwitch
+                              label="Favorite item"
+                              checked={editor.favorite}
+                              onChange={(checked) => updateEditorField('favorite', checked)}
+                            />
+                            {(editor.item_type === 'login' ||
+                              editor.item_type === 'credit_card' ||
+                              editor.item_type === 'passport') && (
+                              <button
+                                type="button"
+                                className="rf-text-action rf-text-action-muted text-sm"
+                                onClick={() => setShowSensitive((current) => !current)}
+                              >
+                                {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-5 gap-y-3 sm:justify-end">
                             <button
                               type="button"
                               className="rf-text-action text-sm disabled:opacity-50"
+                              disabled={saving || !unlocked}
                               onClick={() =>
-                                runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
+                                runAction(
+                                  editingExisting ? 'Vault item saved.' : 'Vault item created.',
+                                  saveEditorItem,
+                                )
                               }
                             >
-                              {itemPrimaryCopyLabel(selectedItem)}
+                              {editingExisting ? 'Save changes' : 'Save item'}
                             </button>
-                          )}
-                          {selectedItem && (
-                            <button
-                              type="button"
-                              className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
-                              onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
-                            >
-                              Delete
-                            </button>
-                          )}
+                            {selectedItem && itemPrimaryCopyValue(selectedItem) && (
+                              <button
+                                type="button"
+                                className="rf-text-action text-sm disabled:opacity-50"
+                                onClick={() =>
+                                  runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
+                                }
+                              >
+                                {itemPrimaryCopyLabel(selectedItem)}
+                              </button>
+                            )}
+                            {selectedItem && (
+                              <button
+                                type="button"
+                                className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
+                                onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {selectedItem && (
-                          <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="font-medium">
-                                {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
-                              </span>
-                              <span className="text-xs text-white/55">
+                          <div className="space-y-2.5 border-t border-white/8 pt-4 text-sm">
+                            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                              <div className="space-y-1">
+                                <span className="font-medium">
+                                  {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
+                                </span>
+                                <p
+                                  className={`text-sm text-white/85 ${
+                                    selectedItem.item_type === 'secure_note'
+                                      ? 'whitespace-pre-wrap'
+                                      : 'font-mono tracking-[0.18em]'
+                                  }`}
+                                >
+                                  {itemPrimaryPreview(selectedItem, showSensitive)}
+                                </p>
+                              </div>
+                              <span className="pt-0.5 text-xs text-white/55">
                                 {selectedItem.favorite
                                   ? 'Favorite'
                                   : itemTypeLabel(selectedItem.item_type)}
                               </span>
                             </div>
-                            <p
-                              className={`text-sm text-white/85 ${
-                                selectedItem.item_type === 'secure_note'
-                                  ? 'whitespace-pre-wrap'
-                                  : 'font-mono tracking-[0.18em]'
-                              }`}
-                            >
-                              {itemPrimaryPreview(selectedItem, showSensitive)}
-                            </p>
                             <p className="muted">
                               Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
                               {formatTimestamp(selectedItem.updated_ts)}
