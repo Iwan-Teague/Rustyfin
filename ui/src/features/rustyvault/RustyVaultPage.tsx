@@ -1677,7 +1677,7 @@ export default function RustyVaultPage() {
 
               <div className="space-y-4 border-l border-white/10 pl-4">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <label className="space-y-2">
+                  <label className="space-y-3">
                     <span className="text-sm font-medium">Vault password</span>
                     <input
                       ref={vaultPasswordInputRef}
@@ -1691,7 +1691,7 @@ export default function RustyVaultPage() {
                     />
                   </label>
                   {!config?.enabled ? (
-                    <label className="space-y-2">
+                    <label className="space-y-3">
                       <span className="text-sm font-medium">Confirm vault password</span>
                       <input
                         type="password"
@@ -2088,9 +2088,10 @@ export default function RustyVaultPage() {
                   </button>
                 </div>
 
-                <div className={workspaceContentClassName}>
+                <div className="border-t border-white/8 pt-5">
+                  <div className={workspaceContentClassName}>
                   <div className="space-y-7">
-                    <div className={vaultSectionClassName}>
+                    <div className="space-y-5">
                       <div>
                         <h2 className="text-xl font-semibold">Vault preferences</h2>
                       </div>
@@ -2192,58 +2193,58 @@ export default function RustyVaultPage() {
                   </div>
 
                   <div className="space-y-7">
-                    <div>
+                    <div className="space-y-5">
                       <h2 className="text-xl font-semibold">Change vault master password</h2>
                       <p className="mt-1 text-sm muted">
                         Re-enter the current vault master password here. This rotates the wrapped key and re-encrypts your saved items for this vault.
                       </p>
+                      <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
+                        Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        <input
+                          type="password"
+                          value={currentRustyVaultPassword}
+                          onChange={(event) => setCurrentVaultPassword(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="Current vault master password"
+                        />
+                        <input
+                          type="password"
+                          value={newMasterPassword}
+                          onChange={(event) => setNewMasterPassword(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="New vault master password"
+                        />
+                        <input
+                          type="password"
+                          value={newMasterPasswordConfirm}
+                          onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
+                          className={vaultFieldClassName}
+                          placeholder="Confirm new vault master password"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="rf-text-action text-sm"
+                        disabled={!unlocked}
+                        onClick={() => {
+                          if (
+                            !confirmVaultAction(
+                              'Rotate the vault master password now? Rustyfin will re-encrypt the saved vault items on this device.',
+                            )
+                          ) {
+                            return;
+                          }
+                          void runAction(
+                            'Vault master password changed successfully.',
+                            rekeyMasterPassword,
+                          );
+                        }}
+                      >
+                        Rotate master password
+                      </button>
                     </div>
-                    <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
-                      Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
-                    </div>
-                    <div className="grid grid-cols-1 gap-3">
-                      <input
-                        type="password"
-                        value={currentRustyVaultPassword}
-                        onChange={(event) => setCurrentVaultPassword(event.target.value)}
-                        className={vaultFieldClassName}
-                        placeholder="Current vault master password"
-                      />
-                      <input
-                        type="password"
-                        value={newMasterPassword}
-                        onChange={(event) => setNewMasterPassword(event.target.value)}
-                        className={vaultFieldClassName}
-                        placeholder="New vault master password"
-                      />
-                      <input
-                        type="password"
-                        value={newMasterPasswordConfirm}
-                        onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
-                        className={vaultFieldClassName}
-                        placeholder="Confirm new vault master password"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm"
-                      disabled={!unlocked}
-                      onClick={() => {
-                        if (
-                          !confirmVaultAction(
-                            'Rotate the vault master password now? Rustyfin will re-encrypt the saved vault items on this device.',
-                          )
-                        ) {
-                          return;
-                        }
-                        void runAction(
-                          'Vault master password changed successfully.',
-                          rekeyMasterPassword,
-                        );
-                      }}
-                    >
-                      Rotate master password
-                    </button>
                   </div>
 
                   <div className={vaultSectionClassName}>
@@ -2320,6 +2321,7 @@ export default function RustyVaultPage() {
                       Destroy vault
                     </button>
                   </div>
+                </div>
                 </div>
               </div>
             )
