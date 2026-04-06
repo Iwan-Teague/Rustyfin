@@ -103,6 +103,13 @@ pub struct RustyVaultPreferences {
     pub warn_on_untrusted_iframe: bool,
     pub excluded_domains: Vec<String>,
     pub allow_manual_http_fill: bool,
+    pub password_generator_default_preset: String,
+    pub password_generator_default_length: u32,
+    pub password_generator_include_uppercase: bool,
+    pub password_generator_include_lowercase: bool,
+    pub password_generator_include_numbers: bool,
+    pub password_generator_include_symbols: bool,
+    pub password_generator_exclude_ambiguous: bool,
 }
 
 impl Default for RustyVaultPreferences {
@@ -117,6 +124,13 @@ impl Default for RustyVaultPreferences {
             warn_on_untrusted_iframe: true,
             excluded_domains: Vec::new(),
             allow_manual_http_fill: false,
+            password_generator_default_preset: "balanced".to_string(),
+            password_generator_default_length: 22,
+            password_generator_include_uppercase: true,
+            password_generator_include_lowercase: true,
+            password_generator_include_numbers: true,
+            password_generator_include_symbols: true,
+            password_generator_exclude_ambiguous: true,
         }
     }
 }
@@ -125,6 +139,10 @@ impl RustyVaultPreferences {
     pub fn normalized(mut self) -> Self {
         self.default_match_mode = normalize_match_mode(&self.default_match_mode);
         self.excluded_domains = normalize_domains(self.excluded_domains);
+        self.password_generator_default_preset =
+            normalize_password_generator_preset(&self.password_generator_default_preset);
+        self.password_generator_default_length =
+            self.password_generator_default_length.clamp(12, 64);
         self
     }
 }
@@ -145,6 +163,13 @@ fn normalize_domains(values: Vec<String>) -> Vec<String> {
     normalized.sort();
     normalized.dedup();
     normalized
+}
+
+fn normalize_password_generator_preset(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "memorable" | "balanced" | "maximum" => raw.trim().to_ascii_lowercase(),
+        _ => "balanced".to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,6 +326,26 @@ mod tests {
             normalized.excluded_domains,
             vec!["example.com".to_string(), "sub.example.com".to_string()]
         );
+        assert_eq!(normalized.password_generator_default_preset, "balanced");
+        assert_eq!(normalized.password_generator_default_length, 22);
+        assert!(normalized.password_generator_include_uppercase);
+        assert!(normalized.password_generator_include_lowercase);
+        assert!(normalized.password_generator_include_numbers);
+        assert!(normalized.password_generator_include_symbols);
+        assert!(normalized.password_generator_exclude_ambiguous);
+    }
+
+    #[test]
+    fn normalizes_password_generator_defaults() {
+        let normalized = RustyVaultPreferences {
+            password_generator_default_preset: " MEMORABLE ".to_string(),
+            password_generator_default_length: 8,
+            ..RustyVaultPreferences::default()
+        }
+        .normalized();
+
+        assert_eq!(normalized.password_generator_default_preset, "memorable");
+        assert_eq!(normalized.password_generator_default_length, 12);
     }
 
     #[test]

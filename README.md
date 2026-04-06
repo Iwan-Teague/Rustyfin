@@ -38,6 +38,7 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
   - Runtime availability is graceful: if RustyVault is disabled or its schema is unavailable, `/vault` returns `503` and the rest of Rustyfin stays functional
   - Host-facing RustyVault routes are being audited down to live web UI and extension operations; dead convenience routes like `/api/v1/vault/sync` and `/api/v1/vault/protected-actions/complete` have been removed
   - The unlocked `/vault` web UI is credentials-first and currently supports login, credit-card, passport, and secure-note item types alongside the separate settings, generator, and extension views
+  - RustyVault password-generator defaults are now stored in dedicated Vault preferences so saved preset/toggle choices persist across later web sessions
   - Web `/vault` management UI remains the host-facing page
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
   - Secure browser access to `/vault` is edge-only and HTTPS-only: expose only the Caddy edge, keep internal service ports loopback-only, and keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin
