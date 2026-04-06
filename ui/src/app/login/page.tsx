@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { extractErrorMessage, parseResponseBody } from '@/lib/api';
 import { toClientError } from '@/lib/errors';
@@ -11,8 +10,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const router = useRouter();
-  const { refreshMe } = useAuth();
+  const { replaceMe } = useAuth();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -37,9 +35,29 @@ export default function LoginPage() {
         return;
       }
 
-      writeBrowserToken((body as { token: string }).token);
-      await refreshMe();
-      router.push('/');
+      const payload = body as {
+        token: string;
+        user_id?: unknown;
+        username?: unknown;
+        role?: unknown;
+      };
+
+      writeBrowserToken(payload.token);
+
+      if (
+        typeof payload.user_id === 'string' &&
+        typeof payload.username === 'string' &&
+        (payload.role === 'admin' || payload.role === 'user')
+      ) {
+        replaceMe({
+          id: payload.user_id,
+          username: payload.username,
+          login_username: payload.username,
+          role: payload.role,
+        });
+      }
+
+      window.location.assign('/');
     } catch (err: unknown) {
       setError(toClientError(err).message || 'Network error');
     }
