@@ -1921,14 +1921,14 @@ export default function RustyVaultPage() {
                           >
                             {showEditorPanel ? 'Close' : 'Create new'}
                           </button>
-                          <div className="relative flex items-stretch gap-2" ref={typeFilterMenuRef}>
+                          <div className="relative flex items-center gap-1.5" ref={typeFilterMenuRef}>
                             <button
                               type="button"
                               aria-label="Filter saved credential types"
                               aria-haspopup="dialog"
                               aria-expanded={showTypeFilters}
-                              className={`rf-flat-input relative flex h-[2.625rem] w-[2.625rem] shrink-0 items-center justify-center px-0 py-0 text-white/70 transition hover:text-white ${
-                                showTypeFilters ? 'border-white/16 bg-white/[0.05] text-white' : ''
+                              className={`relative flex h-5 w-5 shrink-0 items-center justify-center text-white/68 transition hover:text-white ${
+                                showTypeFilters ? 'text-white' : ''
                               }`}
                               onClick={() => setShowTypeFilters((current) => !current)}
                             >
@@ -1946,11 +1946,6 @@ export default function RustyVaultPage() {
                                 <path d="M7 12h10" />
                                 <path d="M10 17h4" />
                               </svg>
-                              {!allItemTypesVisible && (
-                                <span className="absolute -right-1 -top-1 min-w-[1.1rem] rounded-full bg-[var(--orange-soft)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-black">
-                                  {visibleItemTypes.length}
-                                </span>
-                              )}
                             </button>
                             <input
                               value={search}
