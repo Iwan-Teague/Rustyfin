@@ -23,7 +23,6 @@ type Argon2BrowserModule = {
     ad?: Uint8Array;
     type?: number;
   }): Promise<Argon2BrowserHashResult>;
-  probeArgon2BrowserFallback(): Promise<void>;
 };
 
 const ARGON2_MODULE_SRC = '/vendor/rustyvault/argon2-browser.js';
@@ -58,8 +57,7 @@ async function loadArgon2BrowserModule(): Promise<Argon2BrowserModule> {
           !module ||
           !module.ArgonType ||
           typeof module.ArgonType.Argon2id !== 'number' ||
-          typeof module.hash !== 'function' ||
-          typeof module.probeArgon2BrowserFallback !== 'function'
+          typeof module.hash !== 'function'
         ) {
           throw new Error('Argon2 browser fallback module did not initialize correctly');
         }
@@ -100,9 +98,5 @@ export async function deriveArgon2IdHashBytes(params: {
 }
 
 export async function probeArgon2BrowserFallback(): Promise<void> {
-  const module = await loadArgon2BrowserModule();
-  await withTimeout(
-    module.probeArgon2BrowserFallback(),
-    'Timed out while probing the Argon2 browser fallback',
-  );
+  await loadArgon2BrowserModule();
 }
