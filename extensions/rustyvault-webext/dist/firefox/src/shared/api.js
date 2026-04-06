@@ -9,6 +9,37 @@ export function sanitizeServerBaseUrl(value) {
     url.pathname = url.pathname.replace(/\/+$/, '');
     return url.toString().replace(/\/+$/, '');
 }
+export async function verifyRustyfinServerBaseUrl(serverBaseUrl) {
+    const normalizedBaseUrl = sanitizeServerBaseUrl(serverBaseUrl);
+    let response;
+    try {
+        response = await fetch(`${normalizedBaseUrl}/runtime-config`, {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'omit',
+            headers: {
+                Accept: 'application/json',
+            },
+        });
+    }
+    catch {
+        throw new Error('Could not reach that Rustyfin server address');
+    }
+    if (!response.ok) {
+        throw new Error(`Rustyfin server check failed (${response.status})`);
+    }
+    let body = null;
+    try {
+        body = await response.json();
+    }
+    catch {
+        throw new Error('That address responded, but it did not look like a Rustyfin server');
+    }
+    if (!body || typeof body !== 'object' || !Array.isArray(body.ice_servers)) {
+        throw new Error('That address responded, but it did not look like a Rustyfin server');
+    }
+    return { normalizedBaseUrl };
+}
 export function parseRustyVaultConnectionInput(input) {
     const trimmed = (input || '').trim();
     if (!trimmed) {

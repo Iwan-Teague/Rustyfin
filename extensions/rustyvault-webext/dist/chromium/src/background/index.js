@@ -1,9 +1,9 @@
 import { getCurrentTab, logIfEnabled } from '../shared/browser.js';
-import { apiRequest, defaultRustyVaultPreferences, getVaultPreferences, parseRustyVaultConnectionInput, refreshRustyVaultSession, sanitizeServerBaseUrl, withRustyVaultSession, } from '../shared/api.js';
+import { apiRequest, defaultRustyVaultPreferences, getVaultPreferences, parseRustyVaultConnectionInput, refreshRustyVaultSession, sanitizeServerBaseUrl, verifyRustyfinServerBaseUrl, withRustyVaultSession, } from '../shared/api.js';
 import { buildLookupHashesForUrl, decryptRustyVaultItem, decryptRustyVaultSummary, encryptRustyVaultLoginItem, generatePasswordFromPreferences, unlockRustyVault, } from '../shared/crypto.js';
 import { describePolicyReason, evaluatePagePolicy } from '../shared/policy.js';
 import { classifyPendingAction } from '../shared/save-classifier.js';
-import { clearGeneratedPassword, clearPendingAction, clearSubmittedCandidate, DEFAULT_SETTINGS, getGeneratedPassword, getLastFilled, getPendingAction, getSession, getSettings, getSubmittedCandidate, savePendingAction, setGeneratedPassword, setGrantedOrigins, setLastFilled, setSession, setSettings, setSubmittedCandidate, } from '../shared/storage.js';
+import { clearGeneratedPassword, clearPendingAction, clearSubmittedCandidate, DEFAULT_SETTINGS, getGeneratedPassword, getLastFilled, getPendingAction, getPopupDraft, getSession, getSettings, getSubmittedCandidate, savePendingAction, setGeneratedPassword, setGrantedOrigins, setLastFilled, setPopupDraft, setSession, setSettings, setSubmittedCandidate, } from '../shared/storage.js';
 const AUTO_LOCK_ALARM = 'rustyvault-auto-lock';
 const REGISTERED_SCRIPT_ID = 'rustyvault-site-script';
 const PENDING_EXPIRY_MS = 45_000;
@@ -163,6 +163,22 @@ async function ensureSitePermission(rawUrl, tabId) {
     }
     return true;
 }
+function originPatternForBaseUrl(baseUrl) {
+    const url = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error('Server URL must use http or https');
+    }
+    return `${url.origin}/*`;
+}
+async function ensureServerPermission(baseUrl) {
+    const origin = originPatternForBaseUrl(baseUrl);
+    const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
+    const granted = alreadyGranted || (await chrome.permissions.request({ origins: [origin] }));
+    if (!granted) {
+        throw new Error('RustyVault needs permission to reach that server address');
+    }
+    return origin;
+}
 function policyInputForTab(tab, override = {}) {
     return {
         url: override.url || override.frameUrl || tab?.url || '',
@@ -219,6 +235,7 @@ async function loadMatchesForUrl(tabId, url, override = {}) {
 async function getPopupState() {
     const settings = await getSettings();
     const session = await getSession();
+    const popupDraft = await getPopupDraft();
     const tab = await getCurrentTab();
     const pagePolicy = tab?.id
         ? await resolvePagePolicy(tab.id)
@@ -244,6 +261,7 @@ async function getPopupState() {
         pendingAction: tab?.id ? await getPendingAction(tab.id) : null,
         sitePermissionGranted,
         currentOrigin,
+        popupDraft,
     };
 }
 async function maybeFinalizeSubmittedCandidate(tabId, payload) {
@@ -381,10 +399,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await getSettings();
         try {
             switch (message.type) {
+                case 'save-popup-draft': {
+                    const popupDraft = await setPopupDraft(message.draft || {});
+                    sendResponse(responseOk({ message: 'Popup draft saved.', state: { ...(await getPopupState()), popupDraft } }));
+                    return;
+                }
                 case 'set-server-url': {
-                    const serverBaseUrl = sanitizeServerBaseUrl(message.serverBaseUrl);
-                    const nextSettings = await setSettings({ serverBaseUrl });
-                    sendResponse(responseOk({ settings: nextSettings }));
+                    const normalizedBaseUrl = sanitizeServerBaseUrl(message.serverBaseUrl);
+                    await ensureServerPermission(normalizedBaseUrl);
+                    await verifyRustyfinServerBaseUrl(normalizedBaseUrl);
+                    const nextSettings = await setSettings({ serverBaseUrl: normalizedBaseUrl });
+                    await setPopupDraft({ serverBaseUrlInput: normalizedBaseUrl });
+                    sendResponse(responseOk({
+                        settings: nextSettings,
+                        message: 'Rustyfin server verified and saved.',
+                    }));
                     return;
                 }
                 case 'save-settings': {
@@ -394,13 +423,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case 'pair-device': {
                     const parsed = parseRustyVaultConnectionInput(message.pairingInput);
-                    const serverBaseUrl = parsed.serverBaseUrl || settings.serverBaseUrl;
-                    if (!serverBaseUrl) {
+                    const candidateServerBaseUrl = parsed.serverBaseUrl || settings.serverBaseUrl;
+                    if (!candidateServerBaseUrl) {
                         throw new Error('Set the Rustyfin server URL in the extension first');
                     }
-                    if (parsed.serverBaseUrl && parsed.serverBaseUrl !== settings.serverBaseUrl) {
-                        await setSettings({ serverBaseUrl: parsed.serverBaseUrl });
+                    const normalizedBaseUrl = sanitizeServerBaseUrl(candidateServerBaseUrl);
+                    await ensureServerPermission(normalizedBaseUrl);
+                    await verifyRustyfinServerBaseUrl(normalizedBaseUrl);
+                    if (normalizedBaseUrl !== settings.serverBaseUrl) {
+                        await setSettings({ serverBaseUrl: normalizedBaseUrl });
                     }
+                    await setPopupDraft({
+                        serverBaseUrlInput: normalizedBaseUrl,
+                        pairingInput: parsed.pairingCode,
+                    });
                     const tokens = await apiRequest('/vault/device-sessions/pair/consume', {
                         method: 'POST',
                         body: JSON.stringify({
@@ -410,7 +446,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         }),
                     });
                     await setSession(tokens);
-                    sendResponse(responseOk());
+                    await setPopupDraft({
+                        serverBaseUrlInput: normalizedBaseUrl,
+                        pairingInput: '',
+                    });
+                    sendResponse(responseOk({
+                        message: 'Extension paired. Unlock it with the vault master password.',
+                    }));
                     return;
                 }
                 case 'unlock-vault': {

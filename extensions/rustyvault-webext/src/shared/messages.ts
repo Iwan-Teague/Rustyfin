@@ -7,6 +7,7 @@ import type {
 
 export type BackgroundRequest =
   | { type: 'set-server-url'; serverBaseUrl: string }
+  | { type: 'save-popup-draft'; draft: { serverBaseUrlInput?: string; pairingInput?: string } }
   | { type: 'save-settings'; settings: Record<string, unknown> }
   | { type: 'pair-device'; pairingInput: string; deviceName: string }
   | { type: 'unlock-vault'; masterPassword: string }
@@ -23,7 +24,7 @@ export type BackgroundRequest =
   | { type: 'notify-inline-dismissed'; tabId?: number };
 
 export type BackgroundResponse =
-  | { ok: true; state?: PopupState; settings?: Record<string, unknown>; granted?: boolean; password?: string }
+  | { ok: true; state?: PopupState; settings?: Record<string, unknown>; granted?: boolean; password?: string; message?: string }
   | { ok: false; error: string };
 
 export type ContentRequest =

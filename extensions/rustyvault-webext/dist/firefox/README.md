@@ -54,7 +54,8 @@ To load from Rustyfin Downloads:
 8. Open the extension popup and either:
    - paste the exact Rustyfin server URL, then paste the pairing code, or
    - paste the full connection code to set the server URL and pair in one step
-9. Unlock it with the vault master password, then grant site access when you first use it
+9. The popup keeps the current server and pairing inputs if it closes, and `Save server` verifies the Rustyfin host before pairing
+10. Unlock it with the vault master password, then grant site access when you first use it
 
 To load directly from the repository during development:
 

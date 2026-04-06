@@ -9,6 +9,8 @@ async function callBackground(message: BackgroundRequest): Promise<BackgroundRes
   return chrome.runtime.sendMessage(message);
 }
 
+let transientStatusText = '';
+
 function setVisible(id: string, visible: boolean) {
   $(id)?.classList.toggle('hidden', !visible);
 }
@@ -37,25 +39,41 @@ function pendingLabel(kind: string) {
   }
 }
 
+function setStatusText(text: string) {
+  transientStatusText = text;
+  ($('status') as HTMLParagraphElement).textContent = text;
+}
+
+async function persistPopupDraft(draft: { serverBaseUrlInput?: string; pairingInput?: string }) {
+  await callBackground({
+    type: 'save-popup-draft',
+    draft,
+  });
+}
+
 async function render() {
   const response = await callBackground({ type: 'get-popup-state' });
   if (!response.ok) {
-    ($('status') as HTMLParagraphElement).textContent = response.error;
+    setStatusText(response.error);
     return;
   }
   const state = response.state!;
-  ($('server-url') as HTMLInputElement).value = state.settings.serverBaseUrl || '';
+  ($('server-url') as HTMLInputElement).value =
+    state.popupDraft.serverBaseUrlInput || state.settings.serverBaseUrl || '';
+  ($('pairing-code') as HTMLInputElement).value = state.popupDraft.pairingInput || '';
   setVisible('pairing-panel', !state.paired);
   setVisible('unlock-panel', state.paired);
   setVisible('matches-panel', state.unlocked);
   setVisible('pending-panel', Boolean(state.pendingAction));
 
   const status = $('status') as HTMLParagraphElement;
-  status.textContent = state.unlocked
-    ? `Unlocked for ${state.currentTab?.url || 'current tab'}`
-    : state.paired
-      ? 'Paired but locked'
-      : 'Not paired';
+  status.textContent =
+    transientStatusText ||
+    (state.unlocked
+      ? `Unlocked for ${state.currentTab?.url || 'current tab'}`
+      : state.paired
+        ? 'Paired but locked'
+        : 'Not paired');
 
   const sitePanel = $('site-panel');
   if (!state.sitePermissionGranted && state.currentTab?.url?.startsWith('http')) {
@@ -127,22 +145,27 @@ async function render() {
 }
 
 ($('save-server') as HTMLButtonElement).addEventListener('click', async () => {
+  const serverBaseUrl = ($('server-url') as HTMLInputElement).value;
   const result = await callBackground({
     type: 'set-server-url',
-    serverBaseUrl: ($('server-url') as HTMLInputElement).value,
+    serverBaseUrl,
   });
-  ($('status') as HTMLParagraphElement).textContent = result.ok ? 'Rustyfin server URL saved.' : result.error;
+  setStatusText(result.ok ? result.message || 'Rustyfin server URL saved.' : result.error);
   await render();
 });
 
 ($('pair-device') as HTMLButtonElement).addEventListener('click', async () => {
+  const pairingInput = ($('pairing-code') as HTMLInputElement).value;
   const result = await callBackground({
     type: 'pair-device',
-    pairingInput: ($('pairing-code') as HTMLInputElement).value,
+    pairingInput,
     deviceName: 'Rustyfin Browser Extension',
   });
-  ($('status') as HTMLParagraphElement).textContent =
-    result.ok ? 'Extension paired. Unlock it with the vault master password.' : result.error;
+  setStatusText(
+    result.ok
+      ? result.message || 'Extension paired. Unlock it with the vault master password.'
+      : result.error,
+  );
   await render();
 });
 
@@ -151,8 +174,7 @@ async function render() {
     type: 'unlock-vault',
     masterPassword: ($('master-password') as HTMLInputElement).value,
   });
-  ($('status') as HTMLParagraphElement).textContent =
-    result.ok ? 'Vault unlocked in extension memory.' : result.error;
+  setStatusText(result.ok ? 'Vault unlocked in extension memory.' : result.error);
   if (result.ok) {
     ($('master-password') as HTMLInputElement).value = '';
   }
@@ -161,7 +183,7 @@ async function render() {
 
 ($('lock-vault') as HTMLButtonElement).addEventListener('click', async () => {
   await callBackground({ type: 'lock-vault' });
-  ($('status') as HTMLParagraphElement).textContent = 'Vault locked.';
+  setStatusText('Vault locked.');
   await render();
 });
 
@@ -175,11 +197,13 @@ async function render() {
     url: state.state.currentTab.url,
     tabId: state.state.currentTab.id,
   });
-  ($('status') as HTMLParagraphElement).textContent = result.ok && result.granted
-    ? 'Site access granted.'
-    : result.ok
-      ? 'Site access was not granted.'
-      : result.error;
+  setStatusText(
+    result.ok && result.granted
+      ? 'Site access granted.'
+      : result.ok
+        ? 'Site access was not granted.'
+        : result.error,
+  );
   await render();
 });
 
@@ -198,7 +222,7 @@ async function render() {
       password: ($('pending-password') as HTMLInputElement).value,
     },
   });
-  ($('status') as HTMLParagraphElement).textContent = result.ok ? 'Vault item updated.' : result.error;
+  setStatusText(result.ok ? 'Vault item updated.' : result.error);
   await render();
 });
 
@@ -211,11 +235,22 @@ async function render() {
     type: 'dismiss-pending-item',
     tabId: state.state.currentTab.id,
   });
-  ($('status') as HTMLParagraphElement).textContent = 'Pending save dismissed.';
+  setStatusText('Pending save dismissed.');
   await render();
 });
 
+($('server-url') as HTMLInputElement).addEventListener('input', async (event) => {
+  await persistPopupDraft({
+    serverBaseUrlInput: (event.currentTarget as HTMLInputElement).value,
+  });
+});
+
+($('pairing-code') as HTMLInputElement).addEventListener('input', async (event) => {
+  await persistPopupDraft({
+    pairingInput: (event.currentTarget as HTMLInputElement).value,
+  });
+});
+
 render().catch((error) => {
-  ($('status') as HTMLParagraphElement).textContent =
-    error instanceof Error ? error.message : String(error);
+  setStatusText(error instanceof Error ? error.message : String(error));
 });

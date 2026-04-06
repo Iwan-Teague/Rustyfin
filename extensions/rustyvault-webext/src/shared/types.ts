@@ -174,4 +174,10 @@ export type PopupState = {
   pendingAction: PendingAction | null;
   sitePermissionGranted: boolean;
   currentOrigin: string | null;
+  popupDraft: PopupDraft;
+};
+
+export type PopupDraft = {
+  serverBaseUrlInput: string;
+  pairingInput: string;
 };
