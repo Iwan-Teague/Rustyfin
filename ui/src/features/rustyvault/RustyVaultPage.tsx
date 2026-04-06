@@ -1563,7 +1563,7 @@ export default function RustyVaultPage() {
   if (vaultView !== 'workspace') {
     return (
       <div className="rf-flat-page rf-flat-scope animate-rise">
-        <header className="rf-flat-header pb-2">
+      <header className="rf-flat-header pb-1">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
             <div className="space-y-2">
               <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -1610,7 +1610,7 @@ export default function RustyVaultPage() {
 
         {toastSlot}
 
-        <section className="rf-flat-section pt-1 sm:pt-2">
+        <section className="rf-flat-section pt-0 sm:pt-1">
           {vaultView === 'index' ? (
             <div className="space-y-4 border-t border-white/8 pt-5">
               <button
@@ -1639,7 +1639,7 @@ export default function RustyVaultPage() {
             </div>
           ) : (
             <form
-              className="space-y-5 border-t border-white/8 pt-5"
+              className="vault-unlock-enter space-y-4 border-t border-white/8 pt-3"
               onSubmit={(event) => {
                 event.preventDefault();
                 if (saving || !me || !canSubmitVaultPrompt || !cryptoReady) {
@@ -1667,7 +1667,7 @@ export default function RustyVaultPage() {
 
               <div className="space-y-5">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <label className="space-y-4">
+                  <label className="space-y-5">
                     <span className="text-sm font-medium">Vault password</span>
                     <input
                       ref={vaultPasswordInputRef}
@@ -1681,7 +1681,7 @@ export default function RustyVaultPage() {
                     />
                   </label>
                   {!config?.enabled ? (
-                    <label className="space-y-4">
+                    <label className="space-y-5">
                       <span className="text-sm font-medium">Confirm vault password</span>
                       <input
                         type="password"
@@ -1723,7 +1723,7 @@ export default function RustyVaultPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header pb-0.5">
+      <header className="rf-flat-header pb-0">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
