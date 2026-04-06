@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useDeferredValue, useEffect, useState, startTransition } from 'react';
+import { useCallback, useDeferredValue, useEffect, useRef, useState, startTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
 import RfSwitch from '@/app/components/RfSwitch';
@@ -515,6 +515,7 @@ export default function RustyVaultPage() {
   const [activeWorkspaceTab, setActiveWorkspaceTab] =
     useState<VaultWorkspaceTab>('credentials');
   const [vaultView, setVaultView] = useState<'index' | 'prompt' | 'workspace'>('index');
+  const settingsPasswordInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredRows = [...rows]
     .filter((row) => {
@@ -811,6 +812,15 @@ export default function RustyVaultPage() {
     }, 5000);
     return () => window.clearTimeout(timeout);
   }, [activeToast]);
+
+  useEffect(() => {
+    if (activeWorkspaceTab !== 'settings' || settingsAccessGranted) return;
+    const focusTimer = window.setTimeout(() => {
+      settingsPasswordInputRef.current?.focus();
+      settingsPasswordInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [activeWorkspaceTab, settingsAccessGranted]);
 
   useEffect(() => {
     if (!settingsAccessGranted || !preferencesDirty) return;
@@ -2026,6 +2036,7 @@ export default function RustyVaultPage() {
                 >
                   <label className="block w-full">
                     <input
+                      ref={settingsPasswordInputRef}
                       type="password"
                       value={securityPassword}
                       onChange={(event) => setSecurityPassword(event.target.value)}
