@@ -664,7 +664,7 @@ pub async fn challenge_protected_action(
         rustfin_db::repo::users::verify_password(&body.current_password, &user.password_hash)
             .map_err(|e| ApiError::Internal(format!("hash error: {e}")))?;
     if !valid {
-        return Err(ApiError::Unauthorized("current password is incorrect".into()).into());
+        return Err(ApiError::Forbidden("current password is incorrect".into()).into());
     }
     let action_token = service::generate_secret_token(64);
     let token_hash = service::hash_secret(&action_token);
