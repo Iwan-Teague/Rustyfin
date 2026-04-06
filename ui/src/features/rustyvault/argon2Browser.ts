@@ -24,6 +24,7 @@ type Argon2BrowserModule = {
 };
 
 const ARGON2_BUNDLE_SRC = '/vendor/rustyvault/argon2-bundled.min.js';
+const ARGON2_LOAD_TIMEOUT_MS = 8_000;
 
 declare global {
   interface Window {
@@ -54,24 +55,67 @@ async function loadArgon2Browser(): Promise<Argon2BrowserModule> {
   }
   if (!window.__rustyVaultArgon2Load) {
     window.__rustyVaultArgon2Load = new Promise<Argon2BrowserModule>((resolve, reject) => {
+      let settled = false;
+      const settleResolve = (value: Argon2BrowserModule) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const timeout = window.setTimeout(() => {
+        settleReject(new Error('Timed out while loading the Argon2 browser fallback bundle'));
+      }, ARGON2_LOAD_TIMEOUT_MS);
+      const clearTimer = () => window.clearTimeout(timeout);
       const existing = document.querySelector<HTMLScriptElement>(
         `script[data-rustyvault-argon2="true"]`,
       );
       if (existing) {
+        const existingState = existing.dataset.rustyvaultArgon2State;
+        if (existingState === 'ready' || window.argon2) {
+          clearTimer();
+          try {
+            settleResolve(resolveArgon2Browser());
+          } catch (error) {
+            settleReject(
+              error instanceof Error
+                ? error
+                : new Error('Argon2 browser fallback did not initialize correctly'),
+            );
+          }
+          return;
+        }
+        if (existingState === 'error') {
+          clearTimer();
+          settleReject(new Error('Failed to load Argon2 browser fallback bundle'));
+          return;
+        }
         existing.addEventListener(
           'load',
           () => {
+            clearTimer();
             try {
-              resolve(resolveArgon2Browser());
+              settleResolve(resolveArgon2Browser());
             } catch (error) {
-              reject(error);
+              settleReject(
+                error instanceof Error
+                  ? error
+                  : new Error('Argon2 browser fallback did not initialize correctly'),
+              );
             }
           },
           { once: true },
         );
         existing.addEventListener(
           'error',
-          () => reject(new Error('Failed to load Argon2 browser fallback bundle')),
+          () => {
+            clearTimer();
+            existing.dataset.rustyvaultArgon2State = 'error';
+            settleReject(new Error('Failed to load Argon2 browser fallback bundle'));
+          },
           { once: true },
         );
         return;
@@ -81,15 +125,25 @@ async function loadArgon2Browser(): Promise<Argon2BrowserModule> {
       script.src = ARGON2_BUNDLE_SRC;
       script.async = true;
       script.dataset.rustyvaultArgon2 = 'true';
+      script.dataset.rustyvaultArgon2State = 'loading';
       script.onload = () => {
+        clearTimer();
         try {
-          resolve(resolveArgon2Browser());
+          script.dataset.rustyvaultArgon2State = 'ready';
+          settleResolve(resolveArgon2Browser());
         } catch (error) {
-          reject(error);
+          script.dataset.rustyvaultArgon2State = 'error';
+          settleReject(
+            error instanceof Error
+              ? error
+              : new Error('Argon2 browser fallback did not initialize correctly'),
+          );
         }
       };
       script.onerror = () => {
-        reject(new Error('Failed to load Argon2 browser fallback bundle'));
+        clearTimer();
+        script.dataset.rustyvaultArgon2State = 'error';
+        settleReject(new Error('Failed to load Argon2 browser fallback bundle'));
       };
       document.head.appendChild(script);
     }).catch((error) => {

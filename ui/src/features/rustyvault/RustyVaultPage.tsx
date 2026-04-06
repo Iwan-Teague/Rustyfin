@@ -683,7 +683,26 @@ export default function RustyVaultPage() {
   }, [prefs.auto_lock_minutes, unlocked]);
 
   useEffect(() => {
-    getRustyVaultCryptoReadiness().then(setCryptoReadiness);
+    let cancelled = false;
+    getRustyVaultCryptoReadiness()
+      .then((value) => {
+        if (!cancelled) {
+          setCryptoReadiness(value);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCryptoReadiness({
+            ready: false,
+            mode: 'unavailable',
+            reason: 'argon2-unavailable',
+            message: clientErrorMessage(err, 'Vault cryptography could not be initialized in this browser'),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1451,7 +1470,7 @@ export default function RustyVaultPage() {
     }
   }
 
-  if (authLoading || cryptoReadiness === null) {
+  if ((authLoading && !me) || cryptoReadiness === null) {
     return (
       <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Loading Vault…</p>
