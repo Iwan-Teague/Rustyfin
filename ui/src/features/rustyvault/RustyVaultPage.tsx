@@ -517,6 +517,7 @@ export default function RustyVaultPage() {
   );
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
+  const [protectedAccountPassword, setProtectedAccountPassword] = useState('');
   const [settingsAccessGranted, setSettingsAccessGranted] = useState(false);
   const [settingsPasswordFailures, setSettingsPasswordFailures] = useState(0);
   const [showFallbackNotice, setShowFallbackNotice] = useState(false);
@@ -883,7 +884,12 @@ export default function RustyVaultPage() {
   }, [activeToast]);
 
   useEffect(() => {
-    if (activeWorkspaceTab !== 'settings' || settingsAccessGranted) return;
+    if (
+      (activeWorkspaceTab !== 'settings' && activeWorkspaceTab !== 'extension') ||
+      settingsAccessGranted
+    ) {
+      return;
+    }
     const focusTimer = window.setTimeout(() => {
       settingsPasswordInputRef.current?.focus();
       settingsPasswordInputRef.current?.select();
@@ -1012,6 +1018,7 @@ export default function RustyVaultPage() {
         }),
       );
       setSettingsAccessGranted(true);
+      setProtectedAccountPassword(securityPassword);
       setSettingsPasswordFailures(0);
       setSecurityPassword('');
     } catch (err) {
@@ -1142,13 +1149,13 @@ export default function RustyVaultPage() {
   }
 
   async function pairExtension() {
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password to pair a new device');
     }
     const response = await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'approve_device',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       const created = await createRustyVaultDeviceSession(
@@ -1173,7 +1180,7 @@ export default function RustyVaultPage() {
     if (!unlocked || !me || !config?.active_wrapped_key) {
       throw new Error('Unlock the vault before rotating the master password');
     }
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
     if (!currentRustyVaultPassword) {
@@ -1216,7 +1223,7 @@ export default function RustyVaultPage() {
     await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'rekey',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       await rekeyRustyVault(accessToken, challenge.action_token, {
@@ -1247,13 +1254,13 @@ export default function RustyVaultPage() {
     if (!unlocked || !me) {
       throw new Error('Unlock the vault before exporting');
     }
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
     const response = await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'export',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       return exportRustyVault(accessToken, challenge.action_token);
@@ -1272,7 +1279,7 @@ export default function RustyVaultPage() {
     if (!importFile || !unlocked) {
       throw new Error('Choose a Bitwarden export file first');
     }
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
     const text = await importFile.text();
@@ -1283,7 +1290,7 @@ export default function RustyVaultPage() {
     await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'import_overwrite',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       await importRustyVaultBitwardenCiphertexts(accessToken, {
@@ -1297,13 +1304,13 @@ export default function RustyVaultPage() {
   }
 
   async function revokeOtherSessions() {
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
     await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'revoke_other_sessions',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       await revokeOtherRustyVaultSessions(challenge.action_token, accessToken);
@@ -1312,13 +1319,13 @@ export default function RustyVaultPage() {
   }
 
   async function destroyCurrentVault() {
-    if (!securityPassword.trim()) {
+    if (!protectedAccountPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
     await withRustyVaultAccess(async (accessToken) => {
       const challenge = await challengeRustyVaultProtectedAction({
         action_kind: 'destroy_rustyvault',
-        current_password: securityPassword,
+        current_password: protectedAccountPassword,
         vaultAccessToken: accessToken,
       });
       await destroyRustyVault(accessToken, challenge.action_token);
@@ -1327,6 +1334,7 @@ export default function RustyVaultPage() {
     setVaultSession(null);
     setUnlocked(null);
     setSettingsAccessGranted(false);
+    setProtectedAccountPassword('');
     setSettingsPasswordFailures(0);
     setVaultView('index');
     setActiveWorkspaceTab('credentials');
@@ -1350,7 +1358,9 @@ export default function RustyVaultPage() {
       : activeWorkspaceTab === 'generator'
         ? 'w-full'
         : activeWorkspaceTab === 'extension'
-          ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]'
+          ? settingsAccessGranted
+            ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]'
+            : 'w-full'
           : 'w-full';
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
   const vaultSectionClassName = 'space-y-4 border-t border-white/8 pt-4';
@@ -1368,6 +1378,8 @@ export default function RustyVaultPage() {
   const currentVaultDescription = config?.enabled
     ? 'Client-side encrypted credentials, cards, passports, and secure notes for this Rustyfin account.'
     : 'Create an encrypted vault before saving credentials or personal records.';
+  const protectedAccessTabLabel =
+    activeWorkspaceTab === 'extension' ? 'extension' : 'settings';
 
   const toastSlot = (
     <div className="flex min-h-[0.72rem] items-end">
@@ -1380,6 +1392,41 @@ export default function RustyVaultPage() {
       </div>
     </div>
   );
+
+  function renderProtectedAccessGate() {
+    return (
+      <div className="min-h-[18rem] pt-1 sm:pt-2">
+        <form
+          className="mx-auto flex w-full max-w-[30rem] flex-col items-center space-y-6 pt-2 text-center"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void runAction(
+              `Vault ${protectedAccessTabLabel} unlocked.`,
+              unlockVaultSettings,
+            );
+          }}
+        >
+          <label className="block w-full">
+            <input
+              ref={settingsPasswordInputRef}
+              type="password"
+              value={securityPassword}
+              onChange={(event) => setSecurityPassword(event.target.value)}
+              className={`${vaultFieldClassName} text-center`}
+              placeholder="Enter account password"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rf-text-action text-sm disabled:opacity-50"
+            disabled={saving || !securityPassword.trim()}
+          >
+            Open {protectedAccessTabLabel}
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   function renderCredentialFields() {
     switch (editor.item_type) {
@@ -1882,6 +1929,7 @@ export default function RustyVaultPage() {
                 setVaultView('index');
                 setActiveWorkspaceTab('credentials');
                 setSettingsAccessGranted(false);
+                setProtectedAccountPassword('');
                 setSettingsPasswordFailures(0);
                 setRows([]);
                 setSelectedItem(null);
@@ -2215,33 +2263,7 @@ export default function RustyVaultPage() {
 
           {activeWorkspaceTab === 'settings' && (
             !settingsUnlocked ? (
-              <div className="min-h-[18rem] pt-1 sm:pt-2">
-                <form
-                  className="mx-auto flex w-full max-w-[30rem] flex-col items-center space-y-6 pt-2 text-center"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void runAction('Vault settings unlocked.', unlockVaultSettings);
-                  }}
-                >
-                  <label className="block w-full">
-                    <input
-                      ref={settingsPasswordInputRef}
-                      type="password"
-                      value={securityPassword}
-                      onChange={(event) => setSecurityPassword(event.target.value)}
-                      className={`${vaultFieldClassName} text-center`}
-                      placeholder="Enter account password"
-                    />
-                  </label>
-                  <button
-                    type="submit"
-                    className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={saving || !securityPassword.trim()}
-                  >
-                    Open settings
-                  </button>
-                </form>
-              </div>
+              renderProtectedAccessGate()
             ) : (
               <div className="space-y-7">
                 <div className="flex items-center justify-between gap-4 pt-1">
@@ -2251,6 +2273,7 @@ export default function RustyVaultPage() {
                     className="rf-text-action rf-text-action-muted text-sm"
                     onClick={() => {
                       setSettingsAccessGranted(false);
+                      setProtectedAccountPassword('');
                       setSettingsPasswordFailures(0);
                       setSecurityPassword('');
                     }}
@@ -2658,6 +2681,9 @@ export default function RustyVaultPage() {
           )}
 
           {activeWorkspaceTab === 'extension' && (
+            !settingsUnlocked ? (
+              renderProtectedAccessGate()
+            ) : (
             <div className={workspaceContentClassName}>
               <div className="space-y-7">
                 <div className={vaultSectionClassName}>
@@ -2667,18 +2693,6 @@ export default function RustyVaultPage() {
                       Pairing and device session management live here so the main vault workspace stays focused on saved credentials.
                     </p>
                   </div>
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium">
-                      Rustyfin account password for extension actions
-                    </span>
-                    <input
-                      type="password"
-                      value={securityPassword}
-                      onChange={(event) => setSecurityPassword(event.target.value)}
-                      className={vaultFieldClassName}
-                      placeholder="Needed for pairing and session revocation"
-                    />
-                  </label>
                   <div className={vaultSubsectionClassName}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
@@ -2943,6 +2957,7 @@ export default function RustyVaultPage() {
                 </div>
               </div>
             </div>
+            )
           )}
         </div>
       </section>
