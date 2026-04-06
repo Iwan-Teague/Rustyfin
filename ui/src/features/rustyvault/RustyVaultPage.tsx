@@ -478,6 +478,8 @@ export default function RustyVaultPage() {
   );
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
+  const [settingsAccessGranted, setSettingsAccessGranted] = useState(false);
+  const [showFallbackNotice, setShowFallbackNotice] = useState(false);
   const [currentRustyVaultPassword, setCurrentVaultPassword] = useState('');
   const [newMasterPassword, setNewMasterPassword] = useState('');
   const [newMasterPasswordConfirm, setNewMasterPasswordConfirm] = useState('');
@@ -738,16 +740,33 @@ export default function RustyVaultPage() {
   }, [unlocked, vaultView]);
 
   useEffect(() => {
-    if (!message) return;
-    const timeout = window.setTimeout(() => setMessage(null), 4200);
-    return () => window.clearTimeout(timeout);
-  }, [message]);
+    if (cryptoReadiness?.mode === 'portable-fallback') {
+      setShowFallbackNotice(true);
+    }
+  }, [cryptoReadiness?.mode]);
+
+  const activeToast =
+    error && !isRustyVaultUnavailableError(error)
+      ? { key: 'error', text: error }
+      : message
+        ? { key: 'message', text: message }
+        : showFallbackNotice && cryptoReadiness?.mode === 'portable-fallback'
+          ? { key: 'fallback', text: cryptoReadiness.message }
+          : null;
 
   useEffect(() => {
-    if (!error || isRustyVaultUnavailableError(error)) return;
-    const timeout = window.setTimeout(() => setError(null), 6500);
+    if (!activeToast) return;
+    const timeout = window.setTimeout(() => {
+      if (activeToast.key === 'error') {
+        setError(null);
+      } else if (activeToast.key === 'message') {
+        setMessage(null);
+      } else {
+        setShowFallbackNotice(false);
+      }
+    }, 5000);
     return () => window.clearTimeout(timeout);
-  }, [error]);
+  }, [activeToast]);
 
   async function runAction<T>(label: string, callback: () => Promise<T>) {
     setSaving(true);
@@ -815,6 +834,20 @@ export default function RustyVaultPage() {
     const generatorDefaults = passwordGeneratorDefaultsFromPrefs(updated);
     setGeneratorPreset(generatorDefaults.preset);
     setGeneratorOptions(generatorDefaults.options);
+  }
+
+  async function unlockVaultSettings() {
+    if (!securityPassword.trim()) {
+      throw new Error('Enter your Rustyfin account password first');
+    }
+    await withRustyVaultAccess((accessToken) =>
+      challengeRustyVaultProtectedAction({
+        action_kind: 'export',
+        current_password: securityPassword,
+        vaultAccessToken: accessToken,
+      }),
+    );
+    setSettingsAccessGranted(true);
   }
 
   async function saveEditorItem() {
@@ -1095,6 +1128,7 @@ export default function RustyVaultPage() {
     clearRustyVaultSession();
     setVaultSession(null);
     setUnlocked(null);
+    setSettingsAccessGranted(false);
     setVaultView('index');
     setActiveWorkspaceTab('credentials');
     setRows([]);
@@ -1115,19 +1149,19 @@ export default function RustyVaultPage() {
   ];
 
   const workspaceContentClassName =
-    activeWorkspaceTab === 'credentials'
-      ? showEditorPanel
-        ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.92fr_1.08fr]'
-        : 'w-full'
-      : activeWorkspaceTab === 'settings'
+    activeWorkspaceTab === 'settings'
+      ? settingsAccessGranted
         ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.95fr_1.05fr]'
-        : activeWorkspaceTab === 'generator'
-          ? 'w-full'
-          : 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]';
+        : 'w-full'
+      : activeWorkspaceTab === 'generator'
+        ? 'w-full'
+        : activeWorkspaceTab === 'extension'
+          ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]'
+          : 'w-full';
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
   const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
   const vaultSubsectionClassName = 'space-y-3 border-t border-white/8 pt-4';
-  const settingsUnlocked = securityPassword.trim().length > 0;
+  const settingsUnlocked = settingsAccessGranted;
   const generatorMatchesSavedDefault =
     generatorPreset === prefs.password_generator_default_preset &&
     generatorOptions.length === prefs.password_generator_default_length &&
@@ -1141,37 +1175,17 @@ export default function RustyVaultPage() {
     ? 'Client-side encrypted credentials, cards, passports, and secure notes for this Rustyfin account.'
     : 'Create an encrypted vault before saving credentials or personal records.';
 
-  const toastItems = [
-    error && !isRustyVaultUnavailableError(error)
-      ? { key: 'error', tone: 'error' as const, text: error }
-      : null,
-    cryptoReadiness?.mode === 'portable-fallback'
-      ? { key: 'fallback', tone: 'warning' as const, text: cryptoReadiness.message }
-      : null,
-    message ? { key: 'message', tone: 'success' as const, text: message } : null,
-  ].filter(
-    (
-      toast,
-    ): toast is {
-      key: string;
-      tone: 'success' | 'error' | 'warning';
-      text: string;
-    } => Boolean(toast),
-  );
-
-  const toastStack =
-    toastItems.length > 0 ? (
-      <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 flex w-[min(34rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col gap-3 sm:bottom-5">
-        {toastItems.map((toast) => (
-          <div
-            key={toast.key}
-            className={`pointer-events-auto rounded-2xl px-4 py-3 text-sm shadow-[0_18px_48px_rgba(0,0,0,0.24)] backdrop-blur ${toastClassName()}`}
-          >
-            {toast.text}
-          </div>
-        ))}
+  const toastSlot = (
+    <div className="flex h-[4.25rem] items-center justify-center">
+      <div
+        className={`w-full max-w-[34rem] rounded-2xl px-4 py-3 text-sm shadow-[0_18px_48px_rgba(0,0,0,0.24)] backdrop-blur transition-opacity duration-200 ${
+          activeToast ? `opacity-100 ${toastClassName()}` : 'pointer-events-none opacity-0'
+        }`}
+      >
+        {activeToast?.text ?? ''}
       </div>
-    ) : null;
+    </div>
+  );
 
   function renderCredentialFields() {
     switch (editor.item_type) {
@@ -1509,6 +1523,8 @@ export default function RustyVaultPage() {
           </div>
         )}
 
+        {toastSlot}
+
         <section className="rf-flat-section pt-3 sm:pt-4">
           {vaultView === 'index' ? (
             <div className="space-y-4 border-t border-white/8 pt-5">
@@ -1625,7 +1641,6 @@ export default function RustyVaultPage() {
             </form>
           )}
         </section>
-        {toastStack}
       </div>
     );
   }
@@ -1669,6 +1684,8 @@ export default function RustyVaultPage() {
         </div>
       </header>
 
+      {toastSlot}
+
       <section className="rf-flat-section pt-2 sm:pt-3">
         <div className="flex justify-end">
           <button
@@ -1678,6 +1695,7 @@ export default function RustyVaultPage() {
               setUnlocked(null);
               setVaultView('index');
               setActiveWorkspaceTab('credentials');
+              setSettingsAccessGranted(false);
               setRows([]);
               setSelectedItem(null);
               setEditingExisting(false);
@@ -1711,260 +1729,287 @@ export default function RustyVaultPage() {
         <div key={activeWorkspaceTab} className="vault-workspace-panel pt-5 sm:pt-6">
           {activeWorkspaceTab === 'credentials' && (
             <div className={workspaceContentClassName}>
-              <div className="space-y-7">
+              <div className="relative min-h-[34rem] overflow-hidden">
                 <div className={vaultSectionClassName}>
-                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                    <div>
-                      <h2 className="text-xl font-semibold">Saved credentials</h2>
-                      <p className="mt-1 max-w-2xl text-sm muted">
-                        Unlock once, then browse everything locally from ciphertext summaries. Search stays in the browser.
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                      <input
-                        value={search}
-                        onChange={(event) => setSearch(event.target.value)}
-                        className="rf-flat-input min-w-[16rem] px-4 py-2 text-sm"
-                        placeholder="Search title, site, person, or document"
-                      />
-                      <button
-                        type="button"
-                        className="rf-text-action text-sm"
-                        onClick={() => startNewDraft(newItemType)}
-                      >
-                        Create new
-                      </button>
-                      {showEditorPanel && (
-                        <button
-                          type="button"
-                          className="rf-text-action rf-text-action-muted text-sm"
-                          onClick={closeEditorPanel}
-                        >
-                          Close editor
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {!unlocked ? (
-                    <p className="px-1 py-2 text-sm muted">
-                      Unlock the vault to browse and edit entries.
-                    </p>
-                  ) : filteredRows.length === 0 ? (
-                    <p className="px-1 py-2 text-sm muted">
-                      No matching items yet. Start with a login, card, passport, or secure note.
-                    </p>
-                  ) : (
-                    <div className="space-y-1">
-                      {filteredRows.map((row) => (
-                        <button
-                          key={row.encrypted.id}
-                          type="button"
-                          data-vault-item-id={row.encrypted.id}
-                          onClick={() => {
-                            setError(null);
-                            void loadItem(row.encrypted.id).catch((err) => {
-                              setError(clientErrorMessage(err, 'Failed to load the vault item'));
-                            });
-                          }}
-                          className={`w-full rounded-2xl px-4 py-4 text-left transition ${
-                            selectedItem?.id === row.encrypted.id && showEditorPanel
-                              ? 'border border-[var(--orange-soft)]/45 bg-white/[0.035]'
-                              : 'border border-transparent hover:border-white/10 hover:bg-white/[0.02]'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                                <p className="truncate font-semibold">{row.summary.title}</p>
-                                <span className="text-[11px] uppercase tracking-[0.18em] text-white/40">
-                                  {itemTypeLabel(row.summary.item_type)}
-                                </span>
-                              </div>
-                              <p className="mt-1 truncate text-sm muted">
-                                {row.summary.primary_uri || row.summary.subtitle}
-                              </p>
-                              <p className="mt-1 truncate text-xs text-white/45">
-                                {row.summary.username || row.summary.login_email || 'Saved entry'}
-                              </p>
-                            </div>
-                            <div className="shrink-0 text-right text-xs text-white/45">
-                              <p>{formatTimestamp(row.encrypted.updated_ts)}</p>
-                              {lookupResultIds.includes(row.encrypted.id) ? (
-                                <p className="mt-1 text-[var(--orange-soft)]">Matched</p>
-                              ) : row.encrypted.favorite ? (
-                                <p className="mt-1 text-white/70">Favorite</p>
-                              ) : null}
-                            </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {showEditorPanel && (
-                <div className="space-y-7 animate-rise">
-                  <div className={vaultSectionClassName}>
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
-                          {editingExisting ? 'Editing saved item' : 'Create new'}
-                        </p>
-                        <h2 className="text-xl font-semibold">
-                          {editingExisting
-                            ? editor.title || itemTypeLabel(editor.item_type)
-                            : `New ${itemTypeLabel(editor.item_type)}`}
-                        </h2>
+                        <h2 className="text-xl font-semibold">Saved credentials</h2>
                         <p className="mt-1 max-w-2xl text-sm muted">
-                          {itemTypeDescription(editor.item_type)}
+                          Unlock once, then browse everything locally from ciphertext summaries. Search stays in the browser.
                         </p>
                       </div>
-                      <div className="flex flex-wrap gap-3">
-                        {!editingExisting && (
-                          <select
-                            value={editor.item_type}
-                            onChange={(event) =>
-                              startNewDraft(parseVaultItemType(event.target.value))
-                            }
-                            className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
+                      <div className="flex w-full flex-col gap-3 sm:max-w-[24rem] sm:items-stretch">
+                        <button
+                          type="button"
+                          className="rf-text-action text-sm sm:self-end"
+                          onClick={() => startNewDraft(newItemType)}
+                        >
+                          Create new
+                        </button>
+                        <input
+                          value={search}
+                          onChange={(event) => setSearch(event.target.value)}
+                          className="rf-flat-input w-full px-4 py-2 text-sm"
+                          placeholder="Search title, site, person, or document"
+                        />
+                      </div>
+                    </div>
+
+                    {!unlocked ? (
+                      <p className="px-1 py-2 text-sm muted">
+                        Unlock the vault to browse and edit entries.
+                      </p>
+                    ) : filteredRows.length === 0 ? (
+                      <p className="px-1 py-2 text-sm muted">
+                        No matching items yet. Start with a login, card, passport, or secure note.
+                      </p>
+                    ) : (
+                      <div
+                        className={
+                          showEditorPanel
+                            ? 'space-y-1 transition-[padding] duration-300 ease-out xl:pr-[32%]'
+                            : 'space-y-1 transition-[padding] duration-300 ease-out xl:pr-0'
+                        }
+                      >
+                        {filteredRows.map((row) => (
+                          <button
+                            key={row.encrypted.id}
+                            type="button"
+                            data-vault-item-id={row.encrypted.id}
+                            onClick={() => {
+                              setError(null);
+                              void loadItem(row.encrypted.id).catch((err) => {
+                                setError(clientErrorMessage(err, 'Failed to load the vault item'));
+                              });
+                            }}
+                            className={`w-full rounded-2xl px-4 py-4 text-left transition ${
+                              selectedItem?.id === row.encrypted.id && showEditorPanel
+                                ? 'border border-[var(--orange-soft)]/45 bg-white/[0.035]'
+                                : 'border border-transparent hover:border-white/10 hover:bg-white/[0.02]'
+                            }`}
                           >
-                            {ITEM_TYPE_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                  <p className="truncate font-semibold">{row.summary.title}</p>
+                                  <span className="text-[11px] uppercase tracking-[0.18em] text-white/40">
+                                    {itemTypeLabel(row.summary.item_type)}
+                                  </span>
+                                </div>
+                                <p className="mt-1 truncate text-sm muted">
+                                  {row.summary.primary_uri || row.summary.subtitle}
+                                </p>
+                                <p className="mt-1 truncate text-xs text-white/45">
+                                  {row.summary.username || row.summary.login_email || 'Saved entry'}
+                                </p>
+                              </div>
+                              <div className="shrink-0 text-right text-xs text-white/45">
+                                <p>{formatTimestamp(row.encrypted.updated_ts)}</p>
+                                {lookupResultIds.includes(row.encrypted.id) ? (
+                                  <p className="mt-1 text-[var(--orange-soft)]">Matched</p>
+                                ) : row.encrypted.favorite ? (
+                                  <p className="mt-1 text-white/70">Favorite</p>
+                                ) : null}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div
+                  className={`absolute inset-y-0 right-0 z-10 w-full transition-all duration-300 ease-out xl:w-[30%] ${
+                    showEditorPanel
+                      ? 'translate-x-0 opacity-100'
+                      : 'pointer-events-none translate-x-[104%] opacity-0'
+                  }`}
+                >
+                  <div className="h-full rounded-[1.75rem] bg-[rgba(15,19,33,0.94)] px-5 shadow-[0_28px_80px_rgba(0,0,0,0.34)] backdrop-blur xl:border-l xl:border-white/8">
+                    <div className={vaultSectionClassName}>
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
+                            {editingExisting ? 'Editing saved item' : 'Create new'}
+                          </p>
+                          <h2 className="text-xl font-semibold">
+                            {editingExisting
+                              ? editor.title || itemTypeLabel(editor.item_type)
+                              : `New ${itemTypeLabel(editor.item_type)}`}
+                          </h2>
+                          <p className="mt-1 max-w-2xl text-sm muted">
+                            {itemTypeDescription(editor.item_type)}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          {!editingExisting && (
+                            <select
+                              value={editor.item_type}
+                              onChange={(event) =>
+                                startNewDraft(parseVaultItemType(event.target.value))
+                              }
+                              className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
+                            >
+                              {ITEM_TYPE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <button
+                            type="button"
+                            className="rf-text-action rf-text-action-muted text-sm"
+                            onClick={closeEditorPanel}
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+
+                      {renderCredentialFields()}
+
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                        <RfSwitch
+                          label="Favorite item"
+                          checked={editor.favorite}
+                          onChange={(checked) => updateEditorField('favorite', checked)}
+                        />
+                        {(editor.item_type === 'login' ||
+                          editor.item_type === 'credit_card' ||
+                          editor.item_type === 'passport') && (
+                          <button
+                            type="button"
+                            className="rf-text-action rf-text-action-muted text-sm"
+                            onClick={() => setShowSensitive((current) => !current)}
+                          >
+                            {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
+                          </button>
                         )}
                         <button
                           type="button"
-                          className="rf-text-action rf-text-action-muted text-sm"
-                          onClick={closeEditorPanel}
+                          className="rf-text-action text-sm disabled:opacity-50"
+                          disabled={saving || !unlocked}
+                          onClick={() =>
+                            runAction(
+                              editingExisting ? 'Vault item saved.' : 'Vault item created.',
+                              saveEditorItem,
+                            )
+                          }
                         >
-                          Close
+                          {editingExisting ? 'Save changes' : 'Save item'}
                         </button>
+                        {selectedItem && itemPrimaryCopyValue(selectedItem) && (
+                          <button
+                            type="button"
+                            className="rf-text-action text-sm disabled:opacity-50"
+                            onClick={() =>
+                              runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
+                            }
+                          >
+                            {itemPrimaryCopyLabel(selectedItem)}
+                          </button>
+                        )}
+                        {selectedItem && (
+                          <button
+                            type="button"
+                            className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
+                            onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
+
+                      {selectedItem && (
+                        <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium">
+                              {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
+                            </span>
+                            <span className="text-xs text-white/55">
+                              {selectedItem.favorite
+                                ? 'Favorite'
+                                : itemTypeLabel(selectedItem.item_type)}
+                            </span>
+                          </div>
+                          <p
+                            className={`text-sm text-white/85 ${
+                              selectedItem.item_type === 'secure_note'
+                                ? 'whitespace-pre-wrap'
+                                : 'font-mono tracking-[0.18em]'
+                            }`}
+                          >
+                            {itemPrimaryPreview(selectedItem, showSensitive)}
+                          </p>
+                          <p className="muted">
+                            Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
+                            {formatTimestamp(selectedItem.updated_ts)}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
-
-                  {renderCredentialFields()}
-
-                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                    <RfSwitch
-                      label="Favorite item"
-                      checked={editor.favorite}
-                      onChange={(checked) => updateEditorField('favorite', checked)}
-                    />
-                    {(editor.item_type === 'login' ||
-                      editor.item_type === 'credit_card' ||
-                      editor.item_type === 'passport') && (
-                      <button
-                        type="button"
-                        className="rf-text-action rf-text-action-muted text-sm"
-                        onClick={() => setShowSensitive((current) => !current)}
-                      >
-                        {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm disabled:opacity-50"
-                      disabled={saving || !unlocked}
-                      onClick={() =>
-                        runAction(
-                          editingExisting ? 'Vault item saved.' : 'Vault item created.',
-                          saveEditorItem,
-                        )
-                      }
-                    >
-                      {editingExisting ? 'Save changes' : 'Save item'}
-                    </button>
-                    {selectedItem && itemPrimaryCopyValue(selectedItem) && (
-                      <button
-                        type="button"
-                        className="rf-text-action text-sm disabled:opacity-50"
-                        onClick={() => runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)}
-                      >
-                        {itemPrimaryCopyLabel(selectedItem)}
-                      </button>
-                    )}
-                    {selectedItem && (
-                      <button
-                        type="button"
-                        className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
-                        onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </div>
-
-                  {selectedItem && (
-                    <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium">
-                          {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
-                        </span>
-                        <span className="text-xs text-white/55">
-                          {selectedItem.favorite ? 'Favorite' : itemTypeLabel(selectedItem.item_type)}
-                        </span>
-                      </div>
-                      <p
-                        className={`text-sm text-white/85 ${
-                          selectedItem.item_type === 'secure_note'
-                            ? 'whitespace-pre-wrap'
-                            : 'font-mono tracking-[0.18em]'
-                        }`}
-                      >
-                        {itemPrimaryPreview(selectedItem, showSensitive)}
-                      </p>
-                      <p className="muted">
-                        Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
-                        {formatTimestamp(selectedItem.updated_ts)}
-                      </p>
-                    </div>
-                  )}
                 </div>
-              )}
+              </div>
             </div>
           )}
 
           {activeWorkspaceTab === 'settings' && (
-            <div className={workspaceContentClassName}>
-              <div className="space-y-7">
-                <div className="space-y-5 pt-1">
-                  <div>
-                    <h2 className="text-xl font-semibold">Settings</h2>
-                    <p className="mt-1 text-sm muted">
-                      Protected actions stay here so the credentials view remains focused on stored data.
-                    </p>
+            !settingsUnlocked ? (
+              <div className="flex min-h-[34rem] items-center justify-center">
+                <form
+                  className="w-full max-w-[32rem] space-y-5 rounded-[1.75rem] bg-white/[0.03] px-6 py-7 shadow-[0_28px_80px_rgba(0,0,0,0.22)]"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void runAction('Vault settings unlocked.', unlockVaultSettings);
+                  }}
+                >
+                  <div className="text-center">
+                    <h2 className="text-2xl font-semibold">Unlock Vault settings</h2>
+                  </div>
+                  <label className="block space-y-2">
+                    <span className="text-sm font-medium">Rustyfin account password</span>
+                    <input
+                      type="password"
+                      value={securityPassword}
+                      onChange={(event) => setSecurityPassword(event.target.value)}
+                      className={vaultFieldClassName}
+                      placeholder="Rustyfin account password"
+                    />
+                  </label>
+                  <div className="flex justify-center">
+                    <button
+                      type="submit"
+                      className="rf-text-action text-sm disabled:opacity-50"
+                      disabled={saving || !securityPassword.trim()}
+                    >
+                      Open settings
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <div className={workspaceContentClassName}>
+                <div className="space-y-7">
+                  <div className="space-y-5 pt-1">
+                    <div className="flex items-start justify-between gap-4">
+                      <h2 className="text-xl font-semibold">Settings</h2>
+                      <button
+                        type="button"
+                        className="rf-text-action rf-text-action-muted text-sm"
+                        onClick={() => {
+                          setSettingsAccessGranted(false);
+                          setSecurityPassword('');
+                        }}
+                      >
+                        Lock settings
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="rounded-2xl bg-white/[0.035] px-4 py-4">
-                    <p className="text-sm font-medium text-white/92">
-                      Rustyfin account password required before Vault settings unlock
-                    </p>
-                    <p className="mt-1 text-sm muted">
-                      Enter it here before you can view or change Vault settings. Rustyfin will still verify this password again on the server before any sensitive action runs.
-                    </p>
-                    <label className="mt-4 block space-y-2">
-                      <span className="text-sm font-medium">Rustyfin account password</span>
-                      <input
-                        type="password"
-                        value={securityPassword}
-                        onChange={(event) => setSecurityPassword(event.target.value)}
-                        className={vaultFieldClassName}
-                        placeholder="Required before any protected action runs"
-                      />
-                    </label>
-                    <p className="mt-3 text-xs text-white/55">
-                      This protects vault preferences, password rotation, imports, exports, and delete flows behind an extra account-password checkpoint.
-                    </p>
-                  </div>
-                </div>
-
-                {settingsUnlocked ? (
                   <div className={vaultSectionClassName}>
                     <div>
                       <h2 className="text-xl font-semibold">Vault preferences</h2>
@@ -2068,153 +2113,141 @@ export default function RustyVaultPage() {
                       Save preferences
                     </button>
                   </div>
-                ) : (
-                  <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
-                    Enter your Rustyfin account password above to reveal vault preferences and protected Vault controls.
-                  </div>
-                )}
-              </div>
+                </div>
 
-              <div className="space-y-7">
-                {settingsUnlocked ? (
-                  <>
-                    <div className="space-y-5 pt-1">
-                      <div>
-                        <h2 className="text-xl font-semibold">Change vault master password</h2>
-                        <p className="mt-1 text-sm muted">
-                          Re-enter the current vault master password here. This rotates the wrapped key and re-encrypts your saved items for this vault.
-                        </p>
-                      </div>
-                      <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
-                        Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
-                      </div>
-                      <div className="grid grid-cols-1 gap-3">
-                        <input
-                          type="password"
-                          value={currentRustyVaultPassword}
-                          onChange={(event) => setCurrentVaultPassword(event.target.value)}
-                          className={vaultFieldClassName}
-                          placeholder="Current vault master password"
-                        />
-                        <input
-                          type="password"
-                          value={newMasterPassword}
-                          onChange={(event) => setNewMasterPassword(event.target.value)}
-                          className={vaultFieldClassName}
-                          placeholder="New vault master password"
-                        />
-                        <input
-                          type="password"
-                          value={newMasterPasswordConfirm}
-                          onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
-                          className={vaultFieldClassName}
-                          placeholder="Confirm new vault master password"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        className="rf-text-action text-sm"
-                        disabled={!unlocked}
-                        onClick={() => {
-                          if (
-                            !confirmVaultAction(
-                              'Rotate the vault master password now? Rustyfin will re-encrypt the saved vault items on this device.',
-                            )
-                          ) {
-                            return;
-                          }
-                          void runAction(
-                            'Vault master password changed successfully.',
-                            rekeyMasterPassword,
-                          );
-                        }}
-                      >
-                        Rotate master password
-                      </button>
-                    </div>
-
-                    <div className={vaultSectionClassName}>
-                      <div>
-                        <h2 className="text-xl font-semibold">Import and export</h2>
-                        <p className="mt-1 text-sm muted">
-                          Export decrypted JSON locally or import Bitwarden logins into this vault.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap gap-x-5 gap-y-2">
-                        <button
-                          type="button"
-                          className="rf-text-action text-sm disabled:opacity-50"
-                          disabled={!unlocked}
-                          onClick={() => runAction('Vault export downloaded.', exportCurrentVault)}
-                        >
-                          Export decrypted JSON
-                        </button>
-                      </div>
-                      <RfSwitch
-                        label="Clear current items before importing"
-                        checked={importClearExisting}
-                        onChange={setImportClearExisting}
-                      />
-                      <p className="text-sm muted">
-                        Importing can add a large batch of credentials at once. If clearing is enabled, the current vault entries will be replaced.
+                <div className="space-y-7">
+                  <div className="space-y-5 pt-1">
+                    <div>
+                      <h2 className="text-xl font-semibold">Change vault master password</h2>
+                      <p className="mt-1 text-sm muted">
+                        Re-enter the current vault master password here. This rotates the wrapped key and re-encrypts your saved items for this vault.
                       </p>
+                    </div>
+                    <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
+                      Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
                       <input
-                        type="file"
-                        accept="application/json,.json"
-                        onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
-                        className="block w-full text-sm"
+                        type="password"
+                        value={currentRustyVaultPassword}
+                        onChange={(event) => setCurrentVaultPassword(event.target.value)}
+                        className={vaultFieldClassName}
+                        placeholder="Current vault master password"
                       />
+                      <input
+                        type="password"
+                        value={newMasterPassword}
+                        onChange={(event) => setNewMasterPassword(event.target.value)}
+                        className={vaultFieldClassName}
+                        placeholder="New vault master password"
+                      />
+                      <input
+                        type="password"
+                        value={newMasterPasswordConfirm}
+                        onChange={(event) => setNewMasterPasswordConfirm(event.target.value)}
+                        className={vaultFieldClassName}
+                        placeholder="Confirm new vault master password"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm"
+                      disabled={!unlocked}
+                      onClick={() => {
+                        if (
+                          !confirmVaultAction(
+                            'Rotate the vault master password now? Rustyfin will re-encrypt the saved vault items on this device.',
+                          )
+                        ) {
+                          return;
+                        }
+                        void runAction(
+                          'Vault master password changed successfully.',
+                          rekeyMasterPassword,
+                        );
+                      }}
+                    >
+                      Rotate master password
+                    </button>
+                  </div>
+
+                  <div className={vaultSectionClassName}>
+                    <div>
+                      <h2 className="text-xl font-semibold">Import and export</h2>
+                      <p className="mt-1 text-sm muted">
+                        Export decrypted JSON locally or import Bitwarden logins into this vault.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-x-5 gap-y-2">
                       <button
                         type="button"
                         className="rf-text-action text-sm disabled:opacity-50"
-                        disabled={!unlocked || !importFile}
-                        onClick={() => {
-                          if (
-                            !confirmVaultAction(
-                              importClearExisting
-                                ? 'Import this Bitwarden JSON and replace the current vault contents? This cannot be undone.'
-                                : 'Import this Bitwarden JSON into the current vault now?',
-                            )
-                          ) {
-                            return;
-                          }
-                          void runAction('Bitwarden import completed.', importBitwardenJson);
-                        }}
+                        disabled={!unlocked}
+                        onClick={() => runAction('Vault export downloaded.', exportCurrentVault)}
                       >
-                        Import Bitwarden JSON locally
+                        Export decrypted JSON
                       </button>
                     </div>
-
-                    <div className="space-y-3 border-t border-[var(--danger)]/35 pt-4">
-                      <p className="font-medium text-[var(--danger)]">Delete vault</p>
-                      <p className="text-sm muted">
-                        Destroying the vault deletes wrapped keys, item ciphertext, audit history, and vault device sessions. The main Rustyfin account stays intact.
-                      </p>
-                      <button
-                        type="button"
-                        className="rf-text-action rf-text-action-danger text-sm"
-                        onClick={() => {
-                          if (
-                            !confirmVaultAction(
-                              'Destroy this vault permanently? This removes the encrypted vault contents, wrapped keys, and vault sessions.',
-                            )
-                          ) {
-                            return;
-                          }
-                          void runAction('Vault destroyed.', destroyCurrentVault);
-                        }}
-                      >
-                        Destroy vault
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
-                    Protected settings stay hidden until you enter your Rustyfin account password in this session.
+                    <RfSwitch
+                      label="Clear current items before importing"
+                      checked={importClearExisting}
+                      onChange={setImportClearExisting}
+                    />
+                    <p className="text-sm muted">
+                      Importing can add a large batch of credentials at once. If clearing is enabled, the current vault entries will be replaced.
+                    </p>
+                    <input
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+                      className="block w-full text-sm"
+                    />
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm disabled:opacity-50"
+                      disabled={!unlocked || !importFile}
+                      onClick={() => {
+                        if (
+                          !confirmVaultAction(
+                            importClearExisting
+                              ? 'Import this Bitwarden JSON and replace the current vault contents? This cannot be undone.'
+                              : 'Import this Bitwarden JSON into the current vault now?',
+                          )
+                        ) {
+                          return;
+                        }
+                        void runAction('Bitwarden import completed.', importBitwardenJson);
+                      }}
+                    >
+                      Import Bitwarden JSON locally
+                    </button>
                   </div>
-                )}
+
+                  <div className="space-y-3 border-t border-[var(--danger)]/35 pt-4">
+                    <p className="font-medium text-[var(--danger)]">Delete vault</p>
+                    <p className="text-sm muted">
+                      Destroying the vault deletes wrapped keys, item ciphertext, audit history, and vault device sessions. The main Rustyfin account stays intact.
+                    </p>
+                    <button
+                      type="button"
+                      className="rf-text-action rf-text-action-danger text-sm"
+                      onClick={() => {
+                        if (
+                          !confirmVaultAction(
+                            'Destroy this vault permanently? This removes the encrypted vault contents, wrapped keys, and vault sessions.',
+                          )
+                        ) {
+                          return;
+                        }
+                        void runAction('Vault destroyed.', destroyCurrentVault);
+                      }}
+                    >
+                      Destroy vault
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {activeWorkspaceTab === 'generator' && (
@@ -2556,7 +2589,6 @@ export default function RustyVaultPage() {
           )}
         </div>
       </section>
-      {toastStack}
     </div>
   );
 }
