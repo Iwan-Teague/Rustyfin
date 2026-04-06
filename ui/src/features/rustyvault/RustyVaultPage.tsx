@@ -449,6 +449,22 @@ function confirmVaultAction(message: string) {
   return typeof window === 'undefined' ? true : window.confirm(message);
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId = 0;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 export default function RustyVaultPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
@@ -634,9 +650,12 @@ export default function RustyVaultPage() {
         cryptoReadiness?.message ?? 'This browser is not ready for vault cryptography yet',
       );
     }
-    const unlockedContext = await import('@/features/rustyvault/crypto').then(
-      ({ unlockRustyVault }) =>
+    const unlockedContext = await withTimeout(
+      import('@/features/rustyvault/crypto').then(({ unlockRustyVault }) =>
         unlockRustyVault(masterPassword, me.id, config.active_wrapped_key!),
+      ),
+      20_000,
+      'Vault unlock is taking too long. Please try again.',
     );
     setUnlocked(unlockedContext);
     setVaultView('workspace');
@@ -648,7 +667,11 @@ export default function RustyVaultPage() {
     setShowSensitive(false);
     setMasterPassword('');
     setConfirmMasterPassword('');
-    await loadItems(unlockedContext);
+    await withTimeout(
+      loadItems(unlockedContext),
+      12_000,
+      'Vault items took too long to load after unlock. Please try again.',
+    );
     setMessage('Vault unlocked.');
   }
 
@@ -1980,20 +2003,19 @@ export default function RustyVaultPage() {
             !settingsUnlocked ? (
               <div className="min-h-[18rem] pt-1 sm:pt-2">
                 <form
-                  className="w-full max-w-[32rem] space-y-5"
+                  className="mx-auto flex w-full max-w-[30rem] flex-col items-center space-y-6 pt-2 text-center"
                   onSubmit={(event) => {
                     event.preventDefault();
                     void runAction('Vault settings unlocked.', unlockVaultSettings);
                   }}
                 >
-                  <h2 className="text-2xl font-semibold">Unlock Vault settings</h2>
-                  <label className="block space-y-2">
+                  <label className="block w-full space-y-4">
                     <span className="text-sm font-medium">Rustyfin account password</span>
                     <input
                       type="password"
                       value={securityPassword}
                       onChange={(event) => setSecurityPassword(event.target.value)}
-                      className={vaultFieldClassName}
+                      className={`${vaultFieldClassName} text-center`}
                       placeholder="Rustyfin account password"
                     />
                   </label>
