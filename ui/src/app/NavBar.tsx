@@ -99,6 +99,15 @@ export default function NavBar() {
   const [confirmLeaveVoiceOpen, setConfirmLeaveVoiceOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [expandedGroupHref, setExpandedGroupHref] = useState<string | null>(null);
+  const hideShellChrome = pathname.startsWith('/setup') || pathname.startsWith('/login');
+  const navLinks = useMemo(
+    () => [
+      ...ROOT_NAV_ITEMS.map(({ href, label }) => ({ href, label })),
+      { href: '/ai', label: 'AI' },
+      ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
+    ],
+    [loading, me?.role],
+  );
 
   useEffect(() => {
     setPortalMounted(true);
@@ -115,7 +124,7 @@ export default function NavBar() {
     setMenuOpen(false);
   }, [pathname]);
 
-  if (pathname.startsWith('/setup') || pathname.startsWith('/login')) {
+  if (hideShellChrome) {
     return null;
   }
 
@@ -126,15 +135,6 @@ export default function NavBar() {
   const deafened = hasLocalVoiceSession ? (voiceSession?.deafened ?? false) : false;
   const baseVoiceActionClass =
     'inline-flex h-9 w-9 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40';
-  const navLinks = useMemo(
-    () => [
-      ...ROOT_NAV_ITEMS.map(({ href, label }) => ({ href, label })),
-      { href: '/ai', label: 'AI' },
-      ...(!loading && me?.role === 'admin' ? [{ href: '/admin', label: 'Admin' }] : []),
-    ],
-    [loading, me?.role],
-  );
-
   const isActivePath = (href: string) => {
     if (pathname === href || pathname.startsWith(`${href}/`)) {
       return true;
