@@ -2009,14 +2009,13 @@ export default function RustyVaultPage() {
                     void runAction('Vault settings unlocked.', unlockVaultSettings);
                   }}
                 >
-                  <label className="block w-full space-y-4">
-                    <span className="text-sm font-medium">Rustyfin account password</span>
+                  <label className="block w-full">
                     <input
                       type="password"
                       value={securityPassword}
                       onChange={(event) => setSecurityPassword(event.target.value)}
                       className={`${vaultFieldClassName} text-center`}
-                      placeholder="Rustyfin account password"
+                      placeholder="Enter account password"
                     />
                   </label>
                   <button
