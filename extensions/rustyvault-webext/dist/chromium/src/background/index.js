@@ -421,7 +421,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case 'pair-device': {
                     const parsed = parseRustyVaultConnectionInput(message.pairingInput);
-                    const candidateServerBaseUrl = parsed.serverBaseUrl || settings.serverBaseUrl;
+                    const candidateServerBaseUrl = parsed.serverBaseUrl || message.serverBaseUrl || settings.serverBaseUrl;
                     if (!candidateServerBaseUrl) {
                         throw new Error('Set the Rustyfin server URL in the extension first');
                     }

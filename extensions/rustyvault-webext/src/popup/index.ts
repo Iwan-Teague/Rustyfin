@@ -203,6 +203,7 @@ async function render() {
       type: 'pair-device',
       pairingInput,
       deviceName: 'Rustyfin Browser Extension',
+      serverBaseUrl: normalizedBaseUrl,
     });
     if (result.ok) {
       ($('server-url') as HTMLInputElement).value = normalizedBaseUrl;
