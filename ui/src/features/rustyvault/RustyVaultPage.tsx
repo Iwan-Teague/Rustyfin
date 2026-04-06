@@ -1261,7 +1261,7 @@ export default function RustyVaultPage() {
     : 'Create an encrypted vault before saving credentials or personal records.';
 
   const toastSlot = (
-    <div className="flex min-h-[1.35rem] items-end">
+    <div className="flex min-h-[0.95rem] items-end">
       <div
         className={`w-full text-left text-sm transition-opacity duration-200 ${
           activeToast ? `opacity-100 ${toastClassName()}` : 'pointer-events-none opacity-0'
@@ -1563,7 +1563,7 @@ export default function RustyVaultPage() {
   if (vaultView !== 'workspace') {
     return (
       <div className="rf-flat-page rf-flat-scope animate-rise">
-        <header className="rf-flat-header pb-3">
+        <header className="rf-flat-header pb-2">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
             <div className="space-y-2">
               <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -1610,7 +1610,7 @@ export default function RustyVaultPage() {
 
         {toastSlot}
 
-        <section className="rf-flat-section pt-3 sm:pt-4">
+        <section className="rf-flat-section pt-1 sm:pt-2">
           {vaultView === 'index' ? (
             <div className="space-y-4 border-t border-white/8 pt-5">
               <button
@@ -1651,17 +1651,7 @@ export default function RustyVaultPage() {
                 );
               }}
             >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <h2 className="text-2xl font-semibold">
-                    {config?.enabled ? 'Unlock Personal Vault' : 'Create Personal Vault'}
-                  </h2>
-                  <p className="text-sm muted">
-                    {config?.enabled
-                      ? 'Enter the vault password to open all saved credentials and personal records.'
-                      : 'Create a vault password to enable encrypted storage for credentials, cards, documents, and secure notes.'}
-                  </p>
-                </div>
+              <div className="flex justify-end">
                 <button
                   type="button"
                   className="rf-text-action rf-text-action-muted text-sm"
@@ -1675,9 +1665,9 @@ export default function RustyVaultPage() {
                 </button>
               </div>
 
-              <div className="space-y-4 border-l border-white/10 pl-4">
+              <div className="space-y-5">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <label className="space-y-3">
+                  <label className="space-y-4">
                     <span className="text-sm font-medium">Vault password</span>
                     <input
                       ref={vaultPasswordInputRef}
@@ -1691,7 +1681,7 @@ export default function RustyVaultPage() {
                     />
                   </label>
                   {!config?.enabled ? (
-                    <label className="space-y-3">
+                    <label className="space-y-4">
                       <span className="text-sm font-medium">Confirm vault password</span>
                       <input
                         type="password"
@@ -1733,7 +1723,7 @@ export default function RustyVaultPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header pb-1">
+      <header className="rf-flat-header pb-0.5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -1772,7 +1762,7 @@ export default function RustyVaultPage() {
 
       {toastSlot}
 
-      <section className="rf-flat-section pt-0 sm:pt-1">
+      <section className="rf-flat-section pt-0">
         <div className="flex justify-end">
           <button
             type="button"
