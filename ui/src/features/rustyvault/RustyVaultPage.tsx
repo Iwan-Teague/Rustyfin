@@ -16,10 +16,11 @@ import {
   decryptRustyVaultItem,
   decryptRustyVaultSummary,
   encryptRustyVaultLoginItem,
+  getRustyVaultCryptoReadiness,
   normalizeWebsiteUrl,
   rewrapRustyVaultKey,
-  supportsRustyVaultCrypto,
   type RustyVaultLoginItem,
+  type RustyVaultCryptoReadiness,
   type RustyVaultSummaryPlaintext,
   type RustyVaultUnlockedContext,
 } from '@/features/rustyvault/crypto';
@@ -234,7 +235,7 @@ export default function RustyVaultPage() {
   const router = useRouter();
   const { me, loading: authLoading } = useAuth();
 
-  const [cryptoSupported, setCryptoSupported] = useState<boolean | null>(null);
+  const [cryptoReadiness, setCryptoReadiness] = useState<RustyVaultCryptoReadiness | null>(null);
   const [config, setConfig] = useState<RustyVaultConfigResponse | null>(null);
   const [prefs, setPrefs] = useState<RustyVaultPreferences>(defaultRustyVaultPreferences());
   const [rustyVaultSession, setVaultSession] = useState<StoredRustyVaultSession | null>(readRustyVaultSession());
@@ -285,6 +286,7 @@ export default function RustyVaultPage() {
   });
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
+  const cryptoReady = cryptoReadiness?.ready === true;
   const canSubmitVaultPrompt = config?.enabled
     ? masterPassword.trim().length > 0
     : masterPassword.length > 0 &&
@@ -348,8 +350,10 @@ export default function RustyVaultPage() {
 
   async function bootstrapFreshVault() {
     if (!me) return;
-    if (cryptoSupported !== true) {
-      throw new Error('This browser is not ready for vault cryptography yet');
+    if (!cryptoReady) {
+      throw new Error(
+        cryptoReadiness?.message ?? 'This browser is not ready for vault cryptography yet',
+      );
     }
     if (!masterPassword || masterPassword !== confirmMasterPassword) {
       throw new Error('Enter and confirm the same new vault master password');
@@ -376,8 +380,10 @@ export default function RustyVaultPage() {
     if (!me || !config?.active_wrapped_key) {
       throw new Error('Vault is not ready to unlock');
     }
-    if (cryptoSupported !== true) {
-      throw new Error('This browser is not ready for vault cryptography yet');
+    if (!cryptoReady) {
+      throw new Error(
+        cryptoReadiness?.message ?? 'This browser is not ready for vault cryptography yet',
+      );
     }
     const unlockedContext = await import('@/features/rustyvault/crypto').then(({ unlockRustyVault }) =>
       unlockRustyVault(masterPassword, me.id, config.active_wrapped_key!),
@@ -416,7 +422,7 @@ export default function RustyVaultPage() {
   }, [prefs.auto_lock_minutes, unlocked]);
 
   useEffect(() => {
-    supportsRustyVaultCrypto().then(setCryptoSupported);
+    getRustyVaultCryptoReadiness().then(setCryptoReadiness);
   }, []);
 
   useEffect(() => {
@@ -768,7 +774,7 @@ export default function RustyVaultPage() {
     ? 'Client-side encrypted logins for this Rustyfin account.'
     : 'Create an encrypted vault before saving passwords.';
 
-  if (authLoading || loadingState) {
+  if (authLoading || loadingState || cryptoReadiness === null) {
     return (
       <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Loading Vault…</p>
@@ -810,7 +816,11 @@ export default function RustyVaultPage() {
               </div>
               <div className="space-y-1">
                 <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">KDF</p>
-                <p className="text-sm font-medium">Argon2id 64 MiB</p>
+                <p className="text-sm font-medium">
+                  {cryptoReadiness.mode === 'portable-fallback'
+                    ? 'Argon2id fallback'
+                    : 'Argon2id 64 MiB'}
+                </p>
               </div>
               <div className="space-y-1">
                 <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
@@ -828,6 +838,18 @@ export default function RustyVaultPage() {
 
         {error && (
           <div className="notice-error rounded-xl px-4 py-3 text-sm">{error}</div>
+        )}
+
+        {cryptoReadiness.reason !== 'ok' && (
+          <div className="notice-error rounded-xl px-4 py-3 text-sm">
+            {cryptoReadiness.message}
+          </div>
+        )}
+
+        {cryptoReadiness.mode === 'portable-fallback' && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            {cryptoReadiness.message}
+          </div>
         )}
 
         {message && (
@@ -919,7 +941,7 @@ export default function RustyVaultPage() {
                   <button
                     type="button"
                     className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={saving || !me || !canSubmitVaultPrompt}
+                    disabled={saving || !me || !canSubmitVaultPrompt || !cryptoReady}
                     onClick={() =>
                       runAction(
                         config?.enabled ? 'Vault unlocked.' : 'Vault created.',
@@ -965,7 +987,11 @@ export default function RustyVaultPage() {
             </div>
             <div className="space-y-1">
               <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">KDF</p>
-              <p className="text-sm font-medium">Argon2id 64 MiB</p>
+              <p className="text-sm font-medium">
+                {cryptoReadiness.mode === 'portable-fallback'
+                  ? 'Argon2id fallback'
+                  : 'Argon2id 64 MiB'}
+              </p>
             </div>
             <div className="space-y-1">
               <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">Auto-lock</p>
@@ -983,6 +1009,12 @@ export default function RustyVaultPage() {
 
       {error && (
         <div className="notice-error rounded-xl px-4 py-3 text-sm">{error}</div>
+      )}
+
+      {cryptoReadiness.mode === 'portable-fallback' && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          {cryptoReadiness.message}
+        </div>
       )}
 
       {message && (

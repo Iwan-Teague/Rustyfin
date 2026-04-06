@@ -19,6 +19,8 @@ Keep these listeners internal-only or loopback-only:
 
 For `/vault`, trusted HTTPS is mandatory. Do not treat browser certificate-warning bypasses or direct backend-port access as supported.
 
+RustyVault web access does not require the browser extension. The web vault uses native browser Argon2id when it is available and falls back to a bundled portable Argon2id path when it is not, but both paths still require a trusted HTTPS browser context.
+
 ## Choose One Access Mode
 
 ### Private or VPN-only access

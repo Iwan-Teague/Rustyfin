@@ -1,5 +1,7 @@
 'use client';
 
+import { deriveArgon2IdHashBytes, probeArgon2BrowserFallback } from './argon2Browser';
+
 import type {
   EncryptedRustyVaultItem,
   EncryptedRustyVaultItemSummary,
@@ -71,6 +73,21 @@ export type RustyVaultUnlockedContext = {
   index_key: CryptoKey;
 };
 
+export type RustyVaultCryptoReadiness = {
+  ready: boolean;
+  mode: 'native' | 'portable-fallback' | 'unavailable';
+  reason:
+    | 'ok'
+    | 'insecure-context'
+    | 'missing-webcrypto'
+    | 'missing-subtle'
+    | 'argon2-unavailable';
+  message: string;
+};
+
+let nativeArgon2SupportPromise: Promise<boolean> | null = null;
+let portableArgon2SupportPromise: Promise<boolean> | null = null;
+
 function aadBytes(
   userId: string,
   itemId: string,
@@ -118,20 +135,67 @@ async function importArgon2PasswordKey(password: string): Promise<CryptoKey> {
   ]);
 }
 
+async function browserSupportsNativeArgon2Id(): Promise<boolean> {
+  if (!nativeArgon2SupportPromise) {
+    nativeArgon2SupportPromise = (async () => {
+      try {
+        const probe = await importArgon2PasswordKey('probe');
+        await crypto.subtle.deriveBits(
+          {
+            name: 'Argon2id',
+            nonce: new Uint8Array(16).buffer,
+            parallelism: 1,
+            memory: 8_192,
+            passes: 1,
+          } as AlgorithmIdentifier,
+          probe,
+          256,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return nativeArgon2SupportPromise;
+}
+
+async function browserSupportsPortableArgon2(): Promise<boolean> {
+  if (!portableArgon2SupportPromise) {
+    portableArgon2SupportPromise = probeArgon2BrowserFallback()
+      .then(() => true)
+      .catch(() => false);
+  }
+  return portableArgon2SupportPromise;
+}
+
 async function deriveMasterMaterial(password: string, salt: Uint8Array): Promise<CryptoKey> {
-  const passwordKey = await importArgon2PasswordKey(password);
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'Argon2id',
-      nonce: toArrayBuffer(salt),
+  let bits: ArrayBuffer | Uint8Array;
+  if (await browserSupportsNativeArgon2Id()) {
+    const passwordKey = await importArgon2PasswordKey(password);
+    bits = await crypto.subtle.deriveBits(
+      {
+        name: 'Argon2id',
+        nonce: toArrayBuffer(salt),
+        parallelism: ARGON2_PARAMS.parallelism,
+        memory: ARGON2_PARAMS.memory_kib,
+        passes: ARGON2_PARAMS.iterations,
+      } as AlgorithmIdentifier,
+      passwordKey,
+      256,
+    );
+  } else {
+    bits = await deriveArgon2IdHashBytes({
+      pass: encoder.encode(password),
+      salt,
+      time: ARGON2_PARAMS.iterations,
+      mem: ARGON2_PARAMS.memory_kib,
       parallelism: ARGON2_PARAMS.parallelism,
-      memory: ARGON2_PARAMS.memory_kib,
-      passes: ARGON2_PARAMS.iterations,
-    } as AlgorithmIdentifier,
-    passwordKey,
-    256,
-  );
-  return crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+      hashLen: 32,
+    });
+  }
+  const importBytes = bits instanceof Uint8Array ? toArrayBuffer(bits) : bits;
+  return crypto.subtle.importKey('raw', importBytes, 'HKDF', false, ['deriveKey']);
 }
 
 async function deriveWrapKey(masterMaterial: CryptoKey): Promise<CryptoKey> {
@@ -220,24 +284,59 @@ async function decryptBlob<T>(
   return JSON.parse(decoder.decode(plaintext)) as T;
 }
 
-export async function supportsRustyVaultCrypto(): Promise<boolean> {
-  try {
-    const probe = await importArgon2PasswordKey('probe');
-    await crypto.subtle.deriveBits(
-      {
-        name: 'Argon2id',
-        nonce: new Uint8Array(16).buffer,
-        parallelism: 1,
-        memory: 8_192,
-        passes: 1,
-      } as AlgorithmIdentifier,
-      probe,
-      256,
-    );
-    return true;
-  } catch {
-    return false;
+export async function getRustyVaultCryptoReadiness(): Promise<RustyVaultCryptoReadiness> {
+  if (typeof globalThis.crypto === 'undefined') {
+    return {
+      ready: false,
+      mode: 'unavailable',
+      reason: 'missing-webcrypto',
+      message: 'RustyVault requires browser WebCrypto support.',
+    };
   }
+  if (!globalThis.crypto.subtle) {
+    return {
+      ready: false,
+      mode: 'unavailable',
+      reason: 'missing-subtle',
+      message: 'RustyVault requires SubtleCrypto support in this browser.',
+    };
+  }
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return {
+      ready: false,
+      mode: 'unavailable',
+      reason: 'insecure-context',
+      message:
+        'RustyVault requires a trusted HTTPS browser context. Plain HTTP and certificate-warning bypasses are not supported.',
+    };
+  }
+  if (await browserSupportsNativeArgon2Id()) {
+    return {
+      ready: true,
+      mode: 'native',
+      reason: 'ok',
+      message: 'RustyVault is using native browser Argon2id support.',
+    };
+  }
+  if (await browserSupportsPortableArgon2()) {
+    return {
+      ready: true,
+      mode: 'portable-fallback',
+      reason: 'ok',
+      message: 'RustyVault is using a portable Argon2id fallback for this browser.',
+    };
+  }
+  return {
+    ready: false,
+    mode: 'unavailable',
+    reason: 'argon2-unavailable',
+    message:
+      'This browser does not provide the Argon2id support RustyVault needs, and the portable fallback could not be initialized.',
+  };
+}
+
+export async function supportsRustyVaultCrypto(): Promise<boolean> {
+  return (await getRustyVaultCryptoReadiness()).ready;
 }
 
 export async function bootstrapRustyVaultKeys(
