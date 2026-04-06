@@ -29,6 +29,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - when a RustyVault route accepts both Rustyfin auth and a RustyVault session, explicitly reject cross-user token mixing instead of assuming the headers belong to the same user
   - backend removability path exists through the `rustyvault` Cargo feature, and runtime graceful-disable exists through `RUSTFIN_RUSTYVAULT_ENABLED=0`
   - host-facing RustyVault routes should map to live web UI or extension consumers; do not reintroduce removed convenience endpoints such as `/api/v1/vault/sync` or `/api/v1/vault/protected-actions/complete` without a concrete product consumer
+  - the unlocked RustyVault web UI is credentials-first and currently supports login, credit-card, passport, and secure-note items, with settings, generator, and extension operations split into separate views
   - `crates/server/src/account_prefs.rs` is host-only account state now; do not reintroduce RustyVault settings into that shared model
   - when RustyVault is unavailable, the Vault surface should return `503` or render an unavailable state; the rest of Rustyfin should continue operating normally
   - secure browser publication of `/vault` must stay edge-only and HTTPS-only; do not expose backend/service ports directly for vault access

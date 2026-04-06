@@ -42,6 +42,7 @@ const MULTIPART_SUFFIXES = new Set([
 ]);
 
 export type RustyVaultLoginItem = {
+  item_type: 'login';
   id: string;
   title: string;
   username: string;
@@ -55,7 +56,65 @@ export type RustyVaultLoginItem = {
   updated_ts: number;
 };
 
+export type RustyVaultCreditCardItem = {
+  item_type: 'credit_card';
+  id: string;
+  title: string;
+  cardholder_name: string;
+  card_number: string;
+  expiry_month: string;
+  expiry_year: string;
+  security_code: string;
+  issuer_name: string;
+  notes: string;
+  favorite: boolean;
+  revision: number;
+  created_ts: number;
+  updated_ts: number;
+};
+
+export type RustyVaultPassportItem = {
+  item_type: 'passport';
+  id: string;
+  title: string;
+  full_name: string;
+  passport_number: string;
+  nationality: string;
+  issuing_country: string;
+  birth_date: string;
+  expiry_date: string;
+  notes: string;
+  favorite: boolean;
+  revision: number;
+  created_ts: number;
+  updated_ts: number;
+};
+
+export type RustyVaultSecureNoteItem = {
+  item_type: 'secure_note';
+  id: string;
+  title: string;
+  notes: string;
+  favorite: boolean;
+  revision: number;
+  created_ts: number;
+  updated_ts: number;
+};
+
+export type RustyVaultItemType =
+  | RustyVaultLoginItem['item_type']
+  | RustyVaultCreditCardItem['item_type']
+  | RustyVaultPassportItem['item_type']
+  | RustyVaultSecureNoteItem['item_type'];
+
+export type RustyVaultItem =
+  | RustyVaultLoginItem
+  | RustyVaultCreditCardItem
+  | RustyVaultPassportItem
+  | RustyVaultSecureNoteItem;
+
 export type RustyVaultSummaryPlaintext = {
+  item_type: RustyVaultItemType;
   title: string;
   subtitle: string;
   primary_uri: string;
@@ -228,15 +287,60 @@ async function deriveIndexKey(masterMaterial: CryptoKey): Promise<CryptoKey> {
   );
 }
 
-function summaryFromItem(item: RustyVaultLoginItem): RustyVaultSummaryPlaintext {
-  return {
-    title: item.title.trim(),
-    subtitle: item.username.trim() || item.login_email.trim() || 'Saved login',
-    primary_uri: item.website_urls[0] ?? '',
-    username: item.username.trim(),
-    login_email: item.login_email.trim(),
-    favorite: item.favorite,
-  };
+function maskVisibleTail(value: string, digits = 4) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const tail = trimmed.slice(-digits);
+  return `•••• ${tail}`;
+}
+
+function summaryFromItem(item: RustyVaultItem): RustyVaultSummaryPlaintext {
+  switch (item.item_type) {
+    case 'credit_card':
+      return {
+        item_type: item.item_type,
+        title: item.title.trim(),
+        subtitle: item.cardholder_name.trim() || 'Saved card',
+        primary_uri: item.issuer_name.trim() || maskVisibleTail(item.card_number),
+        username: maskVisibleTail(item.card_number),
+        login_email:
+          item.expiry_month.trim() && item.expiry_year.trim()
+            ? `Expires ${item.expiry_month.trim()}/${item.expiry_year.trim()}`
+            : '',
+        favorite: item.favorite,
+      };
+    case 'passport':
+      return {
+        item_type: item.item_type,
+        title: item.title.trim(),
+        subtitle: item.full_name.trim() || 'Saved passport',
+        primary_uri: item.issuing_country.trim() || item.nationality.trim(),
+        username: maskVisibleTail(item.passport_number),
+        login_email: item.expiry_date.trim() ? `Expires ${item.expiry_date.trim()}` : '',
+        favorite: item.favorite,
+      };
+    case 'secure_note':
+      return {
+        item_type: item.item_type,
+        title: item.title.trim(),
+        subtitle: 'Secure note',
+        primary_uri: '',
+        username: '',
+        login_email: '',
+        favorite: item.favorite,
+      };
+    case 'login':
+    default:
+      return {
+        item_type: item.item_type,
+        title: item.title.trim(),
+        subtitle: item.username.trim() || item.login_email.trim() || 'Saved login',
+        primary_uri: item.website_urls[0] ?? '',
+        username: item.username.trim(),
+        login_email: item.login_email.trim(),
+        favorite: item.favorite,
+      };
+  }
 }
 
 async function encryptBlob<T>(
@@ -565,9 +669,9 @@ export async function buildLookupHashesForUrl(
   return hashes;
 }
 
-export async function encryptRustyVaultLoginItem(
+export async function encryptRustyVaultItem(
   unlocked: RustyVaultUnlockedContext,
-  item: RustyVaultLoginItem,
+  item: RustyVaultItem,
   matchMode: RustyVaultUriMatchMode,
 ): Promise<UpsertRustyVaultItemRequest> {
   const summary = summaryFromItem(item);
@@ -587,11 +691,14 @@ export async function encryptRustyVaultLoginItem(
     PAYLOAD_VERSION,
     item,
   );
-  const uriIndexes = await buildUriIndexes(unlocked.index_key, item.website_urls, matchMode);
+  const uriIndexes =
+    item.item_type === 'login'
+      ? await buildUriIndexes(unlocked.index_key, item.website_urls, matchMode)
+      : [];
 
   return {
     id: item.id,
-    item_type: 'login',
+    item_type: item.item_type,
     key_version: unlocked.key_version,
     summary_version: SUMMARY_VERSION,
     summary_nonce_hex: encryptedSummary.nonce_hex,
@@ -605,11 +712,19 @@ export async function encryptRustyVaultLoginItem(
   };
 }
 
+export async function encryptRustyVaultLoginItem(
+  unlocked: RustyVaultUnlockedContext,
+  item: RustyVaultLoginItem,
+  matchMode: RustyVaultUriMatchMode,
+): Promise<UpsertRustyVaultItemRequest> {
+  return encryptRustyVaultItem(unlocked, item, matchMode);
+}
+
 export async function decryptRustyVaultSummary(
   unlocked: RustyVaultUnlockedContext,
   item: EncryptedRustyVaultItemSummary,
 ): Promise<RustyVaultSummaryPlaintext> {
-  return decryptBlob<RustyVaultSummaryPlaintext>(
+  const summary = await decryptBlob<RustyVaultSummaryPlaintext>(
     unlocked.data_key,
     unlocked.user_id,
     item.id,
@@ -618,13 +733,17 @@ export async function decryptRustyVaultSummary(
     item.summary_nonce_hex,
     item.summary_ciphertext_hex,
   );
+  return {
+    ...summary,
+    item_type: (summary.item_type as RustyVaultItemType | undefined) ?? (item.item_type as RustyVaultItemType),
+  };
 }
 
 export async function decryptRustyVaultItem(
   unlocked: RustyVaultUnlockedContext,
   item: EncryptedRustyVaultItem,
-): Promise<RustyVaultLoginItem> {
-  return decryptBlob<RustyVaultLoginItem>(
+): Promise<RustyVaultItem> {
+  const payload = await decryptBlob<RustyVaultItem>(
     unlocked.data_key,
     unlocked.user_id,
     item.id,
@@ -633,4 +752,8 @@ export async function decryptRustyVaultItem(
     item.payload_nonce_hex,
     item.payload_ciphertext_hex,
   );
+  return {
+    ...payload,
+    item_type: (payload.item_type as RustyVaultItemType | undefined) ?? (item.item_type as RustyVaultItemType),
+  } as RustyVaultItem;
 }
