@@ -516,6 +516,7 @@ export default function RustyVaultPage() {
     useState<VaultWorkspaceTab>('credentials');
   const [vaultView, setVaultView] = useState<'index' | 'prompt' | 'workspace'>('index');
   const settingsPasswordInputRef = useRef<HTMLInputElement | null>(null);
+  const vaultPasswordInputRef = useRef<HTMLInputElement | null>(null);
 
   const filteredRows = [...rows]
     .filter((row) => {
@@ -732,6 +733,15 @@ export default function RustyVaultPage() {
   }, []);
 
   useEffect(() => {
+    document.documentElement.dataset.rfPage = 'vault';
+    document.body.dataset.rfPage = 'vault';
+    return () => {
+      delete document.documentElement.dataset.rfPage;
+      delete document.body.dataset.rfPage;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!authLoading && !me) {
       router.replace('/login');
     }
@@ -821,6 +831,15 @@ export default function RustyVaultPage() {
     }, 0);
     return () => window.clearTimeout(focusTimer);
   }, [activeWorkspaceTab, settingsAccessGranted]);
+
+  useEffect(() => {
+    if (vaultView !== 'prompt') return;
+    const focusTimer = window.setTimeout(() => {
+      vaultPasswordInputRef.current?.focus();
+      vaultPasswordInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [vaultView, config?.enabled]);
 
   useEffect(() => {
     if (!settingsAccessGranted || !preferencesDirty) return;
@@ -1212,7 +1231,6 @@ export default function RustyVaultPage() {
   const workspaceBadges = [
     unlocked ? 'Unlocked' : config?.enabled ? 'Locked' : 'Not set up',
     `${config?.item_count ?? 0} items`,
-    rustyVaultSession ? 'Web session active' : 'No web session',
   ];
 
   const workspaceContentClassName =
@@ -1597,7 +1615,7 @@ export default function RustyVaultPage() {
             <div className="space-y-4 border-t border-white/8 pt-5">
               <button
                 type="button"
-                className="w-full border-l border-white/10 px-4 py-5 text-left transition hover:bg-white/[0.02]"
+                className="group relative w-full overflow-hidden rounded-[1.6rem] px-5 py-5 text-left transition duration-200"
                 onClick={() => {
                   setError(null);
                   setMessage(null);
@@ -1606,7 +1624,8 @@ export default function RustyVaultPage() {
                   setVaultView('prompt');
                 }}
               >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <span className="pointer-events-none absolute inset-0 rounded-[1.6rem] bg-gradient-to-r from-white/[0.065] via-white/[0.028] to-transparent opacity-0 transition duration-200 group-hover:opacity-100" />
+                <div className="relative flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div className="space-y-1">
                     <h2 className="text-2xl font-semibold">{currentVaultLabel}</h2>
                     <p className="text-sm muted">{currentVaultDescription}</p>
@@ -1614,7 +1633,6 @@ export default function RustyVaultPage() {
                   <div className="rf-inline-meta justify-start sm:justify-end">
                     <span>{config?.enabled ? 'Locked' : 'Not set up'}</span>
                     <span>{config?.item_count ?? 0} items</span>
-                    <span>{rustyVaultSession ? 'Web session active' : 'No web session'}</span>
                   </div>
                 </div>
               </button>
@@ -1662,6 +1680,7 @@ export default function RustyVaultPage() {
                   <label className="space-y-2">
                     <span className="text-sm font-medium">Vault password</span>
                     <input
+                      ref={vaultPasswordInputRef}
                       type="password"
                       value={masterPassword}
                       onChange={(event) => setMasterPassword(event.target.value)}
