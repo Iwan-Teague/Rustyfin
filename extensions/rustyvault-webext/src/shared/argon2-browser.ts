@@ -1,0 +1,186 @@
+const ARGON2_WASM_URL = new URL('./vendor/argon2.wasm', import.meta.url).toString();
+
+export const ArgonType = {
+  Argon2d: 0,
+  Argon2i: 1,
+  Argon2id: 2,
+} as const;
+
+let modulePromise: Promise<any> | null = null;
+
+function createWasmMemory(mem: number) {
+  const KB = 1024;
+  const GB = 1024 * 1024 * KB;
+  const WASM_PAGE_SIZE = 64 * KB;
+  const totalMemory = (2 * GB - 64 * KB) / WASM_PAGE_SIZE;
+  const initialMemory = Math.min(
+    Math.max(Math.ceil((mem * KB) / WASM_PAGE_SIZE), 256) + 256,
+    totalMemory,
+  );
+  return new WebAssembly.Memory({
+    initial: initialMemory,
+    maximum: totalMemory,
+  });
+}
+
+async function loadWasmBinary() {
+  const response = await fetch(ARGON2_WASM_URL);
+  if (!response.ok) {
+    throw new Error(`Failed to load Argon2 wasm (${response.status})`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function loadModule(mem = 1024) {
+  if (modulePromise) {
+    return modulePromise;
+  }
+  modulePromise = (async () => {
+    const wasmBinary = await loadWasmBinary();
+    return new Promise((resolve, reject) => {
+      (globalThis as any).Module = {
+        wasmBinary,
+        wasmMemory: createWasmMemory(mem),
+        locateFile(filePath: string) {
+          return filePath === 'argon2.wasm' ? ARGON2_WASM_URL : filePath;
+        },
+        onAbort(reason: unknown) {
+          reject(new Error(String(reason || 'Argon2 wasm initialization failed')));
+        },
+        postRun() {
+          resolve((globalThis as any).Module);
+        },
+      };
+      import('./vendor/argon2.js').catch((error) => {
+        modulePromise = null;
+        reject(error);
+      });
+    });
+  })().catch((error) => {
+    modulePromise = null;
+    throw error;
+  });
+  return modulePromise;
+}
+
+function allocateArray(module: any, arr: Uint8Array) {
+  return module.allocate(arr, 'i8', module.ALLOC_NORMAL);
+}
+
+function allocateArrayStr(module: any, arr: Uint8Array) {
+  return allocateArray(module, new Uint8Array([...arr, 0]));
+}
+
+function encodeUtf8(value: string | Uint8Array) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  return new TextEncoder().encode(value);
+}
+
+export async function hash(params: {
+  pass: string | Uint8Array;
+  salt: string | Uint8Array;
+  time?: number;
+  mem?: number;
+  parallelism?: number;
+  hashLen?: number;
+  type?: number;
+  secret?: Uint8Array;
+  ad?: Uint8Array;
+}) {
+  const mCost = params.mem || 1024;
+  const module = await loadModule(mCost);
+  const tCost = params.time || 1;
+  const parallelism = params.parallelism || 1;
+  const password = encodeUtf8(params.pass);
+  const passwordPtr = allocateArrayStr(module, password);
+  const salt = encodeUtf8(params.salt);
+  const saltPtr = allocateArrayStr(module, salt);
+  const hashLen = params.hashLen || 24;
+  const hashPtr = module.allocate(new Array(hashLen), 'i8', module.ALLOC_NORMAL);
+  const secretPtr = params.secret ? allocateArray(module, params.secret) : 0;
+  const secretLen = params.secret ? params.secret.byteLength : 0;
+  const adPtr = params.ad ? allocateArray(module, params.ad) : 0;
+  const adLen = params.ad ? params.ad.byteLength : 0;
+  const argon2Type = params.type ?? ArgonType.Argon2d;
+  const encodedLen = module._argon2_encodedlen(
+    tCost,
+    mCost,
+    parallelism,
+    salt.length,
+    hashLen,
+    argon2Type,
+  );
+  const encodedPtr = module.allocate(new Array(encodedLen + 1), 'i8', module.ALLOC_NORMAL);
+  const version = 0x13;
+  let err: unknown = null;
+  let res = 0;
+  try {
+    res = module._argon2_hash_ext(
+      tCost,
+      mCost,
+      parallelism,
+      passwordPtr,
+      password.length,
+      saltPtr,
+      salt.length,
+      hashPtr,
+      hashLen,
+      encodedPtr,
+      encodedLen,
+      argon2Type,
+      secretPtr,
+      secretLen,
+      adPtr,
+      adLen,
+      version,
+    );
+  } catch (error) {
+    err = error;
+  }
+
+  try {
+    if (res !== 0 && !err) {
+      err = new Error(module.UTF8ToString(module._argon2_error_message(res)));
+    }
+    if (err) {
+      throw err;
+    }
+    const hashBytes = new Uint8Array(hashLen);
+    let hashHex = '';
+    for (let index = 0; index < hashLen; index += 1) {
+      const byte = module.HEAP8[hashPtr + index];
+      hashBytes[index] = byte;
+      hashHex += (`0${(0xff & byte).toString(16)}`).slice(-2);
+    }
+    return {
+      hash: hashBytes,
+      hashHex,
+      encoded: module.UTF8ToString(encodedPtr),
+    };
+  } finally {
+    try {
+      module._free(passwordPtr);
+      module._free(saltPtr);
+      module._free(hashPtr);
+      module._free(encodedPtr);
+      if (secretPtr) module._free(secretPtr);
+      if (adPtr) module._free(adPtr);
+    } catch {
+      // Ignore cleanup failures from the wasm runtime.
+    }
+  }
+}
+
+export async function probeArgon2BrowserFallback() {
+  await hash({
+    pass: 'probe',
+    salt: new Uint8Array(16),
+    time: 1,
+    mem: 8_192,
+    parallelism: 1,
+    hashLen: 32,
+    type: ArgonType.Argon2id,
+  });
+}

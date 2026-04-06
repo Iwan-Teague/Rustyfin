@@ -62,6 +62,13 @@ function PlatformSection({
               </div>
               <p className="text-sm muted">{item.summary}</p>
               {item.detail && <p className="text-xs text-slate-400">{item.detail}</p>}
+              {item.install_steps.length > 0 && (
+                <ol className="space-y-1 text-xs text-slate-400">
+                  {item.install_steps.map((step, index) => (
+                    <li key={`${item.id}-step-${index}`}>{index + 1}. {step}</li>
+                  ))}
+                </ol>
+              )}
             </div>
 
             <div className="flex shrink-0 flex-wrap gap-3 pt-2 lg:justify-end">
@@ -176,9 +183,13 @@ export default function DownloadsPage() {
     );
   }
 
+  const extensions = catalog.filter((i) => i.platform === 'browser_extension');
   const desktop = catalog.filter((i) => ['windows', 'macos', 'linux'].includes(i.platform));
   const mobile = catalog.filter((i) => ['android', 'ios'].includes(i.platform));
-  const other = catalog.filter((i) => !['windows', 'macos', 'linux', 'android', 'ios'].includes(i.platform));
+  const other = catalog.filter(
+    (i) =>
+      !['browser_extension', 'windows', 'macos', 'linux', 'android', 'ios'].includes(i.platform),
+  );
 
   return (
     <div className="animate-rise rf-flat-page">
@@ -202,6 +213,12 @@ export default function DownloadsPage() {
         <div className="rf-flat-empty text-center muted">Loading catalog...</div>
       ) : (
         <div className="space-y-10">
+          <PlatformSection
+            title="Browser Extensions"
+            items={extensions}
+            onDownload={handleDownload}
+            pendingId={downloadPendingId}
+          />
           <PlatformSection
             title="Desktop"
             items={desktop}

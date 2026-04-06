@@ -13,7 +13,8 @@ Rustyfin is a native-Debian-first local media platform with:
 - Next.js frontend (`ui`)
 - Product-scoped frontend feature module (`ui/src/features/rustyvault`) for the Vault surface
 - Browser extension MVP (`extensions/rustyvault-webext`)
-  - downloadable from the host Downloads page via `/api/v1/downloads/artifacts/rustyvault-webext/package`
+  - downloadable from the host Downloads page via `/api/v1/downloads/artifacts/rustyvault-webext-chromium/package` and `/api/v1/downloads/artifacts/rustyvault-webext-firefox/package`
+  - current canonical build outputs live under `extensions/rustyvault-webext/dist/chromium` and `extensions/rustyvault-webext/dist/firefox`
 - Shared Rust domain/repo crates (`crates/core`, `crates/db`, `crates/scanner`, `crates/metadata`, `crates/transcoder`, `crates/servers-host`)
 - A `Servers` product area for native game-server management, currently focused on Minecraft on supported Debian hosts through `systemd`
 - A `Vault` product area for client-side encrypted password storage, web management, and browser-extension pairing/autofill
@@ -37,6 +38,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin, and use `RUSTFIN_EDGE_TLS_MODE=manual|auto` instead of ad-hoc edge rewrites when changing native browser access
   - web `/vault` creation and unlock must not depend on the browser extension; preserve the native-browser Argon2id path plus the shipped portable Argon2id runtime fallback (`argon2.js` plus `argon2.wasm`), keep trusted HTTPS enforcement explicit in the UI, and do not remove the Vault-route CSP allowance needed for the portable WebAssembly fallback
   - web Vault unlock must derive against the stored wrapped-key KDF parameters and fail fast with a user-visible error instead of leaving the unlock action pending indefinitely
+  - the browser extension should prefer runtime-granted site access plus dynamic content-script registration over permanent all-sites host access, while preserving popup/manual fill as the fallback when inline suggestions are unavailable
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages

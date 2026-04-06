@@ -1,0 +1,8 @@
+{
+  "host_permissions": [],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "rustyvault@rustyfin.local"
+    }
+  }
+}
