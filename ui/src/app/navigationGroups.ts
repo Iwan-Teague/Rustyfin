@@ -34,6 +34,11 @@ export const PERSONAL_GROUP: NavigationGroup = {
       description: 'Open RustyVault for saved credentials and secure session management.',
     },
     {
+      href: '/dictionary',
+      label: 'Dictionary',
+      description: 'Open a lightweight glossary workspace for words, notes, and definitions.',
+    },
+    {
       href: '/backups',
       label: 'Backups',
       description: 'Run snapshots, inspect history, and review backup policies.',
