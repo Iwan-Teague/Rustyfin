@@ -328,7 +328,7 @@ export default function HomePage() {
             </Link>
           </div>
           {continueWatching.length === 0 ? (
-            <div className="space-y-3 text-sm text-white/88">
+            <div className="rf-flat-empty space-y-3 text-sm text-white/88">
               <p>Start a movie or episode from a library and Rustyfin will keep your place here.</p>
               <Link href="/libraries" className="rf-text-action mt-3 text-sm">
                 Open libraries
@@ -449,7 +449,7 @@ export default function HomePage() {
             </div>
           ) : null}
           {!loadingData && publicRooms.length === 0 ? (
-            <div className="space-y-3 text-sm text-white/88">
+            <div className="rf-flat-empty space-y-3 text-sm text-white/88">
               <p>Jump into what&apos;s live right now, or open the full rooms workspace.</p>
               <Link href="/rooms" className="rf-text-action mt-3 text-sm">
                 Join an active room
