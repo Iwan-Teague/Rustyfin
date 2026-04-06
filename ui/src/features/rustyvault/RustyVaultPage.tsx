@@ -453,6 +453,33 @@ function toastClassName() {
   return 'text-white/78';
 }
 
+function isLikelyLocalRustyfinOrigin(origin: string) {
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    const hostname = url.hostname.trim().toLowerCase();
+    if (url.protocol !== 'https:') {
+      return false;
+    }
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      return true;
+    }
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) {
+      const [a, b] = hostname.split('.').map((segment) => Number(segment));
+      return (
+        a === 10 ||
+        a === 127 ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) ||
+        (a === 100 && b >= 64 && b <= 127)
+      );
+    }
+    return !hostname.includes('.');
+  } catch {
+    return false;
+  }
+}
+
 function confirmVaultAction(message: string) {
   return typeof window === 'undefined' ? true : window.confirm(message);
 }
@@ -516,6 +543,8 @@ export default function RustyVaultPage() {
   const [newMasterPasswordConfirm, setNewMasterPasswordConfirm] = useState('');
   const [extensionPairing, setExtensionPairing] =
     useState<RustyVaultPairingCodeResponse | null>(null);
+  const [extensionCopiedField, setExtensionCopiedField] =
+    useState<null | 'server' | 'pairing'>(null);
   const [vaultDisplayNameInput, setVaultDisplayNameInput] = useState('');
   const [deviceSessions, setDeviceSessions] = useState<RustyVaultDeviceSessionResponse[]>([]);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -559,6 +588,7 @@ export default function RustyVaultPage() {
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
   const cryptoReady = cryptoReadiness?.ready === true;
+  const showExtensionTrustNote = isLikelyLocalRustyfinOrigin(browserVisibleOrigin);
   const canSubmitVaultPrompt = config?.enabled
     ? masterPassword.trim().length > 0
     : masterPassword.length > 0 &&
@@ -849,6 +879,14 @@ export default function RustyVaultPage() {
     }, 5000);
     return () => window.clearTimeout(timeout);
   }, [activeToast]);
+
+  useEffect(() => {
+    if (!extensionCopiedField) return;
+    const timeout = window.setTimeout(() => {
+      setExtensionCopiedField(null);
+    }, 3000);
+    return () => window.clearTimeout(timeout);
+  }, [extensionCopiedField]);
 
   useEffect(() => {
     if (
@@ -2694,6 +2732,13 @@ export default function RustyVaultPage() {
                         <p className="font-mono text-sm text-white/90">
                           {browserVisibleOrigin || 'Loading current Rustyfin origin...'}
                         </p>
+                        {showExtensionTrustNote && (
+                          <p className="text-xs text-white/58">
+                            This is the correct live Rustyfin address. If the browser shows it as
+                            Not Secure, trust the Rustyfin certificate first. The extension cannot
+                            connect to an untrusted HTTPS certificate.
+                          </p>
+                        )}
                       </div>
                       {browserVisibleOrigin && (
                         <button
@@ -2704,11 +2749,13 @@ export default function RustyVaultPage() {
                               writeClipboardWithTimeout(
                                 browserVisibleOrigin,
                                 prefs.clipboard_clear_seconds,
-                              ),
+                              ).then(() => setExtensionCopiedField('server')),
                             )
                           }
                         >
-                          Copy server address
+                          {extensionCopiedField === 'server'
+                            ? 'Copied'
+                            : 'Copy server address'}
                         </button>
                       )}
                     </div>
@@ -2729,11 +2776,13 @@ export default function RustyVaultPage() {
                               writeClipboardWithTimeout(
                                 extensionPairing.pairing_code,
                                 prefs.clipboard_clear_seconds,
-                              ),
+                              ).then(() => setExtensionCopiedField('pairing')),
                             )
                           }
                         >
-                          Copy pairing code
+                          {extensionCopiedField === 'pairing'
+                            ? 'Copied'
+                            : 'Copy pairing code'}
                         </button>
                       )}
                     </div>

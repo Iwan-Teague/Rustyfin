@@ -41,6 +41,7 @@ Rustyfin is a native-Debian-first local media platform with:
   - web Vault unlock must derive against the stored wrapped-key KDF parameters and fail fast with a user-visible error instead of leaving the unlock action pending indefinitely
   - extension fill and save flows should stay frame-aware for supported same-origin login surfaces, while preserving the cross-origin iframe block as a hard policy boundary
   - the browser extension popup should keep short-term pairing/server drafts across popup closes, and save/pair actions must verify the exact Rustyfin server URL plus request host access for that origin instead of silently dropping popup input
+  - the browser extension also requires a browser-trusted HTTPS certificate for that Rustyfin origin; self-signed or otherwise untrusted local edge certificates will block popup/API networking until trusted or replaced with a trusted hostname-based certificate
   - the browser extension should prefer runtime-granted site access plus dynamic content-script registration over permanent all-sites host access, while preserving popup/manual fill as the fallback when inline suggestions are unavailable
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
