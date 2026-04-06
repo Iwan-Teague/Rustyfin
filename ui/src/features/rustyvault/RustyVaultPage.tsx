@@ -440,16 +440,8 @@ function itemPrimaryPreview(item: RustyVaultItem, reveal: boolean) {
   return maskedSecret(value.replace(/\s+/g, ''));
 }
 
-function toastClassName(tone: 'success' | 'error' | 'warning') {
-  switch (tone) {
-    case 'error':
-      return 'border border-[var(--danger)]/35 bg-[var(--danger)]/12 text-white';
-    case 'warning':
-      return 'border border-amber-500/35 bg-amber-500/12 text-amber-50';
-    case 'success':
-    default:
-      return 'border border-emerald-500/35 bg-emerald-500/12 text-emerald-50';
-  }
+function toastClassName() {
+  return 'bg-[rgba(34,38,55,0.92)] text-white/90';
 }
 
 export default function RustyVaultPage() {
@@ -1080,7 +1072,7 @@ export default function RustyVaultPage() {
       : activeWorkspaceTab === 'settings'
         ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.95fr_1.05fr]'
         : activeWorkspaceTab === 'generator'
-          ? 'mx-auto max-w-5xl'
+          ? 'w-full'
           : 'grid grid-cols-1 gap-7 xl:grid-cols-[0.9fr_1.1fr]';
   const vaultFieldClassName = 'rf-flat-input px-4 py-3';
   const vaultSectionClassName = 'space-y-5 border-t border-white/8 pt-5';
@@ -1110,13 +1102,11 @@ export default function RustyVaultPage() {
 
   const toastStack =
     toastItems.length > 0 ? (
-      <div className="pointer-events-none fixed bottom-5 left-4 right-4 z-50 flex flex-col gap-3 sm:left-auto sm:right-6 sm:w-[25rem]">
+      <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 flex w-[min(34rem,calc(100vw-1.5rem))] -translate-x-1/2 flex-col gap-3 sm:bottom-5">
         {toastItems.map((toast) => (
           <div
             key={toast.key}
-            className={`pointer-events-auto rounded-2xl px-4 py-3 text-sm shadow-[0_18px_48px_rgba(0,0,0,0.24)] backdrop-blur ${toastClassName(
-              toast.tone,
-            )}`}
+            className={`pointer-events-auto rounded-2xl px-4 py-3 text-sm shadow-[0_18px_48px_rgba(0,0,0,0.24)] backdrop-blur ${toastClassName()}`}
           >
             {toast.text}
           </div>
@@ -1869,7 +1859,7 @@ export default function RustyVaultPage() {
           {activeWorkspaceTab === 'settings' && (
             <div className={workspaceContentClassName}>
               <div className="space-y-7">
-                <div className={vaultSectionClassName}>
+                <div className="space-y-5 pt-1">
                   <div>
                     <h2 className="text-xl font-semibold">Settings</h2>
                     <p className="mt-1 text-sm muted">
@@ -1877,18 +1867,24 @@ export default function RustyVaultPage() {
                     </p>
                   </div>
 
-                  <label className="space-y-2">
-                    <span className="text-sm font-medium">
-                      Rustyfin account password for protected actions
-                    </span>
-                    <input
-                      type="password"
-                      value={securityPassword}
-                      onChange={(event) => setSecurityPassword(event.target.value)}
-                      className={vaultFieldClassName}
-                      placeholder="Used only for short-lived protected action challenges"
-                    />
-                  </label>
+                  <div className="rounded-2xl bg-white/[0.035] px-4 py-4">
+                    <p className="text-sm font-medium text-white/92">
+                      Rustyfin account password required for protected actions
+                    </p>
+                    <p className="mt-1 text-sm muted">
+                      Enter this before rotating the vault password, importing, exporting, pairing devices, revoking sessions, or deleting the vault.
+                    </p>
+                    <label className="mt-4 block space-y-2">
+                      <span className="text-sm font-medium">Rustyfin account password</span>
+                      <input
+                        type="password"
+                        value={securityPassword}
+                        onChange={(event) => setSecurityPassword(event.target.value)}
+                        className={vaultFieldClassName}
+                        placeholder="Required before any protected action runs"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <div className={vaultSectionClassName}>
@@ -1997,11 +1993,11 @@ export default function RustyVaultPage() {
               </div>
 
               <div className="space-y-7">
-                <div className={vaultSectionClassName}>
+                <div className="space-y-5 pt-1">
                   <div>
                     <h2 className="text-xl font-semibold">Change vault master password</h2>
                     <p className="mt-1 text-sm muted">
-                      Re-enter the current vault master password here. The Rustyfin account password above is still required for the protected action challenge.
+                      Re-enter the current vault master password here. The Rustyfin account password above must already be filled in before the rotation can run.
                     </p>
                   </div>
                   <div className="grid grid-cols-1 gap-3">
@@ -2032,7 +2028,10 @@ export default function RustyVaultPage() {
                     className="rf-text-action text-sm"
                     disabled={!unlocked}
                     onClick={() =>
-                      runAction('Vault master password changed.', rekeyMasterPassword)
+                      runAction(
+                        'Vault master password changed successfully.',
+                        rekeyMasterPassword,
+                      )
                     }
                   >
                     Rotate master password
@@ -2106,7 +2105,7 @@ export default function RustyVaultPage() {
                       Strong randomness comes from the browser crypto RNG, not `Math.random()`. Memorable mode now builds human-friendly passphrases first, then layers in sensible substitutions that still respect your toggles.
                     </p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-3">
                     {(['memorable', 'balanced', 'maximum'] as PasswordGeneratorPreset[]).map(
                       (preset) => (
                         <button
@@ -2124,8 +2123,8 @@ export default function RustyVaultPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                  <label className="space-y-2">
+                <div className="grid gap-5 xl:grid-cols-[minmax(15rem,19rem)_1fr] xl:items-start">
+                  <label className="space-y-2 xl:max-w-[19rem]">
                     <span className="text-sm font-medium">Length</span>
                     <input
                       type="number"
@@ -2142,36 +2141,28 @@ export default function RustyVaultPage() {
                       className={vaultFieldClassName}
                     />
                   </label>
-                  {([
-                    ['include_uppercase', 'Upper'],
-                    ['include_lowercase', 'Lower'],
-                    ['include_numbers', 'Numbers'],
-                    ['include_symbols', 'Symbols'],
-                  ] as const).map(([key, label]) => (
-                    <RfSwitch
-                      key={key}
-                      label={label}
-                      checked={generatorOptions[key]}
-                      onChange={(checked) =>
-                        setGeneratorOptions((current) => ({
-                          ...current,
-                          [key]: checked,
-                        }))
-                      }
-                    />
-                  ))}
+                  <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {([
+                      ['include_uppercase', 'Upper'],
+                      ['include_lowercase', 'Lower'],
+                      ['include_numbers', 'Numbers'],
+                      ['include_symbols', 'Symbols'],
+                      ['exclude_ambiguous', 'Exclude ambiguous characters'],
+                    ] as const).map(([key, label]) => (
+                      <RfSwitch
+                        key={key}
+                        label={label}
+                        checked={generatorOptions[key]}
+                        onChange={(checked) =>
+                          setGeneratorOptions((current) => ({
+                            ...current,
+                            [key]: checked,
+                          }))
+                        }
+                      />
+                    ))}
+                  </div>
                 </div>
-
-                <RfSwitch
-                  label="Exclude ambiguous characters"
-                  checked={generatorOptions.exclude_ambiguous}
-                  onChange={(checked) =>
-                    setGeneratorOptions((current) => ({
-                      ...current,
-                      exclude_ambiguous: checked,
-                    }))
-                  }
-                />
 
                 {generatorPreset === 'memorable' && (
                   <p className="text-sm muted">
@@ -2179,54 +2170,56 @@ export default function RustyVaultPage() {
                   </p>
                 )}
 
-                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                <div className="space-y-4">
                   <input
                     readOnly
                     value={generatedPassword}
                     className="rf-flat-input w-full px-4 py-3 font-mono text-sm"
                     placeholder="Generate a password to stage it here"
                   />
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm"
-                    onClick={() =>
-                      runAction('Generated a new password.', async () =>
-                        setGeneratedPassword(
-                          generatePassword(generatorOptions, generatorPreset),
-                        ),
-                      )
-                    }
-                  >
-                    Generate
-                  </button>
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={!generatedPassword}
-                    onClick={() =>
-                      runAction('Generated password copied.', async () =>
-                        writeClipboardWithTimeout(
-                          generatedPassword,
-                          prefs.clipboard_clear_seconds,
-                        ),
-                      )
-                    }
-                  >
-                    Copy
-                  </button>
-                  <button
-                    type="button"
-                    className="rf-text-action text-sm disabled:opacity-50"
-                    disabled={!generatedPassword}
-                    onClick={() => {
-                      startNewDraft('login');
-                      updateEditorField('password', generatedPassword);
-                      setShowSensitive(true);
-                      setMessage('Generated password staged in a new login draft.');
-                    }}
-                  >
-                    Use in vault
-                  </button>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm"
+                      onClick={() =>
+                        runAction('Generated a new password.', async () =>
+                          setGeneratedPassword(
+                            generatePassword(generatorOptions, generatorPreset),
+                          ),
+                        )
+                      }
+                    >
+                      Generate
+                    </button>
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm disabled:opacity-50"
+                      disabled={!generatedPassword}
+                      onClick={() =>
+                        runAction('Generated password copied.', async () =>
+                          writeClipboardWithTimeout(
+                            generatedPassword,
+                            prefs.clipboard_clear_seconds,
+                          ),
+                        )
+                      }
+                    >
+                      Copy
+                    </button>
+                    <button
+                      type="button"
+                      className="rf-text-action text-sm disabled:opacity-50"
+                      disabled={!generatedPassword}
+                      onClick={() => {
+                        startNewDraft('login');
+                        updateEditorField('password', generatedPassword);
+                        setShowSensitive(true);
+                        setMessage('Generated password staged in a new login draft.');
+                      }}
+                    >
+                      Use in vault
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
