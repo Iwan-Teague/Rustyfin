@@ -4,6 +4,8 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rustfin_core::error::ApiError;
+#[cfg(feature = "rustyvault")]
+use rustyvault::extension_package::RustyVaultWebExtensionTarget;
 use serde::Serialize;
 use sqlx::Row;
 use tracing::warn;
@@ -13,6 +15,8 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 const RUSTYVAULT_WEBEXT_ARTIFACT_ID: &str = "rustyvault-webext";
+const RUSTYVAULT_WEBEXT_CHROMIUM_ARTIFACT_ID: &str = "rustyvault-webext-chromium";
+const RUSTYVAULT_WEBEXT_FIREFOX_ARTIFACT_ID: &str = "rustyvault-webext-firefox";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +131,12 @@ pub async fn build_download_catalog(state: &AppState) -> Result<DownloadCatalogR
     for pg_row in rows {
         let row = decode_download_artifact_row(pg_row)
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+        if row.artifact_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID
+            || row.artifact_id == RUSTYVAULT_WEBEXT_CHROMIUM_ARTIFACT_ID
+            || row.artifact_id == RUSTYVAULT_WEBEXT_FIREFOX_ARTIFACT_ID
+        {
+            continue;
+        }
         let install_steps: Vec<String> =
             serde_json::from_str(&row.install_steps_json).unwrap_or_default();
         let download_path = if row.distribution_mode == "direct" && row.availability == "available"
@@ -174,6 +184,8 @@ pub async fn build_download_catalog(state: &AppState) -> Result<DownloadCatalogR
         });
     }
 
+    append_virtual_rustyvault_extension_artifacts(state, &mut items)?;
+
     // Append legacy/virtual artifacts if not present in DB?
     // For now, we assume the DB is the source of truth as per instructions.
     // If the DB is empty, the catalog is empty.
@@ -183,6 +195,88 @@ pub async fn build_download_catalog(state: &AppState) -> Result<DownloadCatalogR
     // We will assume migration or admin action will populate the DB.
 
     Ok(DownloadCatalogResponse { items })
+}
+
+fn append_virtual_rustyvault_extension_artifacts(
+    state: &AppState,
+    items: &mut Vec<DownloadArtifactResponse>,
+) -> Result<(), AppError> {
+    #[cfg(feature = "rustyvault")]
+    {
+        if !state.rustyvault.available {
+            return Ok(());
+        }
+        for target in [
+            RustyVaultWebExtensionTarget::Chromium,
+            RustyVaultWebExtensionTarget::Firefox,
+        ] {
+            let info = crate::rustyvault_host::extension_package::extension_info(target)?;
+            let title = match target {
+                RustyVaultWebExtensionTarget::Chromium => {
+                    "RustyVault Browser Extension for Chrome, Edge, Brave, and other Chromium browsers"
+                }
+                RustyVaultWebExtensionTarget::Firefox => "RustyVault Browser Extension for Firefox",
+            };
+            let detail = match target {
+                RustyVaultWebExtensionTarget::Chromium => {
+                    "Built MV3 package with runtime-granted site access, inline suggestions, and explicit save/update prompts."
+                }
+                RustyVaultWebExtensionTarget::Firefox => {
+                    "Firefox-targeted package with the same RustyVault pairing, fill, and save flows packaged as an XPI."
+                }
+            };
+            let install_steps = match target {
+                RustyVaultWebExtensionTarget::Chromium => vec![
+                    "Download the package and extract it locally.".to_string(),
+                    "Open your browser extensions page and enable developer mode.".to_string(),
+                    "Choose Load unpacked and select the extracted rustyvault-webext folder."
+                        .to_string(),
+                    "Open RustyVault from the toolbar, set your Rustyfin server URL, then pair it from /vault."
+                        .to_string(),
+                ],
+                RustyVaultWebExtensionTarget::Firefox => vec![
+                    "Download the XPI package.".to_string(),
+                    "Open about:debugging in Firefox and choose This Firefox.".to_string(),
+                    "Select Load Temporary Add-on and choose the downloaded XPI or extracted manifest."
+                        .to_string(),
+                    "Open RustyVault from the toolbar, set your Rustyfin server URL, then pair it from /vault."
+                        .to_string(),
+                ],
+            };
+            items.push(DownloadArtifactResponse {
+                id: info.artifact_id.clone(),
+                artifact_id: info.artifact_id.clone(),
+                title: title.to_string(),
+                summary: "Secure browser extension for pairing to RustyVault, inline credential suggestions, manual fill, and explicit save/update flows.".to_string(),
+                availability: DownloadArtifactAvailability::Available,
+                detail: detail.to_string(),
+                platform: "browser_extension".to_string(),
+                architecture: info.browser_family.clone(),
+                version: Some(info.version.clone()),
+                channel: "stable".to_string(),
+                package_filename: Some(info.package_filename.clone()),
+                file_size: None,
+                checksum: None,
+                signature_status: "unsigned".to_string(),
+                distribution_mode: "direct".to_string(),
+                external_url: None,
+                download_path: Some(format!(
+                    "/api/v1/downloads/artifacts/{}/package",
+                    info.artifact_id
+                )),
+                install_mode: Some(info.install_mode.clone()),
+                setup_path: Some("/vault".to_string()),
+                requires_sign_in: true,
+                install_steps,
+            });
+        }
+    }
+    #[cfg(not(feature = "rustyvault"))]
+    {
+        let _ = state;
+        let _ = items;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -196,6 +290,36 @@ pub async fn download_artifact_package(
     Path(item_id): Path<String>,
 ) -> Result<Response, AppError> {
     let _ = auth;
+
+    if item_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID || item_id == RUSTYVAULT_WEBEXT_CHROMIUM_ARTIFACT_ID
+    {
+        #[cfg(feature = "rustyvault")]
+        {
+            return download_rustyvault_webext_package(
+                &state,
+                RustyVaultWebExtensionTarget::Chromium,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "rustyvault"))]
+        {
+            return download_rustyvault_webext_package(&state, ()).await;
+        }
+    }
+    if item_id == RUSTYVAULT_WEBEXT_FIREFOX_ARTIFACT_ID {
+        #[cfg(feature = "rustyvault")]
+        {
+            return download_rustyvault_webext_package(
+                &state,
+                RustyVaultWebExtensionTarget::Firefox,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "rustyvault"))]
+        {
+            return download_rustyvault_webext_package(&state, ()).await;
+        }
+    }
 
     // Check if it's the legacy path (artifact_id) or new path (item_id)
     // The route definition decides this.
@@ -224,7 +348,18 @@ pub async fn download_artifact_package(
 
         // Special case for RustyVault WebExt to keep serving the embedded/generated package
         if row.artifact_id == RUSTYVAULT_WEBEXT_ARTIFACT_ID {
-            return download_rustyvault_webext_package(&state).await;
+            #[cfg(feature = "rustyvault")]
+            {
+                return download_rustyvault_webext_package(
+                    &state,
+                    RustyVaultWebExtensionTarget::Chromium,
+                )
+                .await;
+            }
+            #[cfg(not(feature = "rustyvault"))]
+            {
+                return download_rustyvault_webext_package(&state, ()).await;
+            }
         }
 
         // Serve file from artifacts directory
@@ -280,15 +415,18 @@ pub async fn download_artifact_package(
 }
 
 #[cfg(feature = "rustyvault")]
-async fn download_rustyvault_webext_package(state: &AppState) -> Result<Response, AppError> {
+async fn download_rustyvault_webext_package(
+    state: &AppState,
+    target: RustyVaultWebExtensionTarget,
+) -> Result<Response, AppError> {
     if !state.rustyvault.available {
         return Ok(service_unavailable_response(
             state.rustyvault.public_reason(),
         ));
     }
 
-    let info = crate::rustyvault_host::extension_package::extension_info()?;
-    let body = crate::rustyvault_host::extension_package::extension_package_bytes()?;
+    let info = crate::rustyvault_host::extension_package::extension_info(target)?;
+    let body = crate::rustyvault_host::extension_package::extension_package_bytes(target)?;
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CACHE_CONTROL, "no-store")
@@ -310,7 +448,10 @@ async fn download_rustyvault_webext_package(state: &AppState) -> Result<Response
 }
 
 #[cfg(not(feature = "rustyvault"))]
-async fn download_rustyvault_webext_package(state: &AppState) -> Result<Response, AppError> {
+async fn download_rustyvault_webext_package(
+    state: &AppState,
+    _target: (),
+) -> Result<Response, AppError> {
     Ok(service_unavailable_response(
         state.rustyvault.public_reason(),
     ))

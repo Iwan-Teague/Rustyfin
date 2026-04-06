@@ -41,6 +41,8 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
   - RustyVault password-generator defaults are now stored in dedicated Vault preferences so saved preset/toggle choices persist across later web sessions
   - Web `/vault` management UI remains the host-facing page
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
+  - The browser extension now builds into separate Chromium and Firefox targets under `extensions/rustyvault-webext/dist/`
+  - The Downloads page now exposes first-class RustyVault browser packages for Chromium-family browsers and Firefox instead of a single generic MVP zip
   - Secure browser access to `/vault` is edge-only and HTTPS-only: expose only the Caddy edge, keep internal service ports loopback-only, and keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin
   - Web `/vault` does not require the browser extension to create or unlock a vault; it now uses native browser Argon2id when available and a shipped portable Argon2id runtime (`argon2.js` plus `argon2.wasm`) otherwise, but still requires a trusted HTTPS context
   - Keep the Vault route CSP compatible with the portable Argon2id WebAssembly fallback; do not strip the Vault-specific `unsafe-eval` / `wasm-unsafe-eval` allowance from the `/vault` HTML response
@@ -52,7 +54,7 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
 - Downloads
   - Web `/downloads` release surface for official Rustyfin packages
   - Backed by a host-owned downloads catalog and artifact pipeline at `/api/v1/downloads/catalog`
-  - Current implementation exposes the RustyVault browser extension package through `/api/v1/downloads/artifacts/rustyvault-webext/package`
+  - Current implementation exposes first-class RustyVault browser extension packages through `/api/v1/downloads/artifacts/rustyvault-webext-chromium/package` and `/api/v1/downloads/artifacts/rustyvault-webext-firefox/package`
   - The Downloads host route is the authoritative public package-delivery surface for first-party artifacts
   - Future first-party applications and companion downloads can land here without moving existing links
   - Planned first-party client artifacts now explicitly include Windows, macOS, Linux, Android APK, and iOS distribution paths
@@ -171,6 +173,7 @@ Native Rustyfin on supported Debian hosts runs these services directly on the ho
 - `/Users/iwanteague/Desktop/Rustyfin/ui` - Next.js frontend
 - `/Users/iwanteague/Desktop/Rustyfin/ui/src/features/rustyvault` - RustyVault frontend feature module mounted by the host `/vault` route
 - `/Users/iwanteague/Desktop/Rustyfin/extensions/rustyvault-webext` - browser extension MVP for RustyVault
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/rustyvault-browser-extension-api.md` - canonical browser-extension route inventory
 - `/Users/iwanteague/Desktop/Rustyfin/scripts` - native install/start/stop/deploy/systemd scripts
 - `/Users/iwanteague/Desktop/Rustyfin/tests` - tests and E2E harnesses
 - `/Users/iwanteague/Desktop/Rustyfin/docs` - current operations guides, active plans, architecture docs, and setup specs

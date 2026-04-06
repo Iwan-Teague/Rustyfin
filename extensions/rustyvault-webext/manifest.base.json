@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "RustyVault",
+  "version": "0.2.0",
+  "description": "RustyVault browser extension for secure autofill, inline suggestions, and save/update prompts.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "RustyVault",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "commands": {
+    "open-popup": {
+      "suggested_key": {
+        "default": "Alt+Shift+V"
+      },
+      "description": "Open RustyVault"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  }
+}

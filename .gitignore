@@ -59,6 +59,7 @@ ui/node_modules/
 
 # Local test/runtime artifacts
 /.tmp/
+extensions/rustyvault-webext/.tmp-build/
 /.native-bins/
 /.npm-cache/
 /.playwright-browsers/
