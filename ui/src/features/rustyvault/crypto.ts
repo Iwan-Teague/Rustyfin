@@ -571,18 +571,43 @@ export async function unlockRustyVault(
   });
   const wrapKey = await deriveWrapKey(masterMaterial);
   const indexKey = await deriveIndexKey(masterMaterial);
-  const vaultKey = await crypto.subtle.unwrapKey(
-    'raw',
-    toArrayBuffer(fromHex(wrappedKey.wrapped_vault_key_hex)),
-    wrapKey,
-    {
-      name: 'AES-GCM',
-      iv: toArrayBuffer(fromHex(wrappedKey.wrap_nonce_hex)),
-    },
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt', 'wrapKey'],
-  );
+  let vaultKey: CryptoKey;
+  try {
+    vaultKey = await crypto.subtle.unwrapKey(
+      'raw',
+      toArrayBuffer(fromHex(wrappedKey.wrapped_vault_key_hex)),
+      wrapKey,
+      {
+        name: 'AES-GCM',
+        iv: toArrayBuffer(fromHex(wrappedKey.wrap_nonce_hex)),
+      },
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt', 'wrapKey'],
+    );
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      ['OperationError', 'InvalidAccessError', 'DataError', 'UnknownError'].includes(error.name)
+    ) {
+      throw new Error('Incorrect vault password.');
+    }
+    if (error instanceof Error) {
+      const combined = `${error.name} ${error.message}`.toLowerCase();
+      if (
+        combined.includes('unknown error') ||
+        combined.includes('operation-specific reason') ||
+        combined.includes('operationerror') ||
+        combined.includes('invalidaccesserror') ||
+        combined.includes('dataerror') ||
+        combined.includes('unwrap') ||
+        combined.includes('decrypt')
+      ) {
+        throw new Error('Incorrect vault password.');
+      }
+    }
+    throw error;
+  }
   return {
     user_id: userId,
     key_version: wrappedKey.key_version,
