@@ -130,6 +130,8 @@ const ITEM_TYPE_OPTIONS: Array<{
   },
 ];
 
+const ALL_ITEM_TYPES: RustyVaultItemType[] = ITEM_TYPE_OPTIONS.map((option) => option.value);
+
 const MAX_VAULT_SETTINGS_PASSWORD_ATTEMPTS = 5;
 
 function nowTs() {
@@ -494,6 +496,10 @@ export default function RustyVaultPage() {
   const [showSensitive, setShowSensitive] = useState(false);
   const [editingExisting, setEditingExisting] = useState(false);
   const [search, setSearch] = useState('');
+  const [showTypeFilters, setShowTypeFilters] = useState(false);
+  const [visibleItemTypes, setVisibleItemTypes] = useState<RustyVaultItemType[]>(() => [
+    ...ALL_ITEM_TYPES,
+  ]);
   const deferredSearch = useDeferredValue(search);
   const [generatorPreset, setGeneratorPreset] =
     useState<PasswordGeneratorPreset>('balanced');
@@ -527,9 +533,11 @@ export default function RustyVaultPage() {
   const [vaultView, setVaultView] = useState<'index' | 'prompt' | 'workspace'>('index');
   const settingsPasswordInputRef = useRef<HTMLInputElement | null>(null);
   const vaultPasswordInputRef = useRef<HTMLInputElement | null>(null);
+  const typeFilterMenuRef = useRef<HTMLDivElement | null>(null);
 
   const filteredRows = [...rows]
     .filter((row) => {
+      if (!visibleItemTypes.includes(row.summary.item_type)) return false;
       const needle = deferredSearch.trim().toLowerCase();
       if (!needle) return true;
       return [
@@ -553,11 +561,26 @@ export default function RustyVaultPage() {
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
   const cryptoReady = cryptoReadiness?.ready === true;
+  const allItemTypesVisible = visibleItemTypes.length === ALL_ITEM_TYPES.length;
   const canSubmitVaultPrompt = config?.enabled
     ? masterPassword.trim().length > 0
     : masterPassword.length > 0 &&
       confirmMasterPassword.length > 0 &&
       masterPassword === confirmMasterPassword;
+
+  function toggleVisibleItemType(itemType: RustyVaultItemType) {
+    setVisibleItemTypes((current) => {
+      if (current.includes(itemType)) {
+        if (current.length === 1) {
+          return current;
+        }
+        return current.filter((value) => value !== itemType);
+      }
+      return [...current, itemType].sort(
+        (left, right) => ALL_ITEM_TYPES.indexOf(left) - ALL_ITEM_TYPES.indexOf(right),
+      );
+    });
+  }
 
   async function withRustyVaultAccess<T>(
     callback: (accessToken: string) => Promise<T>,
@@ -853,6 +876,25 @@ export default function RustyVaultPage() {
     }, 0);
     return () => window.clearTimeout(focusTimer);
   }, [vaultView, config?.enabled]);
+
+  useEffect(() => {
+    if (!showTypeFilters) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (typeFilterMenuRef.current?.contains(event.target as Node)) return;
+      setShowTypeFilters(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowTypeFilters(false);
+      }
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showTypeFilters]);
 
   useEffect(() => {
     if (!settingsAccessGranted || !preferencesDirty) return;
@@ -1879,12 +1921,96 @@ export default function RustyVaultPage() {
                           >
                             {showEditorPanel ? 'Close' : 'Create new'}
                           </button>
-                          <input
-                            value={search}
-                            onChange={(event) => setSearch(event.target.value)}
-                            className="rf-flat-input w-full px-4 py-2 text-sm"
-                            placeholder="Search title, site, person, or document"
-                          />
+                          <div className="relative flex items-stretch gap-2" ref={typeFilterMenuRef}>
+                            <button
+                              type="button"
+                              aria-label="Filter saved credential types"
+                              aria-haspopup="dialog"
+                              aria-expanded={showTypeFilters}
+                              className={`rf-flat-input relative flex h-[2.625rem] w-[2.625rem] shrink-0 items-center justify-center px-0 py-0 text-white/70 transition hover:text-white ${
+                                showTypeFilters ? 'border-white/16 bg-white/[0.05] text-white' : ''
+                              }`}
+                              onClick={() => setShowTypeFilters((current) => !current)}
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                className="h-4.5 w-4.5"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M4 7h16" />
+                                <path d="M7 12h10" />
+                                <path d="M10 17h4" />
+                              </svg>
+                              {!allItemTypesVisible && (
+                                <span className="absolute -right-1 -top-1 min-w-[1.1rem] rounded-full bg-[var(--orange-soft)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-black">
+                                  {visibleItemTypes.length}
+                                </span>
+                              )}
+                            </button>
+                            <input
+                              value={search}
+                              onChange={(event) => setSearch(event.target.value)}
+                              className="rf-flat-input w-full px-4 py-2 text-sm"
+                              placeholder="Search title, site, person, or document"
+                            />
+                            {showTypeFilters && (
+                              <div className="absolute left-0 top-full z-20 mt-2 w-[17rem] rounded-2xl border border-white/10 bg-[rgba(15,18,30,0.94)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
+                                      Filter types
+                                    </p>
+                                    <p className="mt-1 text-xs text-white/45">
+                                      Choose which saved credential types are shown.
+                                    </p>
+                                  </div>
+                                  {!allItemTypesVisible && (
+                                    <button
+                                      type="button"
+                                      className="rf-text-action text-xs"
+                                      onClick={() => setVisibleItemTypes([...ALL_ITEM_TYPES])}
+                                    >
+                                      Show all
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="space-y-1">
+                                  {ITEM_TYPE_OPTIONS.map((option) => {
+                                    const active = visibleItemTypes.includes(option.value);
+                                    const disableToggle = active && visibleItemTypes.length === 1;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        aria-pressed={active}
+                                        disabled={disableToggle}
+                                        className={`flex w-full items-center justify-between rounded-2xl px-3 py-2 text-left text-sm transition ${
+                                          active
+                                            ? 'bg-white/[0.06] text-white'
+                                            : 'text-white/65 hover:bg-white/[0.035] hover:text-white'
+                                        } ${disableToggle ? 'cursor-not-allowed opacity-75' : ''}`}
+                                        onClick={() => toggleVisibleItemType(option.value)}
+                                      >
+                                        <span>{option.label}</span>
+                                        <span
+                                          className={`text-[11px] uppercase tracking-[0.18em] ${
+                                            active ? 'text-[var(--orange-soft)]' : 'text-white/30'
+                                          }`}
+                                        >
+                                          {active ? 'Shown' : 'Hidden'}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -1894,7 +2020,9 @@ export default function RustyVaultPage() {
                         </p>
                       ) : filteredRows.length === 0 ? (
                         <p className="px-1 py-2 text-sm muted">
-                          No matching items yet. Start with a login, card, passport, or secure note.
+                          {rows.length === 0
+                            ? 'No matching items yet. Start with a login, card, passport, or secure note.'
+                            : 'No saved credentials match the current search or selected types.'}
                         </p>
                       ) : (
                         <div className="space-y-1">
