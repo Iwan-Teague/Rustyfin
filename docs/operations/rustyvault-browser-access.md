@@ -23,6 +23,8 @@ RustyVault web access does not require the browser extension. The web vault uses
 
 Vault unlocks must honor the stored wrapped-key KDF parameters and fail fast with a visible UI error if the browser-side crypto path stalls or cannot initialize.
 
+The `/vault` HTML response must keep a CSP that allows the portable Argon2id WebAssembly runtime to initialize. Do not remove the Vault-specific `unsafe-eval` / `wasm-unsafe-eval` allowance from the route headers unless the fallback implementation changes.
+
 ## Choose One Access Mode
 
 ### Private or VPN-only access

@@ -43,6 +43,7 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
   - Secure browser access to `/vault` is edge-only and HTTPS-only: expose only the Caddy edge, keep internal service ports loopback-only, and keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin
   - Web `/vault` does not require the browser extension to create or unlock a vault; it now uses native browser Argon2id when available and a shipped portable Argon2id runtime (`argon2.js` plus `argon2.wasm`) otherwise, but still requires a trusted HTTPS context
+  - Keep the Vault route CSP compatible with the portable Argon2id WebAssembly fallback; do not strip the Vault-specific `unsafe-eval` / `wasm-unsafe-eval` allowance from the `/vault` HTML response
   - Vault unlock must honor the stored wrapped-key KDF parameters and fail fast instead of leaving the unlock action pending indefinitely
   - Native browser-facing TLS can stay on the installer-managed manual certificate path or switch to Caddy-managed automatic HTTPS with `RUSTFIN_EDGE_TLS_MODE=auto` when `RUSTFIN_PUBLIC_HOST` is a real hostname
   - The generic `/users/me/preferences` host API no longer carries Vault settings

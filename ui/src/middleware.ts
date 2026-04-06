@@ -64,9 +64,8 @@ function isVaultRoute(pathname: string): boolean {
 }
 
 function applyVaultHeaders(response: NextResponse): NextResponse {
-  const scriptSrc = process.env.NODE_ENV === 'development'
-    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
-    : "script-src 'self' 'unsafe-inline'";
+  // RustyVault's portable Argon2id path uses a browser-loaded Wasm module.
+  const scriptSrc = "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'";
   const csp = [
     "default-src 'self'",
     "base-uri 'self'",
