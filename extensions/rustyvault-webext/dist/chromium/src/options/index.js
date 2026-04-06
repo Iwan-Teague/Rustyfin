@@ -7,7 +7,7 @@ async function callBackground(message) {
 function setStatus(message, isError = false) {
     const status = $('status');
     status.textContent = message;
-    status.style.color = isError ? '#ffd4d8' : '';
+    status.style.color = isError ? 'rgba(248, 248, 255, 0.92)' : '';
 }
 async function load() {
     const response = await callBackground({ type: 'get-popup-state' });
