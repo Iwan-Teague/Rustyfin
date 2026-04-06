@@ -4612,6 +4612,12 @@ fn is_ai_runtime_query(message_lower: &str) -> bool {
             "hot model",
             "hot models",
             "role routing",
+            "vram",
+            "gpu memory",
+            "video memory",
+            "graphics memory",
+            "gpu ram",
+            "cuda memory",
         ],
     );
     if explicit {
@@ -6159,6 +6165,14 @@ mod tests {
     #[test]
     fn planner_routes_ai_runtime_identity_queries() {
         let tools = plan_tool_calls("What AI model are you?");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
+        assert!(matches!(tools[0].input, AssistantToolInput::None));
+    }
+
+    #[test]
+    fn planner_routes_vram_questions_to_ai_runtime_tool() {
+        let tools = plan_tool_calls("How much VRAM are the GPUs using right now?");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool, AssistantToolName::SystemGetAiRuntimeSummary);
         assert!(matches!(tools[0].input, AssistantToolInput::None));
