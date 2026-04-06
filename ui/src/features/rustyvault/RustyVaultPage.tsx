@@ -130,6 +130,8 @@ const ITEM_TYPE_OPTIONS: Array<{
   },
 ];
 
+const MAX_VAULT_SETTINGS_PASSWORD_ATTEMPTS = 5;
+
 function nowTs() {
   return Math.floor(Date.now() / 1000);
 }
@@ -473,7 +475,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 export default function RustyVaultPage() {
   const router = useRouter();
-  const { me, loading: authLoading } = useAuth();
+  const { me, loading: authLoading, logout } = useAuth();
 
   const [cryptoReadiness, setCryptoReadiness] = useState<RustyVaultCryptoReadiness | null>(null);
   const [config, setConfig] = useState<RustyVaultConfigResponse | null>(null);
@@ -501,6 +503,7 @@ export default function RustyVaultPage() {
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [securityPassword, setSecurityPassword] = useState('');
   const [settingsAccessGranted, setSettingsAccessGranted] = useState(false);
+  const [settingsPasswordFailures, setSettingsPasswordFailures] = useState(0);
   const [showFallbackNotice, setShowFallbackNotice] = useState(false);
   const [currentRustyVaultPassword, setCurrentVaultPassword] = useState('');
   const [newMasterPassword, setNewMasterPassword] = useState('');
@@ -935,14 +938,37 @@ export default function RustyVaultPage() {
     if (!securityPassword.trim()) {
       throw new Error('Enter your Rustyfin account password first');
     }
-    await withRustyVaultAccess((accessToken) =>
-      challengeRustyVaultProtectedAction({
-        action_kind: 'export',
-        current_password: securityPassword,
-        vaultAccessToken: accessToken,
-      }),
-    );
-    setSettingsAccessGranted(true);
+    try {
+      await withRustyVaultAccess((accessToken) =>
+        challengeRustyVaultProtectedAction({
+          action_kind: 'export',
+          current_password: securityPassword,
+          vaultAccessToken: accessToken,
+        }),
+      );
+      setSettingsAccessGranted(true);
+      setSettingsPasswordFailures(0);
+      setSecurityPassword('');
+    } catch (err) {
+      const messageText = clientErrorMessage(err, 'Vault settings could not be unlocked');
+      const normalized = messageText.toLowerCase();
+      if (!normalized.includes('current password is incorrect')) {
+        throw err;
+      }
+
+      const nextFailures = settingsPasswordFailures + 1;
+      setSettingsPasswordFailures(nextFailures);
+
+      if (nextFailures >= MAX_VAULT_SETTINGS_PASSWORD_ATTEMPTS) {
+        logout();
+        throw new Error('Too many incorrect password attempts. Please sign in again.');
+      }
+
+      const remaining = MAX_VAULT_SETTINGS_PASSWORD_ATTEMPTS - nextFailures;
+      throw new Error(
+        `Incorrect Rustyfin account password. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`,
+      );
+    }
   }
 
   async function renameCurrentVault() {
@@ -1236,6 +1262,7 @@ export default function RustyVaultPage() {
     setVaultSession(null);
     setUnlocked(null);
     setSettingsAccessGranted(false);
+    setSettingsPasswordFailures(0);
     setVaultView('index');
     setActiveWorkspaceTab('credentials');
     setRows([]);
@@ -1790,6 +1817,7 @@ export default function RustyVaultPage() {
                 setVaultView('index');
                 setActiveWorkspaceTab('credentials');
                 setSettingsAccessGranted(false);
+                setSettingsPasswordFailures(0);
                 setRows([]);
                 setSelectedItem(null);
                 setEditingExisting(false);
@@ -2086,6 +2114,7 @@ export default function RustyVaultPage() {
                     className="rf-text-action rf-text-action-muted text-sm"
                     onClick={() => {
                       setSettingsAccessGranted(false);
+                      setSettingsPasswordFailures(0);
                       setSecurityPassword('');
                     }}
                   >
@@ -2098,7 +2127,7 @@ export default function RustyVaultPage() {
                   <div className="space-y-7">
                     <div className="space-y-5">
                       <div className="space-y-3">
-                        <h2 className="text-xl font-semibold">Rename vault</h2>
+                        <h2 className="text-xl font-semibold">Vault preferences</h2>
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                           <label className="min-w-0 flex-1 space-y-2">
                             <span className="text-sm">Vault name</span>
@@ -2119,10 +2148,6 @@ export default function RustyVaultPage() {
                             Rename vault
                           </button>
                         </div>
-                      </div>
-
-                      <div>
-                        <h2 className="text-xl font-semibold">Vault preferences</h2>
                       </div>
 
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
