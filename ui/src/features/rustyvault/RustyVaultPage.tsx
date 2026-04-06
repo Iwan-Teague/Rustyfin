@@ -2263,63 +2263,65 @@ export default function RustyVaultPage() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <label className="space-y-2">
-                          <span className="text-sm">Auto-lock minutes</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={240}
-                            value={prefs.auto_lock_minutes}
-                            onChange={(event) => {
-                              setPreferencesDirty(true);
-                              setPrefs((current) => ({
-                                ...current,
-                                auto_lock_minutes:
-                                  Number.parseInt(event.target.value || '15', 10) || 15,
-                              }));
-                            }}
-                            className={vaultFieldClassName}
-                          />
-                        </label>
-                        <label className="space-y-2">
-                          <span className="text-sm">Clipboard clear seconds</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={120}
-                            value={prefs.clipboard_clear_seconds}
-                            onChange={(event) => {
-                              setPreferencesDirty(true);
-                              setPrefs((current) => ({
-                                ...current,
-                                clipboard_clear_seconds:
-                                  Number.parseInt(event.target.value || '30', 10) || 0,
-                              }));
-                            }}
-                            className={vaultFieldClassName}
-                          />
-                        </label>
-                        <label className="space-y-2">
-                          <span className="text-sm">Default match mode</span>
-                          <select
-                            value={currentMatchMode}
-                            onChange={(event) => {
-                              setPreferencesDirty(true);
-                              setPrefs((current) => ({
-                                ...current,
-                                default_match_mode: normalizeMode(event.target.value),
-                              }));
-                            }}
-                            className={vaultFieldClassName}
-                          >
-                            <option value="exact">Exact</option>
-                            <option value="host">Host</option>
-                            <option value="base_domain">Base domain</option>
-                            <option value="never">Never</option>
-                          </select>
-                        </label>
-                        <label className="space-y-2">
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:items-start">
+                        <div className="grid grid-cols-1 gap-4">
+                          <label className="space-y-2">
+                            <span className="text-sm">Auto-lock minutes</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={240}
+                              value={prefs.auto_lock_minutes}
+                              onChange={(event) => {
+                                setPreferencesDirty(true);
+                                setPrefs((current) => ({
+                                  ...current,
+                                  auto_lock_minutes:
+                                    Number.parseInt(event.target.value || '15', 10) || 15,
+                                }));
+                              }}
+                              className={vaultFieldClassName}
+                            />
+                          </label>
+                          <label className="space-y-2">
+                            <span className="text-sm">Clipboard clear seconds</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={120}
+                              value={prefs.clipboard_clear_seconds}
+                              onChange={(event) => {
+                                setPreferencesDirty(true);
+                                setPrefs((current) => ({
+                                  ...current,
+                                  clipboard_clear_seconds:
+                                    Number.parseInt(event.target.value || '30', 10) || 0,
+                                }));
+                              }}
+                              className={vaultFieldClassName}
+                            />
+                          </label>
+                          <label className="space-y-2">
+                            <span className="text-sm">Default match mode</span>
+                            <select
+                              value={currentMatchMode}
+                              onChange={(event) => {
+                                setPreferencesDirty(true);
+                                setPrefs((current) => ({
+                                  ...current,
+                                  default_match_mode: normalizeMode(event.target.value),
+                                }));
+                              }}
+                              className={vaultFieldClassName}
+                            >
+                              <option value="exact">Exact</option>
+                              <option value="host">Host</option>
+                              <option value="base_domain">Base domain</option>
+                              <option value="never">Never</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="space-y-2 lg:h-full">
                           <span className="text-sm">Excluded domains</span>
                           <textarea
                             value={excludedDomainsInput}
@@ -2328,7 +2330,7 @@ export default function RustyVaultPage() {
                               setExcludedDomainsInput(event.target.value);
                             }}
                             rows={4}
-                            className="rf-flat-input min-h-[6rem] px-4 py-3"
+                            className="rf-flat-input h-40 resize-none overflow-y-auto px-4 py-3 lg:h-[15rem]"
                             placeholder={'example.com\nbank.example'}
                           />
                         </label>
