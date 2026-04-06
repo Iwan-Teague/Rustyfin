@@ -221,10 +221,8 @@ async function syncRegisteredContentScripts() {
 async function ensureSitePermission(rawUrl: string, tabId?: number) {
   const origin = originPatternForUrl(rawUrl);
   const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
-  const granted =
-    alreadyGranted || (await chrome.permissions.request({ origins: [origin] }));
-  if (!granted) {
-    return false;
+  if (!alreadyGranted) {
+    throw new Error('RustyVault needs site access for that page first');
   }
   await syncRegisteredContentScripts();
   if (typeof tabId === 'number') {
@@ -247,10 +245,8 @@ function originPatternForBaseUrl(baseUrl: string) {
 async function ensureServerPermission(baseUrl: string) {
   const origin = originPatternForBaseUrl(baseUrl);
   const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
-  const granted =
-    alreadyGranted || (await chrome.permissions.request({ origins: [origin] }));
-  if (!granted) {
-    throw new Error('RustyVault needs permission to reach that server address');
+  if (!alreadyGranted) {
+    throw new Error('RustyVault needs access to that server address first');
   }
   return origin;
 }
