@@ -252,6 +252,22 @@ runtime_service_present() {
   systemctl cat "${RUSTFIN_SYSTEMD_SERVICE:-rustyfin-native.service}" >/dev/null 2>&1
 }
 
+edge_origin() {
+  echo "${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-https://127.0.0.1:${RUSTFIN_UI_EDGE_PORT:-3000}}"
+}
+
+edge_curl() {
+  local path="$1"
+  local url
+  url="$(edge_origin)"
+  url="${url%/}${path}"
+  if [[ -n "${RUSTFIN_EDGE_HEALTH_RESOLVE:-}" ]]; then
+    curl -skf --resolve "${RUSTFIN_EDGE_HEALTH_RESOLVE}" "$url"
+  else
+    curl -skf "$url"
+  fi
+}
+
 check_runtime_services_active() {
   runtime_service_present || {
     echo "rustyfin-native.service not installed on this host."
@@ -268,7 +284,7 @@ check_runtime_edge() {
     echo "rustyfin-native.service not installed on this host."
     return "$SKIP_CODE"
   }
-  curl -skfI "https://127.0.0.1:${RUSTFIN_UI_EDGE_PORT:-3000}/"
+  edge_curl "/" >/dev/null
 }
 
 check_runtime_config() {
@@ -276,7 +292,7 @@ check_runtime_config() {
     echo "rustyfin-native.service not installed on this host."
     return "$SKIP_CODE"
   }
-  curl -skf "https://127.0.0.1:${RUSTFIN_UI_EDGE_PORT:-3000}/runtime-config" | jq -e '
+  edge_curl "/runtime-config" | jq -e '
     (.backend_origin | type) == "string" and (.backend_origin | length) > 0
   '
 }

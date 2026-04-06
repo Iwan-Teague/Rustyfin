@@ -174,6 +174,10 @@ The normal user-facing entrypoint is:
 
 - `https://<host>:3000`
 
+For secure browser publication of `/vault`, including exact-origin envs and `RUSTFIN_EDGE_TLS_MODE=manual|auto`, also follow:
+
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/rustyvault-browser-access.md`
+
 ## Logs and Runtime Files
 
 Native runtime state is written under:

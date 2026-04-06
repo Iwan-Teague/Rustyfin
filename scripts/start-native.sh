@@ -34,6 +34,7 @@ Environment:
   RUSTFIN_SERVERS_AGENT_PORT            Servers agent port (default: 8103)
   RUSTFIN_UI_INTERNAL_PORT              Internal Next standalone port (default: 3001)
   RUSTFIN_UI_PORT                       HTTPS edge port (default: 3000)
+  RUSTFIN_EDGE_TLS_MODE                 Edge TLS mode: manual|auto (default: manual)
   RUSTFIN_DATABASE_URL                  PostgreSQL URL (default: postgresql://rustfin:rustfin@127.0.0.1:5432/rustfin)
   RUSTFIN_JWT_SECRET                    Stable JWT signing secret for persistent sessions
   RUSTFIN_MEDIA_PATH                    Host media root (default: $HOME)
@@ -175,6 +176,7 @@ user_transcription_port="${RUSTFIN_TRANSCRIPTION_AGENT_PORT:-}"
 user_servers_agent_port="${RUSTFIN_SERVERS_AGENT_PORT:-}"
 user_ui_internal_port="${RUSTFIN_UI_INTERNAL_PORT:-}"
 user_ui_port="${RUSTFIN_UI_PORT:-}"
+user_edge_tls_mode="${RUSTFIN_EDGE_TLS_MODE:-}"
 user_browser_backend_origin="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
 user_ws_allowed_origins="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
 user_webrtc_ice_servers_json="${RUSTFIN_WEBRTC_ICE_SERVERS_JSON:-}"
@@ -213,6 +215,7 @@ fi
 [[ -n "$user_servers_agent_port" ]] && RUSTFIN_SERVERS_AGENT_PORT="$user_servers_agent_port"
 [[ -n "$user_ui_internal_port" ]] && RUSTFIN_UI_INTERNAL_PORT="$user_ui_internal_port"
 [[ -n "$user_ui_port" ]] && RUSTFIN_UI_PORT="$user_ui_port"
+[[ -n "$user_edge_tls_mode" ]] && RUSTFIN_EDGE_TLS_MODE="$user_edge_tls_mode"
 [[ -n "$user_browser_backend_origin" ]] && RUSTYFIN_BROWSER_BACKEND_ORIGIN="$user_browser_backend_origin"
 [[ -n "$user_ws_allowed_origins" ]] && RUSTFIN_WS_ALLOWED_ORIGINS="$user_ws_allowed_origins"
 [[ -n "$user_webrtc_ice_servers_json" ]] && RUSTFIN_WEBRTC_ICE_SERVERS_JSON="$user_webrtc_ice_servers_json"
@@ -245,6 +248,7 @@ export RUSTFIN_TRANSCRIPTION_AGENT_PORT="${RUSTFIN_TRANSCRIPTION_AGENT_PORT:-}"
 export RUSTFIN_SERVERS_AGENT_PORT="${RUSTFIN_SERVERS_AGENT_PORT:-}"
 export RUSTFIN_UI_INTERNAL_PORT="${RUSTFIN_UI_INTERNAL_PORT:-}"
 export RUSTFIN_UI_PORT="${RUSTFIN_UI_PORT:-}"
+export RUSTFIN_EDGE_TLS_MODE="${RUSTFIN_EDGE_TLS_MODE:-}"
 export RUSTFIN_PUBLIC_HOST="${RUSTFIN_PUBLIC_HOST:-}"
 export RUSTYFIN_BROWSER_BACKEND_ORIGIN="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-}"
 export RUSTFIN_WS_ALLOWED_ORIGINS="${RUSTFIN_WS_ALLOWED_ORIGINS:-}"
@@ -342,6 +346,7 @@ if [[ "$RUSTFIN_ENABLE_SERVERS_AGENT" == "1" ]]; then
 fi
 info "UI internal port: $RUSTFIN_UI_INTERNAL_PORT"
 info "UI edge port: $RUSTFIN_UI_PORT"
+info "Edge TLS mode: ${RUSTFIN_EDGE_TLS_MODE:-manual}"
 info "Public host: $public_host"
 info "Browser backend origin: $RUSTYFIN_BROWSER_BACKEND_ORIGIN"
 info "WebSocket allowed origins: $RUSTFIN_WS_ALLOWED_ORIGINS"

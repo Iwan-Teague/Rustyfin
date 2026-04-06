@@ -5,7 +5,12 @@
 
 # Native Debian host HTTPS edge for UI + API proxying.
 :{$RUSTFIN_UI_PORT} {
+  encode zstd gzip
   tls {$RUSTFIN_EDGE_TLS_CERT} {$RUSTFIN_EDGE_TLS_KEY}
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+  }
 
   @calendar path /api/v1/calendar/*
   reverse_proxy @calendar 127.0.0.1:{$RUSTFIN_CALENDAR_PORT}
