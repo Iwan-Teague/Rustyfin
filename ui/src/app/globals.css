@@ -1995,6 +1995,24 @@ input[type="checkbox"]:disabled {
   animation-delay: 400ms;
 }
 
+.vault-unlock-enter {
+  animation: vault-unlock-enter 280ms var(--ease-out-expo) both;
+  transform-origin: top center;
+}
+
+@keyframes vault-unlock-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.992);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
 .app-nav .rf-nav-link {
   position: relative;
   overflow: hidden;
