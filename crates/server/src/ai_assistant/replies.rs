@@ -269,6 +269,8 @@ struct GroundedAiRuntimeEnvelope {
     model: GroundedAiRuntimeModel,
     scheduler: GroundedAiRuntimeScheduler,
     #[serde(default)]
+    gpus: Vec<GroundedAiRuntimeGpu>,
+    #[serde(default)]
     role_routing: Vec<GroundedAiRuntimeRoleRoute>,
 }
 
@@ -294,6 +296,19 @@ struct GroundedAiRuntimeScheduler {
 }
 
 #[derive(Debug, Deserialize)]
+struct GroundedAiRuntimeGpu {
+    #[serde(default)]
+    index: Option<u32>,
+    name: String,
+    #[serde(default)]
+    utilization_percent: Option<f64>,
+    #[serde(default)]
+    vram_used_bytes: Option<u64>,
+    #[serde(default)]
+    vram_total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GroundedAiRuntimeRoleRoute {
     role: String,
     model_name: String,
@@ -316,6 +331,58 @@ pub fn deterministic_ai_runtime_reply(
     }
 
     let runtime = serde_json::from_value::<GroundedAiRuntimeEnvelope>(block.data.clone()).ok()?;
+    let lower = message.to_ascii_lowercase();
+    let mentions_gpu_memory = [
+        "vram",
+        "video memory",
+        "gpu memory",
+        "graphics memory",
+        "gpu ram",
+        "cuda memory",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    if mentions_gpu_memory {
+        if runtime.gpus.is_empty() {
+            return Some("I couldn't find any live GPU VRAM metrics right now.".to_string());
+        }
+
+        let mut lines = vec!["Current GPU VRAM usage:".to_string()];
+        for gpu in &runtime.gpus {
+            let label = match gpu.index {
+                Some(index) => format!("GPU {index} ({})", gpu.name),
+                None => gpu.name.clone(),
+            };
+            match (gpu.vram_used_bytes, gpu.vram_total_bytes) {
+                (Some(used), Some(total)) if total > 0 => {
+                    let percent = (used as f64 / total as f64) * 100.0;
+                    lines.push(format!(
+                        "- {label} is using {} of {} ({percent:.1}%).",
+                        format_binary_bytes(used),
+                        format_binary_bytes(total)
+                    ));
+                }
+                (Some(used), _) => {
+                    lines.push(format!(
+                        "- {label} is using {}, but total VRAM was not reported.",
+                        format_binary_bytes(used)
+                    ));
+                }
+                _ => {
+                    let utilization_suffix = gpu
+                        .utilization_percent
+                        .map(|util| format!(" GPU utilization is {util:.1}%."))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "- {label} did not report live VRAM usage.{utilization_suffix}"
+                    ));
+                }
+            }
+        }
+        return Some(lines.join("\n"));
+    }
+
     let answer_route = runtime
         .role_routing
         .iter()
@@ -353,7 +420,6 @@ pub fn deterministic_ai_runtime_reply(
         lines.push("No AI model is currently loaded.".to_string());
     }
 
-    let lower = message.to_ascii_lowercase();
     let mentions_backend = [
         "backend", "local", "remote", "gpu", "gpus", "device", "devices", "threads", "context",
     ]
@@ -1308,5 +1374,58 @@ mod tests {
         assert!(reply.contains("Scheduler is normal with 1 active and 2 queued."));
         assert!(reply.contains("2.0 GiB"));
         assert!(reply.contains("8.0 GiB"));
+    }
+
+    #[test]
+    fn deterministic_ai_runtime_reply_reports_gpu_vram_when_requested() {
+        let reply = deterministic_ai_runtime_reply(
+            "How much VRAM are the GPUs using right now?",
+            &[AssistantToolContextBlock {
+                tool: "system_get_ai_runtime_summary",
+                label: "Rustyfin AI runtime summary".to_string(),
+                status: "ok",
+                data: json!({
+                    "model": {
+                        "name": "Llama-3.2-3B-Instruct-Q4_K_M",
+                        "backend": "local",
+                        "loaded": true,
+                        "context_length": 4096,
+                        "n_threads": 8,
+                        "split_mode": "layer",
+                        "device_indices": [0, 1]
+                    },
+                    "scheduler": {
+                        "overload_state": "Normal",
+                        "active_turns": 0,
+                        "queued_turns": 0,
+                        "warm_pool_bytes": 0_u64,
+                        "warm_pool_budget_bytes": 0_u64
+                    },
+                    "gpus": [
+                        {
+                            "index": 0,
+                            "name": "RTX 3090",
+                            "utilization_percent": 12.5,
+                            "vram_used_bytes": 2147483648_u64,
+                            "vram_total_bytes": 25769803776_u64
+                        },
+                        {
+                            "index": 1,
+                            "name": "RTX 3080",
+                            "utilization_percent": 9.0,
+                            "vram_used_bytes": 1073741824_u64,
+                            "vram_total_bytes": 10737418240_u64
+                        }
+                    ],
+                    "role_routing": []
+                }),
+            }],
+        )
+        .expect("expected deterministic ai runtime reply");
+
+        assert!(reply.contains("Current GPU VRAM usage:"));
+        assert!(reply.contains("GPU 0 (RTX 3090) is using 2.0 GiB of 24.0 GiB (8.3%)."));
+        assert!(reply.contains("GPU 1 (RTX 3080) is using 1.0 GiB of 10.0 GiB (10.0%)."));
+        assert!(!reply.contains("1024MB"));
     }
 }
