@@ -561,7 +561,6 @@ export default function RustyVaultPage() {
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
   const cryptoReady = cryptoReadiness?.ready === true;
-  const allItemTypesVisible = visibleItemTypes.length === ALL_ITEM_TYPES.length;
   const canSubmitVaultPrompt = config?.enabled
     ? masterPassword.trim().length > 0
     : masterPassword.length > 0 &&
@@ -1955,7 +1954,7 @@ export default function RustyVaultPage() {
                             />
                             {showTypeFilters && (
                               <div className="absolute left-0 top-full z-20 mt-2 w-[17rem] rounded-2xl border border-white/10 bg-[rgba(15,18,30,0.94)] p-3 shadow-[0_18px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-                                <div className="mb-3 flex items-center justify-between gap-3">
+                                <div className="mb-3">
                                   <div>
                                     <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
                                       Filter types
@@ -1964,15 +1963,6 @@ export default function RustyVaultPage() {
                                       Choose which saved credential types are shown.
                                     </p>
                                   </div>
-                                  {!allItemTypesVisible && (
-                                    <button
-                                      type="button"
-                                      className="rf-text-action text-xs"
-                                      onClick={() => setVisibleItemTypes([...ALL_ITEM_TYPES])}
-                                    >
-                                      Show all
-                                    </button>
-                                  )}
                                 </div>
                                 <div className="space-y-1">
                                   {ITEM_TYPE_OPTIONS.map((option) => {
@@ -1994,7 +1984,7 @@ export default function RustyVaultPage() {
                                         <span>{option.label}</span>
                                         <span
                                           className={`text-[11px] uppercase tracking-[0.18em] ${
-                                            active ? 'text-[var(--orange-soft)]' : 'text-white/30'
+                                            active ? 'text-white/75' : 'text-white/40'
                                           }`}
                                         >
                                           {active ? 'Shown' : 'Hidden'}
