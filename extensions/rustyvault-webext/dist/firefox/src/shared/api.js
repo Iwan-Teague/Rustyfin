@@ -9,6 +9,37 @@ export function sanitizeServerBaseUrl(value) {
     url.pathname = url.pathname.replace(/\/+$/, '');
     return url.toString().replace(/\/+$/, '');
 }
+export function parseRustyVaultConnectionInput(input) {
+    const trimmed = (input || '').trim();
+    if (!trimmed) {
+        throw new Error('Enter a pairing code from Rustyfin /vault');
+    }
+    if (/^RFVLT-[A-Z0-9-]+$/i.test(trimmed)) {
+        return {
+            serverBaseUrl: null,
+            pairingCode: trimmed.toUpperCase(),
+        };
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch {
+        throw new Error('Enter a valid pairing code or RustyVault connection code');
+    }
+    if (parsed.protocol !== 'rustyvault:' || parsed.hostname !== 'pair') {
+        throw new Error('Enter a valid RustyVault connection code');
+    }
+    const server = parsed.searchParams.get('server');
+    const code = parsed.searchParams.get('code');
+    if (!server || !code) {
+        throw new Error('RustyVault connection code is missing the server URL or pairing code');
+    }
+    return {
+        serverBaseUrl: sanitizeServerBaseUrl(server),
+        pairingCode: code.trim().toUpperCase(),
+    };
+}
 function joinPath(baseUrl, path) {
     return `${baseUrl.replace(/\/+$/, '')}/api/v1${path}`;
 }

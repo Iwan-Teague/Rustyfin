@@ -49,9 +49,12 @@ To load from Rustyfin Downloads:
    - open `about:debugging#/runtime/this-firefox`
    - choose `Load Temporary Add-on`
    - select the extracted manifest or XPI contents
-6. Open the extension popup and set the Rustyfin server URL
-7. Create a pairing code from Rustyfin `/vault`
-8. Pair the extension, unlock it with the vault master password, then grant site access when you first use it
+6. Open Rustyfin `/vault` and use the Extension view
+7. Copy the exact browser-visible Rustyfin server URL shown there, or copy the full connection code
+8. Open the extension popup and either:
+   - paste the exact Rustyfin server URL, then paste the pairing code, or
+   - paste the full connection code to set the server URL and pair in one step
+9. Unlock it with the vault master password, then grant site access when you first use it
 
 To load directly from the repository during development:
 
