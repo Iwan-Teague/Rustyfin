@@ -176,12 +176,5 @@ export async function deriveArgon2IdHashBytes(params: {
 }
 
 export async function probeArgon2BrowserFallback(): Promise<void> {
-  await deriveArgon2IdHashBytes({
-    pass: 'probe',
-    salt: new Uint8Array(16),
-    time: 1,
-    mem: 8_192,
-    parallelism: 1,
-    hashLen: 32,
-  });
+  await loadArgon2Browser();
 }
