@@ -9,7 +9,7 @@ export type BackgroundRequest =
   | { type: 'set-server-url'; serverBaseUrl: string }
   | { type: 'save-popup-draft'; draft: { serverBaseUrlInput?: string; pairingInput?: string } }
   | { type: 'save-settings'; settings: Record<string, unknown> }
-  | { type: 'pair-device'; pairingInput: string; deviceName: string }
+  | { type: 'pair-device'; pairingInput: string; deviceName: string; serverBaseUrl?: string }
   | { type: 'unlock-vault'; masterPassword: string }
   | { type: 'lock-vault' }
   | { type: 'get-popup-state' }

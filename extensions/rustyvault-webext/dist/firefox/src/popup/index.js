@@ -180,6 +180,7 @@ $('pair-device').addEventListener('click', async () => {
             type: 'pair-device',
             pairingInput,
             deviceName: 'Rustyfin Browser Extension',
+            serverBaseUrl: normalizedBaseUrl,
         });
         if (result.ok) {
             $('server-url').value = normalizedBaseUrl;
