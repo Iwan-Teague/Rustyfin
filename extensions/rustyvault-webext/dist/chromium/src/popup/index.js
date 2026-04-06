@@ -1,4 +1,5 @@
 import { describePolicyReason } from '../shared/policy.js';
+import { parseRustyVaultConnectionInput, sanitizeServerBaseUrl, } from '../shared/api.js';
 function $(id) {
     return document.getElementById(id);
 }
@@ -40,6 +41,28 @@ async function persistPopupDraft(draft) {
         type: 'save-popup-draft',
         draft,
     });
+}
+function originPatternForServer(baseUrl) {
+    const url = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error('Server URL must use http or https');
+    }
+    return `${url.origin}/*`;
+}
+async function ensureServerPermissionFromPopup(serverBaseUrl) {
+    const normalizedBaseUrl = sanitizeServerBaseUrl(serverBaseUrl);
+    const origin = originPatternForServer(normalizedBaseUrl);
+    const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
+    const granted = alreadyGranted || (await chrome.permissions.request({ origins: [origin] }));
+    if (!granted) {
+        throw new Error('RustyVault needs access to that server address');
+    }
+    return normalizedBaseUrl;
+}
+async function ensureCurrentSitePermissionFromPopup(url) {
+    const origin = originPatternForServer(url);
+    const alreadyGranted = await chrome.permissions.contains({ origins: [origin] });
+    return alreadyGranted || chrome.permissions.request({ origins: [origin] });
 }
 async function render() {
     const response = await callBackground({ type: 'get-popup-state' });
@@ -130,25 +153,45 @@ async function render() {
     }
 }
 $('save-server').addEventListener('click', async () => {
-    const serverBaseUrl = $('server-url').value;
-    const result = await callBackground({
-        type: 'set-server-url',
-        serverBaseUrl,
-    });
-    setStatusText(result.ok ? result.message || 'Rustyfin server URL saved.' : result.error);
-    await render();
+    try {
+        const serverBaseUrl = $('server-url').value;
+        const normalizedBaseUrl = await ensureServerPermissionFromPopup(serverBaseUrl);
+        const result = await callBackground({
+            type: 'set-server-url',
+            serverBaseUrl: normalizedBaseUrl,
+        });
+        setStatusText(result.ok ? result.message || 'Rustyfin server URL saved.' : result.error);
+        await render();
+    }
+    catch (error) {
+        setStatusText(error instanceof Error ? error.message : String(error));
+    }
 });
 $('pair-device').addEventListener('click', async () => {
-    const pairingInput = $('pairing-code').value;
-    const result = await callBackground({
-        type: 'pair-device',
-        pairingInput,
-        deviceName: 'Rustyfin Browser Extension',
-    });
-    setStatusText(result.ok
-        ? result.message || 'Extension paired. Unlock it with the vault master password.'
-        : result.error);
-    await render();
+    try {
+        const pairingInput = $('pairing-code').value;
+        const parsed = parseRustyVaultConnectionInput(pairingInput);
+        const candidateServerBaseUrl = parsed.serverBaseUrl || $('server-url').value;
+        if (!candidateServerBaseUrl) {
+            throw new Error('Set the Rustyfin server URL in the extension first');
+        }
+        const normalizedBaseUrl = await ensureServerPermissionFromPopup(candidateServerBaseUrl);
+        const result = await callBackground({
+            type: 'pair-device',
+            pairingInput,
+            deviceName: 'Rustyfin Browser Extension',
+        });
+        if (result.ok) {
+            $('server-url').value = normalizedBaseUrl;
+        }
+        setStatusText(result.ok
+            ? result.message || 'Extension paired. Unlock it with the vault master password.'
+            : result.error);
+        await render();
+    }
+    catch (error) {
+        setStatusText(error instanceof Error ? error.message : String(error));
+    }
 });
 $('unlock-vault').addEventListener('click', async () => {
     const result = await callBackground({
@@ -169,6 +212,16 @@ $('lock-vault').addEventListener('click', async () => {
 $('grant-site').addEventListener('click', async () => {
     const state = await callBackground({ type: 'get-popup-state' });
     if (!state.ok || !state.state?.currentTab?.url) {
+        return;
+    }
+    const grantedByPopup = await ensureCurrentSitePermissionFromPopup(state.state.currentTab.url).catch((error) => {
+        setStatusText(error instanceof Error ? error.message : String(error));
+        return false;
+    });
+    if (!grantedByPopup) {
+        if (!transientStatusText) {
+            setStatusText('Site access was not granted.');
+        }
         return;
     }
     const result = await callBackground({
