@@ -442,7 +442,7 @@ function itemPrimaryPreview(item: RustyVaultItem, reveal: boolean) {
 }
 
 function toastClassName() {
-  return 'bg-[rgba(34,38,55,0.92)] text-white/90';
+  return 'text-white/78';
 }
 
 function confirmVaultAction(message: string) {
@@ -1195,9 +1195,9 @@ export default function RustyVaultPage() {
     : 'Create an encrypted vault before saving credentials or personal records.';
 
   const toastSlot = (
-    <div className="flex h-[4.25rem] items-center justify-center">
+    <div className="flex h-[2.25rem] items-end">
       <div
-        className={`w-full max-w-[34rem] rounded-2xl px-4 py-3 text-sm shadow-[0_18px_48px_rgba(0,0,0,0.24)] backdrop-blur transition-opacity duration-200 ${
+        className={`w-full text-left text-sm transition-opacity duration-200 ${
           activeToast ? `opacity-100 ${toastClassName()}` : 'pointer-events-none opacity-0'
         }`}
       >
@@ -1666,7 +1666,7 @@ export default function RustyVaultPage() {
 
   return (
     <div className="rf-flat-page rf-flat-scope animate-rise">
-      <header className="rf-flat-header pb-3">
+      <header className="rf-flat-header pb-2">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-12 xl:gap-16">
           <div className="space-y-2">
             <h1 className="text-3xl font-semibold sm:text-4xl">Vault</h1>
@@ -1705,7 +1705,7 @@ export default function RustyVaultPage() {
 
       {toastSlot}
 
-      <section className="rf-flat-section pt-2 sm:pt-3">
+      <section className="rf-flat-section pt-1 sm:pt-2">
         <div className="flex justify-end">
           <button
             type="button"
@@ -1767,9 +1767,15 @@ export default function RustyVaultPage() {
                           <button
                             type="button"
                             className="rf-text-action text-sm sm:self-end"
-                            onClick={() => startNewDraft(newItemType)}
+                            onClick={() => {
+                              if (showEditorPanel) {
+                                closeEditorPanel();
+                              } else {
+                                startNewDraft(newItemType);
+                              }
+                            }}
                           >
-                            Create new
+                            {showEditorPanel ? 'Close' : 'Create new'}
                           </button>
                           <input
                             value={search}
@@ -1856,17 +1862,11 @@ export default function RustyVaultPage() {
                       <div className={vaultSectionClassName}>
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                           <div>
-                            <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
-                              {editingExisting ? 'Editing saved item' : 'Create new'}
-                            </p>
                             <h2 className="text-xl font-semibold">
                               {editingExisting
                                 ? editor.title || itemTypeLabel(editor.item_type)
                                 : `New ${itemTypeLabel(editor.item_type)}`}
                             </h2>
-                            <p className="mt-1 max-w-2xl text-sm muted">
-                              {itemTypeDescription(editor.item_type)}
-                            </p>
                           </div>
                           <div className="flex flex-wrap gap-3">
                             {!editingExisting && (
@@ -1884,13 +1884,6 @@ export default function RustyVaultPage() {
                                 ))}
                               </select>
                             )}
-                            <button
-                              type="button"
-                              className="rf-text-action rf-text-action-muted text-sm"
-                              onClick={closeEditorPanel}
-                            >
-                              Close
-                            </button>
                           </div>
                         </div>
 
@@ -1985,17 +1978,15 @@ export default function RustyVaultPage() {
 
           {activeWorkspaceTab === 'settings' && (
             !settingsUnlocked ? (
-              <div className="flex min-h-[22rem] items-start justify-center pt-2 sm:pt-4">
+              <div className="min-h-[18rem] pt-1 sm:pt-2">
                 <form
-                  className="w-full max-w-[32rem] space-y-5 rounded-[1.75rem] bg-white/[0.03] px-6 py-7 shadow-[0_28px_80px_rgba(0,0,0,0.22)]"
+                  className="w-full max-w-[32rem] space-y-5"
                   onSubmit={(event) => {
                     event.preventDefault();
                     void runAction('Vault settings unlocked.', unlockVaultSettings);
                   }}
                 >
-                  <div className="text-center">
-                    <h2 className="text-2xl font-semibold">Unlock Vault settings</h2>
-                  </div>
+                  <h2 className="text-2xl font-semibold">Unlock Vault settings</h2>
                   <label className="block space-y-2">
                     <span className="text-sm font-medium">Rustyfin account password</span>
                     <input
@@ -2006,15 +1997,13 @@ export default function RustyVaultPage() {
                       placeholder="Rustyfin account password"
                     />
                   </label>
-                  <div className="flex justify-center">
-                    <button
-                      type="submit"
-                      className="rf-text-action text-sm disabled:opacity-50"
-                      disabled={saving || !securityPassword.trim()}
-                    >
-                      Open settings
-                    </button>
-                  </div>
+                  <button
+                    type="submit"
+                    className="rf-text-action text-sm disabled:opacity-50"
+                    disabled={saving || !securityPassword.trim()}
+                  >
+                    Open settings
+                  </button>
                 </form>
               </div>
             ) : (
