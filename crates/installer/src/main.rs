@@ -261,6 +261,19 @@ struct BootstrapAiModelConfig {
     strict: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeTlsMode {
+    Manual,
+    Auto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HttpOriginParts {
+    scheme: String,
+    host: String,
+    port: u16,
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = parse_args(env::args().skip(1).collect())?;
     let repo_root = repo_root()?;
@@ -1260,6 +1273,7 @@ fn write_native_runtime_defaults(
 : \"${{RUSTFIN_UI_PORT:=3000}}\"\n\
 : \"${{RUSTFIN_MEDIA_PATH:={media_path}}}\"\n\
 : \"${{RUSTFIN_PUBLIC_HOST:={public_host}}}\"\n\
+: \"${{RUSTFIN_EDGE_TLS_MODE:=manual}}\"\n\
 : \"${{RUSTFIN_WEBRTC_ICE_SERVERS_JSON:={webrtc_ice_servers_json}}}\"\n\
 : \"${{RUSTFIN_WEBRTC_STUN_URL:={webrtc_stun_url}}}\"\n\
 : \"${{RUSTFIN_WEBRTC_TURN_URL:={webrtc_turn_url}}}\"\n\
@@ -1919,25 +1933,32 @@ fn plan_native_runtime(
                 .flatten()
                 .unwrap_or_else(|| "localhost".to_string())
         });
+    let public_host_name = normalize_public_host_name(&public_host);
+    let edge_tls_mode = resolve_edge_tls_mode()?;
 
     let browser_backend_origin = env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("http://{public_host}:{backend_port}"));
+        .unwrap_or_else(|| build_public_browser_origin(&public_host, ui_port));
 
     let ws_allowed_origins = env::var("RUSTFIN_WS_ALLOWED_ORIGINS")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| build_ws_allowed_origins(&public_host, ui_port));
+        .unwrap_or_else(|| build_ws_allowed_origins(&browser_backend_origin, ui_port));
+    let edge_health_resolve =
+        build_edge_health_resolve(&browser_backend_origin).unwrap_or_default();
 
     let media_path = resolve_media_path(&repo_root)?;
     let directory_picker_helper_url = env::var("RUSTFIN_DIRECTORY_PICKER_HELPER_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("http://127.0.0.1:{}/pick", options.picker_helper_port));
-    let edge_tls_hosts = resolve_edge_tls_hosts(&public_host);
-    let (edge_tls_cert, edge_tls_key) =
-        ensure_edge_tls_cert(&safe_tmp_dir, &edge_tls_hosts, &public_host)?;
+    let edge_tls_hosts = resolve_edge_tls_hosts(&public_host_name);
+    let (edge_tls_cert, edge_tls_key) = if edge_tls_mode == EdgeTlsMode::Manual {
+        ensure_edge_tls_cert(&safe_tmp_dir, &edge_tls_hosts, &public_host_name)?
+    } else {
+        (String::new(), String::new())
+    };
 
     let database_url = resolve_database_url()?;
     validate_postgres_url(&database_url)?;
@@ -1998,8 +2019,16 @@ fn plan_native_runtime(
         ("RUSTFIN_UI_INTERNAL_PORT", ui_internal_port.to_string()),
         ("RUSTFIN_UI_PORT", ui_port.to_string()),
         ("RUSTFIN_PUBLIC_HOST", public_host.clone()),
+        (
+            "RUSTFIN_EDGE_TLS_MODE",
+            match edge_tls_mode {
+                EdgeTlsMode::Manual => "manual".to_string(),
+                EdgeTlsMode::Auto => "auto".to_string(),
+            },
+        ),
         ("RUSTYFIN_BROWSER_BACKEND_ORIGIN", browser_backend_origin),
         ("RUSTFIN_WS_ALLOWED_ORIGINS", ws_allowed_origins),
+        ("RUSTFIN_EDGE_HEALTH_RESOLVE", edge_health_resolve),
         (
             "RUSTFIN_WEBRTC_ICE_SERVERS_JSON",
             env::var("RUSTFIN_WEBRTC_ICE_SERVERS_JSON").unwrap_or_default(),
@@ -2280,6 +2309,14 @@ fn write_runtime_snapshot_to_path(output: &Path) -> anyhow::Result<()> {
             env::var("RUSTFIN_UI_PORT").unwrap_or_default(),
         ),
         (
+            "RUSTFIN_PUBLIC_HOST",
+            env::var("RUSTFIN_PUBLIC_HOST").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_EDGE_TLS_MODE",
+            env::var("RUSTFIN_EDGE_TLS_MODE").unwrap_or_default(),
+        ),
+        (
             "RUSTFIN_MEDIA_PATH",
             env::var("RUSTFIN_MEDIA_PATH").unwrap_or_default(),
         ),
@@ -2290,6 +2327,10 @@ fn write_runtime_snapshot_to_path(output: &Path) -> anyhow::Result<()> {
         (
             "RUSTFIN_WS_ALLOWED_ORIGINS",
             env::var("RUSTFIN_WS_ALLOWED_ORIGINS").unwrap_or_default(),
+        ),
+        (
+            "RUSTFIN_EDGE_HEALTH_RESOLVE",
+            env::var("RUSTFIN_EDGE_HEALTH_RESOLVE").unwrap_or_default(),
         ),
         (
             "RUSTFIN_WEBRTC_ICE_SERVERS_JSON",
@@ -2482,6 +2523,27 @@ fn launch_native_runtime(
         ],
         &["node".to_string(), "server.js".to_string()],
     )?;
+    let edge_config_path = resolve_edge_caddy_config_path(
+        repo_root,
+        &runtime_paths.runtime_root.join("config"),
+        env::var("RUSTFIN_EDGE_TLS_MODE")
+            .unwrap_or_else(|_| "manual".to_string())
+            .as_str(),
+        env::var("RUSTFIN_PUBLIC_HOST")
+            .unwrap_or_else(|_| "localhost".to_string())
+            .as_str(),
+        env::var("RUSTFIN_UI_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(3000),
+        env::var("RUSTFIN_EDGE_TLS_CERT")
+            .unwrap_or_default()
+            .as_str(),
+        env::var("RUSTFIN_EDGE_TLS_KEY")
+            .unwrap_or_default()
+            .as_str(),
+    )?;
+
     start_background_process(
         "rustfin-edge",
         repo_root,
@@ -2492,10 +2554,7 @@ fn launch_native_runtime(
         &[
             "run".to_string(),
             "--config".to_string(),
-            repo_root
-                .join("scripts/caddy/Caddyfile.native")
-                .display()
-                .to_string(),
+            edge_config_path.display().to_string(),
             "--adapter".to_string(),
             "caddyfile".to_string(),
         ],
@@ -2514,9 +2573,11 @@ fn launch_native_runtime(
             env::var("RUSTFIN_TRANSCRIPTION_AGENT_PORT").unwrap_or_else(|_| "8102".to_string());
         let servers_agent_port =
             env::var("RUSTFIN_SERVERS_AGENT_PORT").unwrap_or_else(|_| "8103".to_string());
-        let ui_port = env::var("RUSTFIN_UI_PORT").unwrap_or_else(|_| "3000".to_string());
         let ui_internal_port =
             env::var("RUSTFIN_UI_INTERNAL_PORT").unwrap_or_else(|_| "3001".to_string());
+        let browser_backend_origin = env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN")
+            .unwrap_or_else(|_| "https://127.0.0.1:3000".to_string());
+        let edge_health_resolve = env::var("RUSTFIN_EDGE_HEALTH_RESOLVE").unwrap_or_default();
 
         let _ = wait_for_http(
             "rustfin",
@@ -2562,19 +2623,20 @@ fn launch_native_runtime(
             60,
             false,
         )?;
-        let _ = wait_for_http(
+        let _ = wait_for_edge_origin_path(
             "ui-edge",
-            &format!("https://127.0.0.1:{ui_port}/health"),
+            &browser_backend_origin,
+            "/health",
+            &edge_health_resolve,
             60,
-            true,
         )?;
     }
 
     println!("[rustfin-installer] Rustyfin native runtime is up.");
     println!(
-        "[rustfin-installer] UI: https://{}:{}",
-        env::var("RUSTFIN_PUBLIC_HOST").unwrap_or_else(|_| "localhost".to_string()),
-        env::var("RUSTFIN_UI_PORT").unwrap_or_else(|_| "3000".to_string())
+        "[rustfin-installer] UI: {}",
+        env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN")
+            .unwrap_or_else(|_| "https://localhost:3000".to_string())
     );
     println!(
         "[rustfin-installer] Logs: {}",
@@ -2805,6 +2867,209 @@ fn ensure_edge_tls_cert(
         cert_path.display().to_string(),
         key_path.display().to_string(),
     ))
+}
+
+fn resolve_edge_tls_mode() -> anyhow::Result<EdgeTlsMode> {
+    let raw = env::var("RUSTFIN_EDGE_TLS_MODE")
+        .unwrap_or_else(|_| "manual".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    match raw.as_str() {
+        "" | "manual" => Ok(EdgeTlsMode::Manual),
+        "auto" => Ok(EdgeTlsMode::Auto),
+        other => bail!("Unsupported RUSTFIN_EDGE_TLS_MODE={other}. Use manual or auto."),
+    }
+}
+
+fn strip_host_candidate(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let no_scheme = trimmed
+        .split_once("://")
+        .map(|(_, value)| value)
+        .unwrap_or(trimmed);
+    no_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(no_scheme)
+        .trim()
+        .trim_matches('/')
+        .to_string()
+}
+
+fn split_host_port(authority: &str) -> (String, Option<u16>) {
+    if authority.is_empty() {
+        return (String::new(), None);
+    }
+
+    if let Some(rest) = authority.strip_prefix('[')
+        && let Some((host, suffix)) = rest.split_once(']')
+    {
+        let port = suffix
+            .strip_prefix(':')
+            .and_then(|value| value.parse::<u16>().ok());
+        return (host.to_string(), port);
+    }
+
+    if authority.matches(':').count() == 1
+        && let Some((host, port)) = authority.rsplit_once(':')
+        && let Ok(port) = port.parse::<u16>()
+    {
+        return (host.to_string(), Some(port));
+    }
+
+    (authority.to_string(), None)
+}
+
+fn normalize_public_host_name(public_host: &str) -> String {
+    let candidate = strip_host_candidate(public_host);
+    let (host, _) = split_host_port(&candidate);
+    if host.is_empty() {
+        "localhost".to_string()
+    } else {
+        host
+    }
+}
+
+fn default_port_for_scheme(scheme: &str) -> u16 {
+    match scheme {
+        "http" => 80,
+        _ => 443,
+    }
+}
+
+fn format_http_origin(scheme: &str, host: &str, port: u16) -> String {
+    let default_port = default_port_for_scheme(scheme);
+    if port == default_port {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    }
+}
+
+fn parse_http_origin(raw: &str) -> Option<HttpOriginParts> {
+    let trimmed = raw.trim();
+    let (scheme, rest) = if let Some(value) = trimmed.strip_prefix("https://") {
+        ("https".to_string(), value)
+    } else if let Some(value) = trimmed.strip_prefix("http://") {
+        ("http".to_string(), value)
+    } else {
+        return None;
+    };
+
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let (host, explicit_port) = split_host_port(authority);
+    if host.is_empty() {
+        return None;
+    }
+
+    Some(HttpOriginParts {
+        scheme: scheme.clone(),
+        host,
+        port: explicit_port.unwrap_or_else(|| default_port_for_scheme(&scheme)),
+    })
+}
+
+fn build_public_browser_origin(public_host: &str, ui_port: u16) -> String {
+    let candidate = strip_host_candidate(public_host);
+    let (host, explicit_port) = split_host_port(&candidate);
+    let host = if host.is_empty() {
+        "localhost".to_string()
+    } else {
+        host
+    };
+    format_http_origin("https", &host, explicit_port.unwrap_or(ui_port))
+}
+
+fn build_edge_health_resolve(origin: &str) -> Option<String> {
+    let parsed = parse_http_origin(origin)?;
+    if parsed.host.eq_ignore_ascii_case("localhost")
+        || parsed.host == "127.0.0.1"
+        || parsed.host == "0.0.0.0"
+        || parsed.host == "::1"
+        || parsed.host == "[::1]"
+        || is_ipv4(&parsed.host)
+    {
+        return None;
+    }
+    Some(format!("{}:{}:127.0.0.1", parsed.host, parsed.port))
+}
+
+fn build_edge_site_address(
+    public_host: &str,
+    ui_port: u16,
+    edge_tls_mode: EdgeTlsMode,
+) -> anyhow::Result<String> {
+    match edge_tls_mode {
+        EdgeTlsMode::Manual => Ok(format!(":{ui_port}")),
+        EdgeTlsMode::Auto => {
+            let candidate = strip_host_candidate(public_host);
+            let (host, explicit_port) = split_host_port(&candidate);
+            if host.is_empty() || host.eq_ignore_ascii_case("localhost") || is_ipv4(&host) {
+                bail!(
+                    "RUSTFIN_EDGE_TLS_MODE=auto requires RUSTFIN_PUBLIC_HOST to be a real hostname, not {}",
+                    if candidate.is_empty() {
+                        "<empty>"
+                    } else {
+                        candidate.as_str()
+                    }
+                );
+            }
+            let port = explicit_port.unwrap_or(ui_port);
+            Ok(if port == 443 {
+                host
+            } else {
+                format!("{host}:{port}")
+            })
+        }
+    }
+}
+
+fn render_auto_https_caddyfile(site_address: &str) -> String {
+    format!(
+        "{{\n  admin off\n}}\n\n# Native Debian host HTTPS edge for UI + API proxying.\n{site_address} {{\n  encode zstd gzip\n\n  header {{\n    Strict-Transport-Security \"max-age=31536000; includeSubDomains\"\n  }}\n\n  @calendar path /api/v1/calendar/*\n  reverse_proxy @calendar 127.0.0.1:{{$RUSTFIN_CALENDAR_PORT}}\n\n  @backend path /api/* /stream/* /health\n  reverse_proxy @backend 127.0.0.1:{{$RUSTFIN_BACKEND_PORT}}\n\n  reverse_proxy 127.0.0.1:{{$RUSTFIN_UI_INTERNAL_PORT}}\n}}\n"
+    )
+}
+
+fn resolve_edge_caddy_config_path(
+    repo_root: &Path,
+    output_dir: &Path,
+    edge_tls_mode_raw: &str,
+    public_host: &str,
+    ui_port: u16,
+    edge_tls_cert: &str,
+    edge_tls_key: &str,
+) -> anyhow::Result<PathBuf> {
+    let edge_tls_mode = match edge_tls_mode_raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => EdgeTlsMode::Auto,
+        _ => EdgeTlsMode::Manual,
+    };
+
+    match edge_tls_mode {
+        EdgeTlsMode::Manual => {
+            let _ = (edge_tls_cert, edge_tls_key);
+            Ok(repo_root.join("scripts/caddy/Caddyfile.native"))
+        }
+        EdgeTlsMode::Auto => {
+            fs::create_dir_all(output_dir)
+                .with_context(|| format!("failed to create {}", output_dir.display()))?;
+            let rendered = render_auto_https_caddyfile(&build_edge_site_address(
+                public_host,
+                ui_port,
+                EdgeTlsMode::Auto,
+            )?);
+            let path = output_dir.join("Caddyfile.native");
+            fs::write(&path, rendered)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            Ok(path)
+        }
+    }
 }
 
 fn detect_primary_lan_ipv4() -> anyhow::Result<Option<String>> {
@@ -3151,6 +3416,26 @@ fn wait_for_http(name: &str, url: &str, attempts: usize, insecure: bool) -> anyh
     Ok(false)
 }
 
+fn wait_for_edge_origin_path(
+    name: &str,
+    origin: &str,
+    path: &str,
+    resolve_override: &str,
+    attempts: usize,
+) -> anyhow::Result<bool> {
+    for _ in 0..attempts {
+        if edge_origin_ready(origin, path, resolve_override)? {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    println!(
+        "[rustfin-installer] Warning: {} did not become ready: {}{}",
+        name, origin, path
+    );
+    Ok(false)
+}
+
 fn http_ready(url: &str, insecure: bool) -> anyhow::Result<bool> {
     let mut cmd = Command::new("curl");
     cmd.arg("-fsS");
@@ -3159,6 +3444,40 @@ fn http_ready(url: &str, insecure: bool) -> anyhow::Result<bool> {
     }
     let status = cmd.arg(url).status().context("failed to execute curl")?;
     Ok(status.success())
+}
+
+fn edge_origin_ready(origin: &str, path: &str, resolve_override: &str) -> anyhow::Result<bool> {
+    let mut cmd = edge_origin_curl_command(origin, path, resolve_override)?;
+    let status = cmd.status().context("failed to execute curl")?;
+    Ok(status.success())
+}
+
+fn edge_origin_curl_command(
+    origin: &str,
+    path: &str,
+    resolve_override: &str,
+) -> anyhow::Result<Command> {
+    let origin_parts = parse_http_origin(origin)
+        .ok_or_else(|| anyhow::anyhow!("invalid edge origin: {origin}"))?;
+    let mut cmd = Command::new("curl");
+    cmd.arg("-k").arg("-fsS");
+    if !resolve_override.trim().is_empty() {
+        cmd.arg("--resolve").arg(resolve_override.trim());
+    }
+    cmd.arg(format!(
+        "{}{}",
+        format_http_origin(&origin_parts.scheme, &origin_parts.host, origin_parts.port),
+        normalize_origin_path(path)
+    ));
+    Ok(cmd)
+}
+
+fn normalize_origin_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
 }
 
 fn tail_log_files(log_dir: &Path) -> anyhow::Result<()> {
@@ -3345,8 +3664,10 @@ fn resolve_clean_database_url(repo_root: &Path) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootstrapAiModelConfig, cmdline_matches_pidfile_name, derive_gguf_file_name_from_url,
-        merge_search_paths_into_rustflags, parse_ai_bootstrap_model_enabled,
+        BootstrapAiModelConfig, EdgeTlsMode, build_edge_health_resolve, build_edge_site_address,
+        build_public_browser_origin, build_ws_allowed_origins, cmdline_matches_pidfile_name,
+        derive_gguf_file_name_from_url, format_http_origin, merge_search_paths_into_rustflags,
+        parse_ai_bootstrap_model_enabled, parse_http_origin,
         resolve_bootstrap_ai_model_config_with_overrides, resolve_installer_ai_model_dir_from_env,
     };
     use std::path::PathBuf;
@@ -3481,6 +3802,72 @@ mod tests {
     fn resolve_installer_ai_model_dir_prefers_env_value() {
         let path = resolve_installer_ai_model_dir_from_env(Some("/srv/rustyfin/models"));
         assert_eq!(path, PathBuf::from("/srv/rustyfin/models"));
+    }
+
+    #[test]
+    fn default_browser_origin_uses_https_edge_port() {
+        assert_eq!(
+            build_public_browser_origin("vault.example.com", 3000),
+            "https://vault.example.com:3000"
+        );
+        assert_eq!(
+            build_public_browser_origin("vault.example.com", 443),
+            "https://vault.example.com"
+        );
+    }
+
+    #[test]
+    fn ws_allowed_origins_include_exact_browser_origin_and_localhost() {
+        let origins = build_ws_allowed_origins("https://vault.example.com:3000", 3000);
+        assert!(origins.contains("https://vault.example.com:3000"));
+        assert!(origins.contains("https://localhost:3000"));
+        assert!(origins.contains("http://127.0.0.1:3000"));
+        assert!(!origins.contains("http://vault.example.com:3000"));
+    }
+
+    #[test]
+    fn edge_site_address_uses_hostname_in_auto_mode() {
+        assert_eq!(
+            build_edge_site_address("vault.example.com", 3000, EdgeTlsMode::Auto)
+                .expect("auto https site address"),
+            "vault.example.com:3000"
+        );
+        assert_eq!(
+            build_edge_site_address("vault.example.com", 443, EdgeTlsMode::Auto)
+                .expect("default https site address"),
+            "vault.example.com"
+        );
+    }
+
+    #[test]
+    fn edge_site_address_rejects_ip_auto_mode() {
+        let error = build_edge_site_address("192.168.0.36", 3000, EdgeTlsMode::Auto)
+            .expect_err("ip auto mode should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("requires RUSTFIN_PUBLIC_HOST to be a real hostname")
+        );
+    }
+
+    #[test]
+    fn edge_health_resolve_targets_loopback_for_named_hosts() {
+        assert_eq!(
+            build_edge_health_resolve("https://vault.example.com:3000"),
+            Some("vault.example.com:3000:127.0.0.1".to_string())
+        );
+        assert_eq!(build_edge_health_resolve("https://127.0.0.1:3000"), None);
+    }
+
+    #[test]
+    fn parse_http_origin_normalizes_missing_default_port() {
+        let parsed = parse_http_origin("https://vault.example.com/path").expect("origin parse");
+        assert_eq!(parsed.host, "vault.example.com");
+        assert_eq!(parsed.port, 443);
+        assert_eq!(
+            format_http_origin(&parsed.scheme, &parsed.host, parsed.port),
+            "https://vault.example.com"
+        );
     }
 }
 
@@ -3643,7 +4030,9 @@ fn validate_systemd_runtime_start(
         env::var("RUSTFIN_TRANSCRIPTION_AGENT_PORT").unwrap_or_else(|_| "8102".to_string());
     let servers_agent_port =
         env::var("RUSTFIN_SERVERS_AGENT_PORT").unwrap_or_else(|_| "8103".to_string());
-    let ui_port = env::var("RUSTFIN_UI_PORT").unwrap_or_else(|_| "3000".to_string());
+    let browser_backend_origin = env::var("RUSTYFIN_BROWSER_BACKEND_ORIGIN")
+        .unwrap_or_else(|_| "https://127.0.0.1:3000".to_string());
+    let edge_health_resolve = env::var("RUSTFIN_EDGE_HEALTH_RESOLVE").unwrap_or_default();
 
     let backend_ready = wait_for_http(
         "rustfin",
@@ -3685,11 +4074,12 @@ fn validate_systemd_runtime_start(
     } else {
         true
     };
-    let ui_ready = wait_for_http(
+    let ui_ready = wait_for_edge_origin_path(
         "ui-login",
-        &format!("https://127.0.0.1:{ui_port}/login"),
+        &browser_backend_origin,
+        "/login",
+        &edge_health_resolve,
         60,
-        true,
     )?;
 
     if backend_ready
@@ -4361,16 +4751,18 @@ fn external_servers_agent_configured() -> bool {
             .is_some()
 }
 
-fn build_ws_allowed_origins(public_host: &str, ui_port: u16) -> String {
+fn build_ws_allowed_origins(browser_origin: &str, ui_port: u16) -> String {
     let mut origins = vec![
         format!("http://localhost:{ui_port}"),
         format!("http://127.0.0.1:{ui_port}"),
         format!("https://localhost:{ui_port}"),
         format!("https://127.0.0.1:{ui_port}"),
     ];
-    if public_host != "localhost" && public_host != "127.0.0.1" {
-        origins.push(format!("http://{public_host}:{ui_port}"));
-        origins.push(format!("https://{public_host}:{ui_port}"));
+    if let Some(parsed) = parse_http_origin(browser_origin) {
+        let exact_origin = format_http_origin(&parsed.scheme, &parsed.host, parsed.port);
+        if !origins.iter().any(|existing| existing == &exact_origin) {
+            origins.push(exact_origin);
+        }
     }
     origins.join(",")
 }

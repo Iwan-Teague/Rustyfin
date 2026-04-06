@@ -39,6 +39,8 @@ The supported native Linux install flow is implemented for Debian 12, Debian 13,
   - Host-facing RustyVault routes are being audited down to live web UI and extension operations; dead convenience routes like `/api/v1/vault/sync` and `/api/v1/vault/protected-actions/complete` have been removed
   - Web `/vault` management UI remains the host-facing page
   - Browser extension MVP for pairing, page detection, save prompts, and manual autofill
+  - Secure browser access to `/vault` is edge-only and HTTPS-only: expose only the Caddy edge, keep internal service ports loopback-only, and keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin
+  - Native browser-facing TLS can stay on the installer-managed manual certificate path or switch to Caddy-managed automatic HTTPS with `RUSTFIN_EDGE_TLS_MODE=auto` when `RUSTFIN_PUBLIC_HOST` is a real hostname
   - The generic `/users/me/preferences` host API no longer carries Vault settings
   - Backend can be compiled without RustyVault via `cargo check -p rustfin-server --no-default-features`
   - Runtime availability can also be forced off with `RUSTFIN_RUSTYVAULT_ENABLED=0`, and the UI host fallback can be forced with `NEXT_PUBLIC_RUSTYVAULT_ENABLED=0`
@@ -226,6 +228,7 @@ Compatibility aliases:
 Detailed native operations guide:
 
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/rustyvault-browser-access.md`
 - `/Users/iwanteague/Desktop/Rustyfin/docs/README.md`
 
 ## Native Runtime Notes
@@ -243,6 +246,11 @@ Detailed native operations guide:
 - Runtime TLS material, service tokens, and the persisted runtime snapshot are now written by:
   - `./scripts/rustfin-installer.sh plan-native-runtime`
   - `./scripts/rustfin-installer.sh write-native-runtime-snapshot`
+- Browser-facing runtime defaults now resolve to the HTTPS edge origin instead of the raw backend bind, and websocket allowlists follow that exact browser-visible origin by default
+- Native Caddy edge TLS mode is now controlled by:
+  - `RUSTFIN_EDGE_TLS_MODE=manual|auto`
+  - `manual` keeps the installer-managed certificate/key path on the configured edge port
+  - `auto` renders a hostname-based Caddy config for automatic certificate management and requires `RUSTFIN_PUBLIC_HOST` to be a real hostname
 - The installer-generated edge TLS certificate now covers the detected public host plus `localhost`, `127.0.0.1`, and detected local hostname aliases such as `server`, so browser access through the host name does not depend on an IP-only certificate SAN
 - Native runtime launch/stop/reset are now emitted by:
   - `./scripts/rustfin-installer.sh launch-native-runtime`
@@ -297,7 +305,9 @@ Core runtime:
 - `RUSTFIN_BACKEND_PORT`
 - `RUSTFIN_BACKEND_BIND_IP`
 - `RUSTFIN_UI_PORT`
+- `RUSTFIN_EDGE_TLS_MODE` - Caddy edge TLS mode for browser-facing deployments (`manual|auto`)
 - `RUSTFIN_PUBLIC_HOST`
+- `RUSTYFIN_BROWSER_BACKEND_ORIGIN`
 - `RUSTFIN_MEDIA_PATH`
 - `RUSTFIN_DIRECTORY_BROWSE_ROOTS`
 - `RUSTFIN_WS_ALLOWED_ORIGINS`

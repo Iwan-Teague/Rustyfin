@@ -33,6 +33,8 @@ recompute_runtime_dirs
 
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-8096}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-3000}"
+EDGE_ORIGIN="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-https://127.0.0.1:${UI_EDGE_PORT}}"
+EDGE_HEALTH_RESOLVE="${RUSTFIN_EDGE_HEALTH_RESOLVE:-}"
 
 cleanup() {
   "$REPO_ROOT/scripts/stop-native.sh" >/dev/null 2>&1 || true
@@ -87,8 +89,18 @@ backend_health_ok() {
   curl -fsS "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1
 }
 
+edge_curl() {
+  local path="$1"
+  local url="${EDGE_ORIGIN%/}${path}"
+  local -a args=(-k -fsS)
+  if [[ -n "$EDGE_HEALTH_RESOLVE" ]]; then
+    args+=(--resolve "$EDGE_HEALTH_RESOLVE")
+  fi
+  curl "${args[@]}" "$url" >/dev/null 2>&1
+}
+
 edge_health_ok() {
-  curl -kfsS "https://127.0.0.1:${UI_EDGE_PORT}/health" >/dev/null 2>&1
+  edge_curl "/health"
 }
 
 find_service_pid() {
@@ -131,6 +143,8 @@ fi
 recompute_runtime_dirs
 BACKEND_PORT="${RUSTFIN_BACKEND_PORT:-$BACKEND_PORT}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-$UI_EDGE_PORT}"
+EDGE_ORIGIN="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-https://127.0.0.1:${UI_EDGE_PORT}}"
+EDGE_HEALTH_RESOLVE="${RUSTFIN_EDGE_HEALTH_RESOLVE:-$EDGE_HEALTH_RESOLVE}"
 
 while true; do
   for service in "${required_services[@]}"; do
@@ -159,7 +173,7 @@ while true; do
     die "Backend health check failed on http://127.0.0.1:${BACKEND_PORT}/health"
   fi
   if ! edge_health_ok; then
-    die "Edge health check failed on https://127.0.0.1:${UI_EDGE_PORT}/health"
+    die "Edge health check failed on ${EDGE_ORIGIN%/}/health"
   fi
   sleep 2
 done

@@ -31,6 +31,8 @@ YOUTUBE_PORT="${RUSTFIN_YOUTUBE_AGENT_PORT:-8101}"
 TRANSCRIPTION_PORT="${RUSTFIN_TRANSCRIPTION_AGENT_PORT:-8102}"
 SERVERS_AGENT_PORT="${RUSTFIN_SERVERS_AGENT_PORT:-8103}"
 UI_EDGE_PORT="${RUSTFIN_UI_PORT:-3000}"
+EDGE_ORIGIN="${RUSTYFIN_BROWSER_BACKEND_ORIGIN:-https://127.0.0.1:${UI_EDGE_PORT}}"
+EDGE_HEALTH_RESOLVE="${RUSTFIN_EDGE_HEALTH_RESOLVE:-}"
 MEDIA_PATH="${RUSTFIN_MEDIA_PATH:-}"
 
 trim_whitespace() {
@@ -152,6 +154,25 @@ wait_http_ok() {
   return 1
 }
 
+wait_edge_http_ok() {
+  local name="$1"
+  local path="$2"
+  local attempts="${3:-60}"
+  local url="${EDGE_ORIGIN%/}${path}"
+  local -a curl_args=(-fsS -k)
+  if [[ -n "$EDGE_HEALTH_RESOLVE" ]]; then
+    curl_args+=(--resolve "$EDGE_HEALTH_RESOLVE")
+  fi
+  for _ in $(seq 1 "$attempts"); do
+    if curl "${curl_args[@]}" "$url" >/dev/null 2>&1; then
+      info "${name} ready"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 wait_ws_route() {
   local name="$1"
   local url="$2"
@@ -184,8 +205,8 @@ run_checks() {
   wait_http_ok "youtube-agent" "http://127.0.0.1:${YOUTUBE_PORT}/health" 0 60 &&
   wait_http_ok "transcription-agent" "http://127.0.0.1:${TRANSCRIPTION_PORT}/health" 0 60 &&
   wait_http_ok "servers-agent" "http://127.0.0.1:${SERVERS_AGENT_PORT}/health" 0 60 &&
-  wait_http_ok "edge-health" "https://127.0.0.1:${UI_EDGE_PORT}/health" 1 60 &&
-  wait_http_ok "runtime-config" "https://127.0.0.1:${UI_EDGE_PORT}/runtime-config" 1 60 &&
+  wait_edge_http_ok "edge-health" "/health" 60 &&
+  wait_edge_http_ok "runtime-config" "/runtime-config" 60 &&
   wait_http_ok "watch-party" "http://127.0.0.1:${BACKEND_PORT}/api/v1/watch-party/health" 0 60 &&
   wait_ws_route "channels websocket" "http://127.0.0.1:${BACKEND_PORT}/api/v1/channels/ws" 60
 }

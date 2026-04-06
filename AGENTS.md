@@ -31,6 +31,8 @@ Rustyfin is a native-Debian-first local media platform with:
   - host-facing RustyVault routes should map to live web UI or extension consumers; do not reintroduce removed convenience endpoints such as `/api/v1/vault/sync` or `/api/v1/vault/protected-actions/complete` without a concrete product consumer
   - `crates/server/src/account_prefs.rs` is host-only account state now; do not reintroduce RustyVault settings into that shared model
   - when RustyVault is unavailable, the Vault surface should return `503` or render an unavailable state; the rest of Rustyfin should continue operating normally
+  - secure browser publication of `/vault` must stay edge-only and HTTPS-only; do not expose backend/service ports directly for vault access
+  - keep `RUSTFIN_PUBLIC_HOST`, `RUSTYFIN_BROWSER_BACKEND_ORIGIN`, and `RUSTFIN_WS_ALLOWED_ORIGINS` aligned to the exact browser-visible origin, and use `RUSTFIN_EDGE_TLS_MODE=manual|auto` instead of ad-hoc edge rewrites when changing native browser access
 - A `Downloads` product area for first-party packages, extensions, and future Rustyfin client releases
   - keep Downloads host-owned; do not make `ui/src/app/downloads/page.tsx` depend on `ui/src/features/rustyvault/api.ts`
   - treat the Downloads catalog/artifact routes as the authoritative public delivery surface for first-party packages

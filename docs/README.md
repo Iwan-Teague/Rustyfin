@@ -12,6 +12,8 @@ The supported native Linux install flow for Rustyfin is **Debian 12, Debian 13, 
   - repository operating rules and runtime policy
 - `/Users/iwanteague/Desktop/Rustyfin/docs/operations/debian-12-native-runtime.md`
   - install, start, deploy, ports, and service model
+- `/Users/iwanteague/Desktop/Rustyfin/docs/operations/rustyvault-browser-access.md`
+  - secure browser publication of `/vault`, exact origin settings, and edge TLS modes
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/rustyfin-current-state-design-baseline-2026-03-13.md`
   - current architecture and product baseline
 - `/Users/iwanteague/Desktop/Rustyfin/docs/reports/2026-03-16-feature-gap-audit-excluding-network.md`
