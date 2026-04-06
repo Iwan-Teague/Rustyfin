@@ -146,6 +146,19 @@ export type RustyVaultCryptoReadiness = {
 
 let nativeArgon2SupportPromise: Promise<boolean> | null = null;
 let portableArgon2SupportPromise: Promise<boolean> | null = null;
+const CRYPTO_PROBE_TIMEOUT_MS = 8_000;
+
+async function resolveWithin<T>(promise: Promise<T>, fallback: T, timeoutMs = CRYPTO_PROBE_TIMEOUT_MS) {
+  return Promise.race<T>([
+    promise,
+    new Promise<T>((resolve) => {
+      const timeoutId = window.setTimeout(() => resolve(fallback), timeoutMs);
+      promise.finally(() => window.clearTimeout(timeoutId)).catch(() => {
+        window.clearTimeout(timeoutId);
+      });
+    }),
+  ]);
+}
 
 function aadBytes(
   userId: string,
@@ -230,7 +243,7 @@ async function browserSupportsPortableArgon2(): Promise<boolean> {
 
 async function deriveMasterMaterial(password: string, salt: Uint8Array): Promise<CryptoKey> {
   let bits: ArrayBuffer | Uint8Array;
-  if (await browserSupportsNativeArgon2Id()) {
+  if (await resolveWithin(browserSupportsNativeArgon2Id(), false)) {
     const passwordKey = await importArgon2PasswordKey(password);
     bits = await crypto.subtle.deriveBits(
       {
@@ -422,7 +435,7 @@ export async function getRustyVaultCryptoReadiness(): Promise<RustyVaultCryptoRe
       message: 'RustyVault is using native browser Argon2id support.',
     };
   }
-  if (await browserSupportsPortableArgon2()) {
+  if (await resolveWithin(browserSupportsPortableArgon2(), false)) {
     return {
       ready: true,
       mode: 'portable-fallback',
