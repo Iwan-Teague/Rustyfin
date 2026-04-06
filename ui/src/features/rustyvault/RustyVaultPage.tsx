@@ -507,6 +507,7 @@ export default function RustyVaultPage() {
   const [lookupUrl, setLookupUrl] = useState('');
   const [lookupResultIds, setLookupResultIds] = useState<string[]>([]);
   const [excludedDomainsInput, setExcludedDomainsInput] = useState('');
+  const [preferencesDirty, setPreferencesDirty] = useState(false);
   const [loadingState, setLoadingState] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -578,6 +579,7 @@ export default function RustyVaultPage() {
     setGeneratorPreset(generatorDefaults.preset);
     setGeneratorOptions(generatorDefaults.options);
     setExcludedDomainsInput(nextPrefs.excluded_domains.join('\n'));
+    setPreferencesDirty(false);
     setDeviceSessions(nextDevices);
   }
 
@@ -810,6 +812,18 @@ export default function RustyVaultPage() {
     return () => window.clearTimeout(timeout);
   }, [activeToast]);
 
+  useEffect(() => {
+    if (!settingsAccessGranted || !preferencesDirty) return;
+    const timeout = window.setTimeout(() => {
+      setPreferencesDirty(false);
+      savePreferences().catch((err) => {
+        setError(clientErrorMessage(err, 'Vault preferences could not be saved'));
+        setPreferencesDirty(true);
+      });
+    }, 700);
+    return () => window.clearTimeout(timeout);
+  }, [excludedDomainsInput, preferencesDirty, prefs, settingsAccessGranted]);
+
   async function runAction<T>(label: string, callback: () => Promise<T>) {
     setSaving(true);
     setError(null);
@@ -983,6 +997,7 @@ export default function RustyVaultPage() {
     );
     setPrefs(updated);
     setExcludedDomainsInput(updated.excluded_domains.join('\n'));
+    setPreferencesDirty(false);
   }
 
   async function pairExtension() {
@@ -1193,7 +1208,7 @@ export default function RustyVaultPage() {
   const workspaceContentClassName =
     activeWorkspaceTab === 'settings'
       ? settingsAccessGranted
-        ? 'grid grid-cols-1 gap-7 xl:grid-cols-[0.95fr_1.05fr]'
+        ? 'grid grid-cols-1 gap-7 xl:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]'
         : 'w-full'
       : activeWorkspaceTab === 'generator'
         ? 'w-full'
@@ -2028,131 +2043,125 @@ export default function RustyVaultPage() {
                 </form>
               </div>
             ) : (
-              <div className={workspaceContentClassName}>
-                <div className="space-y-7">
-                  <div className="space-y-5 pt-1">
-                    <div className="flex items-start justify-between gap-4">
-                      <h2 className="text-xl font-semibold">Settings</h2>
-                      <button
-                        type="button"
-                        className="rf-text-action rf-text-action-muted text-sm"
-                        onClick={() => {
-                          setSettingsAccessGranted(false);
-                          setSecurityPassword('');
-                        }}
-                      >
-                        Lock settings
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className={vaultSectionClassName}>
-                    <div>
-                      <h2 className="text-xl font-semibold">Vault preferences</h2>
-                      <p className="mt-1 text-sm muted">
-                        Keep the daily vault behavior predictable without adding clutter to the main credentials view.
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <label className="space-y-2">
-                        <span className="text-sm">Auto-lock minutes</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={240}
-                          value={prefs.auto_lock_minutes}
-                          onChange={(event) =>
-                            setPrefs((current) => ({
-                              ...current,
-                              auto_lock_minutes:
-                                Number.parseInt(event.target.value || '15', 10) || 15,
-                            }))
-                          }
-                          className={vaultFieldClassName}
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm">Clipboard clear seconds</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={120}
-                          value={prefs.clipboard_clear_seconds}
-                          onChange={(event) =>
-                            setPrefs((current) => ({
-                              ...current,
-                              clipboard_clear_seconds:
-                                Number.parseInt(event.target.value || '30', 10) || 0,
-                            }))
-                          }
-                          className={vaultFieldClassName}
-                        />
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm">Default match mode</span>
-                        <select
-                          value={currentMatchMode}
-                          onChange={(event) =>
-                            setPrefs((current) => ({
-                              ...current,
-                              default_match_mode: normalizeMode(event.target.value),
-                            }))
-                          }
-                          className={vaultFieldClassName}
-                        >
-                          <option value="exact">Exact</option>
-                          <option value="host">Host</option>
-                          <option value="base_domain">Base domain</option>
-                          <option value="never">Never</option>
-                        </select>
-                      </label>
-                      <label className="space-y-2">
-                        <span className="text-sm">Excluded domains</span>
-                        <textarea
-                          value={excludedDomainsInput}
-                          onChange={(event) => setExcludedDomainsInput(event.target.value)}
-                          rows={4}
-                          className="rf-flat-input min-h-[6rem] px-4 py-3"
-                          placeholder={'example.com\nbank.example'}
-                        />
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      {([
-                        ['inline_save_prompt_enabled', 'Automatic save prompts'],
-                        ['inline_autofill_enabled', 'Inline autofill affordances'],
-                        ['warn_on_http', 'Warn before HTTP fill'],
-                        ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
-                        ['allow_manual_http_fill', 'Allow manual HTTP fill'],
-                      ] as const).map(([key, label]) => (
-                        <RfSwitch
-                          key={key}
-                          label={label}
-                          checked={prefs[key]}
-                          onChange={(checked) =>
-                            setPrefs((current) => ({
-                              ...current,
-                              [key]: checked,
-                            }))
-                          }
-                        />
-                      ))}
-                    </div>
-
-                    <button
-                      type="button"
-                      className="rf-text-action text-sm"
-                      onClick={() => runAction('Vault preferences saved.', savePreferences)}
-                    >
-                      Save preferences
-                    </button>
-                  </div>
+              <div className="space-y-7">
+                <div className="flex items-center justify-between gap-4 pt-1">
+                  <h2 className="text-xl font-semibold">Settings</h2>
+                  <button
+                    type="button"
+                    className="rf-text-action rf-text-action-muted text-sm"
+                    onClick={() => {
+                      setSettingsAccessGranted(false);
+                      setSecurityPassword('');
+                    }}
+                  >
+                    Lock settings
+                  </button>
                 </div>
 
-                <div className="space-y-7">
-                  <div className="space-y-5 pt-1">
+                <div className={workspaceContentClassName}>
+                  <div className="space-y-7">
+                    <div className={vaultSectionClassName}>
+                      <div>
+                        <h2 className="text-xl font-semibold">Vault preferences</h2>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <label className="space-y-2">
+                          <span className="text-sm">Auto-lock minutes</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={240}
+                            value={prefs.auto_lock_minutes}
+                            onChange={(event) => {
+                              setPreferencesDirty(true);
+                              setPrefs((current) => ({
+                                ...current,
+                                auto_lock_minutes:
+                                  Number.parseInt(event.target.value || '15', 10) || 15,
+                              }));
+                            }}
+                            className={vaultFieldClassName}
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-sm">Clipboard clear seconds</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={120}
+                            value={prefs.clipboard_clear_seconds}
+                            onChange={(event) => {
+                              setPreferencesDirty(true);
+                              setPrefs((current) => ({
+                                ...current,
+                                clipboard_clear_seconds:
+                                  Number.parseInt(event.target.value || '30', 10) || 0,
+                              }));
+                            }}
+                            className={vaultFieldClassName}
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-sm">Default match mode</span>
+                          <select
+                            value={currentMatchMode}
+                            onChange={(event) => {
+                              setPreferencesDirty(true);
+                              setPrefs((current) => ({
+                                ...current,
+                                default_match_mode: normalizeMode(event.target.value),
+                              }));
+                            }}
+                            className={vaultFieldClassName}
+                          >
+                            <option value="exact">Exact</option>
+                            <option value="host">Host</option>
+                            <option value="base_domain">Base domain</option>
+                            <option value="never">Never</option>
+                          </select>
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-sm">Excluded domains</span>
+                          <textarea
+                            value={excludedDomainsInput}
+                            onChange={(event) => {
+                              setPreferencesDirty(true);
+                              setExcludedDomainsInput(event.target.value);
+                            }}
+                            rows={4}
+                            className="rf-flat-input min-h-[6rem] px-4 py-3"
+                            placeholder={'example.com\nbank.example'}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        {([
+                          ['inline_save_prompt_enabled', 'Automatic save prompts'],
+                          ['inline_autofill_enabled', 'Inline autofill affordances'],
+                          ['warn_on_http', 'Warn before HTTP fill'],
+                          ['warn_on_untrusted_iframe', 'Warn on untrusted iframe fill'],
+                          ['allow_manual_http_fill', 'Allow manual HTTP fill'],
+                        ] as const).map(([key, label]) => (
+                          <RfSwitch
+                            key={key}
+                            label={label}
+                            checked={prefs[key]}
+                            onChange={(checked) => {
+                              setPreferencesDirty(true);
+                              setPrefs((current) => ({
+                                ...current,
+                                [key]: checked,
+                              }));
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-7">
                     <div>
                       <h2 className="text-xl font-semibold">Change vault master password</h2>
                       <p className="mt-1 text-sm muted">
