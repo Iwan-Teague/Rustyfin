@@ -167,6 +167,37 @@ type RustyVaultJsonOptions = RequestInit & {
   vaultAccessToken?: string | null;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sanitizeRustyVaultApiErrorMessage(message: string): string {
+  return message.replace(
+    /^(bad request|unauthorized|forbidden|not found|conflict|internal error):\s*/i,
+    '',
+  );
+}
+
+function buildRustyVaultApiError(body: unknown, fallback: string, status: number): Error {
+  const message = sanitizeRustyVaultApiErrorMessage(extractErrorMessage(body, fallback));
+  const error = new Error(message);
+  const enriched = error as Error & {
+    code?: string;
+    status?: number;
+    details?: unknown;
+  };
+  enriched.status = status;
+  if (isRecord(body) && isRecord(body.error)) {
+    if (typeof body.error.code === 'string') {
+      enriched.code = body.error.code;
+    }
+    if ('details' in body.error) {
+      enriched.details = body.error.details;
+    }
+  }
+  return error;
+}
+
 async function rustyVaultJson<T>(path: string, options: RustyVaultJsonOptions = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   if (options.vaultAccessToken && !headers.has(RUSTYVAULT_ACCESS_HEADER)) {
@@ -175,7 +206,7 @@ async function rustyVaultJson<T>(path: string, options: RustyVaultJsonOptions = 
   const res = await apiFetch(path, { ...options, headers });
   const body = await parseResponseBody(res);
   if (!res.ok) {
-    throw new Error(extractErrorMessage(body, `Vault API error: ${res.status}`));
+    throw buildRustyVaultApiError(body, `Vault API error: ${res.status}`, res.status);
   }
   return body as T;
 }
