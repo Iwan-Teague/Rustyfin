@@ -34,11 +34,6 @@ export const PERSONAL_GROUP: NavigationGroup = {
       description: 'Open RustyVault for saved credentials and secure session management.',
     },
     {
-      href: '/dictionary',
-      label: 'Dictionary',
-      description: 'Open a lightweight glossary workspace for words, notes, and definitions.',
-    },
-    {
       href: '/backups',
       label: 'Backups',
       description: 'Run snapshots, inspect history, and review backup policies.',
@@ -61,6 +56,11 @@ export const SOCIAL_GROUP: NavigationGroup = {
       href: '/rooms',
       label: 'Rooms',
       description: 'Join live rooms or create a new shared watch, listen, challenge, or create space.',
+    },
+    {
+      href: '/dictionary',
+      label: 'Dictionary',
+      description: 'Open a lightweight glossary workspace for words, notes, and definitions.',
     },
   ],
 };
