@@ -12,7 +12,10 @@ use crate::state::AppState;
 
 pub fn rustyvault_router() -> Router<AppState> {
     Router::new()
-        .route("/config", get(handlers::get_config))
+        .route(
+            "/config",
+            get(handlers::get_config).patch(handlers::update_config),
+        )
         .route(
             "/preferences",
             get(handlers::get_preferences).patch(handlers::update_preferences),

@@ -87,6 +87,7 @@ pub struct RustyVaultConfigResponse {
     pub schema_version: i32,
     pub supported_kdf_algorithms: Vec<String>,
     pub supported_encryption_algorithms: Vec<String>,
+    pub display_name: String,
     pub active_wrapped_key: Option<RustyVaultWrappedKeyMetadata>,
     pub item_count: i64,
 }
@@ -449,6 +450,11 @@ pub struct RustyVaultImportBitwardenResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustyVaultBootstrapRequest {
     pub wrapped_key: RustyVaultWrappedKeyMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateRustyVaultConfigRequest {
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -48,6 +48,7 @@ import {
   rekeyRustyVault,
   revokeOtherRustyVaultSessions,
   revokeRustyVaultDeviceSession,
+  updateRustyVaultConfig,
   type EncryptedRustyVaultItemSummary,
   type RustyVaultConfigResponse,
   type RustyVaultDeviceSessionResponse,
@@ -399,6 +400,11 @@ function itemTypeDescription(itemType: RustyVaultItemType) {
   return ITEM_TYPE_OPTIONS.find((option) => option.value === itemType)?.description ?? '';
 }
 
+function itemCountLabel(count: number | null | undefined) {
+  const value = count ?? 0;
+  return `${value} ${value === 1 ? 'item' : 'items'}`;
+}
+
 function itemPrimaryCopyValue(item: RustyVaultItem) {
   switch (item.item_type) {
     case 'credit_card':
@@ -501,6 +507,7 @@ export default function RustyVaultPage() {
   const [newMasterPasswordConfirm, setNewMasterPasswordConfirm] = useState('');
   const [extensionPairing, setExtensionPairing] =
     useState<RustyVaultPairingCodeResponse | null>(null);
+  const [vaultDisplayNameInput, setVaultDisplayNameInput] = useState('');
   const [deviceSessions, setDeviceSessions] = useState<RustyVaultDeviceSessionResponse[]>([]);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importClearExisting, setImportClearExisting] = useState(true);
@@ -576,6 +583,7 @@ export default function RustyVaultPage() {
       listRustyVaultDeviceSessions(session.access_token).catch(() => []),
     ]);
     setConfig(nextConfig);
+    setVaultDisplayNameInput(nextConfig.display_name);
     setPrefs(nextPrefs);
     const generatorDefaults = passwordGeneratorDefaultsFromPrefs(nextPrefs);
     setGeneratorPreset(generatorDefaults.preset);
@@ -631,6 +639,7 @@ export default function RustyVaultPage() {
       throw new Error('Vault creation did not persist on the server');
     }
     setConfig(persistedConfig);
+    setVaultDisplayNameInput(persistedConfig.display_name);
     setUnlocked(unlockedContext);
     setVaultView('workspace');
     setActiveWorkspaceTab('credentials');
@@ -662,6 +671,7 @@ export default function RustyVaultPage() {
       'Vault unlock is taking too long. Please try again.',
     );
     setUnlocked(unlockedContext);
+    setVaultDisplayNameInput(config.display_name);
     setVaultView('workspace');
     setActiveWorkspaceTab('credentials');
     setSelectedItem(null);
@@ -933,6 +943,17 @@ export default function RustyVaultPage() {
       }),
     );
     setSettingsAccessGranted(true);
+  }
+
+  async function renameCurrentVault() {
+    if (!config?.enabled) {
+      throw new Error('Create the vault before renaming it');
+    }
+    const updated = await withRustyVaultAccess((accessToken) =>
+      updateRustyVaultConfig({ display_name: vaultDisplayNameInput }, accessToken),
+    );
+    setConfig(updated);
+    setVaultDisplayNameInput(updated.display_name);
   }
 
   async function saveEditorItem() {
@@ -1225,13 +1246,9 @@ export default function RustyVaultPage() {
     const freshSession = await ensureRustyVaultWebSession();
     setVaultSession(freshSession);
     setConfig(await getRustyVaultConfig(freshSession.access_token));
+    setVaultDisplayNameInput('');
     setDeviceSessions([]);
   }
-
-  const workspaceBadges = [
-    unlocked ? 'Unlocked' : config?.enabled ? 'Locked' : 'Not set up',
-    `${config?.item_count ?? 0} items`,
-  ];
 
   const workspaceContentClassName =
     activeWorkspaceTab === 'settings'
@@ -1255,7 +1272,7 @@ export default function RustyVaultPage() {
     generatorOptions.include_numbers === prefs.password_generator_include_numbers &&
     generatorOptions.include_symbols === prefs.password_generator_include_symbols &&
     generatorOptions.exclude_ambiguous === prefs.password_generator_exclude_ambiguous;
-  const currentVaultLabel = config?.enabled ? 'Personal Vault' : 'Set up Vault';
+  const currentVaultLabel = config?.enabled ? config?.display_name || 'Personal Vault' : 'Set up Vault';
   const currentVaultDescription = config?.enabled
     ? 'Client-side encrypted credentials, cards, passports, and secure notes for this Rustyfin account.'
     : 'Create an encrypted vault before saving credentials or personal records.';
@@ -1632,7 +1649,7 @@ export default function RustyVaultPage() {
                   </div>
                   <div className="rf-inline-meta justify-start sm:justify-end">
                     <span>{config?.enabled ? 'Locked' : 'Not set up'}</span>
-                    <span>{config?.item_count ?? 0} items</span>
+                    <span>{itemCountLabel(config?.item_count)}</span>
                   </div>
                 </div>
               </button>
@@ -1799,8 +1816,6 @@ export default function RustyVaultPage() {
               { key: 'generator', label: 'Password Generator' },
               { key: 'extension', label: 'Extension' },
             ]}
-            badges={workspaceBadges}
-            badgesClassName="-translate-y-[2px]"
           />
         </div>
 
@@ -2082,6 +2097,30 @@ export default function RustyVaultPage() {
                   <div className={workspaceContentClassName}>
                   <div className="space-y-7">
                     <div className="space-y-5">
+                      <div className="space-y-3">
+                        <h2 className="text-xl font-semibold">Rename vault</h2>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                          <label className="min-w-0 flex-1 space-y-2">
+                            <span className="text-sm">Vault name</span>
+                            <input
+                              value={vaultDisplayNameInput}
+                              onChange={(event) => setVaultDisplayNameInput(event.target.value)}
+                              className={vaultFieldClassName}
+                              placeholder="Personal Vault"
+                              maxLength={80}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="rf-text-action text-sm disabled:opacity-50"
+                            disabled={saving || !config?.enabled || !vaultDisplayNameInput.trim()}
+                            onClick={() => runAction('Vault renamed.', renameCurrentVault)}
+                          >
+                            Rename vault
+                          </button>
+                        </div>
+                      </div>
+
                       <div>
                         <h2 className="text-xl font-semibold">Vault preferences</h2>
                       </div>
@@ -2188,9 +2227,6 @@ export default function RustyVaultPage() {
                       <p className="mt-1 text-sm muted">
                         Re-enter the current vault master password here. This rotates the wrapped key and re-encrypts your saved items for this vault.
                       </p>
-                      <div className="rounded-2xl bg-white/[0.025] px-4 py-4 text-sm muted">
-                        Confirm carefully before rotating. If you lose the new vault master password, Rustyfin cannot recover these encrypted vault contents for you.
-                      </div>
                       <div className="grid grid-cols-1 gap-3">
                         <input
                           type="password"

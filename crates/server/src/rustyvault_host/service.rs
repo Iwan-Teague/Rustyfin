@@ -151,14 +151,21 @@ pub fn map_item(row: rustfin_db::repo::rustyvault::RustyVaultItemRow) -> Encrypt
 }
 
 pub fn build_rustyvault_config_response(
+    account: Option<rustfin_db::repo::rustyvault::RustyVaultAccountRow>,
     wrapped_key: Option<rustfin_db::repo::rustyvault::RustyVaultWrappedKeyRow>,
     item_count: i64,
 ) -> RustyVaultConfigResponse {
+    let display_name = account
+        .and_then(|row| row.display_name)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Personal Vault".to_string());
     RustyVaultConfigResponse {
         enabled: wrapped_key.is_some(),
         schema_version: RUSTYVAULT_SCHEMA_VERSION,
         supported_kdf_algorithms: vec![RUSTYVAULT_KDF_ALGORITHM.to_string()],
         supported_encryption_algorithms: vec![RUSTYVAULT_ENCRYPTION_ALGORITHM.to_string()],
+        display_name,
         active_wrapped_key: wrapped_key.map(map_wrapped_key_metadata),
         item_count,
     }
@@ -233,6 +240,33 @@ pub async fn save_rustyvault_preferences(
     .await
     .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     Ok(map_preferences_row(saved).normalized())
+}
+
+pub fn normalize_rustyvault_display_name(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("vault display name is required".into()).into());
+    }
+    if trimmed.chars().count() > 80 {
+        return Err(ApiError::BadRequest("vault display name is too long".into()).into());
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_rustyvault_display_name;
+
+    #[test]
+    fn normalize_rustyvault_display_name_trims_valid_names() {
+        let normalized = normalize_rustyvault_display_name("  Personal Vault  ").unwrap();
+        assert_eq!(normalized, "Personal Vault");
+    }
+
+    #[test]
+    fn normalize_rustyvault_display_name_rejects_blank_names() {
+        assert!(normalize_rustyvault_display_name("   ").is_err());
+    }
 }
 
 fn map_preferences_row(
