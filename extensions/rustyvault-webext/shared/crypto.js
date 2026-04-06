@@ -23,6 +23,11 @@ const MULTIPART_SUFFIXES = new Set([
 
 let nativeArgon2SupportPromise = null;
 let portableArgon2SupportPromise = null;
+const DEFAULT_ARGON2_PARAMS = {
+  memory_kib: 65536,
+  iterations: 3,
+  parallelism: 4,
+};
 
 function toArrayBuffer(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -88,7 +93,30 @@ async function browserSupportsPortableArgon2() {
   return portableArgon2SupportPromise;
 }
 
-async function deriveMasterMaterial(password, salt) {
+function normalizeArgon2Params(value) {
+  const memory_kib =
+    typeof value?.memory_kib === 'number' && Number.isFinite(value.memory_kib) && value.memory_kib > 0
+      ? Math.floor(value.memory_kib)
+      : DEFAULT_ARGON2_PARAMS.memory_kib;
+  const iterations =
+    typeof value?.iterations === 'number' && Number.isFinite(value.iterations) && value.iterations > 0
+      ? Math.floor(value.iterations)
+      : DEFAULT_ARGON2_PARAMS.iterations;
+  const parallelism =
+    typeof value?.parallelism === 'number' &&
+    Number.isFinite(value.parallelism) &&
+    value.parallelism > 0
+      ? Math.floor(value.parallelism)
+      : DEFAULT_ARGON2_PARAMS.parallelism;
+  return {
+    memory_kib,
+    iterations,
+    parallelism,
+  };
+}
+
+async function deriveMasterMaterial(password, salt, params = DEFAULT_ARGON2_PARAMS) {
+  const normalizedParams = normalizeArgon2Params(params);
   let bits;
   if (await browserSupportsNativeArgon2Id()) {
     const passwordKey = await importArgon2PasswordKey(password);
@@ -96,9 +124,9 @@ async function deriveMasterMaterial(password, salt) {
       {
         name: 'Argon2id',
         nonce: toArrayBuffer(salt),
-        parallelism: 4,
-        memory: 65536,
-        passes: 3,
+        parallelism: normalizedParams.parallelism,
+        memory: normalizedParams.memory_kib,
+        passes: normalizedParams.iterations,
       },
       passwordKey,
       256,
@@ -110,9 +138,9 @@ async function deriveMasterMaterial(password, salt) {
     bits = await argon2BrowserHash({
       pass: encoder.encode(password),
       salt,
-      time: 3,
-      mem: 65536,
-      parallelism: 4,
+      time: normalizedParams.iterations,
+      mem: normalizedParams.memory_kib,
+      parallelism: normalizedParams.parallelism,
       hashLen: 32,
       type: ArgonType.Argon2id,
     }).then((result) => result.hash);
@@ -151,7 +179,11 @@ async function deriveIndexKey(masterMaterial) {
 }
 
 export async function unlockRustyVault(masterPassword, userId, wrappedKey) {
-  const masterMaterial = await deriveMasterMaterial(masterPassword, fromHex(wrappedKey.kdf_salt_hex));
+  const masterMaterial = await deriveMasterMaterial(masterPassword, fromHex(wrappedKey.kdf_salt_hex), {
+    memory_kib: wrappedKey.kdf_memory_kib,
+    iterations: wrappedKey.kdf_iterations,
+    parallelism: wrappedKey.kdf_parallelism,
+  });
   const wrapKey = await deriveWrapKey(masterMaterial);
   const indexKey = await deriveIndexKey(masterMaterial);
   const vaultKey = await crypto.subtle.unwrapKey(
