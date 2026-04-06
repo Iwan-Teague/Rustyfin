@@ -1354,6 +1354,93 @@ fn split_transcript_text_into_entries(
     started_ts_ms: i64,
     ended_ts_ms: i64,
 ) -> Vec<(i64, i64, String)> {
+    const MAX_TRANSCRIPT_SEGMENT_CHARS: usize = 180;
+    const MAX_TRANSCRIPT_SEGMENT_WORDS: usize = 32;
+    const TARGET_TRANSCRIPT_SEGMENT_CHARS: usize = 140;
+    const TARGET_TRANSCRIPT_SEGMENT_WORDS: usize = 24;
+    const MAX_TRANSCRIPT_SEGMENT_DURATION_MS: i64 = 12_000;
+
+    fn normalize_segment_text(value: &str) -> String {
+        value.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn segment_char_count(value: &str) -> usize {
+        value.chars().count().max(1)
+    }
+
+    fn segment_word_count(value: &str) -> usize {
+        value.split_whitespace().count().max(1)
+    }
+
+    fn split_segment_roughly_in_half(value: &str) -> Option<(String, String)> {
+        let words: Vec<&str> = value.split_whitespace().collect();
+        if words.len() < 2 {
+            return None;
+        }
+        let midpoint = words.len() / 2;
+        let left = normalize_segment_text(&words[..midpoint].join(" "));
+        let right = normalize_segment_text(&words[midpoint..].join(" "));
+        if left.is_empty() || right.is_empty() {
+            return None;
+        }
+        Some((left, right))
+    }
+
+    fn split_overlong_segment(value: &str) -> Vec<String> {
+        if segment_char_count(value) <= MAX_TRANSCRIPT_SEGMENT_CHARS
+            && segment_word_count(value) <= MAX_TRANSCRIPT_SEGMENT_WORDS
+        {
+            return vec![value.to_string()];
+        }
+
+        let mut chunks = Vec::new();
+        let mut current_words: Vec<&str> = Vec::new();
+        let mut current_chars = 0usize;
+
+        for word in value.split_whitespace() {
+            let word_chars = word.chars().count();
+            let next_chars = if current_words.is_empty() {
+                word_chars
+            } else {
+                current_chars + 1 + word_chars
+            };
+
+            current_words.push(word);
+            current_chars = next_chars;
+
+            let hard_limit = current_chars >= MAX_TRANSCRIPT_SEGMENT_CHARS
+                || current_words.len() >= MAX_TRANSCRIPT_SEGMENT_WORDS;
+            let soft_limit = current_chars >= TARGET_TRANSCRIPT_SEGMENT_CHARS
+                || current_words.len() >= TARGET_TRANSCRIPT_SEGMENT_WORDS;
+            let soft_boundary = matches!(
+                word.chars().last(),
+                Some(',' | ';' | ':' | ')' | ']' | '-' | '!' | '?' | '.')
+            );
+
+            if hard_limit || (soft_limit && soft_boundary) {
+                let normalized = normalize_segment_text(&current_words.join(" "));
+                if !normalized.is_empty() {
+                    chunks.push(normalized);
+                }
+                current_words.clear();
+                current_chars = 0;
+            }
+        }
+
+        if !current_words.is_empty() {
+            let normalized = normalize_segment_text(&current_words.join(" "));
+            if !normalized.is_empty() {
+                chunks.push(normalized);
+            }
+        }
+
+        if chunks.is_empty() {
+            vec![value.to_string()]
+        } else {
+            chunks
+        }
+    }
+
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -1364,7 +1451,7 @@ fn split_transcript_text_into_entries(
     let mut chars = trimmed.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\n' {
-            let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+            let normalized = normalize_segment_text(&current);
             if !normalized.is_empty() {
                 segments.push(normalized);
             }
@@ -1381,7 +1468,7 @@ fn split_transcript_text_into_entries(
             .peek()
             .is_none_or(|next| next.is_whitespace() || matches!(next, '"' | '\'' | ')' | ']'));
         if is_sentence_punctuation && next_is_boundary {
-            let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+            let normalized = normalize_segment_text(&current);
             if !normalized.is_empty() {
                 segments.push(normalized);
             }
@@ -1389,7 +1476,7 @@ fn split_transcript_text_into_entries(
         }
     }
 
-    let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = normalize_segment_text(&current);
     if !normalized.is_empty() {
         segments.push(normalized);
     }
@@ -1397,6 +1484,43 @@ fn split_transcript_text_into_entries(
     if segments.is_empty() {
         return Vec::new();
     }
+
+    let total_duration = (ended_ts_ms - started_ts_ms).max(segments.len() as i64);
+    let total_chars = segments
+        .iter()
+        .map(|segment| segment_char_count(segment) as i64)
+        .sum::<i64>()
+        .max(1);
+    let mut bounded_segments = Vec::new();
+    for segment in segments {
+        let char_count = segment_char_count(&segment) as i64;
+        let estimated_duration_ms =
+            ((total_duration as i128 * char_count as i128) / total_chars as i128) as i64;
+        let required_parts = ((estimated_duration_ms.max(1) + MAX_TRANSCRIPT_SEGMENT_DURATION_MS
+            - 1)
+            / MAX_TRANSCRIPT_SEGMENT_DURATION_MS) as usize;
+        let mut chunked = split_overlong_segment(&segment);
+
+        while chunked.len() < required_parts {
+            let Some((index, _)) = chunked
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, value)| segment_char_count(value))
+            else {
+                break;
+            };
+            let Some((left, right)) = split_segment_roughly_in_half(&chunked[index]) else {
+                break;
+            };
+            chunked.remove(index);
+            chunked.insert(index, right);
+            chunked.insert(index, left);
+        }
+
+        bounded_segments.extend(chunked);
+    }
+    segments = bounded_segments;
+
     if segments.len() == 1 {
         return vec![(
             started_ts_ms,
@@ -1405,10 +1529,9 @@ fn split_transcript_text_into_entries(
         )];
     }
 
-    let total_duration = (ended_ts_ms - started_ts_ms).max(segments.len() as i64);
     let weights: Vec<i64> = segments
         .iter()
-        .map(|segment| segment.chars().count().max(1) as i64)
+        .map(|segment| segment_char_count(segment) as i64)
         .collect();
     let total_weight: i64 = weights.iter().sum();
     let mut cumulative_weight: i64 = 0;
@@ -2211,9 +2334,9 @@ pub async fn upload_transcription_text(
     }
 
     let accepted_session = resolve_upload_session(&state, &channel_id, &body.session_id).await?;
-    for (segment_started_ts_ms, segment_ended_ts_ms, segment_text) in
-        split_transcript_text_into_entries(text, body.started_ts_ms, body.ended_ts_ms)
-    {
+    let entries = split_transcript_text_into_entries(text, body.started_ts_ms, body.ended_ts_ms);
+    let persisted_segments = entries.len() as i64;
+    for (segment_started_ts_ms, segment_ended_ts_ms, segment_text) in entries {
         rustfin_db::repo::channel_transcripts::append_entry(
             &state.db,
             rustfin_db::repo::channel_transcripts::NewTranscriptEntry {
@@ -2233,7 +2356,7 @@ pub async fn upload_transcription_text(
 
     Ok(Json(TranscriptionTextUploadResponse {
         accepted: true,
-        persisted_segments: 1,
+        persisted_segments,
     }))
 }
 
@@ -2552,5 +2675,24 @@ mod tests {
         assert_eq!(entries.first().map(|entry| entry.0), Some(1_000));
         assert_eq!(entries.last().map(|entry| entry.1), Some(4_000));
         assert!(entries.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+    }
+
+    #[test]
+    fn split_transcript_text_breaks_long_browser_blob_without_punctuation() {
+        let text = "huh oh my god i've seen this is the studio bullets to be honest i don't bullets it's their boobie trap if i can kill them though the good old days one why did they change it why do they change it well maybe on my car maybe yeah that's remember this shit the fucking the fucking you this is the stupidest ever your bullets to be honest the it's the booby trap strut i have boom yeah you did i mean i'll be surprisingly lips three fucking bumps yeah real this so beautiful well i would molds no yeah yeah that's mood";
+        let entries = split_transcript_text_into_entries(text, 336, 86_007);
+
+        assert!(
+            entries.len() >= 4,
+            "expected multiple entries, got {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|(_, _, segment)| segment.chars().count() <= 180)
+        );
+        assert!(entries.windows(2).all(|pair| pair[0].1 <= pair[1].0));
+        assert_eq!(entries.first().map(|entry| entry.0), Some(336));
+        assert_eq!(entries.last().map(|entry| entry.1), Some(86_007));
     }
 }
