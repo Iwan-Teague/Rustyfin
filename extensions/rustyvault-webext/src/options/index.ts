@@ -11,7 +11,7 @@ async function callBackground(message: BackgroundRequest): Promise<BackgroundRes
 function setStatus(message: string, isError = false) {
   const status = $('status') as HTMLParagraphElement;
   status.textContent = message;
-  status.style.color = isError ? '#ffd4d8' : '';
+  status.style.color = isError ? 'rgba(248, 248, 255, 0.92)' : '';
 }
 
 async function load() {

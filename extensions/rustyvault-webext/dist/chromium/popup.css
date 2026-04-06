@@ -1,16 +1,37 @@
-body {
-  margin: 0;
-  min-width: 360px;
-  background:
+:root {
+  color-scheme: dark;
+  --rv-bg:
     radial-gradient(circle at top left, rgba(255, 145, 77, 0.16), transparent 38%),
     radial-gradient(circle at 82% 18%, rgba(255, 117, 136, 0.16), transparent 34%),
     radial-gradient(circle at 75% 82%, rgba(177, 140, 255, 0.18), transparent 40%),
     linear-gradient(160deg, #1d2231 0%, #242b3c 55%, #2b3347 100%);
-  color: #f8f8ff;
+  --rv-surface: rgba(39, 45, 64, 0.82);
+  --rv-surface-strong: rgba(30, 36, 52, 0.94);
+  --rv-border: rgba(215, 223, 255, 0.14);
+  --rv-border-hover: rgba(215, 223, 255, 0.22);
+  --rv-text: #f8f8ff;
+  --rv-muted: rgba(248, 248, 255, 0.72);
+  --rv-muted-strong: rgba(248, 248, 255, 0.82);
+  --rv-focus: rgba(248, 248, 255, 0.7);
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--rv-bg);
+  overscroll-behavior: none;
+}
+
+body {
+  min-width: 360px;
+  color: var(--rv-text);
   font: 14px/1.4 "Avenir Next", "Segoe UI", sans-serif;
 }
 
 .shell {
+  min-height: 100vh;
+  box-sizing: border-box;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -19,11 +40,12 @@ body {
 
 .hero,
 .panel {
-  border: 1px solid rgba(215, 223, 255, 0.14);
-  border-radius: 18px;
-  background: rgba(39, 45, 64, 0.82);
+  border: 1px solid var(--rv-border);
+  border-radius: 24px;
+  background: var(--rv-surface);
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.28);
   padding: 14px;
+  backdrop-filter: blur(18px);
 }
 
 .hero h1,
@@ -36,11 +58,11 @@ body {
   font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: #ffc27a;
+  color: var(--rv-muted-strong);
 }
 
 .muted {
-  color: #c4c9e1;
+  color: var(--rv-muted);
 }
 
 .field {
@@ -64,27 +86,33 @@ body {
 }
 
 .field input {
-  border: 1px solid rgba(215, 223, 255, 0.16);
-  border-radius: 14px;
-  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--rv-border);
+  border-radius: 18px;
+  background: rgba(17, 22, 33, 0.52);
   color: inherit;
   padding: 11px 13px;
 }
 
 .field textarea,
 .field select {
-  border: 1px solid rgba(215, 223, 255, 0.16);
-  border-radius: 14px;
-  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--rv-border);
+  border-radius: 18px;
+  background: rgba(17, 22, 33, 0.52);
   color: inherit;
   padding: 11px 13px;
+  resize: vertical;
+}
+
+.field input::placeholder,
+.field textarea::placeholder {
+  color: rgba(248, 248, 255, 0.42);
 }
 
 .field input:focus-visible,
 .field textarea:focus-visible,
 .field select:focus-visible,
 .btn:focus-visible {
-  outline: 2px solid #ffc27a;
+  outline: 2px solid var(--rv-focus);
   outline-offset: 2px;
 }
 
@@ -106,28 +134,32 @@ body {
 }
 
 .chip {
-  border: 1px solid rgba(255, 145, 77, 0.26);
+  border: 1px solid var(--rv-border-hover);
   border-radius: 999px;
   padding: 4px 10px;
-  background: rgba(255, 145, 77, 0.14);
-  color: #ffd3a6;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--rv-text);
   font-size: 12px;
   font-weight: 600;
 }
 
 .match {
-  border: 1px solid rgba(215, 223, 255, 0.14);
-  border-radius: 14px;
+  border: 1px solid var(--rv-border);
+  border-radius: 20px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--rv-surface-strong);
 }
 
 .btn {
-  border: none;
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: 18px;
   padding: 11px 14px;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
 }
 
 .btn:disabled {
@@ -143,6 +175,14 @@ body {
 .btn-secondary {
   background: rgba(255, 255, 255, 0.08);
   color: inherit;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--rv-border-hover);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .hidden {

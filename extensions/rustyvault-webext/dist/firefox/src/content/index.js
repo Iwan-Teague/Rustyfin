@@ -122,8 +122,12 @@ function ensureOverlayRoot() {
     const style = document.createElement('style');
     style.textContent = `
     .panel {
-      border-radius: 16px;
-      background: rgba(24, 29, 42, 0.96);
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at top left, rgba(255, 145, 77, 0.16), transparent 42%),
+        radial-gradient(circle at 82% 18%, rgba(255, 117, 136, 0.16), transparent 38%),
+        radial-gradient(circle at 75% 82%, rgba(177, 140, 255, 0.18), transparent 44%),
+        linear-gradient(160deg, rgba(29, 34, 49, 0.98) 0%, rgba(36, 43, 60, 0.98) 55%, rgba(43, 51, 71, 0.98) 100%);
       border: 1px solid rgba(215, 223, 255, 0.14);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
       color: #f8f8ff;
@@ -135,7 +139,7 @@ function ensureOverlayRoot() {
       font-size: 11px;
       letter-spacing: 0.18em;
       text-transform: uppercase;
-      color: #ffc27a;
+      color: rgba(248, 248, 255, 0.78);
     }
     .list { display: flex; flex-direction: column; }
     .item, .action {
@@ -151,7 +155,7 @@ function ensureOverlayRoot() {
       background: rgba(255,255,255,0.06);
     }
     .title { font-size: 13px; font-weight: 600; }
-    .meta { font-size: 12px; color: #c4c9e1; }
+    .meta { font-size: 12px; color: rgba(248, 248, 255, 0.72); }
   `;
     const mount = document.createElement('div');
     mount.className = 'panel';
@@ -266,15 +270,19 @@ function createSavePrompt() {
     style.textContent = `
     .prompt {
       inline-size: min(320px, calc(100vw - 32px));
-      border-radius: 18px;
-      background: rgba(24, 29, 42, 0.96);
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at top left, rgba(255, 145, 77, 0.16), transparent 42%),
+        radial-gradient(circle at 82% 18%, rgba(255, 117, 136, 0.16), transparent 38%),
+        radial-gradient(circle at 75% 82%, rgba(177, 140, 255, 0.18), transparent 44%),
+        linear-gradient(160deg, rgba(29, 34, 49, 0.98) 0%, rgba(36, 43, 60, 0.98) 55%, rgba(43, 51, 71, 0.98) 100%);
       border: 1px solid rgba(215, 223, 255, 0.14);
       box-shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
       color: #f8f8ff;
       padding: 14px;
       font-family: "Avenir Next", "Segoe UI", sans-serif;
     }
-    .title { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #ffc27a; margin-bottom: 8px; }
+    .title { font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(248, 248, 255, 0.78); margin-bottom: 8px; }
     .message { font-size: 13px; color: #f8f8ff; margin-bottom: 12px; }
     .actions { display: flex; gap: 8px; }
     button {
