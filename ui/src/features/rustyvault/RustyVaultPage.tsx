@@ -1451,7 +1451,7 @@ export default function RustyVaultPage() {
     }
   }
 
-  if (authLoading || loadingState || cryptoReadiness === null) {
+  if (authLoading || cryptoReadiness === null) {
     return (
       <div className="rf-flat-empty animate-rise px-5 py-4">
         <p className="text-sm muted">Loading Vault…</p>
@@ -1729,227 +1729,234 @@ export default function RustyVaultPage() {
         <div key={activeWorkspaceTab} className="vault-workspace-panel pt-5 sm:pt-6">
           {activeWorkspaceTab === 'credentials' && (
             <div className={workspaceContentClassName}>
-              <div className="relative min-h-[34rem] overflow-hidden">
-                <div className={vaultSectionClassName}>
-                  <div className="space-y-4">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div>
-                        <h2 className="text-xl font-semibold">Saved credentials</h2>
-                        <p className="mt-1 max-w-2xl text-sm muted">
-                          Unlock once, then browse everything locally from ciphertext summaries. Search stays in the browser.
-                        </p>
-                      </div>
-                      <div className="flex w-full flex-col gap-3 sm:max-w-[24rem] sm:items-stretch">
-                        <button
-                          type="button"
-                          className="rf-text-action text-sm sm:self-end"
-                          onClick={() => startNewDraft(newItemType)}
-                        >
-                          Create new
-                        </button>
-                        <input
-                          value={search}
-                          onChange={(event) => setSearch(event.target.value)}
-                          className="rf-flat-input w-full px-4 py-2 text-sm"
-                          placeholder="Search title, site, person, or document"
-                        />
-                      </div>
-                    </div>
-
-                    {!unlocked ? (
-                      <p className="px-1 py-2 text-sm muted">
-                        Unlock the vault to browse and edit entries.
-                      </p>
-                    ) : filteredRows.length === 0 ? (
-                      <p className="px-1 py-2 text-sm muted">
-                        No matching items yet. Start with a login, card, passport, or secure note.
-                      </p>
-                    ) : (
-                      <div
-                        className={
-                          showEditorPanel
-                            ? 'space-y-1 transition-[padding] duration-300 ease-out xl:pr-[32%]'
-                            : 'space-y-1 transition-[padding] duration-300 ease-out xl:pr-0'
-                        }
-                      >
-                        {filteredRows.map((row) => (
+              <div className="flex min-h-[34rem] flex-col gap-6 xl:flex-row">
+                <div
+                  className={`min-w-0 transition-[width] duration-300 ease-out ${
+                    showEditorPanel ? 'xl:w-[70%]' : 'xl:w-full'
+                  }`}
+                >
+                  <div className={vaultSectionClassName}>
+                    <div className="space-y-4">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <h2 className="text-xl font-semibold">Saved credentials</h2>
+                          <p className="mt-1 max-w-2xl text-sm muted">
+                            Unlock once, then browse everything locally from ciphertext summaries. Search stays in the browser.
+                          </p>
+                        </div>
+                        <div className="flex w-full flex-col gap-3 sm:max-w-[24rem] sm:items-stretch">
                           <button
-                            key={row.encrypted.id}
                             type="button"
-                            data-vault-item-id={row.encrypted.id}
-                            onClick={() => {
-                              setError(null);
-                              void loadItem(row.encrypted.id).catch((err) => {
-                                setError(clientErrorMessage(err, 'Failed to load the vault item'));
-                              });
-                            }}
-                            className={`w-full rounded-2xl px-4 py-4 text-left transition ${
-                              selectedItem?.id === row.encrypted.id && showEditorPanel
-                                ? 'border border-[var(--orange-soft)]/45 bg-white/[0.035]'
-                                : 'border border-transparent hover:border-white/10 hover:bg-white/[0.02]'
-                            }`}
+                            className="rf-text-action text-sm sm:self-end"
+                            onClick={() => startNewDraft(newItemType)}
                           >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                                  <p className="truncate font-semibold">{row.summary.title}</p>
-                                  <span className="text-[11px] uppercase tracking-[0.18em] text-white/40">
-                                    {itemTypeLabel(row.summary.item_type)}
-                                  </span>
-                                </div>
-                                <p className="mt-1 truncate text-sm muted">
-                                  {row.summary.primary_uri || row.summary.subtitle}
-                                </p>
-                                <p className="mt-1 truncate text-xs text-white/45">
-                                  {row.summary.username || row.summary.login_email || 'Saved entry'}
-                                </p>
-                              </div>
-                              <div className="shrink-0 text-right text-xs text-white/45">
-                                <p>{formatTimestamp(row.encrypted.updated_ts)}</p>
-                                {lookupResultIds.includes(row.encrypted.id) ? (
-                                  <p className="mt-1 text-[var(--orange-soft)]">Matched</p>
-                                ) : row.encrypted.favorite ? (
-                                  <p className="mt-1 text-white/70">Favorite</p>
-                                ) : null}
-                              </div>
-                            </div>
+                            Create new
                           </button>
-                        ))}
+                          <input
+                            value={search}
+                            onChange={(event) => setSearch(event.target.value)}
+                            className="rf-flat-input w-full px-4 py-2 text-sm"
+                            placeholder="Search title, site, person, or document"
+                          />
+                        </div>
                       </div>
-                    )}
+
+                      {!unlocked ? (
+                        <p className="px-1 py-2 text-sm muted">
+                          Unlock the vault to browse and edit entries.
+                        </p>
+                      ) : filteredRows.length === 0 ? (
+                        <p className="px-1 py-2 text-sm muted">
+                          No matching items yet. Start with a login, card, passport, or secure note.
+                        </p>
+                      ) : (
+                        <div className="space-y-1">
+                          {filteredRows.map((row) => (
+                            <button
+                              key={row.encrypted.id}
+                              type="button"
+                              data-vault-item-id={row.encrypted.id}
+                              onClick={() => {
+                                setError(null);
+                                void loadItem(row.encrypted.id).catch((err) => {
+                                  setError(clientErrorMessage(err, 'Failed to load the vault item'));
+                                });
+                              }}
+                              className={`w-full rounded-2xl px-4 py-4 text-left transition ${
+                                selectedItem?.id === row.encrypted.id && showEditorPanel
+                                  ? 'border border-[var(--orange-soft)]/45 bg-white/[0.035]'
+                                  : 'border border-transparent hover:border-white/10 hover:bg-white/[0.02]'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                    <p className="truncate font-semibold">{row.summary.title}</p>
+                                    <span className="text-[11px] uppercase tracking-[0.18em] text-white/40">
+                                      {itemTypeLabel(row.summary.item_type)}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 truncate text-sm muted">
+                                    {row.summary.primary_uri || row.summary.subtitle}
+                                  </p>
+                                  <p className="mt-1 truncate text-xs text-white/45">
+                                    {row.summary.username || row.summary.login_email || 'Saved entry'}
+                                  </p>
+                                </div>
+                                <div className="shrink-0 text-right text-xs text-white/45">
+                                  <p>{formatTimestamp(row.encrypted.updated_ts)}</p>
+                                  {lookupResultIds.includes(row.encrypted.id) ? (
+                                    <p className="mt-1 text-[var(--orange-soft)]">Matched</p>
+                                  ) : row.encrypted.favorite ? (
+                                    <p className="mt-1 text-white/70">Favorite</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 <div
-                  className={`absolute inset-y-0 right-0 z-10 w-full transition-all duration-300 ease-out xl:w-[30%] ${
+                  className={`min-w-0 overflow-hidden transition-all duration-300 ease-out ${
                     showEditorPanel
-                      ? 'translate-x-0 opacity-100'
-                      : 'pointer-events-none translate-x-[104%] opacity-0'
+                      ? 'max-h-[120rem] opacity-100 xl:w-[30%]'
+                      : 'pointer-events-none max-h-0 opacity-0 xl:w-0 xl:max-h-none'
                   }`}
+                  aria-hidden={!showEditorPanel}
                 >
-                  <div className="h-full rounded-[1.75rem] bg-[rgba(15,19,33,0.94)] px-5 shadow-[0_28px_80px_rgba(0,0,0,0.34)] backdrop-blur xl:border-l xl:border-white/8">
-                    <div className={vaultSectionClassName}>
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
-                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
-                            {editingExisting ? 'Editing saved item' : 'Create new'}
-                          </p>
-                          <h2 className="text-xl font-semibold">
-                            {editingExisting
-                              ? editor.title || itemTypeLabel(editor.item_type)
-                              : `New ${itemTypeLabel(editor.item_type)}`}
-                          </h2>
-                          <p className="mt-1 max-w-2xl text-sm muted">
-                            {itemTypeDescription(editor.item_type)}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap gap-3">
-                          {!editingExisting && (
-                            <select
-                              value={editor.item_type}
-                              onChange={(event) =>
-                                startNewDraft(parseVaultItemType(event.target.value))
-                              }
-                              className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
+                  <div
+                    className={`h-full transition-all duration-300 ease-out ${
+                      showEditorPanel ? 'translate-x-0' : 'translate-x-8'
+                    }`}
+                  >
+                    <div className="h-full xl:border-l xl:border-white/8 xl:pl-6">
+                      <div className={vaultSectionClassName}>
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <p className="text-[11px] uppercase tracking-[0.22em] text-white/45">
+                              {editingExisting ? 'Editing saved item' : 'Create new'}
+                            </p>
+                            <h2 className="text-xl font-semibold">
+                              {editingExisting
+                                ? editor.title || itemTypeLabel(editor.item_type)
+                                : `New ${itemTypeLabel(editor.item_type)}`}
+                            </h2>
+                            <p className="mt-1 max-w-2xl text-sm muted">
+                              {itemTypeDescription(editor.item_type)}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            {!editingExisting && (
+                              <select
+                                value={editor.item_type}
+                                onChange={(event) =>
+                                  startNewDraft(parseVaultItemType(event.target.value))
+                                }
+                                className="rf-flat-input min-w-[12rem] px-4 py-2 text-sm"
+                              >
+                                {ITEM_TYPE_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            <button
+                              type="button"
+                              className="rf-text-action rf-text-action-muted text-sm"
+                              onClick={closeEditorPanel}
                             >
-                              {ITEM_TYPE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
+                              Close
+                            </button>
+                          </div>
+                        </div>
+
+                        {renderCredentialFields()}
+
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                          <RfSwitch
+                            label="Favorite item"
+                            checked={editor.favorite}
+                            onChange={(checked) => updateEditorField('favorite', checked)}
+                          />
+                          {(editor.item_type === 'login' ||
+                            editor.item_type === 'credit_card' ||
+                            editor.item_type === 'passport') && (
+                            <button
+                              type="button"
+                              className="rf-text-action rf-text-action-muted text-sm"
+                              onClick={() => setShowSensitive((current) => !current)}
+                            >
+                              {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
+                            </button>
                           )}
                           <button
                             type="button"
-                            className="rf-text-action rf-text-action-muted text-sm"
-                            onClick={closeEditorPanel}
-                          >
-                            Close
-                          </button>
-                        </div>
-                      </div>
-
-                      {renderCredentialFields()}
-
-                      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                        <RfSwitch
-                          label="Favorite item"
-                          checked={editor.favorite}
-                          onChange={(checked) => updateEditorField('favorite', checked)}
-                        />
-                        {(editor.item_type === 'login' ||
-                          editor.item_type === 'credit_card' ||
-                          editor.item_type === 'passport') && (
-                          <button
-                            type="button"
-                            className="rf-text-action rf-text-action-muted text-sm"
-                            onClick={() => setShowSensitive((current) => !current)}
-                          >
-                            {showSensitive ? 'Hide sensitive fields' : 'Reveal sensitive fields'}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="rf-text-action text-sm disabled:opacity-50"
-                          disabled={saving || !unlocked}
-                          onClick={() =>
-                            runAction(
-                              editingExisting ? 'Vault item saved.' : 'Vault item created.',
-                              saveEditorItem,
-                            )
-                          }
-                        >
-                          {editingExisting ? 'Save changes' : 'Save item'}
-                        </button>
-                        {selectedItem && itemPrimaryCopyValue(selectedItem) && (
-                          <button
-                            type="button"
                             className="rf-text-action text-sm disabled:opacity-50"
+                            disabled={saving || !unlocked}
                             onClick={() =>
-                              runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
+                              runAction(
+                                editingExisting ? 'Vault item saved.' : 'Vault item created.',
+                                saveEditorItem,
+                              )
                             }
                           >
-                            {itemPrimaryCopyLabel(selectedItem)}
+                            {editingExisting ? 'Save changes' : 'Save item'}
                           </button>
-                        )}
+                          {selectedItem && itemPrimaryCopyValue(selectedItem) && (
+                            <button
+                              type="button"
+                              className="rf-text-action text-sm disabled:opacity-50"
+                              onClick={() =>
+                                runAction(itemPrimaryCopyLabel(selectedItem), copySelectedValue)
+                              }
+                            >
+                              {itemPrimaryCopyLabel(selectedItem)}
+                            </button>
+                          )}
+                          {selectedItem && (
+                            <button
+                              type="button"
+                              className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
+                              onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+
                         {selectedItem && (
-                          <button
-                            type="button"
-                            className="rf-text-action rf-text-action-danger text-sm disabled:opacity-50"
-                            onClick={() => runAction('Vault item deleted.', deleteSelectedItem)}
-                          >
-                            Delete
-                          </button>
+                          <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="font-medium">
+                                {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
+                              </span>
+                              <span className="text-xs text-white/55">
+                                {selectedItem.favorite
+                                  ? 'Favorite'
+                                  : itemTypeLabel(selectedItem.item_type)}
+                              </span>
+                            </div>
+                            <p
+                              className={`text-sm text-white/85 ${
+                                selectedItem.item_type === 'secure_note'
+                                  ? 'whitespace-pre-wrap'
+                                  : 'font-mono tracking-[0.18em]'
+                              }`}
+                            >
+                              {itemPrimaryPreview(selectedItem, showSensitive)}
+                            </p>
+                            <p className="muted">
+                              Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
+                              {formatTimestamp(selectedItem.updated_ts)}
+                            </p>
+                          </div>
                         )}
                       </div>
-
-                      {selectedItem && (
-                        <div className="space-y-2 border-l border-white/10 pl-4 text-sm">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="font-medium">
-                              {itemPrimaryCopyLabel(selectedItem).replace('Copy ', '')}
-                            </span>
-                            <span className="text-xs text-white/55">
-                              {selectedItem.favorite
-                                ? 'Favorite'
-                                : itemTypeLabel(selectedItem.item_type)}
-                            </span>
-                          </div>
-                          <p
-                            className={`text-sm text-white/85 ${
-                              selectedItem.item_type === 'secure_note'
-                                ? 'whitespace-pre-wrap'
-                                : 'font-mono tracking-[0.18em]'
-                            }`}
-                          >
-                            {itemPrimaryPreview(selectedItem, showSensitive)}
-                          </p>
-                          <p className="muted">
-                            Created {formatTimestamp(selectedItem.created_ts)} • Updated{' '}
-                            {formatTimestamp(selectedItem.updated_ts)}
-                          </p>
-                        </div>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -1959,7 +1966,7 @@ export default function RustyVaultPage() {
 
           {activeWorkspaceTab === 'settings' && (
             !settingsUnlocked ? (
-              <div className="flex min-h-[34rem] items-center justify-center">
+              <div className="flex min-h-[22rem] items-start justify-center pt-2 sm:pt-4">
                 <form
                   className="w-full max-w-[32rem] space-y-5 rounded-[1.75rem] bg-white/[0.03] px-6 py-7 shadow-[0_28px_80px_rgba(0,0,0,0.22)]"
                   onSubmit={(event) => {
