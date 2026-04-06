@@ -1,3 +1,5 @@
+import { ArgonType, hash as argon2BrowserHash, probeArgon2BrowserFallback } from './argon2-browser.js';
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const EMPTY_SALT = new Uint8Array(0);
@@ -18,6 +20,9 @@ const MULTIPART_SUFFIXES = new Set([
   'co.kr',
   'co.za',
 ]);
+
+let nativeArgon2SupportPromise = null;
+let portableArgon2SupportPromise = null;
 
 function toArrayBuffer(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -49,19 +54,69 @@ async function importArgon2PasswordKey(password) {
   ]);
 }
 
+async function browserSupportsNativeArgon2Id() {
+  if (!nativeArgon2SupportPromise) {
+    nativeArgon2SupportPromise = (async () => {
+      try {
+        const probe = await importArgon2PasswordKey('probe');
+        await crypto.subtle.deriveBits(
+          {
+            name: 'Argon2id',
+            nonce: new Uint8Array(16).buffer,
+            parallelism: 1,
+            memory: 8192,
+            passes: 1,
+          },
+          probe,
+          256,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  }
+  return nativeArgon2SupportPromise;
+}
+
+async function browserSupportsPortableArgon2() {
+  if (!portableArgon2SupportPromise) {
+    portableArgon2SupportPromise = probeArgon2BrowserFallback()
+      .then(() => true)
+      .catch(() => false);
+  }
+  return portableArgon2SupportPromise;
+}
+
 async function deriveMasterMaterial(password, salt) {
-  const passwordKey = await importArgon2PasswordKey(password);
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'Argon2id',
-      nonce: toArrayBuffer(salt),
+  let bits;
+  if (await browserSupportsNativeArgon2Id()) {
+    const passwordKey = await importArgon2PasswordKey(password);
+    bits = await crypto.subtle.deriveBits(
+      {
+        name: 'Argon2id',
+        nonce: toArrayBuffer(salt),
+        parallelism: 4,
+        memory: 65536,
+        passes: 3,
+      },
+      passwordKey,
+      256,
+    );
+  } else {
+    if (!(await browserSupportsPortableArgon2())) {
+      throw new Error('RustyVault Argon2id is unavailable in this browser extension context');
+    }
+    bits = await argon2BrowserHash({
+      pass: encoder.encode(password),
+      salt,
+      time: 3,
+      mem: 65536,
       parallelism: 4,
-      memory: 65536,
-      passes: 3,
-    },
-    passwordKey,
-    256,
-  );
+      hashLen: 32,
+      type: ArgonType.Argon2id,
+    }).then((result) => result.hash);
+  }
   return crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
 }
 
