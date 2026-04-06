@@ -5,6 +5,7 @@ use sqlx::Row;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RustyVaultAccountRow {
     pub user_id: String,
+    pub display_name: Option<String>,
     pub status: String,
     pub schema_version: i32,
     pub active_key_version: i32,
@@ -14,11 +15,22 @@ pub struct RustyVaultAccountRow {
     pub last_rekey_ts: Option<i64>,
 }
 
-type RustyVaultAccountTuple = (String, String, i32, i32, i64, i64, Option<i64>, Option<i64>);
+type RustyVaultAccountTuple = (
+    String,
+    Option<String>,
+    String,
+    i32,
+    i32,
+    i64,
+    i64,
+    Option<i64>,
+    Option<i64>,
+);
 
 fn map_rustyvault_account_row(
     (
         user_id,
+        display_name,
         status,
         schema_version,
         active_key_version,
@@ -30,6 +42,7 @@ fn map_rustyvault_account_row(
 ) -> RustyVaultAccountRow {
     RustyVaultAccountRow {
         user_id,
+        display_name,
         status,
         schema_version,
         active_key_version,
@@ -109,6 +122,13 @@ pub struct UpsertRustyVaultPreferenceInput {
     pub password_generator_include_numbers: bool,
     pub password_generator_include_symbols: bool,
     pub password_generator_exclude_ambiguous: bool,
+    pub updated_ts: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateRustyVaultDisplayNameInput {
+    pub user_id: String,
+    pub display_name: String,
     pub updated_ts: i64,
 }
 
@@ -690,7 +710,7 @@ pub struct CreateRustyVaultAuditEventInput {
     pub created_ts: i64,
 }
 
-const RUSTYVAULT_ACCOUNT_COLUMNS: &str = "user_id, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts";
+const RUSTYVAULT_ACCOUNT_COLUMNS: &str = "user_id, display_name, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts";
 const RUSTYVAULT_PREFERENCE_COLUMNS: &str = "user_id, auto_lock_minutes, clipboard_clear_seconds, inline_save_prompt_enabled, inline_autofill_enabled, default_match_mode, warn_on_http, warn_on_untrusted_iframe, excluded_domains, allow_manual_http_fill, password_generator_default_preset, password_generator_default_length, password_generator_include_uppercase, password_generator_include_lowercase, password_generator_include_numbers, password_generator_include_symbols, password_generator_exclude_ambiguous, updated_ts";
 const RUSTYVAULT_WRAPPED_KEY_COLUMNS: &str = "id, user_id, key_version, kdf_algorithm, kdf_memory_kib, kdf_iterations, kdf_parallelism, kdf_salt, hkdf_algorithm, wrap_algorithm, wrap_nonce, wrapped_vault_key, created_ts, superseded_ts";
 const RUSTYVAULT_ITEM_SUMMARY_COLUMNS: &str = "user_id, id, item_type, key_version, summary_ciphertext, summary_nonce, summary_version, favorite, revision, created_ts, updated_ts, deleted_ts";
@@ -803,6 +823,7 @@ pub async fn count_items(pool: &DbPool, user_id: &str) -> Result<i64, sqlx::Erro
 pub async fn bootstrap_rustyvault(
     pool: &DbPool,
     user_id: &str,
+    display_name: &str,
     account_status: &str,
     schema_version: i32,
     active_key_version: i32,
@@ -811,10 +832,11 @@ pub async fn bootstrap_rustyvault(
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO rustyvault_account (user_id, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts) \
-         VALUES ($1, $2, $3, $4, $5, $5, $5, $5)",
+        "INSERT INTO rustyvault_account (user_id, display_name, status, schema_version, active_key_version, created_ts, updated_ts, last_unlock_required_ts, last_rekey_ts) \
+         VALUES ($1, $2, $3, $4, $5, $6, $6, $6, $6)",
     )
     .bind(user_id)
+    .bind(display_name)
     .bind(account_status)
     .bind(schema_version)
     .bind(active_key_version)
@@ -893,6 +915,25 @@ pub async fn rekey_rustyvault(
 
     tx.commit().await?;
     Ok(())
+}
+
+pub async fn update_rustyvault_display_name(
+    pool: &DbPool,
+    input: &UpdateRustyVaultDisplayNameInput,
+) -> Result<Option<RustyVaultAccountRow>, sqlx::Error> {
+    let sql = format!(
+        "UPDATE rustyvault_account \
+         SET display_name = $2, updated_ts = $3 \
+         WHERE user_id = $1 \
+         RETURNING {RUSTYVAULT_ACCOUNT_COLUMNS}"
+    );
+    let row = sqlx::query_as::<_, RustyVaultAccountTuple>(&sql)
+        .bind(&input.user_id)
+        .bind(&input.display_name)
+        .bind(input.updated_ts)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(map_rustyvault_account_row))
 }
 
 pub async fn get_active_wrapped_key(

@@ -11,7 +11,7 @@ use rustyvault::types::{
     RustyVaultLookupResponse, RustyVaultPreferences, RustyVaultProtectedActionChallengeRequest,
     RustyVaultProtectedActionChallengeResponse, RustyVaultRevokeOtherSessionsRequest,
     RustyVaultRevokeOtherSessionsResponse, RustyVaultSessionRefreshRequest,
-    RustyVaultWrappedKeyMetadata, UpsertRustyVaultItemRequest,
+    RustyVaultWrappedKeyMetadata, UpdateRustyVaultConfigRequest, UpsertRustyVaultItemRequest,
 };
 
 use crate::auth::AuthUser;
@@ -96,6 +96,12 @@ pub async fn get_config(
     State(state): State<AppState>,
     rustyvault_session: RustyVaultSessionUser,
 ) -> Result<impl IntoResponse, AppError> {
+    let account = rustfin_db::repo::rustyvault::get_rustyvault_account(
+        &state.db,
+        &rustyvault_session.user_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let wrapped_key = rustfin_db::repo::rustyvault::get_active_wrapped_key(
         &state.db,
         &rustyvault_session.user_id,
@@ -107,7 +113,7 @@ pub async fn get_config(
             .await
             .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let response: RustyVaultConfigResponse =
-        service::build_rustyvault_config_response(wrapped_key, item_count);
+        service::build_rustyvault_config_response(account, wrapped_key, item_count);
     Ok(no_store_json(response))
 }
 
@@ -128,6 +134,51 @@ pub async fn update_preferences(
     Ok(no_store_json(
         service::save_rustyvault_preferences(&state, &rustyvault_session.user_id, body).await?,
     ))
+}
+
+pub async fn update_config(
+    State(state): State<AppState>,
+    rustyvault_session: RustyVaultSessionUser,
+    Json(body): Json<UpdateRustyVaultConfigRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let display_name = service::normalize_rustyvault_display_name(&body.display_name)?;
+    let account = rustfin_db::repo::rustyvault::update_rustyvault_display_name(
+        &state.db,
+        &rustfin_db::repo::rustyvault::UpdateRustyVaultDisplayNameInput {
+            user_id: rustyvault_session.user_id.clone(),
+            display_name: display_name.clone(),
+            updated_ts: service::now_ts(),
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let Some(account) = account else {
+        return Err(ApiError::NotFound("vault not found".into()).into());
+    };
+    audit::record_event(
+        &state,
+        &rustyvault_session.user_id,
+        Some(&rustyvault_session.session_id),
+        "rustyvault_renamed",
+        None,
+        serde_json::json!({ "display_name": display_name }),
+    )
+    .await?;
+    let wrapped_key = rustfin_db::repo::rustyvault::get_active_wrapped_key(
+        &state.db,
+        &rustyvault_session.user_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    let item_count =
+        rustfin_db::repo::rustyvault::count_items(&state.db, &rustyvault_session.user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
+    Ok(no_store_json(service::build_rustyvault_config_response(
+        Some(account),
+        wrapped_key,
+        item_count,
+    )))
 }
 
 pub async fn bootstrap_rustyvault(
@@ -166,6 +217,7 @@ pub async fn bootstrap_rustyvault(
     rustfin_db::repo::rustyvault::bootstrap_rustyvault(
         &state.db,
         &auth.user_id,
+        &auth.username,
         "active",
         service::RUSTYVAULT_SCHEMA_VERSION,
         wrapped_key.key_version,
@@ -184,6 +236,9 @@ pub async fn bootstrap_rustyvault(
     )
     .await?;
     touch_session_best_effort(&state, &rustyvault_session);
+    let account = rustfin_db::repo::rustyvault::get_rustyvault_account(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let wrapped_key =
         rustfin_db::repo::rustyvault::get_active_wrapped_key(&state.db, &auth.user_id)
             .await
@@ -192,6 +247,7 @@ pub async fn bootstrap_rustyvault(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     Ok(no_store_json(service::build_rustyvault_config_response(
+        account,
         wrapped_key,
         item_count,
     )))
@@ -257,6 +313,9 @@ pub async fn rekey_rustyvault(
         serde_json::json!({ "key_version": wrapped_key.key_version }),
     )
     .await?;
+    let account = rustfin_db::repo::rustyvault::get_rustyvault_account(&state.db, &auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     let active = rustfin_db::repo::rustyvault::get_active_wrapped_key(&state.db, &auth.user_id)
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
@@ -264,7 +323,7 @@ pub async fn rekey_rustyvault(
         .await
         .map_err(|e| ApiError::Internal(format!("db error: {e}")))?;
     Ok(no_store_json(service::build_rustyvault_config_response(
-        active, item_count,
+        account, active, item_count,
     )))
 }
 
@@ -708,7 +767,13 @@ pub async fn export_rustyvault(
     )
     .await?;
     Ok(no_store_json(RustyVaultExportResponse {
-        config: service::build_rustyvault_config_response(wrapped_key, item_count),
+        config: service::build_rustyvault_config_response(
+            rustfin_db::repo::rustyvault::get_rustyvault_account(&state.db, &auth.user_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("db error: {e}")))?,
+            wrapped_key,
+            item_count,
+        ),
         items,
     }))
 }

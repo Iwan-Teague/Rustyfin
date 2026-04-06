@@ -33,8 +33,13 @@ export type RustyVaultConfigResponse = {
   schema_version: number;
   supported_kdf_algorithms: string[];
   supported_encryption_algorithms: string[];
+  display_name: string;
   active_wrapped_key?: RustyVaultWrappedKeyMetadata | null;
   item_count: number;
+};
+
+export type UpdateRustyVaultConfigRequest = {
+  display_name: string;
 };
 
 export type EncryptedRustyVaultItemSummary = {
@@ -180,6 +185,17 @@ export async function getRustyVaultConfig(
 ): Promise<RustyVaultConfigResponse> {
   return rustyVaultJson<RustyVaultConfigResponse>('/vault/config', {
     vaultAccessToken,
+  });
+}
+
+export async function updateRustyVaultConfig(
+  payload: UpdateRustyVaultConfigRequest,
+  vaultAccessToken?: string | null,
+): Promise<RustyVaultConfigResponse> {
+  return rustyVaultJson<RustyVaultConfigResponse>('/vault/config', {
+    method: 'PATCH',
+    vaultAccessToken,
+    body: JSON.stringify(payload),
   });
 }
 
