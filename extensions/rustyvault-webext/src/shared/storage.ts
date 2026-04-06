@@ -3,6 +3,7 @@ import type {
   GeneratedPasswordDraft,
   LastFilledContext,
   PendingAction,
+  PopupDraft,
   RustyVaultSession,
 } from './types.js';
 
@@ -27,6 +28,12 @@ const SESSION_PENDING_KEY = 'rustyvault_pending_actions_v1';
 const SESSION_LAST_FILLED_KEY = 'rustyvault_last_filled_v1';
 const SESSION_GENERATED_KEY = 'rustyvault_generated_passwords_v1';
 const SESSION_SUBMITTED_KEY = 'rustyvault_submitted_candidates_v1';
+const SESSION_POPUP_DRAFT_KEY = 'rustyvault_popup_draft_v1';
+
+const DEFAULT_POPUP_DRAFT: PopupDraft = {
+  serverBaseUrlInput: '',
+  pairingInput: '',
+};
 
 type SubmittedCandidate = {
   tabId: number;
@@ -191,4 +198,25 @@ export async function clearSubmittedCandidate(tabId: number): Promise<void> {
   const current = await getSubmittedCandidates();
   delete current[String(tabId)];
   await area.set({ [SESSION_SUBMITTED_KEY]: current });
+}
+
+export async function getPopupDraft(): Promise<PopupDraft> {
+  const area = await sessionArea();
+  const stored = await area.get(SESSION_POPUP_DRAFT_KEY);
+  const draft = stored[SESSION_POPUP_DRAFT_KEY] || {};
+  return {
+    ...DEFAULT_POPUP_DRAFT,
+    ...(draft || {}),
+  };
+}
+
+export async function setPopupDraft(next: Partial<PopupDraft>): Promise<PopupDraft> {
+  const area = await sessionArea();
+  const current = await getPopupDraft();
+  const merged = {
+    ...current,
+    ...next,
+  };
+  await area.set({ [SESSION_POPUP_DRAFT_KEY]: merged });
+  return merged;
 }
