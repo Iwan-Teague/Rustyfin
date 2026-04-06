@@ -212,27 +212,6 @@ button:focus-visible {
   border-width: 0;
 }
 
-.skip-link {
-  position: fixed;
-  left: 0.75rem;
-  top: 0.75rem;
-  z-index: 60;
-  transform: translateY(-160%);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: rgba(22, 26, 39, 0.98);
-  color: var(--text-main);
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 0.48rem 0.86rem;
-  text-decoration: none;
-  transition: transform 160ms ease;
-}
-
-.skip-link:focus-visible {
-  transform: translateY(0);
-}
-
 .app-shell {
   width: 100%;
   padding-inline: var(--page-pad-inline);
@@ -979,6 +958,20 @@ body[data-rf-page="channels"] .app-main {
     overflow: hidden;
     padding-top: clamp(0.35rem, 0.8vw, 0.7rem);
     padding-bottom: 0;
+  }
+
+  html[data-rf-page="vault"],
+  body[data-rf-page="vault"] {
+    min-height: 100%;
+  }
+
+  body[data-rf-page="vault"] a:focus-visible,
+  body[data-rf-page="vault"] button:focus-visible,
+  body[data-rf-page="vault"] input:focus-visible,
+  body[data-rf-page="vault"] select:focus-visible,
+  body[data-rf-page="vault"] textarea:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
   }
 }
 
