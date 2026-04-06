@@ -125,7 +125,7 @@ $('save-server').addEventListener('click', async () => {
 $('pair-device').addEventListener('click', async () => {
     const result = await callBackground({
         type: 'pair-device',
-        pairingCode: $('pairing-code').value,
+        pairingInput: $('pairing-code').value,
         deviceName: 'Rustyfin Browser Extension',
     });
     $('status').textContent =

@@ -49,6 +49,14 @@ function fieldHint(input) {
 function pageKeywords() {
     return `${document.title} ${window.location.pathname}`.toLowerCase();
 }
+function topLevelUrl() {
+    try {
+        return window.top?.location?.href || window.location.href;
+    }
+    catch {
+        return document.referrer || window.location.href;
+    }
+}
 function visibleInputs() {
     return [...document.querySelectorAll('input, textarea')].filter(isVisible);
 }
@@ -328,14 +336,14 @@ function notifyPageContext() {
         type: 'page-context',
         payload: {
             url: window.location.href,
-            topLevelUrl: window.top === window ? window.location.href : document.referrer || window.location.href,
+            topLevelUrl: window.top === window ? window.location.href : topLevelUrl(),
             isTopFrame: window.top === window,
             hasPasswordField: context.passwordFields.length > 0,
             pageKind: context.pageKind,
         },
     });
 }
-function captureFormSubmission(form) {
+function captureCredentialAttempt() {
     const context = detectContext();
     const usernameValue = (context.usernameField instanceof HTMLInputElement || context.usernameField instanceof HTMLTextAreaElement)
         ? context.usernameField.value
@@ -362,10 +370,39 @@ function captureFormSubmission(form) {
         },
     });
 }
+function submitActionHint(target) {
+    if (!target)
+        return '';
+    const button = target.closest('button, input[type="submit"], input[type="button"], input[type="image"]');
+    if (!button || !isVisible(button)) {
+        return '';
+    }
+    const inputValue = button instanceof HTMLInputElement ? button.value : '';
+    return [
+        button.textContent,
+        button.getAttribute('aria-label'),
+        button.getAttribute('name'),
+        button.getAttribute('id'),
+        inputValue,
+    ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+}
+function isCredentialSubmitTrigger(target) {
+    if (!(target instanceof HTMLElement)) {
+        return false;
+    }
+    const hint = submitActionHint(target);
+    if (!hint) {
+        return false;
+    }
+    return /(sign.?in|log.?in|continue|next|submit|register|sign.?up|create account|join|save|update password|change password|reset password)/.test(hint);
+}
 document.addEventListener('submit', (event) => {
     const form = event.target instanceof HTMLFormElement ? event.target : null;
     if (form) {
-        captureFormSubmission(form);
+        captureCredentialAttempt();
     }
 }, true);
 document.addEventListener('focusin', (event) => {
@@ -391,6 +428,11 @@ document.addEventListener('click', (event) => {
     }
     hideOverlay();
 });
+document.addEventListener('click', (event) => {
+    if (isCredentialSubmitTrigger(event.target)) {
+        captureCredentialAttempt();
+    }
+}, true);
 window.addEventListener('scroll', () => {
     if (overlayRoot && activeField && overlayRoot.style.display !== 'none') {
         positionFloating(overlayRoot, activeField);

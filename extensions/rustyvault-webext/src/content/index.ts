@@ -79,6 +79,14 @@ function pageKeywords() {
   return `${document.title} ${window.location.pathname}`.toLowerCase();
 }
 
+function topLevelUrl() {
+  try {
+    return window.top?.location?.href || window.location.href;
+  } catch {
+    return document.referrer || window.location.href;
+  }
+}
+
 function visibleInputs() {
   return [...document.querySelectorAll('input, textarea')].filter(isVisible) as Array<
     HTMLInputElement | HTMLTextAreaElement
@@ -383,7 +391,7 @@ function notifyPageContext() {
     type: 'page-context',
     payload: {
       url: window.location.href,
-      topLevelUrl: window.top === window ? window.location.href : document.referrer || window.location.href,
+      topLevelUrl: window.top === window ? window.location.href : topLevelUrl(),
       isTopFrame: window.top === window,
       hasPasswordField: context.passwordFields.length > 0,
       pageKind: context.pageKind,
@@ -391,7 +399,7 @@ function notifyPageContext() {
   });
 }
 
-function captureFormSubmission(form: HTMLFormElement) {
+function captureCredentialAttempt() {
   const context = detectContext();
   const usernameValue =
     (context.usernameField instanceof HTMLInputElement || context.usernameField instanceof HTMLTextAreaElement)
@@ -422,12 +430,46 @@ function captureFormSubmission(form: HTMLFormElement) {
   });
 }
 
+function submitActionHint(target: HTMLElement | null) {
+  if (!target) return '';
+  const button = target.closest(
+    'button, input[type="submit"], input[type="button"], input[type="image"]',
+  ) as HTMLElement | null;
+  if (!button || !isVisible(button)) {
+    return '';
+  }
+  const inputValue = button instanceof HTMLInputElement ? button.value : '';
+  return [
+    button.textContent,
+    button.getAttribute('aria-label'),
+    button.getAttribute('name'),
+    button.getAttribute('id'),
+    inputValue,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function isCredentialSubmitTrigger(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const hint = submitActionHint(target);
+  if (!hint) {
+    return false;
+  }
+  return /(sign.?in|log.?in|continue|next|submit|register|sign.?up|create account|join|save|update password|change password|reset password)/.test(
+    hint,
+  );
+}
+
 document.addEventListener(
   'submit',
   (event) => {
     const form = event.target instanceof HTMLFormElement ? event.target : null;
     if (form) {
-      captureFormSubmission(form);
+      captureCredentialAttempt();
     }
   },
   true,
@@ -457,6 +499,16 @@ document.addEventListener('click', (event) => {
   }
   hideOverlay();
 });
+
+document.addEventListener(
+  'click',
+  (event) => {
+    if (isCredentialSubmitTrigger(event.target)) {
+      captureCredentialAttempt();
+    }
+  },
+  true,
+);
 
 window.addEventListener('scroll', () => {
   if (overlayRoot && activeField && overlayRoot.style.display !== 'none') {

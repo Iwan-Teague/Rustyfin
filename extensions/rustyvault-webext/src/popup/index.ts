@@ -138,7 +138,7 @@ async function render() {
 ($('pair-device') as HTMLButtonElement).addEventListener('click', async () => {
   const result = await callBackground({
     type: 'pair-device',
-    pairingCode: ($('pairing-code') as HTMLInputElement).value,
+    pairingInput: ($('pairing-code') as HTMLInputElement).value,
     deviceName: 'Rustyfin Browser Extension',
   });
   ($('status') as HTMLParagraphElement).textContent =

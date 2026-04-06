@@ -25,9 +25,10 @@
       <section id="pairing-panel" class="panel hidden">
         <h2>Pair extension</h2>
         <label class="field" for="pairing-code">
-          <span>Pairing code</span>
-          <input id="pairing-code" placeholder="RFVLT-XXXXXX-XXXXXX-XXXXXX-XXXXXX" autocomplete="off" />
+          <span>Pairing code or connection code</span>
+          <input id="pairing-code" placeholder="RFVLT-... or rustyvault://pair?server=..." autocomplete="off" />
         </label>
+        <p class="muted">You can paste the full connection code from Rustyfin `/vault` to set the server URL and pair in one step.</p>
         <button id="pair-device" type="button" class="btn btn-primary">Pair device</button>
       </section>
 

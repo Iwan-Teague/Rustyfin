@@ -475,6 +475,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   }
 }
 
+function buildExtensionConnectionCode(serverUrl: string, pairingCode: string) {
+  const normalizedServerUrl = serverUrl.trim();
+  const normalizedPairingCode = pairingCode.trim().toUpperCase();
+  if (!normalizedServerUrl || !normalizedPairingCode) {
+    return '';
+  }
+  return `rustyvault://pair?server=${encodeURIComponent(normalizedServerUrl)}&code=${encodeURIComponent(normalizedPairingCode)}`;
+}
+
 export default function RustyVaultPage() {
   const router = useRouter();
   const { me, loading: authLoading, logout } = useAuth();
@@ -511,6 +520,7 @@ export default function RustyVaultPage() {
   const [settingsAccessGranted, setSettingsAccessGranted] = useState(false);
   const [settingsPasswordFailures, setSettingsPasswordFailures] = useState(0);
   const [showFallbackNotice, setShowFallbackNotice] = useState(false);
+  const [browserVisibleOrigin, setBrowserVisibleOrigin] = useState('');
   const [currentRustyVaultPassword, setCurrentVaultPassword] = useState('');
   const [newMasterPassword, setNewMasterPassword] = useState('');
   const [newMasterPasswordConfirm, setNewMasterPasswordConfirm] = useState('');
@@ -561,6 +571,14 @@ export default function RustyVaultPage() {
 
   const currentMatchMode = normalizeMode(prefs.default_match_mode);
   const cryptoReady = cryptoReadiness?.ready === true;
+  const chromiumExtensionPackagePath =
+    '/api/v1/downloads/artifacts/rustyvault-webext-chromium/package';
+  const firefoxExtensionPackagePath =
+    '/api/v1/downloads/artifacts/rustyvault-webext-firefox/package';
+  const extensionConnectionCode = buildExtensionConnectionCode(
+    browserVisibleOrigin,
+    extensionPairing?.pairing_code ?? '',
+  );
   const canSubmitVaultPrompt = config?.enabled
     ? masterPassword.trim().length > 0
     : masterPassword.length > 0 &&
@@ -743,6 +761,12 @@ export default function RustyVaultPage() {
       setMessage('Vault locked after inactivity.');
     }, prefs.auto_lock_minutes * 60 * 1000);
   }, [prefs.auto_lock_minutes, unlocked]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setBrowserVisibleOrigin(window.location.origin);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -2660,7 +2684,7 @@ export default function RustyVaultPage() {
                       <div>
                         <p className="font-medium">Browser extension package</p>
                         <p className="text-sm muted">
-                          Download the current RustyVault browser extension package from Downloads, then pair it from this page.
+                          Download the browser package for your browser, then pair it against this exact Rustyfin server.
                         </p>
                       </div>
                       <span className="text-xs text-white/55">Host-managed download</span>
@@ -2669,6 +2693,15 @@ export default function RustyVaultPage() {
                       <Link href="/downloads" className="rf-text-action text-sm">
                         Open Downloads
                       </Link>
+                      <a
+                        href={chromiumExtensionPackagePath}
+                        className="rf-text-action text-sm"
+                      >
+                        Download Chromium package
+                      </a>
+                      <a href={firefoxExtensionPackagePath} className="rf-text-action text-sm">
+                        Download Firefox package
+                      </a>
                       <button
                         type="button"
                         className="rf-text-action text-sm disabled:opacity-50"
@@ -2696,10 +2729,40 @@ export default function RustyVaultPage() {
                         Revoke other sessions
                       </button>
                     </div>
-                    <div className="space-y-1 text-sm muted">
-                      <p>1. Download the zip package from Downloads and extract it on your machine.</p>
-                      <p>2. In Chrome or Edge developer extensions, choose Load unpacked and select the extracted folder.</p>
-                      <p>3. Open the extension popup, set your Rustyfin server URL, then use the pairing code below.</p>
+                    <div className="space-y-3 text-sm">
+                      <div className="space-y-1">
+                        <p className="font-medium text-white/88">Exact Rustyfin server URL</p>
+                        <p className="muted">
+                          Use the same browser-visible Rustyfin address this page is currently using.
+                        </p>
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                          <span className="font-mono text-white/88">
+                            {browserVisibleOrigin || 'Loading current Rustyfin origin...'}
+                          </span>
+                          {browserVisibleOrigin && (
+                            <button
+                              type="button"
+                              className="rf-text-action text-sm"
+                              onClick={() =>
+                                runAction('Exact Rustyfin server URL copied.', async () =>
+                                  writeClipboardWithTimeout(
+                                    browserVisibleOrigin,
+                                    prefs.clipboard_clear_seconds,
+                                  ),
+                                )
+                              }
+                            >
+                              Copy server URL
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-1 muted">
+                        <p>1. Download the zip package for Chromium or Firefox and extract it locally.</p>
+                        <p>2. In Chrome or Edge developer extensions, choose Load unpacked and select the extracted folder. In Firefox, use `about:debugging` and load the extracted manifest.</p>
+                        <p>3. Open the extension popup. Either paste the exact server URL above, or paste the full connection code below after you generate one here.</p>
+                        <p>4. Pair the extension, then unlock it with the same vault master password you use on this page.</p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2810,11 +2873,62 @@ export default function RustyVaultPage() {
                     )}
                   </div>
                   {extensionPairing && (
-                    <div className="space-y-2 border-l border-white/10 pl-4">
-                      <p className="text-sm font-semibold">Pairing code</p>
+                    <div className="space-y-3 border-l border-white/10 pl-4">
+                      {extensionConnectionCode && (
+                        <div className="space-y-2">
+                          <p className="text-sm font-semibold">Connection code</p>
+                          <p className="text-sm muted">
+                            Paste this into the extension pairing field to set the exact server URL and pair in one step.
+                          </p>
+                          <p className="break-all font-mono text-sm text-white/90">
+                            {extensionConnectionCode}
+                          </p>
+                          <button
+                            type="button"
+                            className="rf-text-action text-sm"
+                            onClick={() =>
+                              runAction('Extension connection code copied.', async () =>
+                                writeClipboardWithTimeout(
+                                  extensionConnectionCode,
+                                  prefs.clipboard_clear_seconds,
+                                ),
+                              )
+                            }
+                          >
+                            Copy connection code
+                          </button>
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        <p className="text-sm font-semibold">Pairing code</p>
+                        <p className="text-sm muted">
+                          If you prefer to type the server URL separately in the extension, use this pairing code instead.
+                        </p>
                       <p className="font-mono text-lg tracking-[0.2em] text-white/90">
                         {extensionPairing.pairing_code}
                       </p>
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                          <button
+                            type="button"
+                            className="rf-text-action text-sm"
+                            onClick={() =>
+                              runAction('Extension pairing code copied.', async () =>
+                                writeClipboardWithTimeout(
+                                  extensionPairing.pairing_code,
+                                  prefs.clipboard_clear_seconds,
+                                ),
+                              )
+                            }
+                          >
+                            Copy pairing code
+                          </button>
+                          {browserVisibleOrigin && (
+                            <span className="text-xs muted">
+                              Pairing target: <span className="font-mono text-white/88">{browserVisibleOrigin}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
                       <p className="text-sm muted">
                         Fingerprint phrase:{' '}
                         <span className="text-white/90">

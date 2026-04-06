@@ -1,5 +1,5 @@
 import { getCurrentTab, logIfEnabled } from '../shared/browser.js';
-import { apiRequest, defaultRustyVaultPreferences, getVaultPreferences, refreshRustyVaultSession, sanitizeServerBaseUrl, withRustyVaultSession, } from '../shared/api.js';
+import { apiRequest, defaultRustyVaultPreferences, getVaultPreferences, parseRustyVaultConnectionInput, refreshRustyVaultSession, sanitizeServerBaseUrl, withRustyVaultSession, } from '../shared/api.js';
 import { buildLookupHashesForUrl, decryptRustyVaultItem, decryptRustyVaultSummary, encryptRustyVaultLoginItem, generatePasswordFromPreferences, unlockRustyVault, } from '../shared/crypto.js';
 import { describePolicyReason, evaluatePagePolicy } from '../shared/policy.js';
 import { classifyPendingAction } from '../shared/save-classifier.js';
@@ -10,6 +10,7 @@ const PENDING_EXPIRY_MS = 45_000;
 let unlocked = null;
 let matchesByTab = new Map();
 let pagePolicyByTab = new Map();
+let lastFrameByTab = new Map();
 let vaultPreferences = defaultRustyVaultPreferences();
 function nowTs() {
     return Math.floor(Date.now() / 1000);
@@ -32,6 +33,28 @@ function requireTabId(explicitTabId, sender, action) {
         throw new Error(`RustyVault could not determine which tab to ${action}`);
     }
     return tabId;
+}
+function rememberFrame(tabId, sender) {
+    if (typeof sender?.frameId === 'number' && sender.frameId >= 0) {
+        lastFrameByTab.set(tabId, sender.frameId);
+    }
+}
+function preferredFrameId(tabId, sender) {
+    if (typeof sender?.frameId === 'number' && sender.frameId >= 0) {
+        return sender.frameId;
+    }
+    return lastFrameByTab.get(tabId);
+}
+async function sendContentMessage(tabId, message, frameId) {
+    if (typeof frameId === 'number') {
+        try {
+            return await chrome.tabs.sendMessage(tabId, message, { frameId });
+        }
+        catch {
+            // Fall back to the top frame if the original target is gone.
+        }
+    }
+    return chrome.tabs.sendMessage(tabId, message);
 }
 function decodeJwtPayload(token) {
     const parts = (token || '').split('.');
@@ -118,6 +141,7 @@ async function syncRegisteredContentScripts() {
             id: REGISTERED_SCRIPT_ID,
             matches: grantedOrigins,
             js: ['src/content/index.js'],
+            allFrames: true,
             runAt: 'document_idle',
             persistAcrossSessions: true,
         },
@@ -133,7 +157,7 @@ async function ensureSitePermission(rawUrl, tabId) {
     await syncRegisteredContentScripts();
     if (typeof tabId === 'number') {
         await chrome.scripting.executeScript({
-            target: { tabId },
+            target: { tabId, allFrames: true },
             files: ['src/content/index.js'],
         }).catch(() => null);
     }
@@ -260,13 +284,13 @@ async function maybeFinalizeSubmittedCandidate(tabId, payload) {
     await updateBadge(tabId, matches.length, true);
     const settings = await getSettings();
     if (settings.inlineSavePromptEnabled) {
-        await chrome.tabs.sendMessage(tabId, {
+        await sendContentMessage(tabId, {
             type: 'show-save-prompt',
             payload: {
                 kind: action.kind,
                 message: action.message,
             },
-        }).catch(() => null);
+        }, lastFrameByTab.get(tabId)).catch(() => null);
     }
 }
 async function fetchAndMergeItem(itemId, draft, kind) {
@@ -284,7 +308,7 @@ async function fetchAndMergeItem(itemId, draft, kind) {
         updated_ts: nowTs(),
     };
 }
-async function savePendingActionToServer(tabId, overrides = {}) {
+async function savePendingActionToServer(tabId, overrides = {}, frameId) {
     if (!unlocked) {
         throw new Error('Unlock the vault before saving a login');
     }
@@ -315,7 +339,7 @@ async function savePendingActionToServer(tabId, overrides = {}) {
     });
     await clearPendingAction(tabId);
     await clearGeneratedPassword(tabId);
-    await chrome.tabs.sendMessage(tabId, { type: 'dismiss-save-prompt' }).catch(() => null);
+    await sendContentMessage(tabId, { type: 'dismiss-save-prompt' }, frameId ?? lastFrameByTab.get(tabId)).catch(() => null);
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (tab?.url) {
         await loadMatchesForUrl(tabId, tab.url, { topLevelUrl: tab.url, isTopFrame: true }).catch(() => null);
@@ -350,6 +374,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
     matchesByTab.delete(tabId);
     pagePolicyByTab.delete(tabId);
+    lastFrameByTab.delete(tabId);
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
@@ -368,10 +393,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     return;
                 }
                 case 'pair-device': {
+                    const parsed = parseRustyVaultConnectionInput(message.pairingInput);
+                    const serverBaseUrl = parsed.serverBaseUrl || settings.serverBaseUrl;
+                    if (!serverBaseUrl) {
+                        throw new Error('Set the Rustyfin server URL in the extension first');
+                    }
+                    if (parsed.serverBaseUrl && parsed.serverBaseUrl !== settings.serverBaseUrl) {
+                        await setSettings({ serverBaseUrl: parsed.serverBaseUrl });
+                    }
                     const tokens = await apiRequest('/vault/device-sessions/pair/consume', {
                         method: 'POST',
                         body: JSON.stringify({
-                            pairing_code: message.pairingCode,
+                            pairing_code: parsed.pairingCode,
                             device_name: message.deviceName || 'Rustyfin Browser Extension',
                             device_platform: 'webext',
                         }),
@@ -417,6 +450,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case 'page-context': {
                     if (sender.tab?.id) {
+                        if (message.payload.hasPasswordField ||
+                            message.payload.pageKind === 'login' ||
+                            message.payload.pageKind === 'signup' ||
+                            message.payload.pageKind === 'change_password' ||
+                            message.payload.pageKind === 'username_step') {
+                            rememberFrame(sender.tab.id, sender);
+                        }
                         await loadMatchesForUrl(sender.tab.id, message.payload.url, {
                             topLevelUrl: message.payload.topLevelUrl,
                             isTopFrame: message.payload.isTopFrame,
@@ -428,6 +468,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case 'credential-capture': {
                     if (sender.tab?.id) {
+                        rememberFrame(sender.tab.id, sender);
                         const policy = await resolvePagePolicy(sender.tab.id, {
                             url: sender.url || message.payload.url,
                             topLevelUrl: sender.tab.url || message.payload.url,
@@ -449,6 +490,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         throw new Error('Unlock the vault and select an item first');
                     }
                     const tabId = requireTabId(message.tabId, sender, 'fill credentials on');
+                    rememberFrame(tabId, sender);
                     const policy = await resolvePagePolicy(tabId);
                     if (!policy.canManualFill) {
                         throw new Error(describePolicyReason(policy.manualFillBlockedReason) ||
@@ -456,14 +498,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     }
                     const encrypted = await withRustyVaultSession(`/vault/items/${encodeURIComponent(message.itemId)}`);
                     const payload = await decryptRustyVaultItem(unlocked, encrypted);
-                    await chrome.tabs.sendMessage(tabId, {
+                    await sendContentMessage(tabId, {
                         type: 'fill-credentials',
                         payload: {
                             username: payload.username,
                             email: payload.login_email,
                             password: payload.password,
                         },
-                    });
+                    }, preferredFrameId(tabId, sender));
                     await setLastFilled(tabId, {
                         tabId,
                         itemId: message.itemId,
@@ -478,20 +520,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 }
                 case 'save-pending-item': {
                     const tabId = requireTabId(message.tabId, sender, 'save this login for');
-                    await savePendingActionToServer(tabId, message.draft || {});
+                    rememberFrame(tabId, sender);
+                    await savePendingActionToServer(tabId, message.draft || {}, preferredFrameId(tabId, sender));
                     sendResponse(responseOk());
                     return;
                 }
                 case 'dismiss-pending-item': {
                     const tabId = requireTabId(message.tabId, sender, 'dismiss this save prompt for');
                     await clearPendingAction(tabId);
-                    await chrome.tabs.sendMessage(tabId, { type: 'dismiss-save-prompt' }).catch(() => null);
+                    await sendContentMessage(tabId, { type: 'dismiss-save-prompt' }, preferredFrameId(tabId, sender)).catch(() => null);
                     await updateBadge(tabId, matchesByTab.get(tabId)?.length || 0, false);
                     sendResponse(responseOk());
                     return;
                 }
                 case 'get-inline-state': {
                     const tabId = requireTabId(message.tabId, sender, 'show inline state for');
+                    rememberFrame(tabId, sender);
                     const sitePermissionGranted = await hasSitePermission(message.url).catch(() => false);
                     const policy = await resolvePagePolicy(tabId, {
                         url: message.url,
