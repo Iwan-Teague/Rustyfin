@@ -38,6 +38,7 @@ pub mod audit_log;
 pub mod auth;
 pub mod backups;
 pub mod channels;
+pub mod dictionary;
 pub mod downloads;
 pub mod error;
 pub mod host_directories;

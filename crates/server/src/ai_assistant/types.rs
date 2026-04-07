@@ -114,6 +114,22 @@ pub enum AssistantToolInput {
         selection_label: String,
         group_name: String,
     },
+    DictionaryGetAccountIdentity,
+    DictionarySearchPeople {
+        workspace_id: String,
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<i64>,
+    },
+    DictionaryGetPersonBundle {
+        workspace_id: String,
+        person_id: String,
+    },
+    DictionaryResolveRelationshipReference {
+        reference: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+    },
     ChannelsFilter {
         query: Option<String>,
     },
@@ -310,6 +326,7 @@ pub enum AssistantDomainFamily {
     Conversations,
     Channels,
     Transcript,
+    Dictionary,
     Downloads,
     Library,
     Network,
@@ -336,6 +353,7 @@ impl AssistantDomainFamily {
             Self::Weather => "weather",
             Self::Web => "web",
             Self::Rooms => "rooms",
+            Self::Dictionary => "dictionary",
             Self::System => "system",
             Self::AiRuntime => "ai_runtime",
             Self::Servers => "servers",

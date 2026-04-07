@@ -9,6 +9,7 @@ pub mod ai_models;
 pub mod calendar;
 pub mod channel_transcripts;
 pub mod channels;
+pub mod dictionary;
 pub mod episodes;
 pub mod idempotency;
 pub mod items;

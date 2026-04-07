@@ -28,9 +28,10 @@ pub use orchestrator::{
     unsupported_write_response_for_message,
 };
 pub use replies::{
-    deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_downloads_reply,
-    deterministic_library_reply, deterministic_memory_reply, deterministic_multi_step_reply,
-    deterministic_network_reply, deterministic_system_reply, deterministic_web_reply,
+    deterministic_ai_runtime_reply, deterministic_calendar_reply, deterministic_dictionary_reply,
+    deterministic_downloads_reply, deterministic_library_reply, deterministic_memory_reply,
+    deterministic_multi_step_reply, deterministic_network_reply, deterministic_system_reply,
+    deterministic_web_reply,
 };
 pub use types::{
     AssistantActivityTraceItem, AssistantChatRequest, AssistantClarificationRequest,

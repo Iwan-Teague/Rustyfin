@@ -9,6 +9,10 @@ use super::types::{
 #[serde(rename_all = "snake_case")]
 pub enum AssistantToolName {
     AccountGetProfileSummary,
+    DictionaryGetAccountIdentity,
+    DictionarySearchPeople,
+    DictionaryGetPersonBundle,
+    DictionaryResolveRelationshipReference,
     MemoryListRecentFacts,
     MemoryListRecentEntities,
     MemorySearchFacts,
@@ -125,6 +129,10 @@ impl AssistantToolName {
     pub const fn all() -> &'static [Self] {
         &[
             Self::AccountGetProfileSummary,
+            Self::DictionaryGetAccountIdentity,
+            Self::DictionarySearchPeople,
+            Self::DictionaryGetPersonBundle,
+            Self::DictionaryResolveRelationshipReference,
             Self::MemoryListRecentFacts,
             Self::MemoryListRecentEntities,
             Self::MemorySearchFacts,
@@ -241,6 +249,12 @@ impl AssistantToolName {
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "account_get_profile_summary" => Some(Self::AccountGetProfileSummary),
+            "dictionary_get_account_identity" => Some(Self::DictionaryGetAccountIdentity),
+            "dictionary_search_people" => Some(Self::DictionarySearchPeople),
+            "dictionary_get_person_bundle" => Some(Self::DictionaryGetPersonBundle),
+            "dictionary_resolve_relationship_reference" => {
+                Some(Self::DictionaryResolveRelationshipReference)
+            }
             "memory_list_recent_facts" => Some(Self::MemoryListRecentFacts),
             "memory_list_recent_entities" => Some(Self::MemoryListRecentEntities),
             "memory_search_facts" => Some(Self::MemorySearchFacts),
@@ -362,6 +376,12 @@ impl AssistantToolName {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AccountGetProfileSummary => "account_get_profile_summary",
+            Self::DictionaryGetAccountIdentity => "dictionary_get_account_identity",
+            Self::DictionarySearchPeople => "dictionary_search_people",
+            Self::DictionaryGetPersonBundle => "dictionary_get_person_bundle",
+            Self::DictionaryResolveRelationshipReference => {
+                "dictionary_resolve_relationship_reference"
+            }
             Self::MemoryListRecentFacts => "memory_list_recent_facts",
             Self::MemoryListRecentEntities => "memory_list_recent_entities",
             Self::MemorySearchFacts => "memory_search_facts",
@@ -488,6 +508,46 @@ impl AssistantToolName {
                 confirmation: ToolConfirmationPolicy::None,
                 timeout_ms: 2_000,
                 max_result_bytes: 4 * 1024,
+            },
+            Self::DictionaryGetAccountIdentity => AssistantToolSpec {
+                name: "dictionary_get_account_identity",
+                summary: "Load the signed-in user's linked Human Dictionary identity and default workspaces.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 8 * 1024,
+            },
+            Self::DictionarySearchPeople => AssistantToolSpec {
+                name: "dictionary_search_people",
+                summary: "Search visible Human Dictionary people inside one accessible workspace.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 3_000,
+                max_result_bytes: 10 * 1024,
+            },
+            Self::DictionaryGetPersonBundle => AssistantToolSpec {
+                name: "dictionary_get_person_bundle",
+                summary: "Load one visible Human Dictionary person's facts, relations, and document in one workspace.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 14 * 1024,
+            },
+            Self::DictionaryResolveRelationshipReference => AssistantToolSpec {
+                name: "dictionary_resolve_relationship_reference",
+                summary: "Resolve relationship-relative Human Dictionary references like my mother, my brother, or my co-workers.",
+                access_mode: ToolAccessMode::ReadOnly,
+                risk_tier: ToolRiskTier::Moderate,
+                required_role: ToolRoleRequirement::AnyAuthenticatedUser,
+                confirmation: ToolConfirmationPolicy::None,
+                timeout_ms: 4_000,
+                max_result_bytes: 14 * 1024,
             },
             Self::AiListBackgroundJobs => AssistantToolSpec {
                 name: "ai_list_background_jobs",
@@ -1595,6 +1655,10 @@ impl AssistantToolName {
     pub const fn domain_family(self) -> AssistantDomainFamily {
         match self {
             Self::AccountGetProfileSummary => AssistantDomainFamily::Account,
+            Self::DictionaryGetAccountIdentity
+            | Self::DictionarySearchPeople
+            | Self::DictionaryGetPersonBundle
+            | Self::DictionaryResolveRelationshipReference => AssistantDomainFamily::Dictionary,
             Self::MemoryListRecentFacts
             | Self::MemoryListRecentEntities
             | Self::MemorySearchFacts
@@ -1721,6 +1785,9 @@ impl AssistantToolName {
         matches!(
             self,
             Self::CalendarListEvents
+                | Self::DictionarySearchPeople
+                | Self::DictionaryGetPersonBundle
+                | Self::DictionaryResolveRelationshipReference
                 | Self::CalendarListDateConflicts
                 | Self::CalendarListFreeDays
                 | Self::CalendarGetNextFreeDay
@@ -1790,6 +1857,9 @@ impl AssistantToolName {
         matches!(
             self,
             Self::CalendarListEvents
+                | Self::DictionarySearchPeople
+                | Self::DictionaryGetPersonBundle
+                | Self::DictionaryResolveRelationshipReference
                 | Self::CalendarUpcomingBirthdays
                 | Self::CalendarGetEventDetails
                 | Self::CalendarGetEventByExactDateAndTitle
@@ -1874,6 +1944,7 @@ impl AssistantToolName {
             Self::WeatherGetCurrent
                 | Self::WeatherGetForecast
                 | Self::WeatherGetHistory
+                | Self::DictionaryResolveRelationshipReference
                 | Self::NetworkGetTopologySummary
                 | Self::NetworkGetInterfaceDetails
                 | Self::NetworkGetInterfaceByIp

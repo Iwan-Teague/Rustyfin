@@ -185,7 +185,7 @@ mod tests {
 
     use super::{ToolExecutionProfile, ToolRegistry, default_tool_registry};
     use crate::ai_assistant::providers::{
-        CalendarToolProvider, LibrariesToolProvider, MemoryToolProvider,
+        CalendarToolProvider, DictionaryToolProvider, LibrariesToolProvider, MemoryToolProvider,
     };
     use crate::ai_assistant::registry::AssistantToolName;
 
@@ -202,6 +202,11 @@ mod tests {
         assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::CalendarGetEventDetails),
             Some("calendar")
+        );
+        assert_eq!(
+            registry
+                .provider_id_for_tool(AssistantToolName::DictionaryResolveRelationshipReference),
+            Some("dictionary")
         );
         assert_eq!(
             registry.provider_id_for_tool(AssistantToolName::LibrarySearchTitles),
@@ -357,6 +362,7 @@ mod tests {
     fn registry_can_be_built_with_a_small_provider_subset() {
         let registry = ToolRegistry::from_providers(vec![
             Arc::new(CalendarToolProvider) as Arc<dyn super::ToolProvider>,
+            Arc::new(DictionaryToolProvider) as Arc<dyn super::ToolProvider>,
             Arc::new(LibrariesToolProvider) as Arc<dyn super::ToolProvider>,
             Arc::new(MemoryToolProvider) as Arc<dyn super::ToolProvider>,
         ]);
@@ -369,6 +375,11 @@ mod tests {
         assert!(
             registry
                 .entry(AssistantToolName::LibrarySearchTitles)
+                .is_some()
+        );
+        assert!(
+            registry
+                .entry(AssistantToolName::DictionarySearchPeople)
                 .is_some()
         );
         assert!(

@@ -98,6 +98,13 @@ impl PlannerAstToolCall {
                 .clone()
                 .or_else(|| legacy.availability.clone()),
             room_mode: args.room_mode.clone().or_else(|| legacy.room_mode.clone()),
+            workspace_id: args
+                .workspace_id
+                .clone()
+                .or_else(|| legacy.workspace_id.clone()),
+            person_id: args.person_id.clone().or_else(|| legacy.person_id.clone()),
+            reference: args.reference.clone().or_else(|| legacy.reference.clone()),
+            limit: args.limit.or(legacy.limit),
         }
     }
 }
@@ -114,6 +121,14 @@ struct PlannerAstArgs {
     availability: Option<String>,
     #[serde(default)]
     room_mode: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    person_id: Option<String>,
+    #[serde(default)]
+    reference: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 pub async fn plan_tool_calls_with_model_assist<B: PromptBackend>(
@@ -414,7 +429,11 @@ fn should_prefer_deterministic_plan(calls: &[PlannedToolCall]) -> bool {
         && calls.iter().all(|call| {
             matches!(
                 call.tool,
-                AssistantToolName::WeatherGetCurrent
+                AssistantToolName::DictionaryGetAccountIdentity
+                    | AssistantToolName::DictionarySearchPeople
+                    | AssistantToolName::DictionaryGetPersonBundle
+                    | AssistantToolName::DictionaryResolveRelationshipReference
+                    | AssistantToolName::WeatherGetCurrent
                     | AssistantToolName::WeatherGetForecast
                     | AssistantToolName::WeatherGetHistory
                     | AssistantToolName::WeatherGetHourlyWindow
@@ -756,7 +775,7 @@ fn build_model_planner_messages(
                 "You are the Rustyfin assistant tool planner. Choose zero to {MAX_TOOL_CALLS_PER_TURN} grounded read-only tools. \
 Return JSON only with no markdown, no prose, and no code fences.\n\
 Schema:\n\
-{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"category\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\"}}}}]}}\n\
+{{\"mode\":\"tool_plan\",\"tools\":[{{\"tool\":\"tool_name\",\"args\":{{\"query\":\"optional\",\"url\":\"optional\",\"category\":\"optional\",\"availability\":\"optional\",\"room_mode\":\"optional\",\"workspace_id\":\"optional\",\"person_id\":\"optional\",\"reference\":\"optional\",\"limit\":\"optional integer\"}}}}]}}\n\
 or\n\
 {{\"mode\":\"none\",\"tools\":[]}}\n\
 Rules:\n\
@@ -764,6 +783,10 @@ Rules:\n\
 - Never exceed {MAX_TOOL_CALLS_PER_TURN} tools.\n\
 - Use detail tools only when the user is asking about one specific room, one specific server, one specific download artifact, or one specific library item.\n\
 - Use libraries_list_accessible for generic library access questions.\n\
+- Use dictionary_get_account_identity when the user asks who they are linked to in the Human Dictionary.\n\
+- Use dictionary_search_people for visible Human Dictionary search inside one known workspace.\n\
+- Use dictionary_get_person_bundle when you already know the workspace and one specific visible person id.\n\
+- Use dictionary_resolve_relationship_reference for relationship-relative Human Dictionary queries such as \"my mother\", \"my brother\", or \"my co-workers\".\n\
 - Use library_search_titles for searching by title.\n\
 - Use libraries_get_library_summary when the user wants exact metadata, item counts, paths, or settings for one accessible library.\n\
 - Use library_get_item_media_details when the user wants file path, artwork, poster/backdrop/logo, or storage details for one specific library item.\n\
@@ -910,6 +933,14 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
     match tool {
         AssistantToolName::CalendarCreateEvent => {
             " Args: required title/date/scope; explicit user confirmation is required before the backend will execute it."
+        }
+        AssistantToolName::DictionaryGetAccountIdentity => " Args: none.",
+        AssistantToolName::DictionarySearchPeople => {
+            " Args: required workspace_id/query; optional limit."
+        }
+        AssistantToolName::DictionaryGetPersonBundle => " Args: required workspace_id/person_id.",
+        AssistantToolName::DictionaryResolveRelationshipReference => {
+            " Args: required reference such as \"my mother\"; optional workspace_id override."
         }
         AssistantToolName::CalendarCreateBirthday => {
             " Args: required person/date/year/scope; explicit user confirmation is required before the backend will execute it."
@@ -1129,6 +1160,7 @@ fn planner_tool_argument_hint(tool: AssistantToolName) -> &'static str {
             " Args: required query, optional availability."
         }
         AssistantToolName::AccountGetProfileSummary
+        | AssistantToolName::DictionaryGetAccountIdentity
         | AssistantToolName::AiListBackgroundJobs
         | AssistantToolName::AiGetJobStatus
         | AssistantToolName::AiGetToolRegistry
@@ -1503,6 +1535,65 @@ fn normalize_planner_tool_input(
         | AssistantToolName::SystemGetTranscodeSummary
         | AssistantToolName::SystemGetStorageSummary
         | AssistantToolName::SystemGetRecentErrors => Ok(AssistantToolInput::None),
+        AssistantToolName::DictionarySearchPeople => {
+            let workspace_id = args.workspace_id.clone().ok_or_else(|| {
+                planner_issue(
+                    "missing_required_argument",
+                    "dictionary people search requires a workspace_id",
+                    Some("args.workspace_id"),
+                )
+            })?;
+            let query = normalize_optional_query(args.query.clone())
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "dictionary people search requires a query",
+                        Some("args.query"),
+                    )
+                })?;
+            Ok(AssistantToolInput::DictionarySearchPeople {
+                workspace_id,
+                query,
+                limit: args.limit,
+            })
+        }
+        AssistantToolName::DictionaryGetPersonBundle => {
+            let workspace_id = args.workspace_id.clone().ok_or_else(|| {
+                planner_issue(
+                    "missing_required_argument",
+                    "dictionary person bundle requires a workspace_id",
+                    Some("args.workspace_id"),
+                )
+            })?;
+            let person_id = args.person_id.clone().ok_or_else(|| {
+                planner_issue(
+                    "missing_required_argument",
+                    "dictionary person bundle requires a person_id",
+                    Some("args.person_id"),
+                )
+            })?;
+            Ok(AssistantToolInput::DictionaryGetPersonBundle {
+                workspace_id,
+                person_id,
+            })
+        }
+        AssistantToolName::DictionaryResolveRelationshipReference => {
+            let reference = args
+                .reference
+                .clone()
+                .or_else(|| extract_dictionary_relationship_reference(message))
+                .ok_or_else(|| {
+                    planner_issue(
+                        "missing_required_argument",
+                        "dictionary relationship resolution requires a relationship reference such as my mother",
+                        Some("args.reference"),
+                    )
+                })?;
+            Ok(AssistantToolInput::DictionaryResolveRelationshipReference {
+                reference,
+                workspace_id: args.workspace_id.clone(),
+            })
+        }
         AssistantToolName::CalendarGetEventByExactDateAndTitle
         | AssistantToolName::CalendarGetEventSeriesSummary => {
             let query = normalize_optional_query(args.query.clone())
@@ -2965,7 +3056,17 @@ pub fn plan_tool_calls_with_history(
     let mut planned = Vec::new();
     let mut seen = HashSet::new();
 
-    if has_any(
+    if let Some(reference) = extract_dictionary_relationship_reference(message) {
+        push_tool(
+            &mut planned,
+            &mut seen,
+            AssistantToolName::DictionaryResolveRelationshipReference,
+            AssistantToolInput::DictionaryResolveRelationshipReference {
+                reference,
+                workspace_id: None,
+            },
+        );
+    } else if has_any(
         &lower,
         &[
             "birthday",
@@ -11196,6 +11297,44 @@ fn is_memory_query(message_lower: &str) -> bool {
         || is_memory_provenance_query(message_lower)
 }
 
+fn extract_dictionary_relationship_reference(message: &str) -> Option<String> {
+    let lower = message.to_ascii_lowercase();
+    [
+        "my mother",
+        "my mum",
+        "my mom",
+        "my father",
+        "my dad",
+        "my parent",
+        "my parents",
+        "my brother",
+        "my sister",
+        "my sibling",
+        "my siblings",
+        "my spouse",
+        "my partner",
+        "my wife",
+        "my husband",
+        "my friend",
+        "my friends",
+        "my co-worker",
+        "my co-workers",
+        "my coworker",
+        "my coworkers",
+        "my colleague",
+        "my colleagues",
+        "my child",
+        "my children",
+        "my son",
+        "my daughter",
+        "my grandparent",
+        "my grandparents",
+    ]
+    .iter()
+    .find(|needle| lower.contains(**needle))
+    .map(|needle| (*needle).to_string())
+}
+
 fn message_has_other_domain_context(message_lower: &str) -> bool {
     has_any(
         message_lower,
@@ -13681,6 +13820,44 @@ mod tests {
         .expect("expected deterministic tool inventory reply");
         assert!(reply.contains("system_get_service_health"));
         assert!(reply.contains("system_get_host_runtime_summary"));
+    }
+
+    #[test]
+    fn planner_routes_family_relationship_queries_to_dictionary() {
+        let tools = plan_tool_calls("When is my mother's birthday?");
+        let tool = tools
+            .iter()
+            .find(|call| call.tool == AssistantToolName::DictionaryResolveRelationshipReference)
+            .expect("expected dictionary relationship reference tool");
+        match &tool.input {
+            AssistantToolInput::DictionaryResolveRelationshipReference {
+                reference,
+                workspace_id,
+            } => {
+                assert_eq!(reference, "my mother");
+                assert_eq!(workspace_id, &None);
+            }
+            _ => panic!("expected dictionary relationship reference"),
+        }
+    }
+
+    #[test]
+    fn planner_routes_work_relationship_queries_to_dictionary() {
+        let tools = plan_tool_calls("Who are my co-workers?");
+        let tool = tools
+            .iter()
+            .find(|call| call.tool == AssistantToolName::DictionaryResolveRelationshipReference)
+            .expect("expected dictionary relationship reference tool");
+        match &tool.input {
+            AssistantToolInput::DictionaryResolveRelationshipReference {
+                reference,
+                workspace_id,
+            } => {
+                assert_eq!(reference, "my co-workers");
+                assert_eq!(workspace_id, &None);
+            }
+            _ => panic!("expected dictionary relationship reference"),
+        }
     }
 
     #[test]

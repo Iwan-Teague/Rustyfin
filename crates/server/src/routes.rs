@@ -413,6 +413,7 @@ fn api_router(state: AppState) -> Router<AppState> {
             get(crate::smart_home::get_smart_home_state),
         )
         .nest("/system/backups", crate::backups::router(state.clone()))
+        .nest("/dictionary", crate::dictionary::router())
         .nest("/vault", mounted_rustyvault_router(state))
         .nest("/servers", crate::servers::router::servers_router())
         .nest(
