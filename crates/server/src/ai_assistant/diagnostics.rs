@@ -108,7 +108,8 @@ linux_tool_wrapper!(
     collect_linux_vpn_status,
     "Rustyfin host VPN status"
 );
-pub async fn system_get_process_detail(_query: &str) -> Result<(String, Value), String> {
+pub async fn system_get_process_detail(query: &str) -> Result<(String, Value), String> {
+    let _ = query;
     #[cfg(target_os = "linux")]
     {
         collect_linux_process_detail(query).await
@@ -123,7 +124,8 @@ pub async fn system_get_process_detail(_query: &str) -> Result<(String, Value), 
     }
 }
 
-pub async fn system_get_listener_detail(_query: &str) -> Result<(String, Value), String> {
+pub async fn system_get_listener_detail(query: &str) -> Result<(String, Value), String> {
+    let _ = query;
     #[cfg(target_os = "linux")]
     {
         collect_linux_listener_detail(query).await
@@ -138,7 +140,8 @@ pub async fn system_get_listener_detail(_query: &str) -> Result<(String, Value),
     }
 }
 
-pub async fn system_get_disk_usage_detail(_query: &str) -> Result<(String, Value), String> {
+pub async fn system_get_disk_usage_detail(query: &str) -> Result<(String, Value), String> {
+    let _ = query;
     #[cfg(target_os = "linux")]
     {
         collect_linux_disk_usage_detail(query).await

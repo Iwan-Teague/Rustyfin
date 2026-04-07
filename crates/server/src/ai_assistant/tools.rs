@@ -512,7 +512,7 @@ struct SystemPortConflictDetailEnvelope {
     conflict: SystemPortConflictSummary,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SystemFailedUnitSummary {
     name: String,
     load: String,
@@ -4215,8 +4215,8 @@ async fn network_get_hostname_aliases(
     {
         let mut aliases = collect_linux_hostname_aliases().await?;
         let host_label = detect_linux_host_label();
-        let canonical_hostname = linux_hostname_short_name().ok().flatten();
-        let fqdn = linux_hostname_fqdn().ok().flatten();
+        let canonical_hostname = linux_hostname_short_name().await.ok().flatten();
+        let fqdn = linux_hostname_fqdn().await.ok().flatten();
 
         if let Some(query) = _query.as_deref() {
             let query_matches_primary = canonical_hostname
@@ -9084,7 +9084,7 @@ fn find_linux_failed_unit_detail(
         })
         .collect();
     if exact_matches.len() == 1 {
-        return Some(exact_matches[0].clone());
+        return Some((exact_matches[0].0.clone(), exact_matches[0].1.clone()));
     }
     if exact_matches.len() > 1 {
         return None;
@@ -9102,7 +9102,7 @@ fn find_linux_failed_unit_detail(
         .collect();
 
     if partial_matches.len() == 1 {
-        Some(partial_matches[0].clone())
+        Some((partial_matches[0].0.clone(), partial_matches[0].1.clone()))
     } else {
         None
     }
