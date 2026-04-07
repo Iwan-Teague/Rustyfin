@@ -4906,6 +4906,13 @@ fn format_library_item_source_paths_reply(
         envelope.matched_by, envelope.query
     ));
 
+    if !envelope.source_paths.is_empty() {
+        lines.push(format!(
+            "Source paths: {}.",
+            envelope.source_paths.join(", ")
+        ));
+    }
+
     if envelope.source_paths.is_empty() {
         lines.push("No source paths were returned for this item.".to_string());
     } else {

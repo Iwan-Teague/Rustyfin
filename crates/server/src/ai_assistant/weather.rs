@@ -1288,18 +1288,15 @@ fn format_hourly_window_reply(message: &str, summary: PublicWeatherHourlySummary
         summary.resolved_location, summary.label
     )];
 
-    if lower.contains("rain") || lower.contains("precip") {
-        if let Some(first_precip) = summary.hourly_points.iter().find(|point| {
-            point_has_precipitation(point) || point.condition.to_ascii_lowercase().contains("rain")
-        }) {
-            parts.push(format!(
-                "First precipitation signal appears at {}.",
-                format_weather_hour_time(&first_precip.time)
-            ));
-        } else {
-            parts
-                .push("No grounded precipitation signal appears in the hourly window.".to_string());
-        }
+    if let Some(first_precip) = summary.hourly_points.iter().find(|point| {
+        point_has_precipitation(point) || point.condition.to_ascii_lowercase().contains("rain")
+    }) {
+        parts.push(format!(
+            "First precipitation signal appears at {}.",
+            format_weather_hour_time(&first_precip.time)
+        ));
+    } else if lower.contains("rain") || lower.contains("precip") {
+        parts.push("No grounded precipitation signal appears in the hourly window.".to_string());
     }
 
     let lines = summary
@@ -1483,7 +1480,6 @@ fn point_has_precipitation(point: &PublicWeatherHourlyPoint) -> bool {
     point.rain_mm.unwrap_or(0.0) > 0.0
         || point.showers_mm.unwrap_or(0.0) > 0.0
         || point.snowfall_cm.unwrap_or(0.0) > 0.0
-        || point.precipitation_probability_percent.unwrap_or(0.0) > 0.0
 }
 
 #[cfg(test)]
