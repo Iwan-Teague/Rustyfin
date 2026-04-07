@@ -15,6 +15,12 @@ impl ToolProvider for DownloadsToolProvider {
 
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::DownloadsListAvailableArtifacts);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactDetails);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactSource);
+        registry.register_tool(self, AssistantToolName::DownloadsGetReleaseNotes);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactChecksum);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactInstallSteps);
+        registry.register_tool(self, AssistantToolName::DownloadsGetArtifactCompatibility);
     }
 
     fn execute<'a>(

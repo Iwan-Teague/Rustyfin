@@ -15,6 +15,15 @@ impl ToolProvider for NetworkToolProvider {
 
     fn register(&self, registry: &mut ToolRegistryBuilder) {
         registry.register_tool(self, AssistantToolName::NetworkGetTopologySummary);
+        registry.register_tool(self, AssistantToolName::NetworkGetInterfaceDetails);
+        registry.register_tool(self, AssistantToolName::NetworkGetDefaultRoute);
+        registry.register_tool(self, AssistantToolName::NetworkGetHostnameAliases);
+        registry.register_tool(self, AssistantToolName::NetworkGetDnsServers);
+        registry.register_tool(self, AssistantToolName::NetworkGetRouteTable);
+        registry.register_tool(self, AssistantToolName::NetworkGetActiveConnections);
+        registry.register_tool(self, AssistantToolName::NetworkGetInterfaceCounters);
+        registry.register_tool(self, AssistantToolName::NetworkGetWifiStatus);
+        registry.register_tool(self, AssistantToolName::NetworkGetVpnStatus);
     }
 
     fn execute<'a>(

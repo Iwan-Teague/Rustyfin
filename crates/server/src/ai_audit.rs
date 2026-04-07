@@ -462,6 +462,27 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
         AssistantToolInput::LibraryRecent { query } => {
             format!("library_recent:query={}", query.as_deref().unwrap_or("*"))
         }
+        AssistantToolInput::NetworkInterface { query } => {
+            format!("network_interface:query={query}")
+        }
+        AssistantToolInput::NetworkDefaultRoute { query } => {
+            format!(
+                "network_default_route:query={}",
+                query.as_deref().unwrap_or("*")
+            )
+        }
+        AssistantToolInput::NetworkHostnameAliases { query } => {
+            format!(
+                "network_hostname_aliases:query={}",
+                query.as_deref().unwrap_or("*")
+            )
+        }
+        AssistantToolInput::NetworkDnsServers { query } => {
+            format!(
+                "network_dns_servers:query={}",
+                query.as_deref().unwrap_or("*")
+            )
+        }
         AssistantToolInput::Weather {
             location,
             forecast_days,
@@ -487,6 +508,21 @@ fn input_summary(input: &crate::ai_assistant::types::AssistantToolInput) -> Stri
             room_mode.as_deref().unwrap_or("*"),
             query.as_deref().unwrap_or("*")
         ),
+        AssistantToolInput::SystemService { query } => {
+            format!("system_service:query={query}")
+        }
+        AssistantToolInput::SystemPortConflicts { query } => {
+            format!(
+                "system_port_conflicts:query={}",
+                query.as_deref().unwrap_or("*")
+            )
+        }
+        AssistantToolInput::SystemFailedUnits { query } => {
+            format!(
+                "system_failed_units:query={}",
+                query.as_deref().unwrap_or("*")
+            )
+        }
         AssistantToolInput::ServerFilter {
             query,
             availability,

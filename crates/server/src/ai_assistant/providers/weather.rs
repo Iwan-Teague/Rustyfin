@@ -17,6 +17,9 @@ impl ToolProvider for WeatherToolProvider {
         registry.register_tool(self, AssistantToolName::WeatherGetCurrent);
         registry.register_tool(self, AssistantToolName::WeatherGetForecast);
         registry.register_tool(self, AssistantToolName::WeatherGetHistory);
+        registry.register_tool(self, AssistantToolName::WeatherResolveLocationAlias);
+        registry.register_tool(self, AssistantToolName::WeatherGetForecastForDate);
+        registry.register_tool(self, AssistantToolName::WeatherGetRecentHistoryForDate);
     }
 
     fn execute<'a>(

@@ -121,6 +121,18 @@ pub enum AssistantToolInput {
         query: Option<String>,
         availability: Option<String>,
     },
+    NetworkInterface {
+        query: String,
+    },
+    NetworkDefaultRoute {
+        query: Option<String>,
+    },
+    NetworkHostnameAliases {
+        query: Option<String>,
+    },
+    NetworkDnsServers {
+        query: Option<String>,
+    },
     LibrarySearch {
         query: String,
     },
@@ -153,6 +165,15 @@ pub enum AssistantToolInput {
     ServerFilter {
         query: Option<String>,
         availability: Option<String>,
+    },
+    SystemService {
+        query: String,
+    },
+    SystemPortConflicts {
+        query: Option<String>,
+    },
+    SystemFailedUnits {
+        query: Option<String>,
     },
 }
 
@@ -280,6 +301,7 @@ pub enum AssistantDomainFamily {
     #[default]
     System,
     Account,
+    Memory,
     Calendar,
     Conversations,
     Channels,
@@ -299,6 +321,7 @@ impl AssistantDomainFamily {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Account => "account",
+            Self::Memory => "memory",
             Self::Calendar => "calendar",
             Self::Conversations => "conversations",
             Self::Channels => "channels",

@@ -50,6 +50,12 @@ pub struct NextVisibleCalendarEventRow {
     pub next_occurs_on: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct VisibleCalendarEventOccurrenceRow {
+    pub event: CalendarEventRow,
+    pub occurs_on: NaiveDate,
+}
+
 fn invalid_calendar_date_error(raw: &str) -> sqlx::Error {
     sqlx::Error::Decode(Box::new(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -341,6 +347,81 @@ pub async fn list_visible_events(
     });
 
     Ok(filtered.into_iter().map(|(_, row)| row).collect())
+}
+
+pub async fn list_visible_event_occurrences(
+    pool: &DbPool,
+    user_id: &str,
+    is_admin: bool,
+    from_date: &str,
+    to_date: &str,
+) -> Result<Vec<VisibleCalendarEventOccurrenceRow>, sqlx::Error> {
+    let from_date = parse_calendar_date(from_date)?;
+    let to_date = parse_calendar_date(to_date)?;
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<i64>,
+        String,
+        Option<String>,
+        i64,
+        i64,
+    )> = sqlx::query_as(
+        "SELECT e.id, e.scope, e.owner_user_id, owner.username, e.title, e.description, \
+                e.event_date, e.event_type, e.recurrence, e.birthday_year, \
+                e.created_by_user_id, creator.username, e.created_ts, e.updated_ts \
+         FROM calendar_event e \
+         LEFT JOIN \"user\" owner ON owner.id = e.owner_user_id \
+         LEFT JOIN \"user\" creator ON creator.id = e.created_by_user_id \
+         WHERE (
+             e.scope = 'global'
+             OR ($1 = 1)
+             OR (e.scope = 'personal' AND e.owner_user_id = $2)
+         ) \
+           AND (
+             (e.recurrence = 'none' AND e.event_date::date >= $3 AND e.event_date::date <= $4)
+             OR e.recurrence = 'yearly'
+         ) \
+         ORDER BY e.event_date ASC, e.title ASC, e.created_ts ASC",
+    )
+    .bind(if is_admin { 1 } else { 0 })
+    .bind(user_id)
+    .bind(from_date)
+    .bind(to_date)
+    .fetch_all(pool)
+    .await?;
+
+    let mut filtered = rows
+        .into_iter()
+        .map(map_row)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|row| {
+            occurrence_within_window(&row, from_date, to_date)
+                .transpose()
+                .map(|occurs_on| occurs_on.map(|occurs_on| (occurs_on, row)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    filtered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.title.cmp(&right.1.title))
+            .then_with(|| left.1.created_ts.cmp(&right.1.created_ts))
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+
+    Ok(filtered
+        .into_iter()
+        .map(|(occurs_on, event)| VisibleCalendarEventOccurrenceRow { event, occurs_on })
+        .collect())
 }
 
 pub async fn list_personal_events(
